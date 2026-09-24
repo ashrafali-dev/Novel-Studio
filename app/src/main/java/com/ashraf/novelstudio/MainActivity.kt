@@ -25,11 +25,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
-import android.widget.ScrollView
+import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.webkit.WebSettingsCompat
@@ -55,13 +56,20 @@ class MainActivity : Activity() {
     private lateinit var chatBox: LinearLayout
     private lateinit var strip: LinearLayout
     private lateinit var modeBtn: TextView
+    private lateinit var autoBtn: TextView
 
     private var mode = Mode.SPLIT
     private var autoCopy = false
     private var polling = false
     private var lastChapter: Chapter? = null
     private var lastCopied = ""
+    private var exportNovel: String? = null
     private val handler = Handler(Looper.getMainLooper())
+
+    private val DARK_ON = "(function(){var id='__nsdark';if(document.getElementById(id))return;var s=document.createElement('style');s.id=id;" +
+        "s.textContent='html{filter:invert(1) hue-rotate(180deg)!important;background:#fff}img,video,picture,canvas{filter:invert(1) hue-rotate(180deg)!important}';" +
+        "(document.head||document.documentElement).appendChild(s);})();"
+    private val DARK_OFF = "(function(){var e=document.getElementById('__nsdark');if(e)e.remove();})();"
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
@@ -83,7 +91,7 @@ class MainActivity : Activity() {
 
     private fun barBtn(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
         text = label
-        textSize = 20f
+        textSize = 18f
         gravity = Gravity.CENTER
         setTextColor(0xFFFFFFFF.toInt())
         layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f)
@@ -125,12 +133,21 @@ class MainActivity : Activity() {
             setTextColor(0xFF4F7CFF.toInt())
             setOnClickListener { go(urlBar.text.toString()) }
         }
+        val reloadBtn = TextView(this).apply {
+            text = "⟳"
+            gravity = Gravity.CENTER
+            textSize = 22f
+            setTextColor(0xFFFFFFFF.toInt())
+            setOnClickListener { reloadPage() }
+            setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
+        }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(0xFF202024.toInt())
             setPadding(dp(6), dp(2), dp(6), dp(2))
             addView(urlBar, LinearLayout.LayoutParams(0, WC, 1f))
+            addView(reloadBtn, LinearLayout.LayoutParams(dp(44), dp(40)))
             addView(goBtn, LinearLayout.LayoutParams(dp(48), dp(40)))
         }
 
@@ -156,15 +173,17 @@ class MainActivity : Activity() {
 
         // bottom bar
         modeBtn = barBtn("◫") { cycleMode() }
+        autoBtn = barBtn("⚡") { toggleAuto() }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(0xFF202024.toInt())
             addView(modeBtn)
-            addView(barBtn("📝") { copy(Prefs.prompt(this@MainActivity)); toast("📋 প্রম্পট কপি হয়েছে") })
+            addView(barBtn("📝") { deliver(Prefs.prompt(this@MainActivity), "প্রম্পট") })
             addView(barBtn("◀") { step("prev") })
             addView(barBtn("●") { extractCopy() })
             addView(barBtn("▶") { step("next") })
             addView(barBtn("💾") { saveAnswer() })
+            addView(autoBtn)
             addView(barBtn("☰") { menu() })
         }
 
@@ -179,9 +198,18 @@ class MainActivity : Activity() {
 
         buildStrip()
         setMode(Mode.SPLIT)
+        refreshAutoBtn()
+        applyDark()
         novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
         val firstBot = bots().getJSONObject(0).getString("u")
         chatWv.loadUrl(Prefs.get(this, "botUrl", firstBot))
+    }
+
+    // ⟳ : reload the pane you are looking at (long press = reload both)
+    private fun reloadPage() {
+        val wv = if (mode == Mode.CHAT) chatWv else activeWv
+        wv.reload()
+        toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
     }
 
     private fun setup(wv: WebView) {
@@ -194,16 +222,42 @@ class MainActivity : Activity() {
         s.builtInZoomControls = true
         s.displayZoomControls = false
         s.userAgentString = UA
+        wv.setBackgroundColor(0xFF111114.toInt())
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
             WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, emptySet())
         }
     }
 
+    // ------------------------------------------------------------------ dark mode (0 off, 1 auto, 2 force)
+    private fun darkMode(): Int = Prefs.get(this, "dark", "0").toIntOrNull() ?: 0
+
+    @Suppress("DEPRECATION")
+    private fun applyDark() {
+        val d = darkMode()
+        for (wv in listOf(novelWv, chatWv)) {
+            val on = d != 0
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(wv.settings, on)
+            } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(wv.settings, if (on) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF)
+            }
+        }
+        novelWv.evaluateJavascript(if (d == 2) DARK_ON else DARK_OFF, null)   // "force" = CSS invert, novel site only
+    }
+
+    // ------------------------------------------------------------------ modes
     private fun setMode(m: Mode) {
         mode = m
-        novelBox.visibility = if (m == Mode.CHAT) View.GONE else View.VISIBLE
-        chatBox.visibility = if (m == Mode.NOVEL) View.GONE else View.VISIBLE
+        val nlp = novelBox.layoutParams as LinearLayout.LayoutParams
+        when (m) {
+            Mode.NOVEL -> { nlp.height = 0; nlp.weight = 1f; chatBox.visibility = View.GONE }
+            // novel page stays alive as a 1dp sliver so ▶ / ● keep working while the chatbot is full screen
+            Mode.CHAT -> { nlp.height = dp(1); nlp.weight = 0f; chatBox.visibility = View.VISIBLE }
+            Mode.SPLIT -> { nlp.height = 0; nlp.weight = 1f; chatBox.visibility = View.VISIBLE }
+        }
+        novelBox.layoutParams = nlp
+        novelBox.visibility = View.VISIBLE
         modeBtn.text = when (m) {
             Mode.NOVEL -> "📖"
             Mode.CHAT -> "💬"
@@ -321,12 +375,12 @@ class MainActivity : Activity() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val r = request ?: return false
             val scheme = r.url.scheme ?: ""
-            if (scheme != "http" && scheme != "https") return true          // intent://, market:// ...
+            if (scheme != "http" && scheme != "https") return true
             if (Prefs.adblock(this@MainActivity) && r.isForMainFrame && !r.hasGesture()) {
                 if (AdBlock.blocked(r.url)) return true
                 val cur = Uri.parse(view?.url ?: "").host
                 val nh = r.url.host
-                if (cur != null && nh != null && AdBlock.root(cur) != AdBlock.root(nh)) return true   // auto redirect to another site
+                if (cur != null && nh != null && AdBlock.root(cur) != AdBlock.root(nh)) return true
             }
             return false
         }
@@ -335,8 +389,13 @@ class MainActivity : Activity() {
             if (url != null && !urlBar.hasFocus()) urlBar.setText(url)
         }
 
+        override fun onPageCommitVisible(view: WebView?, url: String?) {
+            if (darkMode() == 2) view?.evaluateJavascript(DARK_ON, null)
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
+            if (darkMode() == 2) view?.evaluateJavascript(DARK_ON, null)
             if (url != null) Prefs.put(this@MainActivity, "lastNovelUrl", url)
             if (autoCopy && !polling) {
                 polling = true
@@ -346,7 +405,6 @@ class MainActivity : Activity() {
     }
 
     private inner class NovelChrome : WebChromeClient() {
-        // target=_blank links (only with a real tap) open in the same view; script popups are dropped
         override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
             if (!isUserGesture || resultMsg == null) return false
             val t = WebView(this@MainActivity)
@@ -383,7 +441,7 @@ class MainActivity : Activity() {
 
     private fun onChapter(ch: Chapter) {
         lastChapter = ch
-        Store.touchNovel(this, ch)
+        Store.touchBookmark(this, ch)
     }
 
     private fun copy(text: String) {
@@ -392,12 +450,24 @@ class MainActivity : Activity() {
         lastCopied = text
     }
 
+    // copy to clipboard (always) + optional auto paste / send inside the chatbot page
+    private fun deliver(full: String, label: String) {
+        copy(full)
+        toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
+        if (Prefs.bool(this, "autoPaste")) {
+            if (mode == Mode.NOVEL) setMode(Mode.CHAT)
+            val send = Prefs.bool(this, "autoSend")
+            handler.postDelayed({ pasteToChat(full, send) }, 500)
+        } else if (mode == Mode.NOVEL && !Prefs.bool(this, "noGoChat")) {
+            setMode(Mode.CHAT)
+        }
+    }
+
     private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
-        copy(full)
-        toast("📋 কপি হয়েছে: ${ch.title} (${full.length} অক্ষর)" + (if (ch.guessed) "\n⚠️ Next/Prev লিংক অনুমান করা" else ""))
-        if (mode == Mode.NOVEL && !Prefs.bool(this, "noGoChat")) setMode(Mode.CHAT)
+        val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
+        deliver(full, tag)
     }
 
     // ●  : copy the chapter on the novel page right now
@@ -408,22 +478,97 @@ class MainActivity : Activity() {
         }
     }
 
-    // ▶ / ◀ : go to next/prev chapter, then copy it automatically
+    // ▶ / ◀ : next/prev chapter, then copy. Screen mode is NOT changed (works while chatbot is full screen)
     private fun step(dir: String) {
+        toast("⏳ " + (if (dir == "next") "পরের" else "আগের") + " চ্যাপ্টার আনছি…")
         extractNow { cur ->
             val base = cur ?: lastChapter
-            val target = if (dir == "next") base?.next else base?.prev
-            if (target == null) {
-                toast("❌ লিংক পাওয়া যায়নি")
+            if (base == null) {
+                toast("❌ আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো")
+                return@extractNow
+            }
+            if (cur != null) onChapter(cur)
+            val target = if (dir == "next") base.next else base.prev
+            if (target != null) {
+                loadAndCopy(target)
             } else {
-                if (cur != null) onChapter(cur)
-                autoCopy = true
-                polling = false
-                if (mode == Mode.CHAT) setMode(Mode.SPLIT)
-                novelWv.loadUrl(target)
-                handler.postDelayed({ autoCopy = false; polling = false }, 60000)
+                clickAndWait(dir, base)
             }
         }
+    }
+
+    private fun loadAndCopy(url: String) {
+        autoCopy = true
+        polling = false
+        novelWv.loadUrl(url)
+        handler.postDelayed({ autoCopy = false; polling = false }, 60000)
+    }
+
+    // No usable link in the page (JS "Next" button, e.g. webnovel.com): click the site's own button
+    private fun clickAndWait(dir: String, base: Chapter) {
+        novelWv.evaluateJavascript(clickJs(dir)) { res ->
+            if (res != null && res.contains("none")) {
+                val g = Extractor.bump(base.url, if (dir == "next") 1 else -1)
+                if (g != null) {
+                    toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
+                    loadAndCopy(g)
+                } else {
+                    toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নোভেল ভিউতে নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
+                }
+            } else {
+                waitChange(base.text.hashCode(), 0)
+            }
+        }
+    }
+
+    private fun waitChange(oldHash: Int, n: Int) {
+        handler.postDelayed({
+            extractNow { ch ->
+                if (ch != null && ch.text.length > 300 && ch.text.hashCode() != oldHash && novelWv.progress >= 100) {
+                    onChapter(ch)
+                    copyChapter(ch)
+                } else if (n < 10) {
+                    waitChange(oldHash, n + 1)
+                } else {
+                    toast("❌ বাটন চেপেছি কিন্তু নতুন চ্যাপ্টার আসেনি — চ্যাপ্টার লক/লগইন লাগতে পারে")
+                }
+            }
+        }, 1500)
+    }
+
+    private fun clickJs(dir: String): String {
+        val alts = if (dir == "next")
+            "next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
+        else
+            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
+        val word = if (dir == "next") "next" else "prev(?!iew)"
+        val js = """
+(function(){
+  var re=new RegExp('^('+'__ALTS__'+')$','i');
+  var wre=new RegExp('__WORD__','i');
+  var els=[].slice.call(document.querySelectorAll('a,button,[role=button],div,span,li,i'));
+  var best=null,bs=0;
+  for(var i=0;i<els.length;i++){
+    var e=els[i];
+    var tc=(e.textContent||'').trim();
+    if(tc.length>25) continue;
+    var cn=(typeof e.className==='string')?e.className:'';
+    var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+cn+' '+(e.id||'')+' '+(e.getAttribute('data-eventname')||'');
+    var s=0;
+    if(re.test(tc)) s+=5; else if(tc.length<=20&&wre.test(tc)) s+=3;
+    if(wre.test(meta)) s+=2;
+    if(s===0) continue;
+    if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true') continue;
+    var r=e.getBoundingClientRect(); if(r.width<3||r.height<3) continue;
+    if(/chap/i.test(meta+tc)) s+=1;
+    if(s>bs){bs=s;best=e;}
+  }
+  if(!best) return 'none';
+  try{ best.click(); }catch(x){}
+  return 'clicked';
+})()
+"""
+        return js.replace("__ALTS__", alts).replace("__WORD__", word)
     }
 
     private fun pollExtract(n: Int) {
@@ -443,101 +588,211 @@ class MainActivity : Activity() {
         }
     }
 
-    // 💾 : the chatbot's own "Copy" button puts the answer on the clipboard; we store it
+    // ------------------------------------------------------------------ auto paste / send into chatbot (experimental)
+    private fun pasteToChat(text: String, send: Boolean) {
+        val js = """
+(async function(text, send){
+  var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms)})};
+  var cands=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
+  if(!cands.length) return 'nobox';
+  cands.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+  var box=cands[0]; box.focus();
+  if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
+    var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
+    box.dispatchEvent(new Event('input',{bubbles:true}));
+  } else {
+    document.execCommand('selectAll',false,null);
+    document.execCommand('insertText',false,text);
+    await sleep(250);
+    if(!(box.innerText||'').trim()){
+      var dt=new DataTransfer(); dt.setData('text/plain',text);
+      box.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    }
+  }
+  if(send){
+    await sleep(Math.min(4000,500+text.length/40));
+    var btn=document.querySelector('button[data-testid="send-button"], button[aria-label*="Send" i], button.send-button, button[type="submit"]');
+    if(btn&&!btn.disabled) btn.click();
+    else box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+  }
+  return 'ok';
+})("""
+        chatWv.evaluateJavascript(js + JSONObject.quote(text) + "," + send + ");") { r ->
+            if (r != null && r.contains("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
+        }
+    }
+
+    private fun toggleAuto() {
+        val on = !(Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend"))
+        Prefs.putBool(this, "autoPaste", on)
+        Prefs.putBool(this, "autoSend", on)
+        refreshAutoBtn()
+        toast(if (on) "⚡ অটো পেস্ট + সেন্ড চালু" else "⚡ অটো বন্ধ — শুধু কপি হবে")
+    }
+
+    private fun refreshAutoBtn() {
+        val on = Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend")
+        autoBtn.alpha = if (on) 1f else 0.35f
+    }
+
+    // ------------------------------------------------------------------ save translation (offline library)
+    // The chatbot's own "Copy" button puts the answer on the clipboard; 💾 stores it
     private fun saveAnswer() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim() ?: ""
-        if (t.length < 30) return toast("❌ ক্লিপবোর্ডে অনুবাদ নেই — আগে চ্যাটবটের Copy বাটন চাপো")
+        if (t.length < 30) return toast("❌ ক্লিপবোর্ডে অনুবাদ নেই — আগে চ্যাটবটের উত্তরের Copy বাটন চাপো")
         if (t == lastCopied.trim()) return toast("❌ এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো")
-        val ch = lastChapter
-        Store.save(this, ch?.title ?: "অনুবাদ", ch?.url ?: "", t)
-        toast("💾 সেভ হয়েছে (${t.length} অক্ষর)")
+        val tr = Store.save(this, lastChapter, t)
+        toast("💾 লাইব্রেরিতে সেভ: ${tr.novel} — ${tr.label()}")
         if (!Prefs.bool(this, "noSaveNext")) step("next")
     }
 
-    // ------------------------------------------------------------------ menu / library
+    // ------------------------------------------------------------------ menu
     private fun menu() {
         val ab = Prefs.adblock(this)
         val wp = Prefs.bool(this, "withPrompt")
         val gc = !Prefs.bool(this, "noGoChat")
         val sn = !Prefs.bool(this, "noSaveNext")
+        val ap = Prefs.bool(this, "autoPaste")
+        val asd = Prefs.bool(this, "autoSend")
+        val d = darkMode()
         val items = arrayOf(
-            "📖 এই পেজ নোভেল লিস্টে সেভ করো",
-            "📚 নোভেল লিস্ট",
-            "💾 সেভ করা অনুবাদ (পড়ো / মুছো)",
+            "📚 লাইব্রেরি (অফলাইনে পড়ো)",
             "⬇️ সব অনুবাদ txt এক্সপোর্ট",
+            "🔖 এই পেজ বুকমার্ক করো",
+            "🔖 বুকমার্ক লিস্ট",
             "📝 প্রম্পট এডিট",
+            "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[d] + "  (ট্যাপ করলে বদলায়)",
+            (if (ap) "✅" else "⬜") + " অটো পেস্ট (চ্যাটবট বক্সে)",
+            (if (asd) "✅" else "⬜") + " অটো সেন্ড",
             (if (wp) "✅" else "⬜") + " কপির সাথে প্রম্পট জুড়ে দাও",
+            (if (sn) "✅" else "⬜") + " 💾 এর পর পরের চ্যাপ্টার কপি করো",
+            (if (gc) "✅" else "⬜") + " ● চাপার পর চ্যাটে যাও (শুধু 📖 মোডে)",
             (if (ab) "✅" else "⬜") + " Ad Block",
             "🔄 Ad Block লিস্ট আপডেট",
-            (if (gc) "✅" else "⬜") + " কপির পর চ্যাটে যাও (শুধু 📖 মোডে)",
-            (if (sn) "✅" else "⬜") + " 💾 এর পর পরের চ্যাপ্টার কপি করো"
+            "🔄 নোভেল পেজ রিলোড",
+            "🔄 চ্যাটবট রিলোড"
         )
         AlertDialog.Builder(this).setItems(items) { _, i ->
             when (i) {
-                0 -> saveNovel()
-                1 -> novelList()
-                2 -> trList()
-                3 -> exportAll()
+                0 -> libraryNovels()
+                1 -> exportAll(null)
+                2 -> saveBookmark()
+                3 -> bookmarkList()
                 4 -> editPrompt()
-                5 -> Prefs.putBool(this, "withPrompt", !wp)
-                6 -> Prefs.putBool(this, "noAdblock", ab)
-                7 -> {
+                5 -> { Prefs.put(this, "dark", ((d + 1) % 3).toString()); applyDark() }
+                6 -> { Prefs.putBool(this, "autoPaste", !ap); refreshAutoBtn() }
+                7 -> { Prefs.putBool(this, "autoSend", !asd); refreshAutoBtn() }
+                8 -> Prefs.putBool(this, "withPrompt", !wp)
+                9 -> Prefs.putBool(this, "noSaveNext", sn)
+                10 -> Prefs.putBool(this, "noGoChat", gc)
+                11 -> Prefs.putBool(this, "noAdblock", ab)
+                12 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") }
                 }
-                8 -> Prefs.putBool(this, "noGoChat", gc)
-                9 -> Prefs.putBool(this, "noSaveNext", sn)
+                13 -> novelWv.reload()
+                14 -> chatWv.reload()
+                else -> {}
             }
         }.show()
     }
 
-    private fun saveNovel() {
-        val u = novelWv.url ?: return
-        val name = (novelWv.title ?: "").ifBlank { Uri.parse(u).host ?: u }
-        Store.addNovel(this, Novel(name, u, u, ""))
-        toast("📖 সেভ হয়েছে: $name")
+    private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
+        val lv = ListView(this)
+        lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        val dlg = AlertDialog.Builder(this).setTitle(title).setView(lv).setNegativeButton("বন্ধ", null).create()
+        lv.setOnItemClickListener { _, _, i, _ -> dlg.dismiss(); onClick(i) }
+        if (onLong != null) lv.setOnItemLongClickListener { _, _, i, _ -> dlg.dismiss(); onLong(i); true }
+        dlg.show()
     }
 
-    private fun novelList() {
-        val l = Store.novels(this)
-        if (l.isEmpty()) return toast("লিস্ট খালি — মেনু থেকে নোভেল সেভ করো")
-        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "\n↳ " + it.lastTitle else "") }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("📚 নোভেল").setItems(labels) { _, i ->
-            AlertDialog.Builder(this).setItems(arrayOf("খোলো (শেষ চ্যাপ্টার)", "মুছো")) { _, k ->
-                if (k == 0) {
-                    if (mode == Mode.CHAT) setMode(Mode.SPLIT)
-                    novelWv.loadUrl(l[i].lastUrl.ifEmpty { l[i].url })
-                } else {
-                    Store.removeNovel(this, i)
+    // ---------- offline library ----------
+    private fun libraryNovels() {
+        val names = Store.novelNames(this)
+        if (names.isEmpty()) return toast("লাইব্রেরি খালি — অনুবাদের Copy করে 💾 চাপলে এখানে জমবে")
+        val labels = names.map { it + "   (" + Store.chapters(this, it).size + " চ্যাপ্টার)" }
+        listDialog("📚 লাইব্রেরি", labels, { i -> novelActions(names[i]) }, null)
+    }
+
+    private fun novelActions(name: String) {
+        AlertDialog.Builder(this).setTitle(name)
+            .setItems(arrayOf("📖 চ্যাপ্টার লিস্ট", "⬇️ এই নোভেল txt এক্সপোর্ট", "✏️ নাম বদলাও", "🗑 পুরো নোভেল মুছো")) { _, k ->
+                when (k) {
+                    0 -> chapterList(name)
+                    1 -> exportAll(name)
+                    2 -> renameNovel(name)
+                    3 -> AlertDialog.Builder(this).setMessage("\"$name\" এর সব অনুবাদ মুছবে?")
+                        .setPositiveButton("মুছো") { _, _ -> Store.deleteNovel(this, name) }
+                        .setNegativeButton("না", null).show()
+                    else -> {}
                 }
             }.show()
-        }.show()
     }
 
-    private fun trList() {
-        val l = Store.list(this)
-        if (l.isEmpty()) return toast("কোনো অনুবাদ সেভ নেই")
-        AlertDialog.Builder(this)
-            .setTitle("💾 অনুবাদ (${l.size})")
-            .setItems(l.map { it.title }.toTypedArray()) { _, i -> reader(l[i]) }
-            .show()
+    private fun chapterList(name: String) {
+        val l = Store.chapters(this, name)
+        if (l.isEmpty()) return
+        listDialog(name + " (লং প্রেসে মোছো)", l.map { it.label() },
+            { i -> startActivity(Intent(this, ReaderActivity::class.java).putExtra("novel", name).putExtra("id", l[i].id)) },
+            { i ->
+                AlertDialog.Builder(this).setMessage("${l[i].label()} মুছবে?")
+                    .setPositiveButton("মুছো") { _, _ -> Store.delete(this, l[i].id) }
+                    .setNegativeButton("না", null).show()
+            })
     }
 
-    private fun reader(t: Tr) {
-        val tv = TextView(this).apply {
-            text = Store.read(this@MainActivity, t.id)
-            textSize = 16f
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            setTextIsSelectable(true)
+    private fun renameNovel(old: String) {
+        val et = EditText(this).apply { setText(old) }
+        AlertDialog.Builder(this).setTitle("নোভেলের নাম")
+            .setView(et)
+            .setPositiveButton("সেভ") { _, _ -> Store.rename(this, old, et.text.toString().trim()) }
+            .setNegativeButton("বাতিল", null).show()
+    }
+
+    private fun exportAll(novel: String?) {
+        if (Store.list(this).isEmpty()) return toast("এক্সপোর্ট করার মতো অনুবাদ নেই")
+        exportNovel = novel
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TITLE, (novel ?: "translations") + ".txt")
         }
-        AlertDialog.Builder(this)
-            .setTitle(t.title)
-            .setView(ScrollView(this).apply { addView(tv) })
-            .setPositiveButton("কপি") { _, _ -> copy(Store.read(this, t.id)); toast("📋 কপি হয়েছে") }
-            .setNegativeButton("মুছো") { _, _ -> Store.delete(this, t.id) }
-            .setNeutralButton("বন্ধ", null)
-            .show()
+        startActivityForResult(i, 42)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 42 && resultCode == RESULT_OK) {
+            val u = data?.data ?: return
+            try {
+                contentResolver.openOutputStream(u)?.use { it.write(Store.export(this, exportNovel).toByteArray()) }
+                toast("✅ এক্সপোর্ট হয়েছে")
+            } catch (e: Exception) {
+                toast("❌ " + (e.message ?: "ব্যর্থ"))
+            }
+        }
+    }
+
+    // ---------- bookmarks ----------
+    private fun saveBookmark() {
+        val u = novelWv.url ?: return
+        val name = (novelWv.title ?: "").ifBlank { Uri.parse(u).host ?: u }
+        Store.addBookmark(this, Bookmark(name, u, u, ""))
+        toast("🔖 সেভ হয়েছে: $name")
+    }
+
+    private fun bookmarkList() {
+        val l = Store.bookmarks(this)
+        if (l.isEmpty()) return toast("বুকমার্ক খালি")
+        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "\n↳ " + it.lastTitle else "") }
+        listDialog("🔖 বুকমার্ক (লং প্রেসে মোছো)", labels,
+            { i ->
+                if (mode == Mode.CHAT) setMode(Mode.SPLIT)
+                novelWv.loadUrl(l[i].lastUrl.ifEmpty { l[i].url })
+            },
+            { i -> Store.removeBookmark(this, i) })
     }
 
     private fun editPrompt() {
@@ -552,29 +807,6 @@ class MainActivity : Activity() {
             .setPositiveButton("সেভ") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
             .setNegativeButton("বাতিল", null)
             .show()
-    }
-
-    private fun exportAll() {
-        if (Store.list(this).isEmpty()) return toast("এক্সপোর্ট করার মতো অনুবাদ নেই")
-        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TITLE, "translations.txt")
-        }
-        startActivityForResult(i, 42)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 42 && resultCode == RESULT_OK) {
-            val u = data?.data ?: return
-            try {
-                contentResolver.openOutputStream(u)?.use { it.write(Store.exportAll(this).toByteArray()) }
-                toast("✅ এক্সপোর্ট হয়েছে")
-            } catch (e: Exception) {
-                toast("❌ " + (e.message ?: "ব্যর্থ"))
-            }
-        }
     }
 
     // ------------------------------------------------------------------ lifecycle
