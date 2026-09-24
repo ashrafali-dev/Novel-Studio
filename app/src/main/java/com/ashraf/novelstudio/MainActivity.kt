@@ -723,7 +723,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun toggleAuto {
     private fun toggleAuto() {
         val on = !(Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend"))
         Prefs.putBool(this, "autoPaste", on)
