@@ -132,7 +132,9 @@ class MainActivity : Activity() {
         novelWv.webViewClient = NovelClient()
         novelWv.webChromeClient = NovelChrome()
         chatWv.webViewClient = ChatClient()
-        chatWv.webChromeClient = WebChromeClient()
+        chatWv.settings.setSupportMultipleWindows(true)
+        chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
+        chatWv.webChromeClient = ChatChrome()
         activeWv = novelWv
         novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
@@ -473,6 +475,35 @@ class MainActivity : Activity() {
                 return true
             }
             return false
+        }
+    }
+
+    private inner class ChatChrome : WebChromeClient() {
+        override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
+            if (!isUserGesture || resultMsg == null) return false
+            val popup = WebView(this@MainActivity)
+            setup(popup)
+            popup.webViewClient = object : WebViewClient() {
+                override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
+                    if (url != null && isChatLoginUrl(Uri.parse(url))) {
+                        openLoginInChrome(url)
+                        v?.stopLoading()
+                    }
+                }
+                override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
+                    val u = r?.url ?: return false
+                    if (isChatLoginUrl(u)) {
+                        openLoginInChrome(u.toString())
+                        v?.stopLoading()
+                        return true
+                    }
+                    return false
+                }
+            }
+            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+            transport.webView = popup
+            resultMsg.sendToTarget()
+            return true
         }
     }
 
