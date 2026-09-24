@@ -131,7 +131,7 @@ class MainActivity : Activity() {
         novelWv.settings.javaScriptCanOpenWindowsAutomatically = false
         novelWv.webViewClient = NovelClient()
         novelWv.webChromeClient = NovelChrome()
-        chatWv.webViewClient = WebViewClient()
+        chatWv.webViewClient = ChatClient()
         chatWv.webChromeClient = WebChromeClient()
         activeWv = novelWv
         novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
@@ -434,6 +434,46 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("বাতিল", null)
             .show()
+    }
+
+    private fun openLoginInChrome(url: String) {
+        val tab = CustomTabsIntent.Builder().setShowTitle(true).build()
+        if (packageManager.getLaunchIntentForPackage("com.android.chrome") != null) {
+            tab.intent.setPackage("com.android.chrome")
+        }
+        try {
+            tab.launchUrl(this, Uri.parse(url))
+            toast("🔐 লগইন Chrome-এ খুলেছি — শেষ হলে Novel Studio-তে ফিরে আসো")
+        } catch (_: Exception) {
+            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            catch (_: Exception) { toast("❌ লগইন পেজ খোলা গেল না") }
+        }
+    }
+
+    private fun isChatLoginUrl(uri: Uri): Boolean {
+        val host = (uri.host ?: "").lowercase()
+        val path = (uri.path ?: "").lowercase()
+        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return true
+        val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
+            host.contains("gemini.google.com") || host.contains("claude.ai") ||
+            host.contains("anthropic.com") || host.contains("deepseek.com") ||
+            host.contains("grok.com") || host == "x.com" || host.endsWith(".x.com")
+        return bot && (path.contains("/login") || path.contains("/signin") ||
+            path.contains("/sign-in") || path.contains("/auth") ||
+            path.contains("/oauth") || path.contains("/authorize"))
+    }
+
+    private inner class ChatClient : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+            val r = request ?: return false
+            val scheme = r.url.scheme ?: ""
+            if (scheme != "http" && scheme != "https") return true
+            if (isChatLoginUrl(r.url)) {
+                openLoginInChrome(r.url.toString())
+                return true
+            }
+            return false
+        }
     }
 
     // ================================================================== navigation / search
