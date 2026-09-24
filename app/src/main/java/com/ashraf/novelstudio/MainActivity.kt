@@ -674,8 +674,8 @@ class MainActivity : Activity() {
     return 'pasted';
   }
   return run();
-})(\${JSONObject.quote(text)},\${send})
-""".trimIndent()
+})(__TEXT__,__SEND__)
+""".trimIndent().replace("__TEXT__", JSONObject.quote(text)).replace("__SEND__", send.toString())
         chatWv.evaluateJavascript(js) { r ->
             val result = r ?: ""
             when {
@@ -998,32 +998,3 @@ class MainActivity : Activity() {
 
     private fun editPrompt() {
         val et = EditText(this).apply {
-            setText(Prefs.prompt(this@MainActivity))
-            minLines = 6
-            gravity = Gravity.TOP
-        }
-        AlertDialog.Builder(this)
-            .setTitle("প্রম্পট")
-            .setView(et)
-            .setPositiveButton("সেভ") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
-            .setNegativeButton("বাতিল", null)
-            .show()
-    }
-
-    // ------------------------------------------------------------------ lifecycle
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (activeWv.canGoBack()) activeWv.goBack() else super.onBackPressed()
-    }
-
-    override fun onPause() {
-        CookieManager.getInstance().flush()
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        novelWv.destroy()
-        chatWv.destroy()
-        super.onDestroy()
-    }
-}
