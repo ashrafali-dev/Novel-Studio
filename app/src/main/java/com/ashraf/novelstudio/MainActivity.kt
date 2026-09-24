@@ -37,6 +37,7 @@ import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONArray
@@ -438,58 +439,72 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // Chat sites stay inside Novel Studio. Their WebView session/cookies are kept by Android WebView.
-    // Do not send login pages to Chrome: Chrome and WebView have separate cookie jars.
+    private fun openLoginInChrome(url: String) {
+        val tab = CustomTabsIntent.Builder().setShowTitle(true).build()
+        if (packageManager.getLaunchIntentForPackage("com.android.chrome") != null) {
+            tab.intent.setPackage("com.android.chrome")
+        }
+        try {
+            tab.launchUrl(this, Uri.parse(url))
+            toast("🔐 লগইন Chrome-এ খুলেছি — শেষ হলে Novel Studio-তে ফিরে আসো")
+        } catch (_: Exception) {
+            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            catch (_: Exception) { toast("❌ লগইন পেজ খোলা গেল না") }
+        }
+    }
+
+    private fun isChatLoginUrl(uri: Uri): Boolean {
+        val host = (uri.host ?: "").lowercase()
+        val path = (uri.path ?: "").lowercase()
+        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return true
+        val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
+            host.contains("gemini.google.com") || host.contains("claude.ai") ||
+            host.contains("anthropic.com") || host.contains("deepseek.com") ||
+            host.contains("grok.com") || host == "x.com" || host.endsWith(".x.com")
+        return bot && (path.contains("/login") || path.contains("/signin") ||
+            path.contains("/sign-in") || path.contains("/auth") ||
+            path.contains("/oauth") || path.contains("/authorize"))
+    }
+
     private inner class ChatClient : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val r = request ?: return false
-            val scheme = r.url.scheme?.lowercase() ?: return false
-            if (scheme == "http" || scheme == "https") return false
-            return try {
-                startActivity(Intent(Intent.ACTION_VIEW, r.url))
-                true
-            } catch (_: Exception) {
-                false
+            val scheme = r.url.scheme ?: ""
+            if (scheme != "http" && scheme != "https") return true
+            if (isChatLoginUrl(r.url)) {
+                openLoginInChrome(r.url.toString())
+                return true
             }
-        }
-
-        override fun onPageFinished(view: WebView?, url: String?) {
-            super.onPageFinished(view, url)
-            // Force WebView's persistent cookie store to disk after navigation/login.
-            CookieManager.getInstance().flush()
+            return false
         }
     }
 
     private inner class ChatChrome : WebChromeClient() {
         override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
             if (!isUserGesture || resultMsg == null) return false
-
-            // Keep popup/login windows inside the app instead of launching Chrome.
             val popup = WebView(this@MainActivity)
             setup(popup)
-            popup.webViewClient = ChatClient()
-            popup.webChromeClient = this
-
-            val transport = resultMsg.obj as? WebView.WebViewTransport ?: run {
-                popup.destroy()
-                return false
+            popup.webViewClient = object : WebViewClient() {
+                override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
+                    if (url != null && isChatLoginUrl(Uri.parse(url))) {
+                        openLoginInChrome(url)
+                        v?.stopLoading()
+                    }
+                }
+                override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
+                    val u = r?.url ?: return false
+                    if (isChatLoginUrl(u)) {
+                        openLoginInChrome(u.toString())
+                        v?.stopLoading()
+                        return true
+                    }
+                    return false
+                }
             }
+            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
             transport.webView = popup
             resultMsg.sendToTarget()
-
-            // The popup needs a visible host. Put it on top of the chat pane.
-            val lp = FrameLayout.LayoutParams(MP, MP)
-            popup.setBackgroundColor(0xFF111114.toInt())
-            content.addView(popup, lp)
-            popup.bringToFront()
             return true
-        }
-
-        override fun onCloseWindow(window: WebView?) {
-            if (window != null && window !== chatWv) {
-                content.removeView(window)
-                window.destroy()
-            }
         }
     }
 
