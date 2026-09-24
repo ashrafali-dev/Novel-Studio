@@ -747,6 +747,54 @@ class MainActivity : Activity() {
         }
     }
 
+    // ------------------------------------------------------------------ site replace
+    private val REPLACE_SELS = "#chapter-content,.chapter-content,.chapter_content,#chr-content,.chr-c,.reading-content,.text-left,#content,.entry-content,.cha-content,.cha-words,.chapter-body,.novel_content,.j_readContent,#chaptercontent,.chapter-c,#article,.article-content,.content,article,#chp,#chapter,.chapter,.text,.chapter-text,#chapter-text,.reading-area"
+
+    private fun replaceJs(translation: String): String {
+        return """
+(function(){
+  var S='__SELS__'.split(','),el=null;
+  for(var i=0;i<S.length;i++){var e=document.querySelector(S[i]);if(e&&(e.innerText||'').trim().length>200){el=e;break;}}
+  if(!el){var ds=document.querySelectorAll('div,article,section,main'),bs=200;for(var j=0;j<ds.length;j++){var d=ds[j],t=(d.innerText||'').trim();if(t.length>bs){bs=t.length;el=d;}}}
+  if(!el)return 'noel';
+  if(!window.__nsOrig)window.__nsOrig=el.innerHTML;
+  window.__nsText=__T__;
+  var tr=el.querySelector('.ns-tr');
+  if(!tr){tr=document.createElement('div');tr.className='ns-tr';tr.style.cssText='white-space:pre-wrap';el.innerHTML='';el.appendChild(tr);try{window.scrollTo(0,0);}catch(x){}}
+  tr.textContent=window.__nsText;
+  if(!document.getElementById('nsTgl')){
+    var b=document.createElement('div');b.id='nsTgl';b.textContent='🌐';
+    b.style.cssText='position:fixed;bottom:14px;right:14px;z-index:2147483647;background:#3A3A44;color:#fff;padding:10px 13px;border-radius:22px;font-size:14px;opacity:.75;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    var showing=true;
+    b.onclick=function(){if(showing){el.innerHTML=window.__nsOrig;showing=false;b.textContent='🌐';}else{el.innerHTML='';var d2=document.createElement('div');d2.className='ns-tr';d2.style.cssText='white-space:pre-wrap';d2.textContent=window.__nsText;el.appendChild(d2);showing=true;b.textContent='📖';}};
+    if(document.body)document.body.appendChild(b);
+  }
+  return 'ok';
+})()""".replace("__SELS__", REPLACE_SELS).replace("__T__", JSONObject.quote(translation))
+    }
+
+    private fun savedTrFor(url: String): Tr? {
+        val key = url.substringBefore('#')
+        return Store.list(this).firstOrNull { it.url.substringBefore('#') == key }
+    }
+
+    private fun runReplace(text: String, retry: Boolean) {
+        novelWv.evaluateJavascript(replaceJs(text)) { r ->
+            if (retry && (r == null || !r.contains("ok"))) {
+                handler.postDelayed({ runReplace(text, false) }, 2500)
+            }
+        }
+    }
+
+    private fun checkCf(failMsg: String) {
+        novelWv.evaluateJavascript(
+            "(function(){var h=document.documentElement?document.documentElement.outerHTML:'';return /cf-challenge|__cf_chl_|cf-browser-verification|challenge-platform|Attention Required|cf-error-details|cf-please-wait/.test(h)?'cf':'no';})()"
+        ) { r ->
+            if (r != null && r.contains("cf")) toast("🛡 Cloudflare চ্যালেঞ্জ — পেজে ক্যাপচা সলভ করো, তারপর আবার চাপো")
+            else toast(failMsg)
+        }
+    }
+
     private fun toggleAuto() {
         val on = !(Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend"))
         Prefs.putBool(this, "autoPaste", on)
