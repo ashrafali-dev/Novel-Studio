@@ -20,6 +20,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -70,6 +71,8 @@ class MainActivity : Activity() {
     private var watchLast = ""
     private val handler = Handler(Looper.getMainLooper())
 
+    @Volatile var pendingBridgeReply: String? = null
+
     private val DARK_ON = "(function(){var id='__nsdark';if(document.getElementById(id))return;var s=document.createElement('style');s.id=id;" +
         "s.textContent='html{filter:invert(1) hue-rotate(180deg)!important;background:#fff}img,video,picture,canvas{filter:invert(1) hue-rotate(180deg)!important}';" +
         "(document.head||document.documentElement).appendChild(s);})();"
@@ -115,8 +118,9 @@ class MainActivity : Activity() {
         novelWv.settings.javaScriptCanOpenWindowsAutomatically = false
         novelWv.webViewClient = NovelClient()
         novelWv.webChromeClient = NovelChrome()
-        chatWv.webViewClient = WebViewClient()
+        chatWv.webViewClient = ChatClient()
         chatWv.webChromeClient = WebChromeClient()
+        chatWv.addJavascriptInterface(ReplyBridge(this), "NsBridge")
         activeWv = novelWv
         novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
@@ -211,7 +215,7 @@ class MainActivity : Activity() {
 
     // ⟳ : reload the pane you are looking at (long press = reload both)
     private fun reloadPage() {
-        val wv = if (mode == Mode.CHAT) chatWv else activeWv
+        val wv = if (mode == Mode.NOVEL) novelWv else chatWv
         wv.reload()
         toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
     }
@@ -226,6 +230,7 @@ class MainActivity : Activity() {
         s.builtInZoomControls = true
         s.displayZoomControls = false
         s.userAgentString = UA
+        s.cacheMode = WebSettings.LOAD_NO_CACHE
         wv.setBackgroundColor(0xFF111114.toInt())
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
@@ -307,7 +312,6 @@ class MainActivity : Activity() {
     private fun openBot(u: String) {
         chatWv.loadUrl(u)
         Prefs.put(this, "botUrl", u)
-        if (mode == Mode.NOVEL) setMode(Mode.CHAT)
     }
 
     private fun removeBot(i: Int) {
@@ -360,7 +364,6 @@ class MainActivity : Activity() {
             !s.contains(' ') && s.contains('.') -> "https://$s"
             else -> "https://duckduckgo.com/?q=" + URLEncoder.encode(s, "UTF-8")
         }
-        if (mode == Mode.CHAT) setMode(Mode.SPLIT)
         novelWv.loadUrl(u)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(urlBar.windowToken, 0)
@@ -428,6 +431,11 @@ class MainActivity : Activity() {
             resultMsg.sendToTarget()
             return true
         }
+    }
+
+    private inner class ChatClient : WebViewClient() {
+        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {}
+        override fun onPageFinished(view: WebView?, url: String?) { view?.evaluateJavascript(STREAM_OBSERVER_JS, null) }
     }
 
     // ------------------------------------------------------------------ extraction
@@ -634,23 +642,60 @@ class MainActivity : Activity() {
         }
     }
 
-    // Auto-watch the chatbot reply and place it back into the novel page.
+    // ------------------------------------------------------------------ watch chatbot reply via JS→Kotlin bridge
     private fun startWatchReply(sentText: String) {
         val tail = sentText.replace(Regex("\\s+"), " ").trim().takeLast(70)
         watchTries = 0; watchStable = 0; watchLast = ""; watchActive = true
+        chatWv.evaluateJavascript(STREAM_OBSERVER_JS, null)
         pollChatReply(tail)
     }
+
+    private val STREAM_OBSERVER_JS = """
+(function(){
+  if(window.__nsObserved) return 'already';
+  window.__nsObserved=true;
+  var debounce=1500,minStableLen=120,lastSnap=null,obs=null,debounceId=null;
+  function snap(){
+    var sels='article[data-testid*="conversation-turn"],div[data-message-author-role],div[data-author],[data-message-id],.markdown,.prose,.msg,.assistant,[class*="assistant" i],[class*="response" i],[class*="message" i]';
+    var parts=[],e=document.querySelectorAll(sels);
+    for(var i=0;i<e.length;i++){var t=(e[i].innerText||'').trim();if(t.length>20)parts.push(t);}
+    if(!parts.length)return(document.body.innerText||'').slice(-4000);
+    return parts.join('\n\n---\n\n');
+  }
+  function check(){
+    var cur=snap();
+    if(lastSnap===cur&&cur.length>minStableLen){
+      try{if(window.NsBridge&&window.NsBridge.complete)window.NsBridge.complete(cur);}catch(x){}
+    }
+    lastSnap=cur;
+  }
+  obs=new MutationObserver(function(){
+    if(debounceId)clearTimeout(debounceId);
+    debounceId=setTimeout(check,debounce);
+  });
+  if(document.body)obs.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true});
+  lastSnap=snap();
+  window.__nsClock=setInterval(check,4000);
+  return 'installed';
+})();
+"""
 
     private fun pollChatReply(tail: String) {
         if (!watchActive) return
         handler.postDelayed({
             if (!watchActive) return@postDelayed
+            val bridged = pendingBridgeReply
+            if (bridged != null && bridged.length > 120) {
+                pendingBridgeReply = null
+                onWatchTick(tail, bridged)
+                return@postDelayed
+            }
             val js = "(function(tail){var norm=function(s){return (s||'').replace(/\\s+/g,' ').trim()};var k=norm(tail);" +
-                "var sels='[data-message-author-role=assistant],[class*=assistant],[class*=markdown],[class*=prose],[class*=response],[class*=message-content]'.split(',');" +
+                "var sels='article[data-testid*=\"conversation-turn\"],div[data-message-author-role],div[data-author],.markdown,.prose,[data-message-id]'.split(',');" +
                 "var best='';for(var i=0;i<sels.length&&best==='';i++){var es=document.querySelectorAll(sels[i]);" +
                 "for(var j=es.length-1;j>=0;j--){var t=norm(es[j].innerText);if(t.length>150&&(k===''||t.indexOf(k)<0)){best=t;break;}}}" +
-                "if(!best&&k){var b=norm(document.body.innerText);var p=b.lastIndexOf(k);if(p>=0)best=b.substring(p+k.length).trim();}" +
-                "if(best.length>6000)best=best.substring(0,6000);return JSON.stringify(best);})(" + JSONObject.quote(tail) + ")"
+                "if(!best&&k){var body=norm(document.body.innerText);var p=body.lastIndexOf(k);if(p>=0)best=body.substring(p+k.length).trim();}" +
+                "if(best.length>12000)best=best.substring(0,12000);return JSON.stringify(best);})(" + JSONObject.quote(tail) + ")"
             chatWv.evaluateJavascript(js) { raw ->
                 var resp = ""
                 try { resp = JSONArray("[$raw]").getString(0) } catch (_: Exception) {}
@@ -661,16 +706,16 @@ class MainActivity : Activity() {
 
     private fun onWatchTick(tail: String, resp: String) {
         if (resp.length > 120 && resp == watchLast) watchStable++ else { watchStable = 0; watchLast = resp }
-        if (watchStable >= 4) {
+        if (watchStable >= 3) {
             watchActive = false
             if (Prefs.bool(this, "noAutoSite")) toast("✅ অনুবাদ রেডি — বটের Copy চেপে 💾 চাপো")
             else translationArrived(resp)
             return
         }
         watchTries++
-        if (watchTries > 100) {
+        if (watchTries > 150) {
             watchActive = false
-            toast("⌛ বটের উত্তর ধরা যায়নি — বটের Copy চেপে 💾 চাপো")
+            toast("⌛ বটের উত্তর ধরা যায়নি — বটের Copy চেপে 💾 চাপো (আগের মতোই কাজ করবে)")
             return
         }
         pollChatReply(tail)
@@ -678,48 +723,24 @@ class MainActivity : Activity() {
 
     private fun translationArrived(text: String) {
         val tr = Store.save(this, lastChapter, text)
-        toast("✅ অনুবাদ সাইটে বসানো হচ্ছে: " + tr.novel + " — " + tr.label())
+        toast("✅ অনুবাদ সাইটে বসানো হচ্ছে: ${tr.novel} — ${tr.label()}")
         runReplace(text, true)
-        if (mode == Mode.CHAT) setMode(Mode.SPLIT)
     }
 
-    private val REPLACE_SELS = "#chapter-content,.chapter-content,.chapter_content,#chr-content,.chr-c,.reading-content,.text-left,#content,.entry-content,.cha-content,.cha-words,.chapter-body,.novel_content,.j_readContent,#chaptercontent,.chapter-c,#article,.article-content,.content,article"
-
-    private fun replaceJs(translation: String): String {
-        return """
-(function(){
-  var S='__SELS__'.split(','),el=null;
-  for(var i=0;i<S.length;i++){var e=document.querySelector(S[i]);if(e&&(e.innerText||'').trim().length>300){el=e;break;}}
-  if(!el){var ds=document.querySelectorAll('div,article,section,main'),bs=300;for(var j=0;j<ds.length;j++){var d=ds[j],t=(d.innerText||'').trim();if(t.length>bs){bs=t.length;el=d;}}}
-  if(!el)return 'noel';
-  if(!window.__nsOrig)window.__nsOrig=el.innerHTML;
-  window.__nsText=__T__;
-  var tr=el.querySelector('.ns-tr');
-  if(!tr){tr=document.createElement('div');tr.className='ns-tr';tr.style.cssText='white-space:pre-wrap';el.innerHTML='';el.appendChild(tr);window.scrollTo(0,0);}
-  tr.textContent=window.__nsText;
-  if(!document.getElementById('nsTgl')){
-    var b=document.createElement('div');b.id='nsTgl';b.textContent='🌐';
-    b.style.cssText='position:fixed;bottom:14px;right:14px;z-index:2147483647;background:#3A3A44;color:#fff;padding:10px 13px;border-radius:22px;font-size:14px;opacity:.75';
-    var showing=true;b.onclick=function(){if(showing){el.innerHTML=window.__nsOrig;showing=false;}else{el.innerHTML='';var d=document.createElement('div');d.className='ns-tr';d.style.cssText='white-space:pre-wrap';d.textContent=window.__nsText;el.appendChild(d);showing=true;}};document.body.appendChild(b);
-  }return 'ok';
-})()""".replace("__SELS__", REPLACE_SELS).replace("__T__", JSONObject.quote(translation))
-    }
-
-    private fun savedTrFor(url: String): Tr? {
-        val key = url.substringBefore('#')
-        return Store.list(this).firstOrNull { it.url.substringBefore('#') == key }
-    }
-
-    private fun runReplace(text: String, retry: Boolean) {
-        novelWv.evaluateJavascript(replaceJs(text)) { r ->
-            if (retry && (r == null || !r.contains("ok"))) handler.postDelayed({ runReplace(text, false) }, 2500)
-        }
-    }
-
-    private fun checkCf(failMsg: String) {
-        novelWv.evaluateJavascript("(function(){var h=document.documentElement?document.documentElement.outerHTML:'';return /cf-challenge|__cf_chl_|cf-browser-verification|challenge-platform|Attention Required|cf-error-details|cf-please-wait/.test(h)?'cf':'no';})()") { r ->
-            if (r != null && r.contains("cf")) toast("🛡 Cloudflare চ্যালেঞ্জ — পেজে ক্যাপচা সলভ করো, তারপর আবার চাপো")
-            else toast(failMsg)
+    class ReplyBridge(private val activity: MainActivity) {
+        @JavascriptInterface
+        fun complete(text: String) {
+            activity.runOnUiThread {
+                val trimmed = text.trim()
+                if (trimmed.length < 120) return@runOnUiThread
+                if (!activity.watchActive) {
+                    activity.pendingBridgeReply = trimmed
+                    return@runOnUiThread
+                }
+                activity.watchLast = trimmed
+                activity.watchStable = 4
+                activity.onWatchTick("", trimmed)
+            }
         }
     }
 
