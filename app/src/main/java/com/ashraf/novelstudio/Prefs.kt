@@ -18,8 +18,8 @@ object Prefs {
     fun get(c: Context, k: String, def: String = ""): String = sp(c).getString(k, def) ?: def
     fun put(c: Context, k: String, v: String) = sp(c).edit().putString(k, v).apply()
     fun bool(c: Context, k: String): Boolean = sp(c).getBoolean(k, false)
-    fun bool(c: Context, k: String, def: Boolean): Boolean = sp(c).getBoolean(k, def)
     fun putBool(c: Context, k: String, v: Boolean) = sp(c).edit().putBoolean(k, v).apply()
     fun prompt(c: Context): String = get(c, "prompt", DEFAULT_PROMPT)
     fun adblock(c: Context): Boolean = !bool(c, "noAdblock")
+    fun auto(c: Context): Boolean = !bool(c, "noAuto")
 }
