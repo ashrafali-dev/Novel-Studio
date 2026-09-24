@@ -64,6 +64,10 @@ class MainActivity : Activity() {
     private var lastChapter: Chapter? = null
     private var lastCopied = ""
     private var exportNovel: String? = null
+    private var watchActive = false
+    private var watchTries = 0
+    private var watchStable = 0
+    private var watchLast = ""
     private val handler = Handler(Looper.getMainLooper())
 
     private val DARK_ON = "(function(){var id='__nsdark';if(document.getElementById(id))return;var s=document.createElement('style');s.id=id;" +
@@ -397,6 +401,10 @@ class MainActivity : Activity() {
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
             if (darkMode() == 2) view?.evaluateJavascript(DARK_ON, null)
             if (url != null) Prefs.put(this@MainActivity, "lastNovelUrl", url)
+            if (url != null && Prefs.bool(this@MainActivity, "autoReplace")) {
+                val tr = savedTrFor(url)
+                if (tr != null) handler.postDelayed({ runReplace(Store.read(this@MainActivity, tr.id), true) }, 1200)
+            }
             if (autoCopy && !polling) {
                 polling = true
                 handler.postDelayed({ pollExtract(0) }, 800)
@@ -475,7 +483,7 @@ class MainActivity : Activity() {
     // ●  : copy the chapter on the novel page right now
     private fun extractCopy() {
         extractNow { ch ->
-            if (ch == null) toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
+            if (ch == null) checkCf("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
             else { onChapter(ch); copyChapter(ch) }
         }
     }
@@ -528,7 +536,7 @@ class MainActivity : Activity() {
             extractNow { ch ->
                 if (ch != null && ch.text.length > 300 && ch.text.hashCode() != oldHash && novelWv.progress >= 100) {
                     onChapter(ch)
-                    copyChapter(ch, Prefs.bool(this, "autoNextTranslate", true))
+                    copyChapter(ch)
                 } else if (n < 10) {
                     waitChange(oldHash, n + 1)
                 } else {
@@ -579,7 +587,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 onChapter(ch)
-                copyChapter(ch, Prefs.bool(this@MainActivity, "autoNextTranslate", true))
+                copyChapter(ch)
             } else if (n < 6) {
                 handler.postDelayed({ pollExtract(n + 1) }, 1200)
             } else {
@@ -622,19 +630,110 @@ class MainActivity : Activity() {
 })("""
         chatWv.evaluateJavascript(js + JSONObject.quote(text) + "," + send + ");") { r ->
             if (r != null && r.contains("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
+            else if (send && r != null && r.contains("ok")) startWatchReply(text)
         }
     }
 
-    // ▶ Next-এর one-tap automation. ON by default.
+    // Auto-watch the chatbot reply and place it back into the novel page.
+    private fun startWatchReply(sentText: String) {
+        val tail = sentText.replace(Regex("\s+"), " ").trim().takeLast(70)
+        watchTries = 0; watchStable = 0; watchLast = ""; watchActive = true
+        pollChatReply(tail)
+    }
+
+    private fun pollChatReply(tail: String) {
+        if (!watchActive) return
+        handler.postDelayed({
+            if (!watchActive) return@postDelayed
+            val js = "(function(tail){var norm=function(s){return (s||'').replace(/\s+/g,' ').trim()};var k=norm(tail);" +
+                "var sels='[data-message-author-role=assistant],[class*=assistant],[class*=markdown],[class*=prose],[class*=response],[class*=message-content]'.split(',');" +
+                "var best='';for(var i=0;i<sels.length&&best==='';i++){var es=document.querySelectorAll(sels[i]);" +
+                "for(var j=es.length-1;j>=0;j--){var t=norm(es[j].innerText);if(t.length>150&&(k===''||t.indexOf(k)<0)){best=t;break;}}}" +
+                "if(!best&&k){var b=norm(document.body.innerText);var p=b.lastIndexOf(k);if(p>=0)best=b.substring(p+k.length).trim();}" +
+                "if(best.length>6000)best=best.substring(0,6000);return JSON.stringify(best);})(" + JSONObject.quote(tail) + ")"
+            chatWv.evaluateJavascript(js) { raw ->
+                var resp = ""
+                try { resp = JSONArray("[$raw]").getString(0) } catch (_: Exception) {}
+                if (watchActive) onWatchTick(tail, resp)
+            }
+        }, 3000)
+    }
+
+    private fun onWatchTick(tail: String, resp: String) {
+        if (resp.length > 120 && resp == watchLast) watchStable++ else { watchStable = 0; watchLast = resp }
+        if (watchStable >= 4) {
+            watchActive = false
+            if (Prefs.bool(this, "noAutoSite")) toast("✅ অনুবাদ রেডি — বটের Copy চেপে 💾 চাপো")
+            else translationArrived(resp)
+            return
+        }
+        watchTries++
+        if (watchTries > 100) {
+            watchActive = false
+            toast("⌛ বটের উত্তর ধরা যায়নি — বটের Copy চেপে 💾 চাপো")
+            return
+        }
+        pollChatReply(tail)
+    }
+
+    private fun translationArrived(text: String) {
+        val tr = Store.save(this, lastChapter, text)
+        toast("✅ অনুবাদ সাইটে বসানো হচ্ছে: " + tr.novel + " — " + tr.label())
+        runReplace(text, true)
+        if (mode == Mode.CHAT) setMode(Mode.SPLIT)
+    }
+
+    private val REPLACE_SELS = "#chapter-content,.chapter-content,.chapter_content,#chr-content,.chr-c,.reading-content,.text-left,#content,.entry-content,.cha-content,.cha-words,.chapter-body,.novel_content,.j_readContent,#chaptercontent,.chapter-c,#article,.article-content,.content,article"
+
+    private fun replaceJs(translation: String): String {
+        return """
+(function(){
+  var S='__SELS__'.split(','),el=null;
+  for(var i=0;i<S.length;i++){var e=document.querySelector(S[i]);if(e&&(e.innerText||'').trim().length>300){el=e;break;}}
+  if(!el){var ds=document.querySelectorAll('div,article,section,main'),bs=300;for(var j=0;j<ds.length;j++){var d=ds[j],t=(d.innerText||'').trim();if(t.length>bs){bs=t.length;el=d;}}}
+  if(!el)return 'noel';
+  if(!window.__nsOrig)window.__nsOrig=el.innerHTML;
+  window.__nsText=__T__;
+  var tr=el.querySelector('.ns-tr');
+  if(!tr){tr=document.createElement('div');tr.className='ns-tr';tr.style.cssText='white-space:pre-wrap';el.innerHTML='';el.appendChild(tr);window.scrollTo(0,0);}
+  tr.textContent=window.__nsText;
+  if(!document.getElementById('nsTgl')){
+    var b=document.createElement('div');b.id='nsTgl';b.textContent='🌐';
+    b.style.cssText='position:fixed;bottom:14px;right:14px;z-index:2147483647;background:#3A3A44;color:#fff;padding:10px 13px;border-radius:22px;font-size:14px;opacity:.75';
+    var showing=true;b.onclick=function(){if(showing){el.innerHTML=window.__nsOrig;showing=false;}else{el.innerHTML='';var d=document.createElement('div');d.className='ns-tr';d.style.cssText='white-space:pre-wrap';d.textContent=window.__nsText;el.appendChild(d);showing=true;}};document.body.appendChild(b);
+  }return 'ok';
+})()""".replace("__SELS__", REPLACE_SELS).replace("__T__", JSONObject.quote(translation))
+    }
+
+    private fun savedTrFor(url: String): Tr? {
+        val key = url.substringBefore('#')
+        return Store.list(this).firstOrNull { it.url.substringBefore('#') == key }
+    }
+
+    private fun runReplace(text: String, retry: Boolean) {
+        novelWv.evaluateJavascript(replaceJs(text)) { r ->
+            if (retry && (r == null || !r.contains("ok"))) handler.postDelayed({ runReplace(text, false) }, 2500)
+        }
+    }
+
+    private fun checkCf(failMsg: String) {
+        novelWv.evaluateJavascript("(function(){var h=document.documentElement?document.documentElement.outerHTML:'';return /cf-challenge|__cf_chl_|cf-browser-verification|challenge-platform|Attention Required|cf-error-details|cf-please-wait/.test(h)?'cf':'no';})()") { r ->
+            if (r != null && r.contains("cf")) toast("🛡 Cloudflare চ্যালেঞ্জ — পেজে ক্যাপচা সলভ করো, তারপর আবার চাপো")
+            else toast(failMsg)
+        }
+    }
+
+    private fun toggleAuto {
     private fun toggleAuto() {
-        val on = !Prefs.bool(this, "autoNextTranslate", true)
-        Prefs.putBool(this, "autoNextTranslate", on)
+        val on = !(Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend"))
+        Prefs.putBool(this, "autoPaste", on)
+        Prefs.putBool(this, "autoSend", on)
         refreshAutoBtn()
-        toast(if (on) "⚡ নেক্সট অটো-অনুবাদ চালু" else "⚡ নেক্সট অটো-অনুবাদ বন্ধ — শুধু extract + copy")
+        toast(if (on) "⚡ অটো পেস্ট + সেন্ড চালু" else "⚡ অটো বন্ধ — শুধু কপি হবে")
     }
 
     private fun refreshAutoBtn() {
-        val on = Prefs.bool(this, "autoNextTranslate", true)
+        val on = Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend")
         autoBtn.alpha = if (on) 1f else 0.35f
     }
 
@@ -647,6 +746,7 @@ class MainActivity : Activity() {
         if (t == lastCopied.trim()) return toast("❌ এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো")
         val tr = Store.save(this, lastChapter, t)
         toast("💾 লাইব্রেরিতে সেভ: ${tr.novel} — ${tr.label()}")
+        if (Prefs.bool(this, "replaceOnSave")) runReplace(t, true)
         if (!Prefs.bool(this, "noSaveNext")) step("next")
     }
 
@@ -656,50 +756,37 @@ class MainActivity : Activity() {
         val wp = Prefs.bool(this, "withPrompt")
         val gc = !Prefs.bool(this, "noGoChat")
         val sn = !Prefs.bool(this, "noSaveNext")
+        val ro = Prefs.bool(this, "replaceOnSave")
+        val ar = Prefs.bool(this, "autoReplace")
+        val na = Prefs.bool(this, "noAutoSite")
         val ap = Prefs.bool(this, "autoPaste")
         val asd = Prefs.bool(this, "autoSend")
-        val ant = Prefs.bool(this, "autoNextTranslate", true)
         val d = darkMode()
         val items = arrayOf(
-            "📚 লাইব্রেরি (অফলাইনে পড়ো)",
-            "⬇️ সব অনুবাদ txt এক্সপোর্ট",
-            "🔖 এই পেজ বুকমার্ক করো",
-            "🔖 বুকমার্ক লিস্ট",
-            "📝 প্রম্পট এডিট",
+            "📚 লাইব্রেরি (অফলাইনে পড়ো)","⬇️ সব অনুবাদ txt এক্সপোর্ট","🔖 এই পেজ বুকমার্ক করো","🔖 বুকমার্ক লিস্ট","📝 প্রম্পট এডিট",
             "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[d] + "  (ট্যাপ করলে বদলায়)",
-            (if (ant) "✅" else "⬜") + " ▶ নেক্সট: অটো Extract + Paste + Send",
-            (if (ap) "✅" else "⬜") + " ● ম্যানুয়াল কপির অটো পেস্ট",
-            (if (asd) "✅" else "⬜") + " ● ম্যানুয়াল কপির অটো সেন্ড",
+            (if (ap) "✅" else "⬜") + " অটো পেস্ট (চ্যাটবট বক্সে)",
+            (if (asd) "✅" else "⬜") + " অটো সেন্ড",
             (if (wp) "✅" else "⬜") + " কপির সাথে প্রম্পট জুড়ে দাও",
             (if (sn) "✅" else "⬜") + " 💾 এর পর পরের চ্যাপ্টার কপি করো",
+            (if (ro) "✅" else "⬜") + " 💾 এর পর সাইটেই অনুবাদ বসাও",
+            (if (ar) "✅" else "⬜") + " পেজ খুললেই সেভ করা অনুবাদ অটো বসাও",
+            (if (na) "⬜" else "✅") + " অনুবাদ এলেই সাইটে অটো বসাও (⚡ চালু থাকলে)",
             (if (gc) "✅" else "⬜") + " ● চাপার পর চ্যাটে যাও (শুধু 📖 মোডে)",
-            (if (ab) "✅" else "⬜") + " Ad Block",
-            "🔄 Ad Block লিস্ট আপডেট",
-            "🔄 নোভেল পেজ রিলোড",
-            "🔄 চ্যাটবট রিলোড"
+            (if (ab) "✅" else "⬜") + " Ad Block","🔄 Ad Block লিস্ট আপডেট","🔄 নোভেল পেজ রিলোড","🔄 চ্যাটবট রিলোড"
         )
         AlertDialog.Builder(this).setItems(items) { _, i ->
             when (i) {
-                0 -> libraryNovels()
-                1 -> exportAll(null)
-                2 -> saveBookmark()
-                3 -> bookmarkList()
-                4 -> editPrompt()
+                0 -> libraryNovels(); 1 -> exportAll(null); 2 -> saveBookmark(); 3 -> bookmarkList(); 4 -> editPrompt()
                 5 -> { Prefs.put(this, "dark", ((d + 1) % 3).toString()); applyDark() }
-                6 -> { Prefs.putBool(this, "autoNextTranslate", !ant); refreshAutoBtn() }
-                7 -> Prefs.putBool(this, "autoPaste", !ap)
-                8 -> Prefs.putBool(this, "autoSend", !asd)
-                9 -> Prefs.putBool(this, "withPrompt", !wp)
-                10 -> Prefs.putBool(this, "noSaveNext", sn)
-                11 -> Prefs.putBool(this, "noGoChat", gc)
-                12 -> Prefs.putBool(this, "noAdblock", ab)
-                13 -> {
-                    toast("⏳ লিস্ট নামাচ্ছি…")
-                    AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") }
-                }
-                14 -> novelWv.reload()
-                15 -> chatWv.reload()
-                else -> {}
+                6 -> { Prefs.putBool(this, "autoPaste", !ap); refreshAutoBtn() }
+                7 -> { Prefs.putBool(this, "autoSend", !asd); refreshAutoBtn() }
+                8 -> Prefs.putBool(this, "withPrompt", !wp); 9 -> Prefs.putBool(this, "noSaveNext", sn)
+                10 -> Prefs.putBool(this, "replaceOnSave", !ro); 11 -> Prefs.putBool(this, "autoReplace", !ar)
+                12 -> Prefs.putBool(this, "noAutoSite", !na); 13 -> Prefs.putBool(this, "noGoChat", gc)
+                14 -> Prefs.putBool(this, "noAdblock", ab)
+                15 -> { toast("⏳ লিস্ট নামাচ্ছি…"); AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") } }
+                16 -> novelWv.reload(); 17 -> chatWv.reload()
             }
         }.show()
     }
