@@ -693,51 +693,57 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ watch chatbot reply
     private fun startWatchReply(sentText: String) {
         val tail=sentText.replace(Regex("\\s+")," ").trim().takeLast(120)
-        watchTries=0; watchStable=0; watchLast=""; watchActive=true; pendingBridgeReply=null
+        watchTries=0
+        watchStable=0
+        watchLast=""
+        watchActive=true
+        pendingBridgeReply=null
         chatWv.evaluateJavascript(STREAM_OBSERVER_JS,null)
         pollChatReply(tail)
     }
+
     private val STREAM_OBSERVER_JS = """
 (function(){
   window.__nsGetLatestReply=function(tail){
-    var n=function(s){return(s||'').replace(/\\s+/g,' ').trim()},k=n(tail),o=[];
+    var n=function(s){return(s||'').replace(/\\s+/g,' ').trim()};
+    var k=n(tail);
+    var body=n(document.body?document.body.innerText:'');
+    if(k){
+      var p=body.lastIndexOf(k);
+      if(p>=0){
+        var z=body.substring(p+k.length).trim();
+        z=z.replace(/^[:\\-–—]+/,'').trim();
+        z=z.replace(/\\n(?:Copy|Regenerate|Retry|Share|Edit|Like|Dislike|Sources?)\\s*$/i,'').trim();
+        if(z.length>120)return z.slice(0,16000);
+      }
+    }
+
     var sels=[
       '[data-message-author-role="assistant"]',
       '[data-author="assistant"]',
       '[data-author-role="assistant"]',
       '[data-testid*="assistant" i]',
+      '[data-testid*="response" i]',
       '[class*="assistant" i]',
       '[class*="response" i]',
       '[class*="markdown" i]'
     ];
+    var out=[];
     for(var i=0;i<sels.length;i++){
       var a=document.querySelectorAll(sels[i]);
       for(var j=a.length-1;j>=0;j--){
         var t=n(a[j].innerText||a[j].textContent);
-        if(t.length>80&&(!k||t.indexOf(k)<0))o.push(t);
+        if(t.length>120&&(!k||t.indexOf(k)<0))out.push(t);
       }
     }
-    if(o.length)return o[o.length-1];
+    if(out.length)return out[out.length-1];
 
     var turns=document.querySelectorAll('article[data-testid*="conversation-turn"],[data-message-id],[data-testid*="conversation-turn"]');
     for(var i=turns.length-1;i>=0;i--){
-      var e=turns[i],t=n(e.innerText||e.textContent);
+      var e=turns[i];
+      var t=n(e.innerText||e.textContent);
       var m=n((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.className||''));
-      if(t.length>80&&(!k||t.indexOf(k)<0)&&/assistant|model|bot|response/i.test(m))return t;
-    }
-
-    if(k){
-      var body=n(document.body.innerText),p=body.lastIndexOf(k);
-      if(p>=0){
-        var z=body.substring(p+k.length).trim().replace(/^[:\\-–—]+/,'').trim();
-        if(z.length>80)return z.slice(0,12000);
-      }
-    }
-
-    var all=document.querySelectorAll('div,p');
-    for(var i=all.length-1;i>=0;i--){
-      var t=n(all[i].innerText||all[i].textContent);
-      if(t.length>120&&t.length<30000&&(!k||t.indexOf(k)<0)&&/\\S/.test(t))return t;
+      if(t.length>120&&(!k||t.indexOf(k)<0)&&/assistant|model|bot|response/i.test(m))return t.slice(0,16000);
     }
     return '';
   };
@@ -757,17 +763,29 @@ class MainActivity : Activity() {
             }
         },1800)
     }
+
     private fun onWatchTick(tail:String,resp:String){
-        if(resp.length>120&&resp==watchLast)watchStable++else{watchStable=0;watchLast=resp}
+        val clean=resp.trim()
+        if(clean.length>120&&clean==watchLast){
+            watchStable++
+        }else{
+            watchStable=0
+            watchLast=clean
+        }
         if(watchStable>=2){
             watchActive=false
-            if(Prefs.bool(this,"noAutoSite"))toast("⚠️ অটো সাইট রিপ্লেস বন্ধ আছে — Menu থেকে এটি চালু করো") else translationArrived(resp)
+            translationArrived(clean)
             return
         }
         watchTries++
-        if(watchTries>100){watchActive=false;toast("⌛ AI-এর উত্তর অটো ধরা যায়নি — Copy/💾 দিয়ে ম্যানুয়ালি সেভ করো");return}
+        if(watchTries>100){
+            watchActive=false
+            toast("⌛ AI-এর উত্তর অটো ধরা যায়নি — Copy/💾 দিয়ে ম্যানুয়ালি সেভ করো")
+            return
+        }
         pollChatReply(tail)
     }
+
     private fun copyAutoReply(text:String){
         val cm=getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("translation",text))
@@ -998,3 +1016,32 @@ class MainActivity : Activity() {
 
     private fun editPrompt() {
         val et = EditText(this).apply {
+            setText(Prefs.prompt(this@MainActivity))
+            minLines = 6
+            gravity = Gravity.TOP
+        }
+        AlertDialog.Builder(this)
+            .setTitle("প্রম্পট")
+            .setView(et)
+            .setPositiveButton("সেভ") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
+            .setNegativeButton("বাতিল", null)
+            .show()
+    }
+
+    // ------------------------------------------------------------------ lifecycle
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (activeWv.canGoBack()) activeWv.goBack() else super.onBackPressed()
+    }
+
+    override fun onPause() {
+        CookieManager.getInstance().flush()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        novelWv.destroy()
+        chatWv.destroy()
+        super.onDestroy()
+    }
+}
