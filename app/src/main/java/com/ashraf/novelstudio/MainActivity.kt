@@ -1,14 +1,17 @@
 package com.ashraf.novelstudio
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -20,11 +23,9 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
-import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
@@ -33,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.webkit.WebSettingsCompat
@@ -50,39 +52,49 @@ class MainActivity : Activity() {
     private val MP = ViewGroup.LayoutParams.MATCH_PARENT
     private val WC = ViewGroup.LayoutParams.WRAP_CONTENT
 
+    // views
     private lateinit var novelWv: WebView
     private lateinit var chatWv: WebView
     private lateinit var activeWv: WebView
     private lateinit var urlBar: EditText
+    private lateinit var content: FrameLayout
     private lateinit var novelBox: FrameLayout
     private lateinit var chatBox: LinearLayout
     private lateinit var strip: LinearLayout
     private lateinit var modeBtn: TextView
     private lateinit var autoBtn: TextView
+    private lateinit var progressBox: LinearLayout
+    private lateinit var progressBar: ProgressBar
+    private lateinit var progressTv: TextView
+    private lateinit var togglePill: TextView
+    private var pulse: ValueAnimator? = null
 
+    // state
     private var mode = Mode.SPLIT
-    private var autoCopy = false
-    private var polling = false
     private var lastChapter: Chapter? = null
     private var lastCopied = ""
     private var exportNovel: String? = null
-    private var watchActive = false
-    private var watchTries = 0
-    private var watchStable = 0
-    private var watchLast = ""
+    private var hasTr = false                 // a translation is currently shown on the novel page
+    private var shownTranslated = false
     private val handler = Handler(Looper.getMainLooper())
 
-    @Volatile var pendingBridgeReply: String? = null
+    // navigation (▶ ◀ ●) — every action gets a fresh token, old callbacks with an old token are ignored
+    private var navToken = 0
+    private var autoCopy = false
+    private var polling = false
+    private var pendUrl = ""
+    private var pendHash = 0
 
-    private val DARK_ON = "(function(){var id='__nsdark';if(document.getElementById(id))return;var s=document.createElement('style');s.id=id;" +
-        "s.textContent='html{filter:invert(1) hue-rotate(180deg)!important;background:#fff}img,video,picture,canvas{filter:invert(1) hue-rotate(180deg)!important}';" +
-        "(document.head||document.documentElement).appendChild(s);})();"
-    private val DARK_OFF = "(function(){var e=document.getElementById('__nsdark');if(e)e.remove();})();"
+    // background translation queue
+    private val queue = mutableListOf<Chapter>()
+    private var running: Chapter? = null
+    private var runToken = 0
+    private var progress = 0
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
 
-    // ------------------------------------------------------------------ UI
+    // ================================================================== UI
     private fun chip(label: String, onClick: () -> Unit, onLong: (() -> Unit)?): TextView = TextView(this).apply {
         text = label
         textSize = 14f
@@ -119,14 +131,13 @@ class MainActivity : Activity() {
         novelWv.settings.javaScriptCanOpenWindowsAutomatically = false
         novelWv.webViewClient = NovelClient()
         novelWv.webChromeClient = NovelChrome()
-        chatWv.webViewClient = ChatClient()
+        chatWv.webViewClient = WebViewClient()
         chatWv.webChromeClient = WebChromeClient()
-        chatWv.addJavascriptInterface(ReplyBridge(this), "NsBridge")
         activeWv = novelWv
         novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
 
-        // top bar
+        // ---- top bar
         urlBar = EditText(this).apply {
             hint = "সার্চ করো বা লিংক দাও"
             setSingleLine()
@@ -135,13 +146,6 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
         }
-        val goBtn = TextView(this).apply {
-            text = "Go"
-            gravity = Gravity.CENTER
-            textSize = 16f
-            setTextColor(0xFF4F7CFF.toInt())
-            setOnClickListener { go(urlBar.text.toString()) }
-        }
         val reloadBtn = TextView(this).apply {
             text = "⟳"
             gravity = Gravity.CENTER
@@ -149,6 +153,13 @@ class MainActivity : Activity() {
             setTextColor(0xFFFFFFFF.toInt())
             setOnClickListener { reloadPage() }
             setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
+        }
+        val goBtn = TextView(this).apply {
+            text = "Go"
+            gravity = Gravity.CENTER
+            textSize = 16f
+            setTextColor(0xFF4F7CFF.toInt())
+            setOnClickListener { go(urlBar.text.toString()) }
         }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -160,7 +171,7 @@ class MainActivity : Activity() {
             addView(goBtn, LinearLayout.LayoutParams(dp(48), dp(40)))
         }
 
-        // panes
+        // ---- panes (both always full-size and alive; the one on top is the one you see)
         novelBox = FrameLayout(this).apply { addView(novelWv, FrameLayout.LayoutParams(MP, MP)) }
         strip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val stripScroll = HorizontalScrollView(this).apply {
@@ -173,14 +184,52 @@ class MainActivity : Activity() {
             addView(stripScroll, LinearLayout.LayoutParams(MP, WC))
             addView(chatWv, LinearLayout.LayoutParams(MP, 0, 1f))
         }
-        val content = LinearLayout(this).apply {
+
+        // ---- translation progress (thin bar + label, pulses while working)
+        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            isIndeterminate = false
+            progressTintList = ColorStateList.valueOf(0xFF4F7CFF.toInt())
+            progressBackgroundTintList = ColorStateList.valueOf(0x33FFFFFF)
+        }
+        progressTv = TextView(this).apply {
+            textSize = 11f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(10), dp(3), dp(10), dp(3))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(0xCC000000.toInt())
+            }
+            setOnClickListener { cancelAll() }
+        }
+        progressBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(novelBox, LinearLayout.LayoutParams(MP, 0, 1f))
-            addView(View(this@MainActivity).apply { setBackgroundColor(0xFF555555.toInt()) }, LinearLayout.LayoutParams(MP, dp(2)))
-            addView(chatBox, LinearLayout.LayoutParams(MP, 0, 1f))
+            gravity = Gravity.CENTER_HORIZONTAL
+            visibility = View.GONE
+            addView(progressBar, LinearLayout.LayoutParams(MP, dp(4)))
+            addView(progressTv, LinearLayout.LayoutParams(WC, WC).also { it.topMargin = dp(4) })
+        }
+        togglePill = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            visibility = View.GONE
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(0xCC4F7CFF.toInt())
+            }
+            setOnClickListener { toggleView() }
         }
 
-        // bottom bar
+        content = FrameLayout(this).apply {
+            addView(novelBox, FrameLayout.LayoutParams(MP, MP))
+            addView(chatBox, FrameLayout.LayoutParams(MP, MP))
+            addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP))
+            addView(togglePill, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(10), dp(10)) })
+            addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
+        }
+
+        // ---- bottom bar
         modeBtn = barBtn("◫") { cycleMode() }
         autoBtn = barBtn("⚡") { toggleAuto() }
         val bar = LinearLayout(this).apply {
@@ -212,13 +261,22 @@ class MainActivity : Activity() {
         novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
         val firstBot = bots().getJSONObject(0).getString("u")
         chatWv.loadUrl(Prefs.get(this, "botUrl", firstBot))
+        handleIntent(intent)
     }
 
-    // ⟳ : reload the pane you are looking at (long press = reload both)
-    private fun reloadPage() {
-        val wv = if (mode == Mode.NOVEL) novelWv else chatWv
-        wv.reload()
-        toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    // Browser -> Share -> Novel Studio : open that link in the novel pane
+    private fun handleIntent(i: Intent?) {
+        val it = i ?: return
+        if (it.action != Intent.ACTION_SEND) return
+        val t = it.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        val m = Regex("https?://\\S+").find(t) ?: return
+        setMode(Mode.NOVEL)
+        novelWv.loadUrl(m.value)
     }
 
     private fun setup(wv: WebView) {
@@ -231,7 +289,6 @@ class MainActivity : Activity() {
         s.builtInZoomControls = true
         s.displayZoomControls = false
         s.userAgentString = UA
-        s.cacheMode = WebSettings.LOAD_NO_CACHE
         wv.setBackgroundColor(0xFF111114.toInt())
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
@@ -239,7 +296,14 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------------ dark mode (0 off, 1 auto, 2 force)
+    // ⟳ : reload the pane you are looking at (long press = reload both)
+    private fun reloadPage() {
+        val wv = if (mode == Mode.CHAT) chatWv else activeWv
+        wv.reload()
+        toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
+    }
+
+    // ================================================================== dark mode (0 off, 1 auto, 2 force)
     private fun darkMode(): Int = Prefs.get(this, "dark", "0").toIntOrNull() ?: 0
 
     @Suppress("DEPRECATION")
@@ -253,34 +317,43 @@ class MainActivity : Activity() {
                 WebSettingsCompat.setForceDark(wv.settings, if (on) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF)
             }
         }
-        novelWv.evaluateJavascript(if (d == 2) DARK_ON else DARK_OFF, null)   // "force" = CSS invert, novel site only
+        novelWv.evaluateJavascript(if (d == 2) Js.DARK_ON else Js.DARK_OFF, null)
     }
 
-    // ------------------------------------------------------------------ modes
+    // ================================================================== modes / layout
     private fun setMode(m: Mode) {
         mode = m
-        val nlp = novelBox.layoutParams as LinearLayout.LayoutParams
-        val clp = chatBox.layoutParams as LinearLayout.LayoutParams
-        when (m) {
-            Mode.NOVEL -> {
-                nlp.height = 0; nlp.weight = 1f; novelBox.visibility = View.VISIBLE
-                clp.height = 0; clp.weight = 0.001f
-                chatBox.visibility = View.INVISIBLE
-            }
-            Mode.CHAT -> {
-                nlp.height = 0; nlp.weight = 0.001f
-                novelBox.visibility = View.INVISIBLE
-                clp.height = 0; clp.weight = 1f
-                chatBox.visibility = View.VISIBLE
-            }
+        modeBtn.text = when (m) {
+            Mode.NOVEL -> "📖"
+            Mode.CHAT -> "💬"
+            Mode.SPLIT -> "◫"
+        }
+        activeWv = if (m == Mode.CHAT) chatWv else novelWv
+        applyLayout()
+        updatePill()
+    }
+
+    // The hidden pane stays full-size right underneath the visible one, so its page keeps running normally
+    private fun applyLayout() {
+        val h = content.height
+        if (h <= 0) return
+        val nl = FrameLayout.LayoutParams(MP, MP)
+        val cl = FrameLayout.LayoutParams(MP, MP)
+        when (mode) {
+            Mode.NOVEL -> novelBox.bringToFront()
+            Mode.CHAT -> chatBox.bringToFront()
             Mode.SPLIT -> {
-                nlp.height = 0; nlp.weight = 1f; novelBox.visibility = View.VISIBLE
-                clp.height = 0; clp.weight = 1f; chatBox.visibility = View.VISIBLE
+                val half = h / 2
+                nl.height = half - dp(1)
+                nl.gravity = Gravity.TOP
+                cl.height = h - half - dp(1)
+                cl.gravity = Gravity.BOTTOM
             }
         }
-        novelBox.layoutParams = nlp
-        chatBox.layoutParams = clp
-        modeBtn.text = when (m) { Mode.NOVEL -> "📖"; Mode.CHAT -> "💬"; Mode.SPLIT -> "◫" }
+        novelBox.layoutParams = nl
+        chatBox.layoutParams = cl
+        progressBox.bringToFront()
+        togglePill.bringToFront()
     }
 
     private fun cycleMode() {
@@ -291,7 +364,7 @@ class MainActivity : Activity() {
         })
     }
 
-    // ------------------------------------------------------------------ chatbots
+    // ================================================================== chatbots
     private fun bot(n: String, u: String) = JSONObject().put("n", n).put("u", u)
 
     private fun bots(): JSONArray {
@@ -347,7 +420,8 @@ class MainActivity : Activity() {
             addView(n)
             addView(u)
         }
-        AlertDialog.Builder(this)            .setTitle("চ্যাটবট যোগ করো")
+        AlertDialog.Builder(this)
+            .setTitle("চ্যাটবট যোগ করো")
             .setView(l)
             .setPositiveButton("যোগ") { _, _ ->
                 var url = u.text.toString().trim()
@@ -362,7 +436,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ------------------------------------------------------------------ navigation / search
+    // ================================================================== navigation / search
     private fun go(s0: String) {
         val s = s0.trim()
         if (s.isEmpty()) return
@@ -371,6 +445,7 @@ class MainActivity : Activity() {
             !s.contains(' ') && s.contains('.') -> "https://$s"
             else -> "https://duckduckgo.com/?q=" + URLEncoder.encode(s, "UTF-8")
         }
+        if (mode == Mode.CHAT) setMode(Mode.SPLIT)
         novelWv.loadUrl(u)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(urlBar.windowToken, 0)
@@ -404,20 +479,17 @@ class MainActivity : Activity() {
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
-            if (darkMode() == 2) view?.evaluateJavascript(DARK_ON, null)
+            if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
-            if (darkMode() == 2) view?.evaluateJavascript(DARK_ON, null)
+            if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
             if (url != null) Prefs.put(this@MainActivity, "lastNovelUrl", url)
-            if (url != null && Prefs.bool(this@MainActivity, "autoReplace")) {
-                val tr = savedTrFor(url)
-                if (tr != null) handler.postDelayed({ runReplace(Store.read(this@MainActivity, tr.id), true) }, 1200)
-            }
             if (autoCopy && !polling) {
                 polling = true
-                handler.postDelayed({ pollExtract(0) }, 800)
+                val tk = navToken
+                handler.postDelayed({ pollExtract(0, tk) }, 800)
             }
         }
     }
@@ -440,31 +512,30 @@ class MainActivity : Activity() {
         }
     }
 
-    private inner class ChatClient : WebViewClient() {
-        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {}
-        override fun onPageFinished(view: WebView?, url: String?) { view?.evaluateJavascript(STREAM_OBSERVER_JS, null) }
-    }
+    // ================================================================== extraction
+    private fun decode(raw: String?): String = try {
+        if (raw == null || raw == "null") "" else JSONArray("[$raw]").getString(0)
+    } catch (e: Exception) { "" }
 
-    // ------------------------------------------------------------------ extraction
     private fun extractNow(cb: (Chapter?) -> Unit) {
         novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
             val url = novelWv.url ?: ""
             Thread {
                 val ch: Chapter? = try {
-                    if (raw == null || raw == "null") null
-                    else {
-                        val html = JSONArray("[$raw]").getString(0)
-                        Extractor.extract(Jsoup.parse(html, url), url)
-                    }
+                    val html = decode(raw)
+                    if (html.isEmpty()) null else Extractor.extract(Jsoup.parse(html, url), url)
                 } catch (e: Exception) { null }
                 runOnUiThread { cb(ch) }
             }.start()
         }
     }
 
+    private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
+
     private fun onChapter(ch: Chapter) {
         lastChapter = ch
         Store.touchBookmark(this, ch)
+        updateProgressUi()
     }
 
     private fun copy(text: String) {
@@ -473,82 +544,96 @@ class MainActivity : Activity() {
         lastCopied = text
     }
 
-    // copy to clipboard (always) + optional auto paste / send inside the chatbot page
-    private fun deliver(full: String, label: String) {
-        copy(full)
-        toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
-        if (Prefs.bool(this, "autoPaste")) {
-            val send = Prefs.bool(this, "autoSend")
-            handler.postDelayed({ pasteToChat(full, send) }, 500)
-        }
+    private fun clearClipboard() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        if (Build.VERSION.SDK_INT >= 28) cm.clearPrimaryClip() else cm.setPrimaryClip(ClipData.newPlainText("", ""))
+        lastCopied = ""
     }
 
-    private fun copyChapter(ch: Chapter) {
-        val p = Prefs.prompt(this)
-        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
-        val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
-        deliver(full, tag)
+    // ================================================================== ● ▶ ◀
+    // Everything from the previous chapter is thrown away the moment a new navigation starts.
+    private fun wipeStale() {
+        navToken++
+        autoCopy = false
+        polling = false
+        hasTr = false
+        shownTranslated = false
+        updatePill()
+        clearClipboard()
+        if (!Prefs.auto(this)) chatWv.evaluateJavascript(Js.clearBox(), null)
+        updateProgressUi()
     }
 
-    // ●  : copy the chapter on the novel page right now
+    // ● : auto mode + translation shown -> switch original/translation; otherwise handle the chapter on the page now
     private fun extractCopy() {
+        if (Prefs.auto(this) && hasTr) { toggleView(); return }
+        navToken++
+        val token = navToken
         extractNow { ch ->
-            if (ch == null) checkCf("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
-            else { onChapter(ch); copyChapter(ch) }
+            if (token != navToken) return@extractNow
+            if (ch == null) toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি") else handleChapter(ch)
         }
     }
 
-    // ▶ / ◀ : next/prev chapter, then copy. Screen mode is NOT changed (works while chatbot is full screen)
+    // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
+        wipeStale()
+        val token = navToken
         toast("⏳ " + (if (dir == "next") "পরের" else "আগের") + " চ্যাপ্টার আনছি…")
         extractNow { cur ->
+            if (token != navToken) return@extractNow
             val base = cur ?: lastChapter
             if (base == null) {
                 toast("❌ আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো")
                 return@extractNow
             }
-            if (cur != null) onChapter(cur)
             val target = if (dir == "next") base.next else base.prev
-            if (target != null) {
-                loadAndCopy(target)
-            } else {
-                clickAndWait(dir, base)
-            }
+            if (target != null) loadAndWait(target, token, base) else clickAndWait(dir, base, token)
         }
     }
 
-    private fun loadAndCopy(url: String) {
+    private fun loadAndWait(url: String, token: Int, base: Chapter) {
+        pendUrl = novelWv.url ?: base.url
+        pendHash = base.text.hashCode()
         autoCopy = true
         polling = false
         novelWv.loadUrl(url)
-        handler.postDelayed({ autoCopy = false; polling = false }, 60000)
+        handler.postDelayed({
+            if (token == navToken && autoCopy) {
+                autoCopy = false
+                polling = false
+                toast("❌ পেজ লোড হয়নি — ⟳ চেপে আবার চেষ্টা করো")
+            }
+        }, 60000)
     }
 
     // No usable link in the page (JS "Next" button, e.g. webnovel.com): click the site's own button
-    private fun clickAndWait(dir: String, base: Chapter) {
-        novelWv.evaluateJavascript(clickJs(dir)) { res ->
+    private fun clickAndWait(dir: String, base: Chapter, token: Int) {
+        novelWv.evaluateJavascript(Js.clickNext(dir)) { res ->
+            if (token != navToken) return@evaluateJavascript
             if (res != null && res.contains("none")) {
                 val g = Extractor.bump(base.url, if (dir == "next") 1 else -1)
                 if (g != null) {
                     toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
-                    loadAndCopy(g)
+                    loadAndWait(g, token, base)
                 } else {
-                    toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নোভেল ভিউতে নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
+                    toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
             } else {
-                waitChange(base.text.hashCode(), 0)
+                waitChange(base.text.hashCode(), 0, token)
             }
         }
     }
 
-    private fun waitChange(oldHash: Int, n: Int) {
+    private fun waitChange(oldHash: Int, n: Int, token: Int) {
         handler.postDelayed({
+            if (token != navToken) return@postDelayed
             extractNow { ch ->
+                if (token != navToken) return@extractNow
                 if (ch != null && ch.text.length > 300 && ch.text.hashCode() != oldHash && novelWv.progress >= 100) {
-                    onChapter(ch)
-                    copyChapter(ch)
+                    commit(ch, token)
                 } else if (n < 10) {
-                    waitChange(oldHash, n + 1)
+                    waitChange(oldHash, n + 1, token)
                 } else {
                     toast("❌ বাটন চেপেছি কিন্তু নতুন চ্যাপ্টার আসেনি — চ্যাপ্টার লক/লগইন লাগতে পারে")
                 }
@@ -556,50 +641,17 @@ class MainActivity : Activity() {
         }, 1500)
     }
 
-    private fun clickJs(dir: String): String {
-        val alts = if (dir == "next")
-            "next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
-        else
-            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
-        val word = if (dir == "next") "next" else "prev(?!iew)"
-        val js = """
-(function(){
-  var re=new RegExp('^('+'__ALTS__'+')$','i');
-  var wre=new RegExp('__WORD__','i');
-  var els=[].slice.call(document.querySelectorAll('a,button,[role=button],div,span,li,i'));
-  var best=null,bs=0;
-  for(var i=0;i<els.length;i++){
-    var e=els[i];
-    var tc=(e.textContent||'').trim();
-    if(tc.length>25) continue;
-    var cn=(typeof e.className==='string')?e.className:'';
-    var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+cn+' '+(e.id||'')+' '+(e.getAttribute('data-eventname')||'');
-    var s=0;
-    if(re.test(tc)) s+=5; else if(tc.length<=20&&wre.test(tc)) s+=3;
-    if(wre.test(meta)) s+=2;
-    if(s===0) continue;
-    if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true') continue;
-    var r=e.getBoundingClientRect(); if(r.width<3||r.height<3) continue;
-    if(/chap/i.test(meta+tc)) s+=1;
-    if(s>bs){bs=s;best=e;}
-  }
-  if(!best) return 'none';
-  try{ best.click(); }catch(x){}
-  return 'clicked';
-})()
-"""
-        return js.replace("__ALTS__", alts).replace("__WORD__", word)
-    }
-
-    private fun pollExtract(n: Int) {
+    // after a page load: only accept a chapter that is really NEW (different URL and different text)
+    private fun pollExtract(n: Int, token: Int) {
+        if (token != navToken) return
         extractNow { ch ->
-            if (ch != null && ch.text.length > 300) {
+            if (token != navToken) return@extractNow
+            if (ch != null && ch.text.length > 300 && ch.text.hashCode() != pendHash && ch.url != pendUrl) {
                 autoCopy = false
                 polling = false
-                onChapter(ch)
-                copyChapter(ch)
-            } else if (n < 6) {
-                handler.postDelayed({ pollExtract(n + 1) }, 1200)
+                commit(ch, token)
+            } else if (n < 8) {
+                handler.postDelayed({ pollExtract(n + 1, token) }, 1200)
             } else {
                 autoCopy = false
                 polling = false
@@ -608,264 +660,279 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------------ auto paste / send into chatbot
-    private fun pasteToChat(text: String, send: Boolean) {
-        val js = """
-(function(text, send){
-  var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms)})};
-  var sels=['#prompt-textarea','textarea[placeholder*="message" i]','textarea[placeholder*="prompt" i]','textarea','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]','[contenteditable]'];
-  function enabled(e){return !!e&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'}
-  function box(){
-    for(var i=0;i<sels.length;i++){
-      var a=[].slice.call(document.querySelectorAll(sels[i])).filter(enabled);
-      if(a.length)return a[a.length-1];
-    }
-    return null;
-  }
-  function put(e){
-    try{e.focus()}catch(x){}
-    if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'){
-      try{
-        var p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-        var d=Object.getOwnPropertyDescriptor(p,'value');
-        if(d&&d.set)d.set.call(e,text);else e.value=text;
-        e.dispatchEvent(new Event('input',{bubbles:true}));
-        e.dispatchEvent(new Event('change',{bubbles:true}));
-        if((e.value||'')===text)return true;
-      }catch(x){}
-    }
-    try{
-      var r=document.createRange(),q=window.getSelection();
-      r.selectNodeContents(e);q.removeAllRanges();q.addRange(r);
-      document.execCommand('insertText',false,text);
-      e.dispatchEvent(new Event('input',{bubbles:true}));
-      if((e.innerText||e.textContent||'').trim())return true;
-    }catch(x){}
-    try{
-      e.textContent=text;
-      e.dispatchEvent(new Event('input',{bubbles:true}));
-      return true;
-    }catch(x){return false}
-  }
-  function sendBtn(){
-    var ss=['button[data-testid="send-button"]','button[data-testid*="send" i]','button[aria-label*="Send" i]','button[aria-label*="Submit" i]','button[title*="Send" i]','button[type="submit"]'];
-    for(var i=0;i<ss.length;i++){
-      var a=document.querySelectorAll(ss[i]);
-      for(var j=a.length-1;j>=0;j--){
-        var b=a[j];
-        if(enabled(b))return b;
-      }
-    }
-    return null;
-  }
-  async function run(){
-    var e=box();if(!e)return 'nobox';
-    if(!put(e))return 'pastefail';
-    await sleep(700);
-    if(!send)return 'pasted';
-    var b=sendBtn();
-    if(b){try{b.click();return 'sent'}catch(x){}}
-    try{
-      e.focus();
-      e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-      e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-      return 'sent';
-    }catch(x){}
-    return 'pasted';
-  }
-  return run();
-})(__TEXT__,__SEND__)
-""".trimIndent().replace("__TEXT__", JSONObject.quote(text)).replace("__SEND__", send.toString())
-        chatWv.evaluateJavascript(js) { r ->
-            val result = r ?: ""
-            when {
-                result.contains("sent") -> {
-                    toast("📨 চ্যাপ্টা পাঠানো হয়েছে — AI উত্তর অটো-ওয়াচ করছি")
-                    startWatchReply(text)
-                }
-                result.contains("pasted") -> toast("📋 চ্যাটবটে পেস্ট হয়েছে — Send নিজে চাপো")
-                result.contains("nobox") -> toast("❌ চ্যাটবটের ইনপুট বক্স পাওয়া যায়নি")
-                else -> toast("❌ অটো-পেস্ট ব্যর্থ: $result")
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------ watch chatbot reply
-    private fun startWatchReply(sentText: String) {
-        val tail=sentText.replace(Regex("\\s+")," ").trim().takeLast(120)
-        watchTries=0
-        watchStable=0
-        watchLast=""
-        watchActive=true
-        pendingBridgeReply=null
-        chatWv.evaluateJavascript(STREAM_OBSERVER_JS,null)
-        pollChatReply(tail)
-    }
-
-    private val STREAM_OBSERVER_JS = """
-(function(){
-  window.__nsGetLatestReply=function(tail){
-    var n=function(s){return(s||'').replace(/\\s+/g,' ').trim()};
-    var k=n(tail);
-    var body=n(document.body?document.body.innerText:'');
-    if(k){
-      var p=body.lastIndexOf(k);
-      if(p>=0){
-        var z=body.substring(p+k.length).trim();
-        z=z.replace(/^[:\\-–—]+/,'').trim();
-        z=z.replace(/\\n(?:Copy|Regenerate|Retry|Share|Edit|Like|Dislike|Sources?)\\s*$/i,'').trim();
-        if(z.length>120)return z.slice(0,16000);
-      }
-    }
-
-    var sels=[
-      '[data-message-author-role="assistant"]',
-      '[data-author="assistant"]',
-      '[data-author-role="assistant"]',
-      '[data-testid*="assistant" i]',
-      '[data-testid*="response" i]',
-      '[class*="assistant" i]',
-      '[class*="response" i]',
-      '[class*="markdown" i]'
-    ];
-    var out=[];
-    for(var i=0;i<sels.length;i++){
-      var a=document.querySelectorAll(sels[i]);
-      for(var j=a.length-1;j>=0;j--){
-        var t=n(a[j].innerText||a[j].textContent);
-        if(t.length>120&&(!k||t.indexOf(k)<0))out.push(t);
-      }
-    }
-    if(out.length)return out[out.length-1];
-
-    var turns=document.querySelectorAll('article[data-testid*="conversation-turn"],[data-message-id],[data-testid*="conversation-turn"]');
-    for(var i=turns.length-1;i>=0;i--){
-      var e=turns[i];
-      var t=n(e.innerText||e.textContent);
-      var m=n((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.className||''));
-      if(t.length>120&&(!k||t.indexOf(k)<0)&&/assistant|model|bot|response/i.test(m))return t.slice(0,16000);
-    }
-    return '';
-  };
-  return 'installed';
-})();
-""".trimIndent()
-
-    private fun pollChatReply(tail:String){
-        if(!watchActive)return
+    // let the page finish rendering, read it once more, then use the fuller version
+    private fun commit(ch: Chapter, token: Int) {
         handler.postDelayed({
-            if(!watchActive)return@postDelayed
-            val js="(function(t){try{return JSON.stringify(window.__nsGetLatestReply?window.__nsGetLatestReply(t):'')}catch(e){return JSON.stringify('')}})("+JSONObject.quote(tail)+")"
-            chatWv.evaluateJavascript(js){raw->
-                var resp=""
-                try{resp=JSONArray("[$raw]").getString(0)}catch(_:Exception){}
-                if(watchActive)onWatchTick(tail,resp)
+            if (token != navToken) return@postDelayed
+            extractNow { c2 ->
+                if (token != navToken) return@extractNow
+                val fin = if (c2 != null && c2.url == ch.url && c2.text.length >= ch.text.length) c2 else ch
+                handleChapter(fin)
             }
-        },1800)
+        }, 900)
     }
 
-    private fun onWatchTick(tail:String,resp:String){
-        val clean=resp.trim()
-        if(clean.length>120&&clean==watchLast){
-            watchStable++
-        }else{
-            watchStable=0
-            watchLast=clean
+    private fun handleChapter(ch: Chapter) {
+        onChapter(ch)
+        if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
+    }
+
+    // ================================================================== copy mode (⚡ off)
+    private fun copyChapter(ch: Chapter) {
+        val p = Prefs.prompt(this)
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
+        val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
+        deliver(full, tag)
+    }
+
+    private fun deliver(full: String, label: String) {
+        copy(full)
+        toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
+        if (Prefs.bool(this, "autoPaste")) {
+            val send = Prefs.bool(this, "autoSend")
+            handler.postDelayed({
+                chatWv.evaluateJavascript(Js.send(full, send)) { r ->
+                    if (decode(r).startsWith("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
+                }
+            }, 400)
         }
-        if(watchStable>=2){
-            watchActive=false
-            translationArrived(clean)
+    }
+
+    // ================================================================== auto mode (⚡ on)
+    private fun autoFlow(ch: Chapter) {
+        val saved = Store.find(this, ch)
+        if (saved != null) {
+            applyTranslation(ch, Store.read(this, saved.id), true)
+            toast("📖 সেভ করা অনুবাদ বসালাম")
+        } else {
+            enqueue(ch)
+        }
+    }
+
+    private fun enqueue(ch: Chapter) {
+        val k = keyOf(ch)
+        val r = running
+        if ((r != null && keyOf(r) == k) || queue.any { keyOf(it) == k }) { updateProgressUi(); return }
+        queue.add(ch)
+        if (running == null) startNext() else updateProgressUi()
+    }
+
+    private fun startNext() {
+        if (queue.isEmpty()) {
+            running = null
+            updateProgressUi()
             return
         }
-        watchTries++
-        if(watchTries>100){
-            watchActive=false
-            toast("⌛ AI-এর উত্তর অটো ধরা যায়নি — Copy/💾 দিয়ে ম্যানুয়ালি সেভ করো")
-            return
-        }
-        pollChatReply(tail)
+        val ch = queue.removeAt(0)
+        running = ch
+        progress = 0
+        val tok = ++runToken
+        updateProgressUi()
+        waitIdle(tok, ch, 0)
     }
 
-    private fun copyAutoReply(text:String){
-        val cm=getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("translation",text))
-        toast("📋 AI-এর উত্তর অটো-কপি হয়েছে")
-    }
-    private fun translationArrived(text:String){
-        copyAutoReply(text)
-        val tr=Store.save(this,lastChapter,text)
-        toast("✅ AI উত্তর পাওয়া গেছে — সাইটে বসানো হচ্ছে: "+tr.label())
-        runReplace(text,true)
-    }
-    class ReplyBridge(private val activity:MainActivity){
-        @JavascriptInterface fun complete(text:String){
-            activity.runOnUiThread{val t=text.trim();if(t.length>=120&&activity.watchActive)activity.pendingBridgeReply=t}
-        }
-    }
-
-    // ------------------------------------------------------------------ site replace
-    private val REPLACE_SELS = "#chapter-content,.chapter-content,.chapter_content,#chr-content,.chr-c,.reading-content,.text-left,#content,.entry-content,.cha-content,.cha-words,.chapter-body,.novel_content,.j_readContent,#chaptercontent,.chapter-c,#article,.article-content,.content,article,#chp,#chapter,.chapter,.text,.chapter-text,#chapter-text,.reading-area"
-
-    private fun replaceJs(translation: String): String {
-        return """
-(function(){
-  var S='__SELS__'.split(','),el=null;
-  for(var i=0;i<S.length;i++){var e=document.querySelector(S[i]);if(e&&(e.innerText||'').trim().length>200){el=e;break;}}
-  if(!el){var ds=document.querySelectorAll('div,article,section,main'),bs=200;for(var j=0;j<ds.length;j++){var d=ds[j],t=(d.innerText||'').trim();if(t.length>bs){bs=t.length;el=d;}}}
-  if(!el)return 'noel';
-  if(!window.__nsOrig)window.__nsOrig=el.innerHTML;
-  window.__nsText=__T__;
-  var tr=el.querySelector('.ns-tr');
-  if(!tr){tr=document.createElement('div');tr.className='ns-tr';tr.style.cssText='white-space:pre-wrap';el.innerHTML='';el.appendChild(tr);try{window.scrollTo(0,0);}catch(x){}}
-  tr.textContent=window.__nsText;
-  if(!document.getElementById('nsTgl')){
-    var b=document.createElement('div');b.id='nsTgl';b.textContent='🌐';
-    b.style.cssText='position:fixed;bottom:14px;right:14px;z-index:2147483647;background:#3A3A44;color:#fff;padding:10px 13px;border-radius:22px;font-size:14px;opacity:.75;box-shadow:0 2px 8px rgba(0,0,0,.4)';
-    var showing=true;
-    b.onclick=function(){if(showing){el.innerHTML=window.__nsOrig;showing=false;b.textContent='🌐';}else{el.innerHTML='';var d2=document.createElement('div');d2.className='ns-tr';d2.style.cssText='white-space:pre-wrap';d2.textContent=window.__nsText;el.appendChild(d2);showing=true;b.textContent='📖';}};
-    if(document.body)document.body.appendChild(b);
-  }
-  return 'ok';
-})()""".replace("__SELS__", REPLACE_SELS).replace("__T__", JSONObject.quote(translation))
-    }
-
-    private fun savedTrFor(url: String): Tr? {
-        val key = url.substringBefore('#')
-        return Store.list(this).firstOrNull { it.url.substringBefore('#') == key }
-    }
-
-    private fun runReplace(text: String, retry: Boolean) {
-        novelWv.evaluateJavascript(replaceJs(text)) { r ->
-            if (retry && (r == null || !r.contains("ok"))) {
-                handler.postDelayed({ runReplace(text, false) }, 2500)
+    // make sure the chatbot is not still busy with something else before we send
+    private fun waitIdle(tok: Int, ch: Chapter, n: Int) {
+        chatWv.evaluateJavascript(Js.readLen()) { raw ->
+            if (tok != runToken) return@evaluateJavascript
+            val parts = decode(raw).split("|")
+            val streaming = parts.getOrNull(1) == "1"
+            if (streaming && n < 12) {
+                if (n == 6) chatWv.evaluateJavascript(Js.stop(), null)
+                handler.postDelayed({ if (tok == runToken) waitIdle(tok, ch, n + 1) }, 1000)
+            } else {
+                sendJob(tok, ch)
             }
         }
     }
 
-    private fun checkCf(failMsg: String) {
-        novelWv.evaluateJavascript(
-            "(function(){var h=document.documentElement?document.documentElement.outerHTML:'';return /cf-challenge|__cf_chl_|cf-browser-verification|challenge-platform|Attention Required|cf-error-details|cf-please-wait/.test(h)?'cf':'no';})()"
-        ) { r ->
-            if (r != null && r.contains("cf")) toast("🛡 Cloudflare চ্যালেঞ্জ — পেজে ক্যাপচা সলভ করো, তারপর আবার চাপো")
-            else toast(failMsg)
+    private fun sendJob(tok: Int, ch: Chapter) {
+        val full = Prefs.prompt(this) + "\n\n---\n\n" + ch.text
+        chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
+            if (tok != runToken) return@evaluateJavascript
+            val r = decode(raw)
+            if (r.startsWith("ok:")) {
+                val n0 = r.substring(3).toIntOrNull() ?: 0
+                pollJob(tok, ch, n0, System.currentTimeMillis(), 0, 0)
+            } else {
+                failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
+            }
+        }
+    }
+
+    private fun expectedLen(ch: Chapter): Int {
+        val t = ch.text
+        var cjk = 0
+        for (c in t) {
+            val x = c.code
+            if (x in 0x3040..0x30FF || x in 0x4E00..0x9FFF || x in 0xAC00..0xD7AF) cjk++
+        }
+        val ratio = if (cjk * 3 > t.length) 2.4 else 1.15
+        return (t.length * ratio).toInt().coerceAtLeast(200)
+    }
+
+    private fun pollJob(tok: Int, ch: Chapter, n0: Int, started: Long, lastLen: Int, stable: Int) {
+        handler.postDelayed({
+            if (tok != runToken) return@postDelayed
+            chatWv.evaluateJavascript(Js.readLen()) { raw ->
+                if (tok != runToken) return@evaluateJavascript
+                val parts = decode(raw).split("|")
+                val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                val streaming = parts.getOrNull(1) == "1"
+                val len = parts.getOrNull(2)?.toIntOrNull() ?: 0
+                val got = n > n0
+                val effLen = if (got) len else 0
+                progress = if (!got) 3 else minOf(95, effLen * 100 / expectedLen(ch))
+                val st = if (got && effLen == lastLen) stable + 1 else 0
+                updateProgressUi()
+                val elapsed = System.currentTimeMillis() - started
+                val done = got && !streaming && st >= 3 && effLen >= ch.text.length * 0.3
+                val doneSlow = got && st >= 15 && effLen > 50
+                when {
+                    done || doneSlow -> finishJob(tok, ch)
+                    elapsed > 6 * 60_000 -> failJob(tok, ch, "সময় শেষ (৬ মিনিট)")
+                    !got && elapsed > 60_000 -> failJob(tok, ch, "চ্যাটবট উত্তর শুরু করেনি — মেসেজ যায়নি?")
+                    else -> pollJob(tok, ch, n0, started, effLen, st)
+                }
+            }
+        }, 1000)
+    }
+
+    private fun cleanReply(t: String): String =
+        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
+
+    private fun finishJob(tok: Int, ch: Chapter) {
+        chatWv.evaluateJavascript(Js.readText()) { raw ->
+            if (tok != runToken) return@evaluateJavascript
+            val t = cleanReply(decode(raw))
+            if (t.length < 30) {
+                failJob(tok, ch, "উত্তর পড়া গেল না")
+                return@evaluateJavascript
+            }
+            Store.save(this, ch, t)
+            progress = 100
+            val shown = lastChapter
+            if (shown != null && keyOf(shown) == keyOf(ch)) applyTranslation(shown, t, true)
+            toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
+            running = null
+            startNext()
+        }
+    }
+
+    // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
+    private fun failJob(tok: Int, ch: Chapter, msg: String) {
+        if (tok != runToken) return
+        queue.clear()
+        running = null
+        copy(Prefs.prompt(this) + "\n\n---\n\n" + ch.text)
+        toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
+        updateProgressUi()
+    }
+
+    private fun cancelAll() {
+        runToken++
+        queue.clear()
+        running = null
+        chatWv.evaluateJavascript(Js.stop(), null)
+        updateProgressUi()
+        toast("⏹ অটো অনুবাদ বন্ধ করলাম")
+    }
+
+    // ---- put the translation into the novel page itself
+    private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
+        if (ch.contentSel.isEmpty()) {
+            toast("⚠️ এই পেজে কনটেন্ট এলিমেন্ট চেনা যায়নি — অনুবাদ লাইব্রেরিতে সেভ আছে")
+            return
+        }
+        val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        novelWv.evaluateJavascript(Js.apply(ch.contentSel, JSONArray(paras).toString())) { r ->
+            if (r != null && r.contains("ok")) {
+                hasTr = true
+                shownTranslated = true
+                updatePill()
+                if (retry) {   // some sites re-render the content a moment later — put it back once
+                    handler.postDelayed({
+                        if (shownTranslated && lastChapter === ch) {
+                            novelWv.evaluateJavascript(Js.stillApplied(ch.contentSel)) { s ->
+                                if (s != null && s.contains("lost")) applyTranslation(ch, text, false)
+                            }
+                        }
+                    }, 2500)
+                }
+            } else {
+                toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+            }
+        }
+    }
+
+    private fun toggleView() {
+        novelWv.evaluateJavascript(Js.TOGGLE) { r ->
+            if (r != null && r.contains("orig")) shownTranslated = false
+            else if (r != null && r.contains("tr")) shownTranslated = true
+            updatePill()
+        }
+    }
+
+    private fun updatePill() {
+        togglePill.visibility = if (hasTr && mode != Mode.CHAT) View.VISIBLE else View.GONE
+        togglePill.text = if (shownTranslated) "🌐 মূল দেখো" else "🌐 অনুবাদ দেখো"
+    }
+
+    // ---- progress overlay
+    private fun updateProgressUi() {
+        val run = running
+        if (run == null && queue.isEmpty()) {
+            setProgressVisible(false)
+            return
+        }
+        val shown = lastChapter
+        val label: String
+        var pct = 0
+        if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
+            label = "🌐 অনুবাদ চলছে…  $progress%"
+            pct = progress
+        } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
+            val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
+            label = "⏳ লাইনে আছে — আগে $ahead টা বাকি"
+        } else {
+            label = "🌐 পেছনে অন্য চ্যাপ্টারের অনুবাদ চলছে  $progress%"
+            pct = progress
+        }
+        progressTv.text = label + "   (থামাতে ট্যাপ)"
+        progressBar.progress = pct
+        setProgressVisible(true)
+    }
+
+    private fun setProgressVisible(v: Boolean) {
+        if (v && progressBox.visibility != View.VISIBLE) {
+            progressBox.visibility = View.VISIBLE
+            val a = ValueAnimator.ofFloat(0.45f, 1f)
+            a.duration = 900
+            a.repeatMode = ValueAnimator.REVERSE
+            a.repeatCount = ValueAnimator.INFINITE
+            a.addUpdateListener { progressBox.alpha = it.animatedValue as Float }
+            a.start()
+            pulse = a
+        } else if (!v && progressBox.visibility == View.VISIBLE) {
+            pulse?.cancel()
+            pulse = null
+            progressBox.alpha = 1f
+            progressBox.visibility = View.GONE
         }
     }
 
     private fun toggleAuto() {
-        val on = !(Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend"))
-        Prefs.putBool(this, "autoPaste", on)
-        Prefs.putBool(this, "autoSend", on)
+        val on = !Prefs.auto(this)
+        Prefs.putBool(this, "noAuto", !on)
         refreshAutoBtn()
-        toast(if (on) "⚡ অটো পেস্ট + সেন্ড চালু" else "⚡ অটো বন্ধ — শুধু কপি হবে")
+        toast(if (on) "⚡ অটো অনুবাদ চালু — ▶ চাপলেই ব্যাকগ্রাউন্ডে অনুবাদ হয়ে সাইটে বসবে" else "⚡ কপি মোড — ▶ চাপলে চ্যাপ্টার কপি হবে")
     }
 
     private fun refreshAutoBtn() {
-        val on = Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend")
-        autoBtn.alpha = if (on) 1f else 0.35f
+        autoBtn.alpha = if (Prefs.auto(this)) 1f else 0.35f
     }
 
-    // ------------------------------------------------------------------ save translation (offline library)
-    // AI reply is auto-copied and auto-replaced; 💾 remains available for manual fallback.
+    // ================================================================== save answer by hand (copy mode)
     private fun saveAnswer() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim() ?: ""
@@ -873,47 +940,63 @@ class MainActivity : Activity() {
         if (t == lastCopied.trim()) return toast("❌ এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো")
         val tr = Store.save(this, lastChapter, t)
         toast("💾 লাইব্রেরিতে সেভ: ${tr.novel} — ${tr.label()}")
-        if (Prefs.bool(this, "replaceOnSave")) runReplace(t, true)
         if (!Prefs.bool(this, "noSaveNext")) step("next")
     }
 
-    // ------------------------------------------------------------------ menu
+    // ================================================================== menu
     private fun menu() {
+        val au = Prefs.auto(this)
         val ab = Prefs.adblock(this)
         val wp = Prefs.bool(this, "withPrompt")
-        val gc = !Prefs.bool(this, "noGoChat")
         val sn = !Prefs.bool(this, "noSaveNext")
-        val ro = Prefs.bool(this, "replaceOnSave")
-        val ar = Prefs.bool(this, "autoReplace")
-        val na = Prefs.bool(this, "noAutoSite")
         val ap = Prefs.bool(this, "autoPaste")
         val asd = Prefs.bool(this, "autoSend")
         val d = darkMode()
         val items = arrayOf(
-            "📚 লাইব্রেরি (অফলাইনে পড়ো)","⬇️ সব অনুবাদ txt এক্সপোর্ট","🔖 এই পেজ বুকমার্ক করো","🔖 বুকমার্ক লিস্ট","📝 প্রম্পট এডিট",
+            "📚 লাইব্রেরি (অফলাইনে পড়ো)",
+            "⬇️ সব অনুবাদ txt এক্সপোর্ট",
+            "🔖 এই পেজ বুকমার্ক করো",
+            "🔖 বুকমার্ক লিস্ট",
+            "📝 প্রম্পট এডিট",
+            (if (au) "✅" else "⬜") + " ⚡ অটো অনুবাদ (ব্যাকগ্রাউন্ডে, সাইটে বসবে)",
+            "🔁 এই চ্যাপ্টার আবার অনুবাদ করাও",
+            "⏹ চলমান অটো অনুবাদ বন্ধ",
             "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[d] + "  (ট্যাপ করলে বদলায়)",
-            (if (ap) "✅" else "⬜") + " অটো পেস্ট (চ্যাটবট বক্সে)",
-            (if (asd) "✅" else "⬜") + " অটো সেন্ড",
-            (if (wp) "✅" else "⬜") + " কপির সাথে প্রম্পট জুড়ে দাও",
-            (if (sn) "✅" else "⬜") + " 💾 এর পর পরের চ্যাপ্টার কপি করো",
-            (if (ro) "✅" else "⬜") + " 💾 এর পর সাইটেই অনুবাদ বসাও",
-            (if (ar) "✅" else "⬜") + " পেজ খুললেই সেভ করা অনুবাদ অটো বসাও",
-            (if (na) "⬜" else "✅") + " অনুবাদ এলেই সাইটে অটো বসাও (⚡ চালু থাকলে)",
-            (if (gc) "✅" else "⬜") + " ● চাপার পর চ্যাটে যাও (শুধু 📖 মোডে)",
-            (if (ab) "✅" else "⬜") + " Ad Block","🔄 Ad Block লিস্ট আপডেট","🔄 নোভেল পেজ রিলোড","🔄 চ্যাটবট রিলোড"
+            (if (ap) "✅" else "⬜") + " কপি মোড: অটো পেস্ট",
+            (if (asd) "✅" else "⬜") + " কপি মোড: অটো সেন্ড",
+            (if (wp) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট",
+            (if (sn) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার",
+            (if (ab) "✅" else "⬜") + " Ad Block",
+            "🔄 Ad Block লিস্ট আপডেট",
+            "🔄 নোভেল পেজ রিলোড",
+            "🔄 চ্যাটবট রিলোড"
         )
         AlertDialog.Builder(this).setItems(items) { _, i ->
             when (i) {
-                0 -> libraryNovels(); 1 -> exportAll(null); 2 -> saveBookmark(); 3 -> bookmarkList(); 4 -> editPrompt()
-                5 -> { Prefs.put(this, "dark", ((d + 1) % 3).toString()); applyDark() }
-                6 -> { Prefs.putBool(this, "autoPaste", !ap); refreshAutoBtn() }
-                7 -> { Prefs.putBool(this, "autoSend", !asd); refreshAutoBtn() }
-                8 -> Prefs.putBool(this, "withPrompt", !wp); 9 -> Prefs.putBool(this, "noSaveNext", sn)
-                10 -> Prefs.putBool(this, "replaceOnSave", !ro); 11 -> Prefs.putBool(this, "autoReplace", !ar)
-                12 -> Prefs.putBool(this, "noAutoSite", !na); 13 -> Prefs.putBool(this, "noGoChat", gc)
-                14 -> Prefs.putBool(this, "noAdblock", ab)
-                15 -> { toast("⏳ লিস্ট নামাচ্ছি…"); AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") } }
-                16 -> novelWv.reload(); 17 -> chatWv.reload()
+                0 -> libraryNovels()
+                1 -> exportAll(null)
+                2 -> saveBookmark()
+                3 -> bookmarkList()
+                4 -> editPrompt()
+                5 -> toggleAuto()
+                6 -> {
+                    val ch = lastChapter
+                    if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো") else { enqueue(ch); toast("⏳ আবার অনুবাদে দেওয়া হলো") }
+                }
+                7 -> cancelAll()
+                8 -> { Prefs.put(this, "dark", ((d + 1) % 3).toString()); applyDark() }
+                9 -> Prefs.putBool(this, "autoPaste", !ap)
+                10 -> Prefs.putBool(this, "autoSend", !asd)
+                11 -> Prefs.putBool(this, "withPrompt", !wp)
+                12 -> Prefs.putBool(this, "noSaveNext", sn)
+                13 -> Prefs.putBool(this, "noAdblock", ab)
+                14 -> {
+                    toast("⏳ লিস্ট নামাচ্ছি…")
+                    AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") }
+                }
+                15 -> novelWv.reload()
+                16 -> chatWv.reload()
+                else -> {}
             }
         }.show()
     }
@@ -930,7 +1013,7 @@ class MainActivity : Activity() {
     // ---------- offline library ----------
     private fun libraryNovels() {
         val names = Store.novelNames(this)
-        if (names.isEmpty()) return toast("লাইব্রেরি খালি — অনুবাদের Copy করে 💾 চাপলে এখানে জমবে")
+        if (names.isEmpty()) return toast("লাইব্রেরি খালি — অনুবাদ হলে এখানে জমবে")
         val labels = names.map { it + "   (" + Store.chapters(this, it).size + " চ্যাপ্টার)" }
         listDialog("📚 লাইব্রেরি", labels, { i -> novelActions(names[i]) }, null)
     }
@@ -1028,7 +1111,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ------------------------------------------------------------------ lifecycle
+    // ================================================================== lifecycle
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (activeWv.canGoBack()) activeWv.goBack() else super.onBackPressed()
@@ -1040,6 +1123,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        pulse?.cancel()
         novelWv.destroy()
         chatWv.destroy()
         super.onDestroy()
