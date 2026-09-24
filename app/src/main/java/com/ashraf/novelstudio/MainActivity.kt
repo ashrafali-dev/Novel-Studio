@@ -614,15 +614,83 @@ class MainActivity : Activity() {
 (function(text, send){
   var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms)})};
   var sels=['#prompt-textarea','textarea[placeholder*="message" i]','textarea[placeholder*="prompt" i]','textarea','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]','[contenteditable]'];
-  function vis(e){if(!e||e.disabled||e.getAttribute('aria-disabled')==='true')return false;var r=e.getBoundingClientRect(),c=getComputedStyle(e);return r.width>0&&r.height>0&&c.display!=='none'&&c.visibility!=='hidden'}
-  function box(){for(var i=0;i<sels.length;i++){var a=[].slice.call(document.querySelectorAll(sels[i])).filter(vis);if(a.length)return a[a.length-1]}return null}
-  function put(e){try{e.focus()}catch(x){};if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'){try{var p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,s=Object.getOwnPropertyDescriptor(p,'value').set;if(s)s.call(e,text);else e.value=text;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));if((e.value||'')===text)return true}catch(x){}}try{var r=document.createRange(),q=window.getSelection();r.selectNodeContents(e);q.removeAllRanges();q.addRange(r);document.execCommand('insertText',false,text);e.dispatchEvent(new Event('input',{bubbles:true}));if((e.innerText||e.textContent||'').trim())return true}catch(x){}try{e.textContent=text;e.dispatchEvent(new Event('input',{bubbles:true}));return true}catch(x){return false}}
-  function sendBtn(){var ss=['button[data-testid="send-button"]','button[data-testid*="send" i]','button[aria-label*="Send" i]','button[aria-label*="Submit" i]','button[title*="Send" i]','button[type="submit"]'];for(var i=0;i<ss.length;i++){var a=document.querySelectorAll(ss[i]);for(var j=a.length-1;j>=0;j--){var b=a[j];if(vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true')return b}}return null}
-  async function run(){var e=box();if(!e)return 'nobox';if(!put(e))return 'pastefail';await sleep(900);if(!send)return 'pasted';var b=sendBtn();if(b){try{b.click();return 'sent'}catch(x){}}try{e.focus();e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent'}catch(x){}return 'pasted'}
+  function enabled(e){return !!e&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'}
+  function box(){
+    for(var i=0;i<sels.length;i++){
+      var a=[].slice.call(document.querySelectorAll(sels[i])).filter(enabled);
+      if(a.length)return a[a.length-1];
+    }
+    return null;
+  }
+  function put(e){
+    try{e.focus()}catch(x){}
+    if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'){
+      try{
+        var p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+        var d=Object.getOwnPropertyDescriptor(p,'value');
+        if(d&&d.set)d.set.call(e,text);else e.value=text;
+        e.dispatchEvent(new Event('input',{bubbles:true}));
+        e.dispatchEvent(new Event('change',{bubbles:true}));
+        if((e.value||'')===text)return true;
+      }catch(x){}
+    }
+    try{
+      var r=document.createRange(),q=window.getSelection();
+      r.selectNodeContents(e);q.removeAllRanges();q.addRange(r);
+      document.execCommand('insertText',false,text);
+      e.dispatchEvent(new Event('input',{bubbles:true}));
+      if((e.innerText||e.textContent||'').trim())return true;
+    }catch(x){}
+    try{
+      e.textContent=text;
+      e.dispatchEvent(new Event('input',{bubbles:true}));
+      return true;
+    }catch(x){return false}
+  }
+  function sendBtn(){
+    var ss=['button[data-testid="send-button"]','button[data-testid*="send" i]','button[aria-label*="Send" i]','button[aria-label*="Submit" i]','button[title*="Send" i]','button[type="submit"]'];
+    for(var i=0;i<ss.length;i++){
+      var a=document.querySelectorAll(ss[i]);
+      for(var j=a.length-1;j>=0;j--){
+        var b=a[j];
+        if(enabled(b))return b;
+      }
+    }
+    return null;
+  }
+  async function run(){
+    var e=box();if(!e)return 'nobox';
+    if(!put(e))return 'pastefail';
+    await sleep(700);
+    if(!send)return 'pasted';
+    var b=sendBtn();
+    if(b){try{b.click();return 'sent'}catch(x){}}
+    try{
+      e.focus();
+      e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+      e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+      return 'sent';
+    }catch(x){}
+    return 'pasted';
+  }
   return run();
-})
+})(\${JSONObject.quote(text)},\${send})
+""".trimIndent()
+        chatWv.evaluateJavascript(js) { r ->
+            val result = r ?: ""
+            when {
+                result.contains("sent") -> {
+                    toast("📨 চ্যাপ্টা পাঠানো হয়েছে — AI উত্তর অটো-ওয়াচ করছি")
+                    startWatchReply(text)
+                }
+                result.contains("pasted") -> toast("📋 চ্যাটবটে পেস্ট হয়েছে — Send নিজে চাপো")
+                result.contains("nobox") -> toast("❌ চ্যাটবটের ইনপুট বক্স পাওয়া যায়নি")
+                else -> toast("❌ অটো-পেস্ট ব্যর্থ: $result")
+            }
+        }
+    }
 
-    // ------------------------------------------------------------------ watch chatbot reply via JS→Kotlin bridge
+    // ------------------------------------------------------------------ watch chatbot reply
     private fun startWatchReply(sentText: String) {
         val tail=sentText.replace(Regex("\\s+")," ").trim().takeLast(120)
         watchTries=0; watchStable=0; watchLast=""; watchActive=true; pendingBridgeReply=null
@@ -633,17 +701,50 @@ class MainActivity : Activity() {
 (function(){
   window.__nsGetLatestReply=function(tail){
     var n=function(s){return(s||'').replace(/\\s+/g,' ').trim()},k=n(tail),o=[];
-    var ss=['[data-message-author-role="assistant"]','[data-author="assistant"]','[data-author-role="assistant"]','.assistant','[class*="assistant" i]','[class*="response" i]'];
-    for(var i=0;i<ss.length;i++){var a=document.querySelectorAll(ss[i]);for(var j=a.length-1;j>=0;j--){var t=n(a[j].innerText||a[j].textContent);if(t.length>80&&(!k||t.indexOf(k)<0))o.push(t)}}
+    var sels=[
+      '[data-message-author-role="assistant"]',
+      '[data-author="assistant"]',
+      '[data-author-role="assistant"]',
+      '[data-testid*="assistant" i]',
+      '[class*="assistant" i]',
+      '[class*="response" i]',
+      '[class*="markdown" i]'
+    ];
+    for(var i=0;i<sels.length;i++){
+      var a=document.querySelectorAll(sels[i]);
+      for(var j=a.length-1;j>=0;j--){
+        var t=n(a[j].innerText||a[j].textContent);
+        if(t.length>80&&(!k||t.indexOf(k)<0))o.push(t);
+      }
+    }
     if(o.length)return o[o.length-1];
-    var turns=document.querySelectorAll('article[data-testid*="conversation-turn"],[data-message-id]');
-    for(var i=turns.length-1;i>=0;i--){var e=turns[i],t=n(e.innerText||e.textContent),m=n((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||''));if(t.length>80&&(!k||t.indexOf(k)<0)&&/assistant|model|bot/i.test(m))return t}
-    if(k){var body=n(document.body.innerText),p=body.lastIndexOf(k);if(p>=0){var z=body.substring(p+k.length).trim().replace(/^[:\\-–—]+/,'').trim();if(z.length>80)return z.slice(0,12000)}}
+
+    var turns=document.querySelectorAll('article[data-testid*="conversation-turn"],[data-message-id],[data-testid*="conversation-turn"]');
+    for(var i=turns.length-1;i>=0;i--){
+      var e=turns[i],t=n(e.innerText||e.textContent);
+      var m=n((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.className||''));
+      if(t.length>80&&(!k||t.indexOf(k)<0)&&/assistant|model|bot|response/i.test(m))return t;
+    }
+
+    if(k){
+      var body=n(document.body.innerText),p=body.lastIndexOf(k);
+      if(p>=0){
+        var z=body.substring(p+k.length).trim().replace(/^[:\\-–—]+/,'').trim();
+        if(z.length>80)return z.slice(0,12000);
+      }
+    }
+
+    var all=document.querySelectorAll('div,p');
+    for(var i=all.length-1;i>=0;i--){
+      var t=n(all[i].innerText||all[i].textContent);
+      if(t.length>120&&t.length<30000&&(!k||t.indexOf(k)<0)&&/\\S/.test(t))return t;
+    }
     return '';
   };
   return 'installed';
 })();
-"""
+""".trimIndent()
+
     private fun pollChatReply(tail:String){
         if(!watchActive)return
         handler.postDelayed({
