@@ -614,34 +614,78 @@ class MainActivity : Activity() {
         val js = """
 (async function(text, send){
   var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms)})};
-  var cands=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});
-  if(!cands.length) return 'nobox';
-  cands.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
-  var box=cands[0]; box.focus();
+  var sels='#prompt-textarea,textarea,input[type="text"],div[contenteditable="true"],div[contenteditable="plaintext-only"],[role="textbox"],[contenteditable]';
+  var cands=[].slice.call(document.querySelectorAll(sels)).filter(function(e){return !e.disabled&&e.getAttribute('aria-disabled')!=='true';});
+  if(!cands.length)return 'nobox';
+
+  cands.sort(function(a,b){
+    var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();
+    return (br.bottom-ar.bottom);
+  });
+  var box=cands[cands.length-1] || cands[0];
+  try{box.focus();}catch(x){}
+
+  var ok=false;
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
-    var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
-    box.dispatchEvent(new Event('input',{bubbles:true}));
-  } else {
-    document.execCommand('selectAll',false,null);
-    document.execCommand('insertText',false,text);
-    await sleep(250);
-    if(!(box.innerText||'').trim()){
-      var dt=new DataTransfer(); dt.setData('text/plain',text);
-      box.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
+    try{
+      var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+      var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
+      if(setter)setter.call(box,text);else box.value=text;
+      box.dispatchEvent(new Event('input',{bubbles:true}));
+      box.dispatchEvent(new Event('change',{bubbles:true}));
+      ok=((box.value||'')===text);
+    }catch(x){}
+  }else{
+    try{
+      document.execCommand('selectAll',false,null);
+      document.execCommand('insertText',false,text);
+      await sleep(150);
+      ok=((box.innerText||box.textContent||'').trim().length>0);
+    }catch(x){}
+    if(!ok){
+      try{
+        box.textContent=text;
+        box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
+        ok=true;
+      }catch(x){}
     }
   }
+
+  if(!ok)return 'pastefail';
+
   if(send){
-    await sleep(Math.min(4000,500+text.length/40));
-    var btn=document.querySelector('button[data-testid="send-button"], button[aria-label*="Send" i], button.send-button, button[type="submit"]');
-    if(btn&&!btn.disabled) btn.click();
-    else box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+    await sleep(Math.min(3500,700+text.length/50));
+    var btn=document.querySelector(
+      'button[data-testid="send-button"],' +
+      'button[data-testid*="send" i],' +
+      'button[aria-label*="Send" i],' +
+      'button[aria-label*="Submit" i],' +
+      'button.send-button,button[type="submit"]'
+    );
+    if(btn && !btn.disabled && btn.getAttribute('aria-disabled')!=='true'){
+      try{btn.click();return 'sent';}catch(x){}
+    }
+    try{
+      box.focus();
+      box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+      box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+      return 'sent';
+    }catch(x){}
+    return 'pasted';
   }
-  return 'ok';
+  return 'pasted';
 })("""
         chatWv.evaluateJavascript(js + JSONObject.quote(text) + "," + send + ");") { r ->
-            if (r != null && r.contains("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
-            else if (send && r != null && r.contains("ok")) startWatchReply(text)
+            when {
+                r != null && r.contains("nobox") ->
+                    toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
+                r != null && r.contains("pastefail") ->
+                    toast("⚠️ চ্যাটবটে লেখা বসানো যায়নি — নিজে পেস্ট করো")
+                send && r != null && r.contains("sent") ->
+                    startWatchReply(text)
+                send && r != null && r.contains("pasted") ->
+                    toast("📋 লেখা বসেছে, কিন্তু Send নিশ্চিত হয়নি — Send চাপো")
+            }
         }
     }
 
@@ -724,7 +768,14 @@ class MainActivity : Activity() {
         pollChatReply(tail)
     }
 
+    private fun copyAutoReply(text: String) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("translation", text))
+        toast("📋 AI-এর উত্তর অটো-কপি হয়েছে")
+    }
+
     private fun translationArrived(text: String) {
+        copyAutoReply(text)
         val tr = Store.save(this, lastChapter, text)
         toast("✅ অনুবাদ সাইটে বসানো হচ্ছে: ${tr.novel} — ${tr.label()}")
         runReplace(text, true)
