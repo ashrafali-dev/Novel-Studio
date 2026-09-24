@@ -636,7 +636,7 @@ class MainActivity : Activity() {
 
     // Auto-watch the chatbot reply and place it back into the novel page.
     private fun startWatchReply(sentText: String) {
-        val tail = sentText.replace(Regex("\s+"), " ").trim().takeLast(70)
+        val tail = sentText.replace(Regex("\\s+"), " ").trim().takeLast(70)
         watchTries = 0; watchStable = 0; watchLast = ""; watchActive = true
         pollChatReply(tail)
     }
@@ -645,7 +645,7 @@ class MainActivity : Activity() {
         if (!watchActive) return
         handler.postDelayed({
             if (!watchActive) return@postDelayed
-            val js = "(function(tail){var norm=function(s){return (s||'').replace(/\s+/g,' ').trim()};var k=norm(tail);" +
+            val js = "(function(tail){var norm=function(s){return (s||'').replace(/\\s+/g,' ').trim()};var k=norm(tail);" +
                 "var sels='[data-message-author-role=assistant],[class*=assistant],[class*=markdown],[class*=prose],[class*=response],[class*=message-content]'.split(',');" +
                 "var best='';for(var i=0;i<sels.length&&best==='';i++){var es=document.querySelectorAll(sels[i]);" +
                 "for(var j=es.length-1;j>=0;j--){var t=norm(es[j].innerText);if(t.length>150&&(k===''||t.indexOf(k)<0)){best=t;break;}}}" +
