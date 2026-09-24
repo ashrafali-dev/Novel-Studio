@@ -480,9 +480,16 @@ class MainActivity : Activity() {
             // The popup needs a visible host. Put it on top of the chat pane.
             val lp = FrameLayout.LayoutParams(MP, MP)
             popup.setBackgroundColor(0xFF111114.toInt())
-            chatBox.addView(popup, lp)
+            content.addView(popup, lp)
             popup.bringToFront()
             return true
+        }
+
+        override fun onCloseWindow(window: WebView?) {
+            if (window != null && window !== chatWv) {
+                content.removeView(window)
+                window.destroy()
+            }
         }
     }
 
