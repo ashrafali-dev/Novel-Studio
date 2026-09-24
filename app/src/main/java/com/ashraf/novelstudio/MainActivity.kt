@@ -613,227 +613,74 @@ class MainActivity : Activity() {
         val js = """
 (function(text, send){
   var sleep=function(ms){return new Promise(function(r){setTimeout(r,ms)})};
-  var selectors=[
-    '#prompt-textarea',
-    'textarea[placeholder*="message" i]',
-    'textarea[placeholder*="prompt" i]',
-    'textarea',
-    'div[contenteditable="true"]',
-    'div[contenteditable="plaintext-only"]',
-    '[role="textbox"]',
-    '[contenteditable]'
-  ];
-
-  function visible(e){
-    if(!e || e.disabled || e.getAttribute('aria-disabled')==='true') return false;
-    var r=e.getBoundingClientRect(),cs=getComputedStyle(e);
-    return r.width>0 && r.height>0 && cs.display!=='none' && cs.visibility!=='hidden';
-  }
-  function findBox(){
-    for(var i=0;i<selectors.length;i++){
-      var es=[].slice.call(document.querySelectorAll(selectors[i]));
-      var v=es.filter(visible);
-      if(v.length) return v[v.length-1];
-    }
-    for(var i=0;i<selectors.length;i++){
-      var es=[].slice.call(document.querySelectorAll(selectors[i])).filter(function(e){
-        return e && !e.disabled && e.getAttribute('aria-disabled')!=='true';
-      });
-      if(es.length) return es[es.length-1];
-    }
-    return null;
-  }
-  function fireInput(e){
-    try{e.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,inputType:'insertText',data:text}));}catch(x){}
-    try{e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(x){
-      try{e.dispatchEvent(new Event('input',{bubbles:true}));}catch(y){}
-    }
-    try{e.dispatchEvent(new Event('change',{bubbles:true}));}catch(x){}
-  }
-  function setBox(e){
-    try{e.focus();}catch(x){}
-    if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'){
-      try{
-        var proto=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-        var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
-        if(setter)setter.call(e,text);else e.value=text;
-        fireInput(e);
-        if((e.value||'')===text)return true;
-      }catch(x){}
-    }
-    try{
-      var sel=window.getSelection(),range=document.createRange();
-      range.selectNodeContents(e);sel.removeAllRanges();sel.addRange(range);
-      document.execCommand('insertText',false,text);
-      fireInput(e);
-      if((e.innerText||e.textContent||'').trim().length>0)return true;
-    }catch(x){}
-    try{
-      e.textContent=text;
-      fireInput(e);
-      return true;
-    }catch(x){return false}
-  }
-  function findSend(){
-    var sels=[
-      'button[data-testid="send-button"]',
-      'button[data-testid*="send" i]',
-      'button[aria-label*="Send" i]',
-      'button[aria-label*="Submit" i]',
-      'button[title*="Send" i]',
-      'button[type="submit"]',
-      '[role="button"][aria-label*="Send" i]',
-      '[role="button"][aria-label*="Submit" i]'
-    ];
-    for(var i=0;i<sels.length;i++){
-      var es=[].slice.call(document.querySelectorAll(sels[i]));
-      for(var j=es.length-1;j>=0;j--){
-        var b=es[j];
-        if(visible(b) && !b.disabled && b.getAttribute('aria-disabled')!=='true')return b;
-      }
-    }
-    return null;
-  }
-  async function run(){
-    var box=findBox();
-    if(!box)return 'nobox';
-    if(!setBox(box))return 'pastefail';
-    await sleep(900);
-    if(!send)return 'pasted';
-    var btn=findSend();
-    if(btn){try{btn.click();return 'sent'}catch(x){}}
-    try{
-      box.focus();
-      box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-      box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-      return 'sent';
-    }catch(x){}
-    return 'pasted';
-  }
+  var sels=['#prompt-textarea','textarea[placeholder*="message" i]','textarea[placeholder*="prompt" i]','textarea','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]','[contenteditable]'];
+  function vis(e){if(!e||e.disabled||e.getAttribute('aria-disabled')==='true')return false;var r=e.getBoundingClientRect(),c=getComputedStyle(e);return r.width>0&&r.height>0&&c.display!=='none'&&c.visibility!=='hidden'}
+  function box(){for(var i=0;i<sels.length;i++){var a=[].slice.call(document.querySelectorAll(sels[i])).filter(vis);if(a.length)return a[a.length-1]}return null}
+  function put(e){try{e.focus()}catch(x){};if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'){try{var p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,s=Object.getOwnPropertyDescriptor(p,'value').set;if(s)s.call(e,text);else e.value=text;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));if((e.value||'')===text)return true}catch(x){}}try{var r=document.createRange(),q=window.getSelection();r.selectNodeContents(e);q.removeAllRanges();q.addRange(r);document.execCommand('insertText',false,text);e.dispatchEvent(new Event('input',{bubbles:true}));if((e.innerText||e.textContent||'').trim())return true}catch(x){}try{e.textContent=text;e.dispatchEvent(new Event('input',{bubbles:true}));return true}catch(x){return false}}
+  function sendBtn(){var ss=['button[data-testid="send-button"]','button[data-testid*="send" i]','button[aria-label*="Send" i]','button[aria-label*="Submit" i]','button[title*="Send" i]','button[type="submit"]'];for(var i=0;i<ss.length;i++){var a=document.querySelectorAll(ss[i]);for(var j=a.length-1;j>=0;j--){var b=a[j];if(vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true')return b}}return null}
+  async function run(){var e=box();if(!e)return 'nobox';if(!put(e))return 'pastefail';await sleep(900);if(!send)return 'pasted';var b=sendBtn();if(b){try{b.click();return 'sent'}catch(x){}}try{e.focus();e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));e.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));return 'sent'}catch(x){}return 'pasted'}
   return run();
-})(
+})
 
     // ------------------------------------------------------------------ watch chatbot reply via JS→Kotlin bridge
     private fun startWatchReply(sentText: String) {
-        val tail = sentText.replace(Regex("\\s+"), " ").trim().takeLast(120)
-        watchTries = 0
-        watchStable = 0
-        watchLast = ""
-        watchActive = true
-        pendingBridgeReply = null
-        chatWv.evaluateJavascript(STREAM_OBSERVER_JS, null)
+        val tail=sentText.replace(Regex("\\s+")," ").trim().takeLast(120)
+        watchTries=0; watchStable=0; watchLast=""; watchActive=true; pendingBridgeReply=null
+        chatWv.evaluateJavascript(STREAM_OBSERVER_JS,null)
         pollChatReply(tail)
     }
-
     private val STREAM_OBSERVER_JS = """
 (function(){
   window.__nsGetLatestReply=function(tail){
-    var norm=function(s){return (s||'').replace(/\\s+/g,' ').trim()};
-    var k=norm(tail);
-    var out=[];
-
-    function add(e,role){
-      if(!e)return;
-      var t=norm(e.innerText||e.textContent);
-      if(t.length<80)return;
-      var meta=norm((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||'')+' '+(typeof e.className==='string'?e.className:''));
-      if(role==='assistant' || /assistant|model|bot|response/i.test(meta)){
-        if(!k || t.indexOf(k)<0) out.push(t);
-      }
-    }
-
-    var roleSels=[
-      '[data-message-author-role="assistant"]',
-      '[data-author="assistant"]',
-      '[data-author-role="assistant"]',
-      '.assistant',
-      '[class*="assistant" i]',
-      '[class*="response" i]'
-    ];
-    for(var i=0;i<roleSels.length;i++){
-      var es=document.querySelectorAll(roleSels[i]);
-      for(var j=es.length-1;j>=0;j--)add(es[j],'assistant');
-    }
-    if(out.length)return out[out.length-1];
-
+    var n=function(s){return(s||'').replace(/\\s+/g,' ').trim()},k=n(tail),o=[];
+    var ss=['[data-message-author-role="assistant"]','[data-author="assistant"]','[data-author-role="assistant"]','.assistant','[class*="assistant" i]','[class*="response" i]'];
+    for(var i=0;i<ss.length;i++){var a=document.querySelectorAll(ss[i]);for(var j=a.length-1;j>=0;j--){var t=n(a[j].innerText||a[j].textContent);if(t.length>80&&(!k||t.indexOf(k)<0))o.push(t)}}
+    if(o.length)return o[o.length-1];
     var turns=document.querySelectorAll('article[data-testid*="conversation-turn"],[data-message-id]');
-    for(var i=turns.length-1;i>=0;i--){
-      var e=turns[i],t=norm(e.innerText||e.textContent),meta=norm((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||''));
-      if(t.length>80 && (!k || t.indexOf(k)<0) && /assistant|model|bot/i.test(meta))return t;
-    }
-
-    if(k){
-      var body=norm(document.body.innerText);
-      var p=body.lastIndexOf(k);
-      if(p>=0){
-        var after=body.substring(p+k.length).trim();
-        after=after.replace(/^[:\\-–—]+/,'').trim();
-        if(after.length>80)return after.slice(0,12000);
-      }
-    }
+    for(var i=turns.length-1;i>=0;i--){var e=turns[i],t=n(e.innerText||e.textContent),m=n((e.getAttribute('data-message-author-role')||'')+' '+(e.getAttribute('data-author')||'')+' '+(e.getAttribute('aria-label')||''));if(t.length>80&&(!k||t.indexOf(k)<0)&&/assistant|model|bot/i.test(m))return t}
+    if(k){var body=n(document.body.innerText),p=body.lastIndexOf(k);if(p>=0){var z=body.substring(p+k.length).trim().replace(/^[:\\-–—]+/,'').trim();if(z.length>80)return z.slice(0,12000)}}
     return '';
   };
   return 'installed';
 })();
 """
-
-    private fun pollChatReply(tail: String) {
-        if (!watchActive) return
+    private fun pollChatReply(tail:String){
+        if(!watchActive)return
         handler.postDelayed({
-            if (!watchActive) return@postDelayed
-            val js = "(function(t){try{return JSON.stringify(window.__nsGetLatestReply?window.__nsGetLatestReply(t):'')}catch(e){return JSON.stringify('')}})(" + JSONObject.quote(tail) + ")"
-            chatWv.evaluateJavascript(js) { raw ->
-                var resp = ""
-                try { resp = JSONArray("[$raw]").getString(0) } catch (_: Exception) {}
-                if (watchActive) onWatchTick(tail, resp)
+            if(!watchActive)return@postDelayed
+            val js="(function(t){try{return JSON.stringify(window.__nsGetLatestReply?window.__nsGetLatestReply(t):'')}catch(e){return JSON.stringify('')}})("+JSONObject.quote(tail)+")"
+            chatWv.evaluateJavascript(js){raw->
+                var resp=""
+                try{resp=JSONArray("[$raw]").getString(0)}catch(_:Exception){}
+                if(watchActive)onWatchTick(tail,resp)
             }
-        }, 1800)
+        },1800)
     }
-
-    private fun onWatchTick(tail: String, resp: String) {
-        if (resp.length > 120 && resp == watchLast) watchStable++ else {
-            watchStable = 0
-            watchLast = resp
-        }
-        if (watchStable >= 2) {
-            watchActive = false
-            if (Prefs.bool(this, "noAutoSite")) {
-                toast("⚠️ অটো সাইট রিপ্লেস বন্ধ আছে — Menu থেকে এটি চালু করো")
-            } else {
-                translationArrived(resp)
-            }
+    private fun onWatchTick(tail:String,resp:String){
+        if(resp.length>120&&resp==watchLast)watchStable++else{watchStable=0;watchLast=resp}
+        if(watchStable>=2){
+            watchActive=false
+            if(Prefs.bool(this,"noAutoSite"))toast("⚠️ অটো সাইট রিপ্লেস বন্ধ আছে — Menu থেকে এটি চালু করো") else translationArrived(resp)
             return
         }
         watchTries++
-        if (watchTries > 100) {
-            watchActive = false
-            toast("⌛ AI-এর উত্তর অটো ধরা যায়নি — Copy/💾 দিয়ে ম্যানুয়ালভাবে সেভ করতে পারো")
-            return
-        }
+        if(watchTries>100){watchActive=false;toast("⌛ AI-এর উত্তর অটো ধরা যায়নি — Copy/💾 দিয়ে ম্যানুয়ালি সেভ করো");return}
         pollChatReply(tail)
     }
-
-    private fun copyAutoReply(text: String) {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("translation", text))
+    private fun copyAutoReply(text:String){
+        val cm=getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("translation",text))
         toast("📋 AI-এর উত্তর অটো-কপি হয়েছে")
     }
-
-    private fun translationArrived(text: String) {
+    private fun translationArrived(text:String){
         copyAutoReply(text)
-        val tr = Store.save(this, lastChapter, text)
-        toast("✅ AI উত্তর পাওয়া গেছে — সাইটে বসানো হচ্ছে: \${tr.label()}")
-        runReplace(text, true)
+        val tr=Store.save(this,lastChapter,text)
+        toast("✅ AI উত্তর পাওয়া গেছে — সাইটে বসানো হচ্ছে: "+tr.label())
+        runReplace(text,true)
     }
-
-    class ReplyBridge(private val activity: MainActivity) {
-        @JavascriptInterface
-        fun complete(text: String) {
-            activity.runOnUiThread {
-                val trimmed = text.trim()
-                if (trimmed.length < 120 || !activity.watchActive) return@runOnUiThread
-                activity.pendingBridgeReply = trimmed
-            }
+    class ReplyBridge(private val activity:MainActivity){
+        @JavascriptInterface fun complete(text:String){
+            activity.runOnUiThread{val t=text.trim();if(t.length>=120&&activity.watchActive)activity.pendingBridgeReply=t}
         }
     }
 
