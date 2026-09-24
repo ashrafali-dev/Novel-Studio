@@ -451,10 +451,12 @@ class MainActivity : Activity() {
     }
 
     // copy to clipboard (always) + optional auto paste / send inside the chatbot page
-    private fun deliver(full: String, label: String) {
+    private fun deliver(full: String, label: String, forceAuto: Boolean = false) {
         copy(full)
         toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
-        if (Prefs.bool(this, "autoPaste")) {
+        if (forceAuto) {
+            handler.postDelayed({ pasteToChat(full, true) }, 500)
+        } else if (Prefs.bool(this, "autoPaste")) {
             if (mode == Mode.NOVEL) setMode(Mode.CHAT)
             val send = Prefs.bool(this, "autoSend")
             handler.postDelayed({ pasteToChat(full, send) }, 500)
@@ -463,11 +465,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun copyChapter(ch: Chapter) {
+    private fun copyChapter(ch: Chapter, forceAuto: Boolean = false) {
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
-        deliver(full, tag)
+        deliver(full, tag, forceAuto)
     }
 
     // ●  : copy the chapter on the novel page right now
@@ -526,7 +528,7 @@ class MainActivity : Activity() {
             extractNow { ch ->
                 if (ch != null && ch.text.length > 300 && ch.text.hashCode() != oldHash && novelWv.progress >= 100) {
                     onChapter(ch)
-                    copyChapter(ch)
+                    copyChapter(ch, Prefs.bool(this, "autoNextTranslate", true))
                 } else if (n < 10) {
                     waitChange(oldHash, n + 1)
                 } else {
@@ -577,7 +579,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 onChapter(ch)
-                copyChapter(ch)
+                copyChapter(ch, Prefs.bool(this@MainActivity, "autoNextTranslate", true))
             } else if (n < 6) {
                 handler.postDelayed({ pollExtract(n + 1) }, 1200)
             } else {
@@ -623,16 +625,16 @@ class MainActivity : Activity() {
         }
     }
 
+    // ▶ Next-এর one-tap automation. ON by default.
     private fun toggleAuto() {
-        val on = !(Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend"))
-        Prefs.putBool(this, "autoPaste", on)
-        Prefs.putBool(this, "autoSend", on)
+        val on = !Prefs.bool(this, "autoNextTranslate", true)
+        Prefs.putBool(this, "autoNextTranslate", on)
         refreshAutoBtn()
-        toast(if (on) "⚡ অটো পেস্ট + সেন্ড চালু" else "⚡ অটো বন্ধ — শুধু কপি হবে")
+        toast(if (on) "⚡ নেক্সট অটো-অনুবাদ চালু" else "⚡ নেক্সট অটো-অনুবাদ বন্ধ — শুধু extract + copy")
     }
 
     private fun refreshAutoBtn() {
-        val on = Prefs.bool(this, "autoPaste") && Prefs.bool(this, "autoSend")
+        val on = Prefs.bool(this, "autoNextTranslate", true)
         autoBtn.alpha = if (on) 1f else 0.35f
     }
 
@@ -656,6 +658,7 @@ class MainActivity : Activity() {
         val sn = !Prefs.bool(this, "noSaveNext")
         val ap = Prefs.bool(this, "autoPaste")
         val asd = Prefs.bool(this, "autoSend")
+        val ant = Prefs.bool(this, "autoNextTranslate", true)
         val d = darkMode()
         val items = arrayOf(
             "📚 লাইব্রেরি (অফলাইনে পড়ো)",
@@ -664,8 +667,9 @@ class MainActivity : Activity() {
             "🔖 বুকমার্ক লিস্ট",
             "📝 প্রম্পট এডিট",
             "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[d] + "  (ট্যাপ করলে বদলায়)",
-            (if (ap) "✅" else "⬜") + " অটো পেস্ট (চ্যাটবট বক্সে)",
-            (if (asd) "✅" else "⬜") + " অটো সেন্ড",
+            (if (ant) "✅" else "⬜") + " ▶ নেক্সট: অটো Extract + Paste + Send",
+            (if (ap) "✅" else "⬜") + " ● ম্যানুয়াল কপির অটো পেস্ট",
+            (if (asd) "✅" else "⬜") + " ● ম্যানুয়াল কপির অটো সেন্ড",
             (if (wp) "✅" else "⬜") + " কপির সাথে প্রম্পট জুড়ে দাও",
             (if (sn) "✅" else "⬜") + " 💾 এর পর পরের চ্যাপ্টার কপি করো",
             (if (gc) "✅" else "⬜") + " ● চাপার পর চ্যাটে যাও (শুধু 📖 মোডে)",
@@ -682,18 +686,19 @@ class MainActivity : Activity() {
                 3 -> bookmarkList()
                 4 -> editPrompt()
                 5 -> { Prefs.put(this, "dark", ((d + 1) % 3).toString()); applyDark() }
-                6 -> { Prefs.putBool(this, "autoPaste", !ap); refreshAutoBtn() }
-                7 -> { Prefs.putBool(this, "autoSend", !asd); refreshAutoBtn() }
-                8 -> Prefs.putBool(this, "withPrompt", !wp)
-                9 -> Prefs.putBool(this, "noSaveNext", sn)
-                10 -> Prefs.putBool(this, "noGoChat", gc)
-                11 -> Prefs.putBool(this, "noAdblock", ab)
-                12 -> {
+                6 -> { Prefs.putBool(this, "autoNextTranslate", !ant); refreshAutoBtn() }
+                7 -> Prefs.putBool(this, "autoPaste", !ap)
+                8 -> Prefs.putBool(this, "autoSend", !asd)
+                9 -> Prefs.putBool(this, "withPrompt", !wp)
+                10 -> Prefs.putBool(this, "noSaveNext", sn)
+                11 -> Prefs.putBool(this, "noGoChat", gc)
+                12 -> Prefs.putBool(this, "noAdblock", ab)
+                13 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") }
                 }
-                13 -> novelWv.reload()
-                14 -> chatWv.reload()
+                14 -> novelWv.reload()
+                15 -> chatWv.reload()
                 else -> {}
             }
         }.show()
