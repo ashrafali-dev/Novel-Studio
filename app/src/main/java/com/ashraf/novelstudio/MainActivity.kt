@@ -24,6 +24,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
@@ -259,20 +260,27 @@ class MainActivity : Activity() {
     private fun setMode(m: Mode) {
         mode = m
         val nlp = novelBox.layoutParams as LinearLayout.LayoutParams
+        val clp = chatBox.layoutParams as LinearLayout.LayoutParams
         when (m) {
-            Mode.NOVEL -> { nlp.height = 0; nlp.weight = 1f; chatBox.visibility = View.GONE }
-            // novel page stays alive as a 1dp sliver so ▶ / ● keep working while the chatbot is full screen
-            Mode.CHAT -> { nlp.height = dp(1); nlp.weight = 0f; chatBox.visibility = View.VISIBLE }
-            Mode.SPLIT -> { nlp.height = 0; nlp.weight = 1f; chatBox.visibility = View.VISIBLE }
+            Mode.NOVEL -> {
+                nlp.height = 0; nlp.weight = 1f; novelBox.visibility = View.VISIBLE
+                clp.height = 0; clp.weight = 0.001f
+                chatBox.visibility = View.INVISIBLE
+            }
+            Mode.CHAT -> {
+                nlp.height = 0; nlp.weight = 0.001f
+                novelBox.visibility = View.INVISIBLE
+                clp.height = 0; clp.weight = 1f
+                chatBox.visibility = View.VISIBLE
+            }
+            Mode.SPLIT -> {
+                nlp.height = 0; nlp.weight = 1f; novelBox.visibility = View.VISIBLE
+                clp.height = 0; clp.weight = 1f; chatBox.visibility = View.VISIBLE
+            }
         }
         novelBox.layoutParams = nlp
-        novelBox.visibility = View.VISIBLE
-        modeBtn.text = when (m) {
-            Mode.NOVEL -> "📖"
-            Mode.CHAT -> "💬"
-            Mode.SPLIT -> "◫"
-        }
-        activeWv = if (m == Mode.CHAT) chatWv else novelWv
+        chatBox.layoutParams = clp
+        modeBtn.text = when (m) { Mode.NOVEL -> "📖"; Mode.CHAT -> "💬"; Mode.SPLIT -> "◫" }
     }
 
     private fun cycleMode() {
@@ -467,25 +475,20 @@ class MainActivity : Activity() {
     }
 
     // copy to clipboard (always) + optional auto paste / send inside the chatbot page
-    private fun deliver(full: String, label: String, forceAuto: Boolean = false) {
+    private fun deliver(full: String, label: String) {
         copy(full)
         toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
-        if (forceAuto) {
-            handler.postDelayed({ pasteToChat(full, true) }, 500)
-        } else if (Prefs.bool(this, "autoPaste")) {
-            if (mode == Mode.NOVEL) setMode(Mode.CHAT)
+        if (Prefs.bool(this, "autoPaste")) {
             val send = Prefs.bool(this, "autoSend")
             handler.postDelayed({ pasteToChat(full, send) }, 500)
-        } else if (mode == Mode.NOVEL && !Prefs.bool(this, "noGoChat")) {
-            setMode(Mode.CHAT)
         }
     }
 
-    private fun copyChapter(ch: Chapter, forceAuto: Boolean = false) {
+    private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
-        deliver(full, tag, forceAuto)
+        deliver(full, tag)
     }
 
     // ●  : copy the chapter on the novel page right now
