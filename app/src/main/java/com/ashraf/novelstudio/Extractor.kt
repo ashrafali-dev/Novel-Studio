@@ -10,7 +10,8 @@ data class Chapter(
     val next: String?,
     val prev: String?,
     val url: String,
-    val guessed: Boolean
+    val novel: String,
+    val number: String
 )
 
 object Extractor {
@@ -24,8 +25,11 @@ object Extractor {
     )
 
     private val NEXT = Regex("next|下一|다음|次の|次へ|次章|পরবর্তী|নেক্সট|›|»|→", RegexOption.IGNORE_CASE)
-    private val PREV = Regex("prev(ious)?\\b|上一|이전|前の|前へ|前章|পূর্ববর্তী|আগের|প্রিভিয়াস|‹|«|←", RegexOption.IGNORE_CASE)
+    private val PREV = Regex("prev(?!iew)|上一|이전|前の|前へ|前章|পূর্ববর্তী|আগের|প্রিভিয়াস|‹|«|←", RegexOption.IGNORE_CASE)
+    private val CH_RE = Regex("chapter|chap\\.|\\bch\\b|episode|\\bep\\b|第.{1,8}[章话話节節回]|제\\s*\\d+\\s*화|\\bpart\\b|\\bvol", RegexOption.IGNORE_CASE)
+    private val GENERIC = setOf("novel", "novels", "book", "books", "library", "browse", "home", "series", "manga", "genres", "ranking", "latest")
 
+    // ------------------------------------------------------------ text
     private fun textOf(el: Element): String {
         val c = el.clone()
         c.children().select(BAD).remove()
@@ -73,20 +77,87 @@ object Extractor {
         return doc.title().trim()
     }
 
+    // ------------------------------------------------------------ story name / chapter number
+    private fun findNovel(doc: Document, url: String, title: String): String {
+        for (p in listOf("meta[property=og:novel:book_name]", "meta[property=og:novel:novel_name]", "meta[name=book_name]")) {
+            val v = doc.selectFirst(p)?.attr("content")?.trim() ?: ""
+            if (v.isNotEmpty()) return v
+        }
+        val host = hostOf(url).removePrefix("www.")
+        val siteWord = host.substringBefore('.').lowercase()
+        val parts = doc.title().split(Regex("\\s[-|–—»:]+\\s|\\s*_\\s*|\\s*\\|\\s*"))
+            .map { it.trim() }.filter { it.length in 2..90 }
+        for (p in parts) {
+            if (CH_RE.containsMatchIn(p) || p == title) continue
+            if (siteWord.isNotEmpty() && p.lowercase().replace(" ", "").contains(siteWord)) continue
+            return p
+        }
+        for (a in doc.select("a[href]")) {
+            val h = a.absUrl("href").lowercase()
+            val t = a.text().trim()
+            if ((h.contains("/book/") || h.contains("/novel/") || h.contains("/series/")) &&
+                t.length in 3..80 && !CH_RE.containsMatchIn(t) && t.lowercase() !in GENERIC && h != url.lowercase()) return t
+        }
+        return host
+    }
+
+    private fun findNumber(title: String, url: String): String {
+        val pats = listOf(
+            Regex("\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)", RegexOption.IGNORE_CASE),
+            Regex("第\\s*(\\d+)\\s*[章话話节節回]"),
+            Regex("제\\s*(\\d+)\\s*화"),
+            Regex("(\\d+)\\s*[화話话]")
+        )
+        for (p in pats) {
+            val m = p.find(title)
+            if (m != null) return m.groupValues[1]
+        }
+        val m2 = Regex("(\\d{1,5})").find(title)
+        if (m2 != null) return m2.groupValues[1]
+        val m3 = Regex("(\\d{1,5})(?!.*\\d)").find(pathOf(url))
+        return if (m3 != null && m3.value.length <= 5) m3.value else ""
+    }
+
+    // ------------------------------------------------------------ links
     private fun strip(u: String) = u.substringBefore('#')
+
+    private fun hostOf(u: String): String {
+        val i = u.indexOf("://")
+        if (i < 0) return ""
+        return u.substring(i + 3).substringBefore('/').substringBefore('?').substringBefore('#').substringBefore(':')
+    }
+
+    private fun pathOf(u: String): String {
+        val i = u.indexOf("://")
+        if (i < 0) return ""
+        val rest = u.substring(i + 3)
+        val s = rest.indexOf('/')
+        if (s < 0) return ""
+        return rest.substring(s).substringBefore('?').substringBefore('#')
+    }
+
+    private fun segs(u: String) = pathOf(u).split('/').count { it.isNotEmpty() }
+    private fun hostRoot(u: String) = hostOf(u).split('.').takeLast(2).joinToString(".")
+
+    // A "next chapter" link must stay on the same site and must not jump UP to a home/book page
+    private fun plausible(cur: String, cand: String): Boolean {
+        if (hostRoot(cur) != hostRoot(cand)) return false
+        val c = segs(cand)
+        return c >= 1 && c >= segs(cur)
+    }
 
     private fun findLink(doc: Document, url: String, kind: String): String? {
         val re = if (kind == "next") NEXT else PREV
         val rel = doc.selectFirst("link[rel=$kind], a[rel=$kind]")
         if (rel != null) {
             val h = rel.absUrl("href")
-            if (h.isNotEmpty() && strip(h) != strip(url)) return h
+            if (h.isNotEmpty() && strip(h) != strip(url) && plausible(url, h)) return h
         }
         var best: String? = null
         var bs = 0
         for (a in doc.select("a[href]")) {
             val h = a.absUrl("href")
-            if (!h.startsWith("http") || strip(h) == strip(url)) continue
+            if (!h.startsWith("http") || strip(h) == strip(url) || !plausible(url, h)) continue
             if (a.className().contains("disabled", true) || a.attr("aria-disabled") == "true") continue
             val txt = a.text().trim()
             val meta = listOf(a.attr("aria-label"), a.attr("title"), a.id(), a.className(), a.attr("rel")).joinToString(" ")
@@ -98,8 +169,8 @@ object Extractor {
         return best
     }
 
-    // Last resort: bump the last number in the URL path (chapter-12 -> chapter-13)
-    private fun bump(url: String, d: Int): String? {
+    // Last resort only (short chapter numbers only — never long IDs like webnovel's)
+    fun bump(url: String, d: Int): String? {
         val q = url.indexOfAny(charArrayOf('?', '#'))
         val base = if (q < 0) url else url.substring(0, q)
         val rest = if (q < 0) "" else url.substring(q)
@@ -108,6 +179,7 @@ object Extractor {
         val head = base.substring(0, hostEnd)
         val path = base.substring(hostEnd)
         val m = Regex("(\\d+)(?!.*\\d)").find(path) ?: return null
+        if (m.value.length > 6) return null
         val n = m.value.toLong() + d
         if (n < 0) return null
         val nv = n.toString().padStart(m.value.length, '0')
@@ -118,12 +190,9 @@ object Extractor {
         val el = findContent(doc) ?: return null
         val body = textOf(el)
         val title = findTitle(doc)
-        var next = findLink(doc, url, "next")
-        var prev = findLink(doc, url, "prev")
-        var guessed = false
-        if (next == null) { next = bump(url, 1); if (next != null) guessed = true }
-        if (prev == null) { prev = bump(url, -1); if (prev != null) guessed = true }
+        val next = findLink(doc, url, "next")
+        val prev = findLink(doc, url, "prev")
         val text = if (body.startsWith(title)) body else title + "\n\n" + body
-        return Chapter(title, text, next, prev, url, guessed)
+        return Chapter(title, text, next, prev, url, findNovel(doc, url, title), findNumber(title, url))
     }
 }
