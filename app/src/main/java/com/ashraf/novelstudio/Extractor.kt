@@ -11,7 +11,8 @@ data class Chapter(
     val prev: String?,
     val url: String,
     val novel: String,
-    val number: String
+    val number: String,
+    val contentSel: String
 )
 
 object Extractor {
@@ -26,9 +27,10 @@ object Extractor {
 
     private val NEXT = Regex("next|下一|다음|次の|次へ|次章|পরবর্তী|নেক্সট|›|»|→", RegexOption.IGNORE_CASE)
     private val PREV = Regex("prev(?!iew)|上一|이전|前の|前へ|前章|পূর্ববর্তী|আগের|প্রিভিয়াস|‹|«|←", RegexOption.IGNORE_CASE)
-    private val CH_RE = Regex("chapter|chap\.|\bch\b|episode|\bep\b|第.{1,8}[章话話节節回]|제\s*\d+\s*화|\bpart\b|\bvol", RegexOption.IGNORE_CASE)
+    private val CH_RE = Regex("chapter|chap\\.|\\bch\\b|episode|\\bep\\b|第.{1,8}[章话話节節回]|제\\s*\\d+\\s*화|\\bpart\\b|\\bvol", RegexOption.IGNORE_CASE)
     private val GENERIC = setOf("novel", "novels", "book", "books", "library", "browse", "home", "series", "manga", "genres", "ranking", "latest")
 
+    // ------------------------------------------------------------ text
     private fun textOf(el: Element): String {
         val c = el.clone()
         c.children().select(BAD).remove()
@@ -76,6 +78,7 @@ object Extractor {
         return doc.title().trim()
     }
 
+    // ------------------------------------------------------------ story name / chapter number
     private fun findNovel(doc: Document, url: String, title: String): String {
         for (p in listOf("meta[property=og:novel:book_name]", "meta[property=og:novel:novel_name]", "meta[name=book_name]")) {
             val v = doc.selectFirst(p)?.attr("content")?.trim() ?: ""
@@ -83,7 +86,7 @@ object Extractor {
         }
         val host = hostOf(url).removePrefix("www.")
         val siteWord = host.substringBefore('.').lowercase()
-        val parts = doc.title().split(Regex("\s[-|–—»:]+\s|\s*_\s*|\s*\|\s*"))
+        val parts = doc.title().split(Regex("\\s[-|–—»:]+\\s|\\s*_\\s*|\\s*\\|\\s*"))
             .map { it.trim() }.filter { it.length in 2..90 }
         for (p in parts) {
             if (CH_RE.containsMatchIn(p) || p == title) continue
@@ -101,21 +104,22 @@ object Extractor {
 
     private fun findNumber(title: String, url: String): String {
         val pats = listOf(
-            Regex("\b(?:chapter|chap|ch|episode|ep)\.?\s*[-#:.]?\s*(\d+(?:\.\d+)?)", RegexOption.IGNORE_CASE),
-            Regex("第\s*(\d+)\s*[章话話节節回]"),
-            Regex("제\s*(\d+)\s*화"),
-            Regex("(\d+)\s*[화話话]")
+            Regex("\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)", RegexOption.IGNORE_CASE),
+            Regex("第\\s*(\\d+)\\s*[章话話节節回]"),
+            Regex("제\\s*(\\d+)\\s*화"),
+            Regex("(\\d+)\\s*[화話话]")
         )
         for (p in pats) {
             val m = p.find(title)
             if (m != null) return m.groupValues[1]
         }
-        val m2 = Regex("(\d{1,5})").find(title)
+        val m2 = Regex("(\\d{1,5})").find(title)
         if (m2 != null) return m2.groupValues[1]
-        val m3 = Regex("(\d{1,5})(?!.*\d)").find(pathOf(url))
+        val m3 = Regex("(\\d{1,5})(?!.*\\d)").find(pathOf(url))
         return if (m3 != null && m3.value.length <= 5) m3.value else ""
     }
 
+    // ------------------------------------------------------------ links
     private fun strip(u: String) = u.substringBefore('#')
 
     private fun hostOf(u: String): String {
@@ -136,6 +140,7 @@ object Extractor {
     private fun segs(u: String) = pathOf(u).split('/').count { it.isNotEmpty() }
     private fun hostRoot(u: String) = hostOf(u).split('.').takeLast(2).joinToString(".")
 
+    // A "next chapter" link must stay on the same site and must not jump UP to a home/book page
     private fun plausible(cur: String, cand: String): Boolean {
         if (hostRoot(cur) != hostRoot(cand)) return false
         val c = segs(cand)
@@ -165,6 +170,7 @@ object Extractor {
         return best
     }
 
+    // Last resort only (short chapter numbers only — never long IDs like webnovel's)
     fun bump(url: String, d: Int): String? {
         val q = url.indexOfAny(charArrayOf('?', '#'))
         val base = if (q < 0) url else url.substring(0, q)
@@ -173,7 +179,7 @@ object Extractor {
         if (hostEnd < 0) return null
         val head = base.substring(0, hostEnd)
         val path = base.substring(hostEnd)
-        val m = Regex("(\d+)(?!.*\d)").find(path) ?: return null
+        val m = Regex("(\\d+)(?!.*\\d)").find(path) ?: return null
         if (m.value.length > 6) return null
         val n = m.value.toLong() + d
         if (n < 0) return null
@@ -188,6 +194,7 @@ object Extractor {
         val next = findLink(doc, url, "next")
         val prev = findLink(doc, url, "prev")
         val text = if (body.startsWith(title)) body else title + "\n\n" + body
-        return Chapter(title, text, next, prev, url, findNovel(doc, url, title), findNumber(title, url))
+        val sel = try { el.cssSelector() } catch (e: Exception) { "" }
+        return Chapter(title, text, next, prev, url, findNovel(doc, url, title), findNumber(title, url), sel)
     }
 }

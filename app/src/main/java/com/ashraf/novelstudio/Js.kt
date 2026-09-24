@@ -24,8 +24,7 @@ function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
 function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
 
-    private fun run(body: String) = PRELUDE + "
-;" + body
+    private fun run(body: String) = PRELUDE + "\n;" + body
 
     private const val SEND_BODY = """
 (function(text,doSend){
