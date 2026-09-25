@@ -19,7 +19,7 @@ var __P={
 };
 var __D={a:'[data-message-author-role="assistant"],.markdown,.prose',b:'',stop:'button[aria-label*="Stop" i]',send:'button[aria-label*="Send" i],button[type="submit"]'};
 function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith('.'+k))return __P[k];}return __D;}
-function __asst(p){var l=[].slice.call(document.querySelectorAll(p.a));return l.filter(function(e){return !l.some(function(o){return o!==e&&o.contains(e);});});}
+function __asst(p){var s=[p.a,'[data-message-author-role="assistant"]','model-response','.font-claude-message','.ds-markdown','[class*="response-content" i]','[class*="assistant-message" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
 function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
 function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
@@ -61,9 +61,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
 
     // "<assistant msg count>|<streaming 0/1>|<length of last reply>"
-    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var len=0;if(n){var e=l[n-1];var b=p.b?(e.querySelector(p.b)||e):e;len=(b.innerText||'').length;}return n+'|'+__stream(p)+'|'+len;})()")
+    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var len=0;if(n){var e=l[n-1];var b=p.b?(e.querySelector(p.b)||e):e;len=(b.innerText||b.textContent||'').length;}return n+'|'+__stream(p)+'|'+len;})()")
 
-    fun readText(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;if(!n)return '';var e=l[n-1];var b=p.b?(e.querySelector(p.b)||e):e;return b.innerText||'';})()")
+    fun readText(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;if(!n)return '';var e=l[n-1];var b=p.b?(e.querySelector(p.b)||e):e;return (b.innerText||b.textContent||'').trim();})()")
 
     fun stop(): String = run("(function(){var p=__prof();var b=p.stop?document.querySelector(p.stop):null;if(b&&b.tagName==='BUTTON')b.click();return 'k';})()")
 
