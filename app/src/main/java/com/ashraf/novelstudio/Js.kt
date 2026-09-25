@@ -28,7 +28,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     private const val SEND_BODY = """
 (function(text,doSend){
-  var p=__prof(); var n0=__asst(p).length; var box=__box();
+  var p=__prof(); var before=__asst(p); var n0=before.length; var len0=0;
+  if(n0){var old=before[n0-1];var ob=p.b?(old.querySelector(p.b)||old):old;len0=(ob.innerText||'').length;}
+  var box=__box();
   if(!box) return 'nobox';
   box.focus();
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
@@ -50,7 +52,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       else box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
     }, Math.min(4000,700+text.length/30));
   }
-  return 'ok:'+n0;
+  return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
 """
 
