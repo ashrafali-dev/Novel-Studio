@@ -214,14 +214,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var curPath=cleanPath(location.href), curTitle=norm(title);
 
   // WebnovelReader's proven catalog route: book URL + /catalog.
-  var bookPath=location.pathname
+  var m=location.pathname.match(/^(\/book\/[^/]+)/i);
+  var bookPath=m?m[1]:location.pathname
     .replace(/\/chapter\/[^/]+.*$/i,'')
     .replace(/\/read\/[^/]+.*$/i,'')
-    .replace(/\\/+$/,'');
-  if(!/\/book\//i.test(bookPath)){
-    var m=location.pathname.match(/^(\/book\/[^/]+)/i);
-    if(m) bookPath=m[1];
-  }
+    .replace(/\/+$/,'');
   if(!bookPath) return 'catalog-error:no-book-path';
 
   var catalogUrl=location.origin+bookPath+'/catalog';
