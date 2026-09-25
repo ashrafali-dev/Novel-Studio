@@ -607,10 +607,28 @@ class MainActivity : Activity() {
     // Hash only the chapter body, not the heading. Some SPA readers update
     // the chapter title before replacing the actual chapter text.
     private fun bodyHash(ch: Chapter): Int {
-        val all = ch.text.trim()
+        // Readers such as WTR-LAB can temporarily contain the old chapter
+        // body while the new heading is already visible. Some pages also
+        // duplicate the old heading inside the content during that swap.
+        // Remove ALL leading copies of the heading before hashing.
+        var body = ch.text.trim()
         val title = ch.title.trim()
-        val body = if (title.isNotEmpty() && all.startsWith(title)) all.removePrefix(title).trim() else all
+        if (title.isNotEmpty()) {
+            var guard = 0
+            while (guard++ < 4 && body.startsWith(title, ignoreCase = false)) {
+                body = body.removePrefix(title).trimStart()
+            }
+        }
         return body.hashCode()
+    }
+
+    private fun cleanUrl(u: String): String = u.substringBefore('#').trimEnd('/')
+
+    private fun isNewPage(ch: Chapter, oldUrl: String, oldHash: Int): Boolean {
+        return ch.text.length > 300 &&
+            cleanUrl(ch.url) != cleanUrl(oldUrl) &&
+            bodyHash(ch) != oldHash &&
+            novelWv.progress >= 100
     }
 
     private fun onChapter(ch: Chapter) {
@@ -674,11 +692,12 @@ class MainActivity : Activity() {
     }
 
     private fun loadAndWait(url: String, token: Int, base: Chapter) {
-        pendUrl = novelWv.url ?: base.url
-        // Ignore a title-only update: the old body can remain mounted briefly.
+        // For a direct next/prev URL, remember the TARGET URL, not the old
+        // URL. SPA readers can change the heading/URL before replacing body.
+        pendUrl = cleanUrl(url)
         pendHash = bodyHash(base)
         autoCopy = true
-        polling = false
+        polling = true
         novelWv.loadUrl(url)
         handler.postDelayed({
             if (token == navToken && autoCopy) {
@@ -702,25 +721,26 @@ class MainActivity : Activity() {
                     toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
             } else {
-                waitChange(bodyHash(base), 0, token)
+                // A chapter button may change the URL/title first and the body
+                // later. Require BOTH URL and body to change.
+                waitChange(bodyHash(base), 0, token, false, base.url)
             }
         }
     }
 
-    private fun waitChange(oldHash: Int, n: Int, token: Int, reloaded: Boolean = false) {
+    private fun waitChange(oldHash: Int, n: Int, token: Int, reloaded: Boolean = false, oldUrl: String = "") {
         handler.postDelayed({
             if (token != navToken) return@postDelayed
             extractNow { ch ->
                 if (token != navToken) return@extractNow
-                // Compare only the body. A new heading alone must never count as a new chapter.
-                if (ch != null && ch.text.length > 300 && bodyHash(ch) != oldHash && novelWv.progress >= 100) {
+                if (ch != null && isNewPage(ch, oldUrl, oldHash)) {
                     commit(ch, token)
                 } else if (n < 10) {
-                    waitChange(oldHash, n + 1, token, reloaded)
+                    waitChange(oldHash, n + 1, token, reloaded, oldUrl)
                 } else if (!reloaded) {
                     toast("🔄 পুরোনো চ্যাপ্টার আটকে গেছে — পেজ রিলোড করছি…")
                     novelWv.reload()
-                    waitChange(oldHash, 0, token, true)
+                    waitChange(oldHash, 0, token, true, oldUrl)
                 } else {
                     toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
@@ -733,19 +753,22 @@ class MainActivity : Activity() {
         if (token != navToken) return
         extractNow { ch ->
             if (token != navToken) return@extractNow
-            // Require both a new URL and a genuinely new BODY. This blocks the
-            // Chapter 39 heading + Chapter 38 body race seen on SPA readers.
-            if (ch != null && ch.text.length > 300 && bodyHash(ch) != pendHash && ch.url != pendUrl) {
+            // Require the requested TARGET URL and a genuinely new BODY.
+            // A new Chapter 39 heading over the old Chapter 38 body must never pass.
+            if (ch != null && ch.text.length > 300 &&
+                cleanUrl(ch.url) == pendUrl &&
+                bodyHash(ch) != pendHash &&
+                novelWv.progress >= 100) {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
-            } else if (n < 8) {
+            } else if (n < 12) {
                 handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, 1200)
             } else if (!reloaded) {
                 toast("🔄 পুরোনো চ্যাপ্টারের লেখা রয়ে গেছে — পেজ রিলোড করছি…")
                 polling = false
                 novelWv.reload()
-                handler.postDelayed({ pollExtract(0, token, true) }, 1800)
+                handler.postDelayed({ pollExtract(0, token, true) }, 2200)
             } else {
                 autoCopy = false
                 polling = false
