@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Novel Studio Webtoon Test</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font-family:system-ui,sans-serif}
+#bar{position:sticky;top:0;z-index:99;background:#202024;padding:10px;font-size:13px}
+#bar b{color:#72a7ff}#progress{margin-top:6px;height:5px;background:#444;border-radius:5px;overflow:hidden}
+#fill{height:100%;width:0;background:#72a7ff;transition:.2s}
+.chapter{max-width:720px;margin:auto}.panel{position:relative;margin:0 auto 8px;overflow:hidden;background:#222}
+.panel img{display:block;width:100%;height:auto}.overlay{position:absolute;z-index:5;pointer-events:none}
+.bubble{position:absolute;padding:8px 12px;background:rgba(255,255,255,.94);color:#111;border-radius:18px;text-align:center;font-weight:600;line-height:1.35;box-shadow:0 2px 8px #0005}
+.badge{position:absolute;left:8px;top:8px;z-index:10;background:#000b;padding:4px 7px;border-radius:8px;font-size:11px}
+.note{max-width:720px;margin:18px auto;padding:12px;color:#bbb;font-size:12px}
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>Novel Studio — Webtoon pipeline test</b>
+  <span id="status"> Detecting panels…</span>
+  <div id="progress"><div id="fill"></div></div>
+</div>
+<div class="chapter" id="chapter"></div>
+<div class="note">
+  This test intentionally contains panels with no dialogue. The mock detector should skip them.
+  In the real app, image text detection + OCR will replace the mock regions, and the AI translation queue will replace the mock translator.
+</div>
+<script>
+const panels = [
+  {h:900, texts:[
+    {x:12,y:15,w:32,h:10,t:"Who are you?"},
+    {x:53,y:38,w:30,h:10,t:"Get away from me!"}
+  ]},
+  {h:1250, texts:[]},
+  {h:850, texts:[
+    {x:10,y:22,w:38,h:11,t:"I have been looking for you."}
+  ]},
+  {h:1400, texts:[]},
+  {h:950, texts:[
+    {x:50,y:18,w:35,h:10,t:"Don't worry. I'm here."},
+    {x:12,y:55,w:30,h:10,t:"Run!"}
+  ]}
+];
+
+const translations = {
+  "Who are you?":"তুমি কে?",
+  "Get away from me!":"কাছে এসো না!",
+  "I have been looking for you.":"আমি তোমাকে খুঁজছিলাম।",
+  "Don't worry. I'm here.":"চিন্তা করো না। আমি এখানে আছি।",
+  "Run!":"দৌড়াও!"
+};
+
+const root=document.getElementById("chapter");
+const fill=document.getElementById("fill"), status=document.getElementById("status");
+const cache=new Map(), jobs=[];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+function makePanel(p,i){
+  const el=document.createElement("div");
+  el.className="panel"; el.dataset.id="panel-"+i;
+  el.style.aspectRatio="700/"+p.h;
+  // Generated visual placeholder; real app will use the Webtoon <img>.
+  el.innerHTML='<svg viewBox="0 0 700 '+p.h+'" width="100%" height="100%" preserveAspectRatio="none"><defs><linearGradient id="g'+i+'" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3b3b46"/><stop offset="1" stop-color="#19191f"/></linearGradient></defs><rect width="700" height="'+p.h+'" fill="url(#g'+i+')"/><circle cx="'+(120+i*90)+'" cy="'+Math.min(p.h-120,180+i*110)+'" r="85" fill="#555"/><rect x="30" y="'+(p.h-120)+'" width="640" height="2" fill="#777"/></svg>';
+  const badge=document.createElement("div"); badge.className="badge"; badge.textContent="Panel "+(i+1)+(p.texts.length?" • text detected":" • no text"); el.appendChild(badge);
+  root.appendChild(el); return el;
+}
+panels.forEach(makePanel);
+
+function show(panelIndex, item){
+  const el=root.children[panelIndex];
+  let layer=el.querySelector(".overlay"); if(!layer){layer=document.createElement("div");layer.className="overlay";layer.style.inset=0;el.appendChild(layer);}
+  const b=document.createElement("div"); b.className="bubble";
+  b.style.left=item.x+"%"; b.style.top=item.y+"%"; b.style.width=item.w+"%"; b.textContent=item.tr;
+  layer.appendChild(b);
+}
+
+async function translateJob(job){
+  // Mock AI latency. Real app sends a small batch of OCR strings to the chosen AI.
+  await sleep(500+Math.random()*900);
+  job.items.forEach(x=>{x.tr=translations[x.t]||("[বাংলা] "+x.t);cache.set(x.key,x.tr);show(job.panel,x)});
+}
+
+async function run(){
+  let total=panels.reduce((n,p)=>n+p.texts.length,0), done=0;
+  status.textContent=" OCR + translation চলছে…";
+  // Only text-containing panels enter the queue. Empty panels are skipped.
+  for(let i=0;i<panels.length;i++){
+    const items=panels[i].texts.map((x,j)=>({...x,key:i+":"+j}));
+    if(!items.length) continue;
+    jobs.push({panel:i,items});
+  }
+  for(const job of jobs){
+    await translateJob(job); done+=job.items.length;
+    fill.style.width=(done/total*100)+"%";
+    status.textContent=" "+done+"/"+total+" text regions translated";
+  }
+  status.textContent=" ✓ background translation ready";
+}
+run();
+
+// In the real app IntersectionObserver would mount cached translations when a panel enters view.
+// This test keeps already-completed overlays visible so you can verify the visual behavior.
+</script>
+</body>
+</html>
