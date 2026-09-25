@@ -126,7 +126,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
 
     fun stillApplied(sel: String): String =
-        "(function(sel){var el=document.querySelector(sel);return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" + org.json.JSONObject.quote(sel) + ")"
+        "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
+        "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
+        "if(!el)el=document.querySelector('[data-ns="1"]');" +
+        "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
+        org.json.JSONObject.quote(sel) + ")"
 
     val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
         "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
