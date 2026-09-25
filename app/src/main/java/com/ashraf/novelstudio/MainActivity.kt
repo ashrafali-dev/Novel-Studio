@@ -747,15 +747,18 @@ class MainActivity : Activity() {
             }
             val target = if (dir == "next") base.next else base.prev
 
-            if (target != null) {
-                // Direct URL navigation: clear the old DOM before loading target.
+            // WebNovel's mobile reader can expose a misleading/home URL as
+            // its extracted "next" link. Its real Next button is the source
+            // of truth, so always use the site's own control there.
+            val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
+            if (target != null && !webNovel) {
+                // Normal sites: direct target URL is fastest.
                 wipeStale(clearNovelDom = true)
                 navToken = token
                 loadAndWait(target, token, base)
             } else {
-                // JS-only Next/Prev needs the current DOM to find/click its
-                // button first. clickAndWait() clears the DOM immediately
-                // after the click has been issued.
+                // SPA/same-URL readers (including WebNovel): let the site's
+                // own Next/Prev handler perform the navigation.
                 clickAndWait(dir, base, token)
             }
         }
