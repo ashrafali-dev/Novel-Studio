@@ -625,10 +625,12 @@ class MainActivity : Activity() {
     private fun cleanUrl(u: String): String = u.substringBefore('#').trimEnd('/')
 
     private fun isNewPage(ch: Chapter, oldUrl: String, oldHash: Int): Boolean {
+        // WebView's numeric loading progress can stop at 99 on some sites.
+        // Chapter readiness is therefore decided from the actual DOM/body,
+        // not from the browser's cosmetic loading percentage.
         return ch.text.length > 300 &&
             cleanUrl(ch.url) != cleanUrl(oldUrl) &&
-            bodyHash(ch) != oldHash &&
-            novelWv.progress >= 100
+            bodyHash(ch) != oldHash
     }
 
     private fun onChapter(ch: Chapter) {
@@ -792,8 +794,7 @@ class MainActivity : Activity() {
             // A new Chapter 39 heading over the old Chapter 38 body must never pass.
             if (ch != null && ch.text.length > 300 &&
                 cleanUrl(ch.url) == pendUrl &&
-                bodyHash(ch) != pendHash &&
-                novelWv.progress >= 100) {
+                bodyHash(ch) != pendHash) {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
@@ -961,8 +962,13 @@ class MainActivity : Activity() {
                 failJob(tok, ch, "উত্তর পড়া গেল না")
                 return@evaluateJavascript
             }
+            // The chatbot response is complete here, so copy the FINAL
+            // response to Android clipboard automatically. This uses the
+            // same clipboard path as manual Copy/Save.
+            copy(t)
             Store.save(this, ch, t)
             progress = 100
+            updateProgressUi()
             val shown = lastChapter
             if (shown != null && keyOf(shown) == keyOf(ch)) applyTranslation(shown, t, true)
             toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
