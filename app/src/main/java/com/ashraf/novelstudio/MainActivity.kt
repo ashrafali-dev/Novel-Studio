@@ -86,6 +86,15 @@ class MainActivity : Activity() {
     private var pendUrl = ""
     private var pendHash = 0
 
+    // WebNovel navigation: load the catalog in the same WebView, keep it
+    // behind the loading overlay, extract the adjacent chapter URL, then
+    // immediately load that chapter.
+    private var webNovelCatalogPending = false
+    private var webNovelCatalogDir = ""
+    private var webNovelCatalogTitle = ""
+    private var webNovelCatalogOldHash = 0
+    private var webNovelCatalogToken = 0
+
     // background translation queue
     private val queue = mutableListOf<Chapter>()
     private var running: Chapter? = null
@@ -558,6 +567,35 @@ class MainActivity : Activity() {
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
             if (url != null) Prefs.put(this@MainActivity, "lastNovelUrl", url)
+
+            if (view === novelWv && webNovelCatalogPending) {
+                val tk = webNovelCatalogToken
+                val dir = webNovelCatalogDir
+                val title = webNovelCatalogTitle
+                val oldHash = webNovelCatalogOldHash
+                webNovelCatalogPending = false
+                view.evaluateJavascript(Js.webNovelPickCatalog(dir, title)) { raw ->
+                    if (tk != navToken) return@evaluateJavascript
+                    val target = decode(raw)
+                    if (target.startsWith("http")) {
+                        pendHash = oldHash
+                        pendUrl = cleanUrl(target)
+                        autoCopy = true
+                        polling = true
+                        view.loadUrl(target)
+                    } else {
+                        hideNavLoading()
+                        autoCopy = false
+                        polling = false
+                        toast(
+                            if (target == "edge") "ℹ️ আর কোনো chapter নেই"
+                            else "❌ WebNovel chapter link পাওয়া যায়নি"
+                        )
+                    }
+                }
+                return
+            }
+
             if (autoCopy && !polling) {
                 polling = true
                 val tk = navToken
@@ -802,26 +840,42 @@ class MainActivity : Activity() {
 
     // No usable link in the page (JS "Next" button, e.g. webnovel.com): click the site's own button
     private fun clickAndWait(dir: String, base: Chapter, token: Int) {
-        val script = if (base.url.contains("webnovel.com/", ignoreCase = true)) {
-            // WebNovel mobile: use its chapter-list drawer, not the unreliable
-            // reader Next arrow. The drawer contains the chapters in order.
-            Js.webNovelNext(dir, base.title)
-        } else {
-            Js.clickNext(dir)
+        if (base.url.contains("webnovel.com/", ignoreCase = true)) {
+            // WebNovel's catalog is used as a navigation source. It is loaded
+            // in this WebView but kept completely covered by the loading
+            // overlay; onPageFinished extracts the adjacent chapter URL and
+            // immediately loads that chapter.
+            val parsed = Uri.parse(base.url)
+            val path = parsed.path ?: ""
+            val match = Regex("^(/book/[^/]+)", RegexOption.IGNORE_CASE).find(path)
+            if (match == null || parsed.scheme.isNullOrEmpty() || parsed.authority.isNullOrEmpty()) {
+                hideNavLoading()
+                toast("❌ WebNovel book URL বোঝা যায়নি")
+                return
+            }
+            val catalogUrl = parsed.scheme + "://" + parsed.authority + match.value + "/catalog"
+            webNovelCatalogPending = true
+            webNovelCatalogDir = dir
+            webNovelCatalogTitle = base.title
+            webNovelCatalogOldHash = bodyHash(base)
+            webNovelCatalogToken = token
+            novelWv.loadUrl(catalogUrl)
+            return
         }
+
+        val script = Js.clickNext(dir)
         novelWv.evaluateJavascript(script) { res ->
             if (token != navToken) return@evaluateJavascript
             if (res != null && (res.contains("none") || res.contains("failed"))) {
                 val g = Extractor.bump(base.url, if (dir == "next") 1 else -1)
-                if (g != null && !base.url.contains("webnovel.com/", ignoreCase = true)) {
+                if (g != null) {
                     toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
                     loadAndWait(g, token, base)
                 } else {
                     hideNavLoading()
-                    toast("❌ WebNovel chapter list পাওয়া যায়নি")
+                    toast("❌ নতুন chapter link পাওয়া যায়নি")
                 }
             } else {
-                // Wait for the newly selected chapter, then extract automatically.
                 pendHash = bodyHash(base)
                 pendUrl = ""
                 autoCopy = true
