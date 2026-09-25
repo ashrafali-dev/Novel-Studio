@@ -722,28 +722,28 @@ class MainActivity : Activity() {
                             .replace("&", "&amp;")
                             .replace("<", "&lt;")
                             .replace(">", "&gt;")
-                        fun attr(s: String) = esc(s).replace(""", "&quot;")
+                        fun attr(s: String) = esc(s).replace("\"", "&quot;")
 
                         val wrap = buildString {
                             append("<html><head><title>")
                             append(esc(o.optString("pageTitle", "")))
                             append("</title></head><body>")
-                            append("<h1 id="__ns_fast_title">")
+                            append("<h1 id=\"__ns_fast_title\">")
                             append(esc(o.optString("title", "")))
                             append("</h1>")
-                            append("<div id="__ns_fast_content">")
+                            append("<div id=\"__ns_fast_content\">")
                             append(o.optString("content", ""))
                             append("</div>")
 
                             o.optJSONObject("next")?.let {
-                                append("<a id="__ns_fast_next" href="")
+                                append("<a id=\"__ns_fast_next\" href=\"")
                                 append(attr(it.optString("href", "")))
-                                append("">")
+                                append("\">")
                                 append(esc(it.optString("text", "")))
                                 append("</a>")
                             }
                             o.optJSONObject("prev")?.let {
-                                append("<a id="__ns_fast_prev" href="")
+                                append("<a id=\"__ns_fast_prev\" href=\"")
                                 append(attr(it.optString("href", "")))
                                 append("">")
                                 append(esc(it.optString("text", "")))
