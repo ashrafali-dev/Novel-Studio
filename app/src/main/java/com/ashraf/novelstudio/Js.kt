@@ -200,26 +200,26 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // and opens <book-path>/catalog, then walks the adjacent chapter.
     // This avoids guessing the mobile reader's icon/button DOM.
     fun webNovelNext(dir: String, currentTitle: String): String {
-        val safe = currentTitle.replace("\\\\", "\\\\\\\\").replace("'", "\\\\'")
+        val safe = currentTitle.replace("\\", "\\\\").replace("'", "\\'")
         return """
 (function(){
   var dir='__DIR__', title='__TITLE__';
-  var norm=function(s){return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();};
+  var norm=function(s){return (s||'').replace(/\s+/g,' ').trim().toLowerCase();};
   var cleanPath=function(u){
     try{
       var x=new URL(u,location.href);
-      return x.pathname.replace(/\\/+$/,'');
+      return x.pathname.replace(/\/+$/,'');
     }catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\\/+$/,'');}
   };
   var curPath=cleanPath(location.href), curTitle=norm(title);
 
   // WebnovelReader's proven catalog route: book URL + /catalog.
   var bookPath=location.pathname
-    .replace(/\\/chapter\\/[^/]+.*$/i,'')
-    .replace(/\\/read\\/[^/]+.*$/i,'')
+    .replace(/\/chapter\/[^/]+.*$/i,'')
+    .replace(/\/read\/[^/]+.*$/i,'')
     .replace(/\\/+$/,'');
-  if(!/\\/book\\//i.test(bookPath)){
-    var m=location.pathname.match(/^(\\/book\\/[^/]+)/i);
+  if(!/\/book\//i.test(bookPath)){
+    var m=location.pathname.match(/^(\/book\/[^/]+)/i);
     if(m) bookPath=m[1];
   }
   if(!bookPath) return 'catalog-error:no-book-path';
@@ -248,7 +248,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         if(at===curTitle)s=100;
         else if(at.indexOf(curTitle)>=0||curTitle.indexOf(at)>=0)s=70;
         else{
-          var words=curTitle.split(/\\s+/).filter(function(x){return x.length>2;});
+          var words=curTitle.split(/\s+/).filter(function(x){return x.length>2;});
           for(var q=0;q<words.length;q++)if(at.indexOf(words[q])>=0)s+=2;
         }
         if(s>score){score=s;best=j;}
