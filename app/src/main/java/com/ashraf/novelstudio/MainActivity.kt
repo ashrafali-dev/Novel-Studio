@@ -580,11 +580,8 @@ class MainActivity : Activity() {
                     if (target.startsWith("http")) {
                         pendHash = oldHash
                         pendUrl = cleanUrl(target)
-                        // Let the target chapter's onPageFinished() start
-                        // the normal extraction poll. If polling is already
-                        // true here, onPageFinished() intentionally does
-                        // nothing, which used to break Next auto-extraction.
-                        autoCopy = true
+                        val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
+                        autoCopy = autoExtract
                         polling = false
                         view.loadUrl(target)
                     } else {
@@ -598,6 +595,10 @@ class MainActivity : Activity() {
                     }
                 }
                 return
+            }
+
+            if (view === novelWv && !autoCopy && !webNovelCatalogPending && navToken > 0) {
+                hideNavLoading()
             }
 
             if (autoCopy && !polling) {
@@ -829,8 +830,9 @@ class MainActivity : Activity() {
         // URL. SPA readers can change the heading/URL before replacing body.
         pendUrl = cleanUrl(url)
         pendHash = bodyHash(base)
-        autoCopy = true
-        polling = true
+        val autoExtract = Prefs.bool(this, "autoExtractNext", true)
+        autoCopy = autoExtract
+        polling = autoExtract
         novelWv.loadUrl(url)
         handler.postDelayed({
             if (token == navToken && autoCopy) {
@@ -880,11 +882,16 @@ class MainActivity : Activity() {
                     toast("❌ নতুন chapter link পাওয়া যায়নি")
                 }
             } else {
+                val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
                 pendHash = bodyHash(base)
                 pendUrl = ""
-                autoCopy = true
-                polling = true
-                waitChange(pendHash, 0, token, base.url)
+                autoCopy = autoExtract
+                polling = autoExtract
+                if (autoExtract) {
+                    waitChange(pendHash, 0, token, base.url)
+                } else {
+                    hideNavLoading()
+                }
             }
         }
     }
@@ -1236,6 +1243,7 @@ class MainActivity : Activity() {
             menuAutoSendLabel(),
             menuPromptLabel(),
             menuSaveNextLabel(),
+            menuNextExtractLabel(),
             menuAdBlockLabel(),
             "🔄 Ad Block লিস্ট আপডেট",
             "🔄 নোভেল পেজ রিলোড",
@@ -1304,19 +1312,25 @@ class MainActivity : Activity() {
                     adapter.notifyDataSetChanged()
                 }
                 13 -> {
+                    val v = !Prefs.bool(this, "autoExtractNext", true)
+                    Prefs.putBool(this, "autoExtractNext", v)
+                    labels[i] = menuNextExtractLabel()
+                    adapter.notifyDataSetChanged()
+                }
+                14 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
                     labels[i] = menuAdBlockLabel()
                     adapter.notifyDataSetChanged()
                 }
-                14 -> {
+                15 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n ->
                         toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
-                15 -> { dlg.dismiss(); novelWv.reload() }
-                16 -> { dlg.dismiss(); chatWv.reload() }
+                16 -> { dlg.dismiss(); novelWv.reload() }
+                17 -> { dlg.dismiss(); chatWv.reload() }
             }
         }
         dlg.show()
@@ -1336,6 +1350,9 @@ class MainActivity : Activity() {
 
     private fun menuPromptLabel(): String =
         (if (Prefs.bool(this, "withPrompt")) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট"
+
+    private fun menuNextExtractLabel(): String =
+        (if (Prefs.bool(this, "autoExtractNext", true)) "✅" else "⬜") + " ▶ Next/Prev এর পর অটো Extract"
 
     private fun menuSaveNextLabel(): String =
         (if (!Prefs.bool(this, "noSaveNext")) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার"
