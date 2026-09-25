@@ -10,8 +10,8 @@ android {
         applicationId 'com.ashraf.novelstudio'
         minSdk 24
         targetSdk 33
-        versionCode 1
-        versionName '1.0'
+        versionCode 62
+        versionName '1.6.2'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
