@@ -650,8 +650,8 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== ● ▶ ◀
-    // Everything from the previous chapter is thrown away the moment a new navigation starts.
-    private fun wipeStale() {
+    // Throw away app state and, for chapter navigation, the old page DOM.
+    private fun wipeStale(clearNovelDom: Boolean = false) {
         navToken++
         autoCopy = false
         polling = false
@@ -659,6 +659,24 @@ class MainActivity : Activity() {
         shownTranslated = false
         updatePill()
         clearClipboard()
+
+        if (clearNovelDom) {
+            novelWv.evaluateJavascript(
+                """
+                (function(){
+                    try {
+                        document.documentElement.innerHTML =
+                            '<head><title>Loading…</title></head>' +
+                            '<body style="background:#111;color:#aaa;font-family:sans-serif">' +
+                            '<div style="padding:32px;text-align:center">Loading chapter…</div>' +
+                            '</body>';
+                    } catch(e) {}
+                    return "cleared";
+                })();
+                """.trimIndent(), null
+            )
+        }
+
         if (!Prefs.auto(this)) chatWv.evaluateJavascript(Js.clearBox(), null)
         updateProgressUi()
     }
@@ -676,6 +694,7 @@ class MainActivity : Activity() {
 
     // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
+        // Read the current chapter first so we know exactly where Next/Prev goes.
         wipeStale()
         val token = navToken
         toast("⏳ " + (if (dir == "next") "পরের" else "আগের") + " চ্যাপ্টার আনছি…")
@@ -687,6 +706,12 @@ class MainActivity : Activity() {
                 return@extractNow
             }
             val target = if (dir == "next") base.next else base.prev
+
+            // Do not allow the old chapter DOM to survive into navigation.
+            // This is separate from the app-state reset above.
+            wipeStale(clearNovelDom = true)
+            navToken = token
+
             if (target != null) loadAndWait(target, token, base) else clickAndWait(dir, base, token)
         }
     }
