@@ -1119,61 +1119,126 @@ class MainActivity : Activity() {
 
     // ================================================================== menu
     private fun menu() {
-        val au = Prefs.auto(this)
-        val ab = Prefs.adblock(this)
-        val wp = Prefs.bool(this, "withPrompt")
-        val sn = !Prefs.bool(this, "noSaveNext")
-        val ap = Prefs.bool(this, "autoPaste")
-        val asd = Prefs.bool(this, "autoSend")
-        val d = darkMode()
-        val items = arrayOf(
+        val labels = arrayListOf(
             "📚 লাইব্রেরি (অফলাইনে পড়ো)",
             "⬇️ সব অনুবাদ txt এক্সপোর্ট",
             "🔖 এই পেজ বুকমার্ক করো",
             "🔖 বুকমার্ক লিস্ট",
             "📝 প্রম্পট এডিট",
-            (if (au) "✅" else "⬜") + " ⚡ অটো অনুবাদ (ব্যাকগ্রাউন্ডে, সাইটে বসবে)",
+            menuAutoLabel(),
             "🔁 এই চ্যাপ্টার আবার অনুবাদ করাও",
             "⏹ চলমান অটো অনুবাদ বন্ধ",
-            "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[d] + "  (ট্যাপ করলে বদলায়)",
-            (if (ap) "✅" else "⬜") + " কপি মোড: অটো পেস্ট",
-            (if (asd) "✅" else "⬜") + " কপি মোড: অটো সেন্ড",
-            (if (wp) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট",
-            (if (sn) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার",
-            (if (ab) "✅" else "⬜") + " Ad Block",
+            menuDarkLabel(),
+            menuAutoPasteLabel(),
+            menuAutoSendLabel(),
+            menuPromptLabel(),
+            menuSaveNextLabel(),
+            menuAdBlockLabel(),
             "🔄 Ad Block লিস্ট আপডেট",
             "🔄 নোভেল পেজ রিলোড",
             "🔄 চ্যাটবট রিলোড"
         )
-        AlertDialog.Builder(this).setItems(items) { _, i ->
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        val lv = ListView(this)
+        lv.adapter = adapter
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("☰ মেনু")
+            .setView(lv)
+            .setNegativeButton("বন্ধ", null)
+            .create()
+
+        lv.setOnItemClickListener { _, _, i, _ ->
             when (i) {
-                0 -> libraryNovels()
-                1 -> exportAll(null)
-                2 -> saveBookmark()
-                3 -> bookmarkList()
-                4 -> editPrompt()
-                5 -> toggleAuto()
+                0 -> { dlg.dismiss(); libraryNovels() }
+                1 -> { dlg.dismiss(); exportAll(null) }
+                2 -> { dlg.dismiss(); saveBookmark() }
+                3 -> { dlg.dismiss(); bookmarkList() }
+                4 -> { dlg.dismiss(); editPrompt() }
+                5 -> {
+                    toggleAuto()
+                    labels[i] = menuAutoLabel()
+                    adapter.notifyDataSetChanged()
+                }
                 6 -> {
                     val ch = lastChapter
-                    if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো") else { enqueue(ch); toast("⏳ আবার অনুবাদে দেওয়া হলো") }
+                    if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
+                    else {
+                        enqueue(ch)
+                        toast("⏳ আবার অনুবাদে দেওয়া হলো")
+                    }
+                    dlg.dismiss()
                 }
-                7 -> cancelAll()
-                8 -> { Prefs.put(this, "dark", ((d + 1) % 3).toString()); applyDark() }
-                9 -> Prefs.putBool(this, "autoPaste", !ap)
-                10 -> Prefs.putBool(this, "autoSend", !asd)
-                11 -> Prefs.putBool(this, "withPrompt", !wp)
-                12 -> Prefs.putBool(this, "noSaveNext", sn)
-                13 -> Prefs.putBool(this, "noAdblock", ab)
+                7 -> { cancelAll(); dlg.dismiss() }
+                8 -> {
+                    val d = darkMode()
+                    Prefs.put(this, "dark", ((d + 1) % 3).toString())
+                    applyDark()
+                    labels[i] = menuDarkLabel()
+                    adapter.notifyDataSetChanged()
+                }
+                9 -> {
+                    val v = !Prefs.bool(this, "autoPaste")
+                    Prefs.putBool(this, "autoPaste", v)
+                    labels[i] = menuAutoPasteLabel()
+                    adapter.notifyDataSetChanged()
+                }
+                10 -> {
+                    val v = !Prefs.bool(this, "autoSend")
+                    Prefs.putBool(this, "autoSend", v)
+                    labels[i] = menuAutoSendLabel()
+                    adapter.notifyDataSetChanged()
+                }
+                11 -> {
+                    val v = !Prefs.bool(this, "withPrompt")
+                    Prefs.putBool(this, "withPrompt", v)
+                    labels[i] = menuPromptLabel()
+                    adapter.notifyDataSetChanged()
+                }
+                12 -> {
+                    val next = !Prefs.bool(this, "noSaveNext")
+                    Prefs.putBool(this, "noSaveNext", !next)
+                    labels[i] = menuSaveNextLabel()
+                    adapter.notifyDataSetChanged()
+                }
+                13 -> {
+                    val v = !Prefs.adblock(this)
+                    Prefs.putBool(this, "noAdblock", !v)
+                    labels[i] = menuAdBlockLabel()
+                    adapter.notifyDataSetChanged()
+                }
                 14 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
-                    AdBlock.update(this) { n -> toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি") }
+                    AdBlock.update(this) { n ->
+                        toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
+                    }
                 }
-                15 -> novelWv.reload()
-                16 -> chatWv.reload()
-                else -> {}
+                15 -> { dlg.dismiss(); novelWv.reload() }
+                16 -> { dlg.dismiss(); chatWv.reload() }
             }
-        }.show()
+        }
+        dlg.show()
     }
+
+    private fun menuAutoLabel(): String =
+        (if (Prefs.auto(this)) "✅" else "⬜") + " ⚡ অটো অনুবাদ (ব্যাকগ্রাউন্ডে, সাইটে বসবে)"
+
+    private fun menuDarkLabel(): String =
+        "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[darkMode()] + "  (ট্যাপ করলে বদলায়)"
+
+    private fun menuAutoPasteLabel(): String =
+        (if (Prefs.bool(this, "autoPaste")) "✅" else "⬜") + " কপি মোড: অটো পেস্ট"
+
+    private fun menuAutoSendLabel(): String =
+        (if (Prefs.bool(this, "autoSend")) "✅" else "⬜") + " কপি মোড: অটো সেন্ড"
+
+    private fun menuPromptLabel(): String =
+        (if (Prefs.bool(this, "withPrompt")) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট"
+
+    private fun menuSaveNextLabel(): String =
+        (if (!Prefs.bool(this, "noSaveNext")) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার"
+
+    private fun menuAdBlockLabel(): String =
+        (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
 
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
         val lv = ListView(this)
