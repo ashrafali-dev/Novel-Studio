@@ -595,9 +595,21 @@ class MainActivity : Activity() {
             Thread {
                 val ch: Chapter? = try {
                     val html = decode(raw)
-                    if (html.isEmpty()) null else Extractor.extract(Jsoup.parse(html, url), url)
+                    if (html.isEmpty()) null else {
+                        val doc = Jsoup.parse(html, url)
+                        Extractor.extract(
+                            doc, url,
+                            SiteProfiles.selector(this@MainActivity, url, "content"),
+                            SiteProfiles.selector(this@MainActivity, url, "title"),
+                            SiteProfiles.selector(this@MainActivity, url, "next"),
+                            SiteProfiles.selector(this@MainActivity, url, "prev")
+                        )
+                    }
                 } catch (e: Exception) { null }
-                runOnUiThread { cb(ch) }
+                runOnUiThread {
+                    if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
+                    cb(ch)
+                }
             }.start()
         }
     }
@@ -1005,12 +1017,9 @@ class MainActivity : Activity() {
 
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
-        if (ch.contentSel.isEmpty()) {
-            toast("⚠️ এই পেজে কনটেন্ট এলিমেন্ট চেনা যায়নি — অনুবাদ লাইব্রেরিতে সেভ আছে")
-            return
-        }
+        val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
-        novelWv.evaluateJavascript(Js.apply(ch.contentSel, JSONArray(paras).toString())) { r ->
+        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString())) { r ->
             if (r != null && r.contains("ok")) {
                 hasTr = true
                 shownTranslated = true
@@ -1018,7 +1027,7 @@ class MainActivity : Activity() {
                 if (retry) {   // some sites re-render the content a moment later — put it back once
                     handler.postDelayed({
                         if (shownTranslated && lastChapter === ch) {
-                            novelWv.evaluateJavascript(Js.stillApplied(ch.contentSel)) { s ->
+                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
                                 if (s != null && s.contains("lost")) applyTranslation(ch, text, false)
                             }
                         }
