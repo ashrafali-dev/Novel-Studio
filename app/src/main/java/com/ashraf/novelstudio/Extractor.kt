@@ -12,7 +12,10 @@ data class Chapter(
     val url: String,
     val novel: String,
     val number: String,
-    val contentSel: String
+    val contentSel: String,
+    val titleSel: String = "",
+    val nextSel: String = "",
+    val prevSel: String = ""
 )
 
 object Extractor {
@@ -56,7 +59,13 @@ object Extractor {
         return s
     }
 
-    private fun findContent(doc: Document): Element? {
+    private fun findContent(doc: Document, preferred: String = ""): Element? {
+        if (preferred.isNotBlank()) {
+            try {
+                val remembered = doc.selectFirst(preferred)
+                if (remembered != null && textOf(remembered).length > 500) return remembered
+            } catch (_: Exception) {}
+        }
         for (sel in SELECTORS) {
             val e = doc.selectFirst(sel)
             if (e != null && textOf(e).length > 500) return e
@@ -70,12 +79,22 @@ object Extractor {
         return best
     }
 
-    private fun findTitle(doc: Document): String {
+    private fun findTitle(doc: Document, preferred: String = ""): Pair<String, String> {
+        if (preferred.isNotBlank()) {
+            try {
+                val remembered = doc.selectFirst(preferred)
+                val t = remembered?.text()?.trim() ?: ""
+                if (t.isNotEmpty() && t.length < 200) return t to preferred
+            } catch (_: Exception) {}
+        }
         for (sel in listOf(".chapter-title", ".chr-title", "#chapter-heading", "h1", "h2")) {
             val t = doc.selectFirst(sel)?.text()?.trim() ?: ""
-            if (t.isNotEmpty() && t.length < 200) return t
+            if (t.isNotEmpty() && t.length < 200) {
+                val actual = try { doc.selectFirst(sel)?.cssSelector() ?: sel } catch (_: Exception) { sel }
+                return t to actual
+            }
         }
-        return doc.title().trim()
+        return doc.title().trim() to ""
     }
 
     // ------------------------------------------------------------ story name / chapter number
@@ -147,12 +166,24 @@ object Extractor {
         return c >= 1 && c >= segs(cur)
     }
 
-    private fun findLink(doc: Document, url: String, kind: String): String? {
+    private fun findLink(doc: Document, url: String, kind: String, preferred: String = ""): Pair<String?, String> {
         val re = if (kind == "next") NEXT else PREV
+        if (preferred.isNotBlank()) {
+            try {
+                val remembered = doc.selectFirst(preferred)
+                if (remembered != null) {
+                    val h = remembered.absUrl("href")
+                    if (h.isNotEmpty() && strip(h) != strip(url) && plausible(url, h)) return h to preferred
+                }
+            } catch (_: Exception) {}
+        }
         val rel = doc.selectFirst("link[rel=$kind], a[rel=$kind]")
         if (rel != null) {
             val h = rel.absUrl("href")
-            if (h.isNotEmpty() && strip(h) != strip(url) && plausible(url, h)) return h
+            if (h.isNotEmpty() && strip(h) != strip(url) && plausible(url, h)) {
+                val actual = try { rel.cssSelector() } catch (_: Exception) { "" }
+                return h to actual
+            }
         }
         var best: String? = null
         var bs = 0
@@ -167,7 +198,12 @@ object Extractor {
             if (re.containsMatchIn(meta)) s += 2
             if (s > bs) { bs = s; best = h }
         }
-        return best
+        if (best != null) {
+            val el = doc.select("a[href]").firstOrNull { it.absUrl("href") == best }
+            val actual = try { el?.cssSelector() ?: "" } catch (_: Exception) { "" }
+            return best to actual
+        }
+        return null to ""
     }
 
     // Last resort only (short chapter numbers only — never long IDs like webnovel's)
@@ -187,14 +223,24 @@ object Extractor {
         return head + path.replaceRange(m.range, nv) + rest
     }
 
-    fun extract(doc: Document, url: String): Chapter? {
-        val el = findContent(doc) ?: return null
+    fun extract(
+        doc: Document,
+        url: String,
+        preferredContent: String = "",
+        preferredTitle: String = "",
+        preferredNext: String = "",
+        preferredPrev: String = ""
+    ): Chapter? {
+        val el = findContent(doc, preferredContent) ?: return null
         val body = textOf(el)
-        val title = findTitle(doc)
-        val next = findLink(doc, url, "next")
-        val prev = findLink(doc, url, "prev")
+        val (title, titleSel) = findTitle(doc, preferredTitle)
+        val (next, nextSel) = findLink(doc, url, "next", preferredNext)
+        val (prev, prevSel) = findLink(doc, url, "prev", preferredPrev)
         val text = if (body.startsWith(title)) body else title + "\n\n" + body
         val sel = try { el.cssSelector() } catch (e: Exception) { "" }
-        return Chapter(title, text, next, prev, url, findNovel(doc, url, title), findNumber(title, url), sel)
+        return Chapter(
+            title, text, next, prev, url, findNovel(doc, url, title),
+            findNumber(title, url), sel, titleSel, nextSel, prevSel
+        )
     }
 }
