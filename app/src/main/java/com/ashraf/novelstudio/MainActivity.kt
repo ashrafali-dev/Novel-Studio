@@ -632,31 +632,46 @@ class MainActivity : Activity() {
         if (raw == null || raw == "null") "" else JSONArray("[$raw]").getString(0)
     } catch (e: Exception) { "" }
 
+    /**
+     * Fast chapter extraction: serialize only the chapter node, not the whole page.
+     * This avoids multi-MB outerHTML parsing on ad-heavy sites.
+     */
     private fun extractNow(cb: (Chapter?) -> Unit) {
-        novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
-            val url = novelWv.url ?: ""
+        val url = novelWv.url ?: ""
+        if (url.isBlank()) { cb(null); return }
+        val contentSel = SiteProfiles.selector(this, url, "content")
+        val titleSel = SiteProfiles.selector(this, url, "title")
+        val nextSel = SiteProfiles.selector(this, url, "next")
+        val prevSel = SiteProfiles.selector(this, url, "prev")
+        val js = "(function(){\nfunction visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}\nfunction txt(e){return ((e&&(e.innerText||e.textContent))||'').trim();}\nfunction pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return visible(e)?e:null;}catch(x){return null;}}\nvar content=pick(__CONTENT__);\nif(!content){\nvar sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c','.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words','.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c','#article','.article-content','.content','article','main'];\nvar best=null,score=0;\nfor(var i=0;i<sels.length;i++){var es=[];try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(x){continue;}for(var j=0;j<es.length;j++){var e=es[j],t=txt(e);if(t.length<300||!visible(e))continue;var sc=t.length+e.querySelectorAll('p').length*250;if(sc>score){score=sc;best=e;}}}content=best;}\nif(!content)return JSON.stringify({ok:false});\nvar titleEl=pick(__TITLE__);if(!titleEl){try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}\nvar title=txt(titleEl);if(!title)title=document.title||'';\nfunction findLink(kind,sel){var e=pick(sel);if(!e){var re=kind==='next'?/next|next chapter|পরবর্তী|নেক্সট|下一|다음|次へ|›|»|→/i:/prev|previous|previous chapter|আগের|পূর্ববর্তী|প্রিভিয়াস|上一|이전|前へ|‹|«|←/i;var as=[].slice.call(document.querySelectorAll('a[href],button,[role=button]'));var best=null,bs=0;for(var i=0;i<as.length;i++){var z=as[i],at=txt(z);if(at.length>40)continue;var meta=(z.getAttribute('aria-label')||'')+' '+(z.getAttribute('title')||'')+' '+(z.className||'')+' '+(z.id||'');var s=(re.test(at)?4:0)+(re.test(meta)?3:0);if(s>bs&&z.href){bs=s;best=z;}}e=best;}return e&&e.href?{href:e.href,text:txt(e)}:null;}\nvar n=findLink('next',__NEXT__),p=findLink('prev',__PREV__);\nreturn JSON.stringify({ok:true,content:content.outerHTML,title:title,next:n,prev:p,pageTitle:document.title||''});\n})()"
+            .replace("__CONTENT__", "${contentSel}")
+            .replace("__TITLE__", "${titleSel}")
+            .replace("__NEXT__", "${nextSel}")
+            .replace("__PREV__", "${prevSel}")
+        novelWv.evaluateJavascript(js) { raw ->
+            val payload = decode(raw)
+            if (payload.isBlank()) { cb(null); return@evaluateJavascript }
             Thread {
                 val ch: Chapter? = try {
-                    val html = decode(raw)
-                    if (html.isEmpty()) null else {
-                        val doc = Jsoup.parse(html, url)
-                        Extractor.extract(
-                            doc, url,
-                            SiteProfiles.selector(this@MainActivity, url, "content"),
-                            SiteProfiles.selector(this@MainActivity, url, "title"),
-                            SiteProfiles.selector(this@MainActivity, url, "next"),
-                            SiteProfiles.selector(this@MainActivity, url, "prev")
-                        )
+                    val o = JSONObject(payload)
+                    if (!o.optBoolean("ok", false)) null else {
+                        fun esc(s: String) = s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                        fun attr(s: String) = esc(s).replace(""","&quot;")
+                        val wrap = buildString {
+                            append("<html><head><title>").append(esc(o.optString("pageTitle",""))).append("</title></head><body>")
+                            append("<h1 id="__ns_fast_title">").append(esc(o.optString("title",""))).append("</h1>")
+                            append("<div id="__ns_fast_content">").append(o.optString("content","")).append("</div>")
+                            o.optJSONObject("next")?.let { append("<a id="__ns_fast_next" href="").append(attr(it.optString("href"))).append("">").append(esc(it.optString("text"))).append("</a>") }
+                            o.optJSONObject("prev")?.let { append("<a id="__ns_fast_prev" href="").append(attr(it.optString("href"))).append("">").append(esc(it.optString("text"))).append("</a>") }
+                            append("</body></html>")
+                        }
+                        Extractor.extract(Jsoup.parse(wrap, url), url, "#__ns_fast_content", "#__ns_fast_title", "#__ns_fast_next", "#__ns_fast_prev")
                     }
-                } catch (e: Exception) { null }
-                runOnUiThread {
-                    if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
-                    cb(ch)
-                }
+                } catch (_: Exception) { null }
+                runOnUiThread { if (ch != null) SiteProfiles.remember(this@MainActivity, ch); cb(ch) }
             }.start()
         }
     }
-
     private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
 
     // Hash only the chapter body, not the heading. Some SPA readers update
@@ -832,7 +847,8 @@ class MainActivity : Activity() {
         pendHash = bodyHash(base)
         val autoExtract = Prefs.bool(this, "autoExtractNext", true)
         autoCopy = autoExtract
-        polling = autoExtract
+        // Let onPageFinished start the first fast extraction.
+        polling = false
         novelWv.loadUrl(url)
         handler.postDelayed({
             if (token == navToken && autoCopy) {
@@ -886,7 +902,7 @@ class MainActivity : Activity() {
                 pendHash = bodyHash(base)
                 pendUrl = ""
                 autoCopy = autoExtract
-                polling = autoExtract
+                polling = false
                 if (autoExtract) {
                     waitChange(pendHash, 0, token, base.url)
                 } else {
@@ -910,7 +926,7 @@ class MainActivity : Activity() {
                     toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — ● চেপে আবার চেষ্টা করো")
                 }
             }
-        }, if (n < 8) 180L else 300L)
+        }, if (n < 4) 150L else 220L)
     }
 
     // After a direct page load, accept a new body even when the URL is reused.
@@ -924,8 +940,8 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
-            } else if (n < 40) {
-                handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, if (n < 8) 180L else 300L)
+            } else if (n < 8) {
+                handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, if (n < 4) 150L else 220L)
             } else {
                 autoCopy = false
                 polling = false
