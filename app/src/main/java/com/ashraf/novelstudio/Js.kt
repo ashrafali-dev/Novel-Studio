@@ -142,24 +142,12 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // ---------------------------------------------------------------- click the site's own Next / Prev button
     private const val CLICK_BODY = """
 (function(){
-  var re=new RegExp('^('+'__ALTS__'+')
-"""
-
-    fun clickNext(dir: String): String {
-        val alts = if (dir == "next")
-            "next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
-        else
-            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
-        val word = if (dir == "next") "next" else "prev(?!iew)"
-        return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
-    }
-}
-,'i');
+  var re=new RegExp('^('+'__ALTS__'+')$','i');
   var wre=new RegExp('__WORD__','i');
   var dir='__DIR__';
 
-  // WebNovel's reader uses a real next/prev control but its DOM can be a
-  // custom element and may have no visible text. Prefer semantic/id controls.
+  // WebNovel and other readers may use custom elements or icon-only controls.
+  // Prefer semantic selectors first, then fall back to text/metadata scoring.
   var direct = dir==='next'
     ? ['#next','[id="next"]','[data-testid="next"]','[aria-label="Next Chapter" i]','[title="Next Chapter" i]','button[title*="Next Chapter" i]','a[title*="Next Chapter" i]','mov-button#next']
     : ['#prev','[id="prev"]','[data-testid="prev"]','[aria-label="Previous Chapter" i]','[title="Previous Chapter" i]','button[title*="Previous Chapter" i]','a[title*="Previous Chapter" i]','mov-button#prev'];
@@ -175,7 +163,6 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
   }
 
-  // Then inspect anchors whose href itself looks like a chapter link.
   var links=[].slice.call(document.querySelectorAll('a[href],button,[role=button],div,span,li,i'));
   var best=null,bs=0;
   for(var i=0;i<links.length;i++){
@@ -187,10 +174,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var s=0;
     if(re.test(tc)) s+=6; else if(tc.length<=25&&wre.test(tc)) s+=4;
     if(wre.test(meta)) s+=4;
-    if(/chapter|/book//i.test(href)&&wre.test(href)) s+=3;
+    if(/chapter|\/book\//i.test(href)&&wre.test(href)) s+=3;
     if(s===0) continue;
     if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true') continue;
-    var r=e.getBoundingClientRect(); if(r.width<3||r.height<3) continue;
+    var r=e.getBoundingClientRect();
+    if(r.width<3||r.height<3) continue;
     if(/chap/i.test(meta+tc+href)) s+=1;
     if(s>bs){bs=s;best=e;}
   }
@@ -205,6 +193,6 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         else
             "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
-        return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word)
+        return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
     }
 }
