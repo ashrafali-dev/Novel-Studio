@@ -194,5 +194,66 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
         return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
+    }    // WebNovel mobile reader fallback: use the chapter-list icon and select
+    // the adjacent chapter because the bottom Next control can be unreliable.
+    fun webNovelNext(dir: String, currentTitle: String): String {
+        val safe = currentTitle.replace("\\", "\\\\").replace("'", "\\'")
+        return """
+(function(){
+  var title='__TITLE__';
+  var norm=function(s){return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();};
+  var cur=norm(title), all=[].slice.call(document.querySelectorAll('button,a,[role="button"],div,span'));
+  var vw=window.innerWidth||document.documentElement.clientWidth, vh=window.innerHeight||document.documentElement.clientHeight;
+  var best=null,bs=-1;
+  for(var i=0;i<all.length;i++){
+    var e=all[i],r=e.getBoundingClientRect();
+    if(r.width<24||r.height<24||r.width>100||r.height>100||r.right>vw*.32||r.bottom<vh*.65||r.left<5)continue;
+    var txt=norm(e.innerText||e.textContent),html=(e.outerHTML||'').toLowerCase(),score=0;
+    if(!txt)score+=5;
+    if(e.querySelector&&e.querySelector('svg'))score+=4;
+    if(/list|chapter|catalog|content|menu/.test(html))score+=5;
+    if(r.left<vw*.22)score+=3;
+    if(score>bs){bs=score;best=e;}
+  }
+  if(!best)return 'list-none';
+  try{best.click();}catch(e){return 'list-click-failed';}
+  setTimeout(function(){
+    var nodes=[].slice.call(document.querySelectorAll('a,button,[role="button"],li,div,span')),hit=null,hr=999999;
+    for(var k=0;k<nodes.length;k++){
+      var n=nodes[k],t=norm(n.innerText||n.textContent);
+      if(!t||t.length>180)continue;
+      if(t===cur||t.indexOf(cur)>=0||cur.indexOf(t)>=0){
+        var rr=n.getBoundingClientRect();
+        if(rr.width>20&&rr.height>15){var d=Math.abs(rr.left-vw*.45)+Math.abs(rr.top-vh*.5);if(d<hr){hr=d;hit=n;}}
+      }
     }
+    if(!hit)return;
+    var row=hit;
+    for(var up=0;up<5&&row.parentElement;up++){
+      var p=row.parentElement,kids=[].slice.call(p.children||[]).filter(function(x){var rr=x.getBoundingClientRect();return rr.width>20&&rr.height>15;});
+      if(kids.length>=2){
+        var idx=kids.indexOf(row);
+        if(idx<0)for(var z=0;z<kids.length;z++)if(kids[z]===hit||kids[z].contains(hit)){idx=z;break;}
+        var ni='__DIR__'==='next'?idx+1:idx-1;
+        if(idx>=0&&kids[ni]){var target=kids[ni].querySelector('a,button,[role="button"]')||kids[ni];try{target.click();return;}catch(e){}}
+      }
+      row=p;
+    }
+    var clickable=nodes.filter(function(x){
+      var rr=x.getBoundingClientRect(),t=norm(x.innerText||x.textContent);
+      return rr.width>30&&rr.height>15&&t.length>3&&t.length<180&&!t.includes('4 years ago')&&/chapter|prolog|part|episode|arc/.test(t);
+    });
+    var ci=-1;
+    for(var q=0;q<clickable.length;q++){var tt=norm(clickable[q].innerText||clickable[q].textContent);if(tt===cur||tt.indexOf(cur)>=0){ci=q;break;}}
+    var cand='__DIR__'==='next'?clickable[ci+1]:clickable[ci-1];
+    if(cand)try{cand.click();}catch(e){}
+  },350);
+  return 'list-clicked';
+})()
+""".trimIndent()
+            .replace("__TITLE__", safe)
+            .replace("__DIR__", dir)
+    }
+
+
 }
