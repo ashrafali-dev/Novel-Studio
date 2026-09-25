@@ -194,66 +194,131 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
         return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
-    }    // WebNovel mobile reader fallback: use the chapter-list icon and select
-    // the adjacent chapter because the bottom Next control can be unreliable.
+    }    // WebNovel navigation based on the open-source WebnovelReader crawler.
+    // That project uses the site's stable chapter catalog selector:
+    //   .j_catalog_list .volume-item li a
+    // and opens <book-path>/catalog, then walks the adjacent chapter.
+    // This avoids guessing the mobile reader's icon/button DOM.
     fun webNovelNext(dir: String, currentTitle: String): String {
-        val safe = currentTitle.replace("\\", "\\\\").replace("'", "\\'")
+        val safe = currentTitle.replace("\\\\", "\\\\\\\\").replace("'", "\\\\'")
         return """
 (function(){
-  var title='__TITLE__';
+  var dir='__DIR__', title='__TITLE__';
   var norm=function(s){return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();};
-  var cur=norm(title), all=[].slice.call(document.querySelectorAll('button,a,[role="button"],div,span'));
-  var vw=window.innerWidth||document.documentElement.clientWidth, vh=window.innerHeight||document.documentElement.clientHeight;
-  var best=null,bs=-1;
-  for(var i=0;i<all.length;i++){
-    var e=all[i],r=e.getBoundingClientRect();
-    if(r.width<24||r.height<24||r.width>100||r.height>100||r.right>vw*.32||r.bottom<vh*.65||r.left<5)continue;
-    var txt=norm(e.innerText||e.textContent),html=(e.outerHTML||'').toLowerCase(),score=0;
-    if(!txt)score+=5;
-    if(e.querySelector&&e.querySelector('svg'))score+=4;
-    if(/list|chapter|catalog|content|menu/.test(html))score+=5;
-    if(r.left<vw*.22)score+=3;
-    if(score>bs){bs=score;best=e;}
+  var cleanPath=function(u){
+    try{
+      var x=new URL(u,location.href);
+      return x.pathname.replace(/\\/+$/,'');
+    }catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\\/+$/,'');}
+  };
+  var curPath=cleanPath(location.href), curTitle=norm(title);
+
+  // WebnovelReader's proven catalog route: book URL + /catalog.
+  var bookPath=location.pathname
+    .replace(/\\/chapter\\/[^/]+.*$/i,'')
+    .replace(/\\/read\\/[^/]+.*$/i,'')
+    .replace(/\\/+$/,'');
+  if(!/\\/book\\//i.test(bookPath)){
+    var m=location.pathname.match(/^(\\/book\\/[^/]+)/i);
+    if(m) bookPath=m[1];
   }
-  if(!best)return 'list-none';
-  try{best.click();}catch(e){return 'list-click-failed';}
-  setTimeout(function(){
-    var nodes=[].slice.call(document.querySelectorAll('a,button,[role="button"],li,div,span')),hit=null,hr=999999;
-    for(var k=0;k<nodes.length;k++){
-      var n=nodes[k],t=norm(n.innerText||n.textContent);
-      if(!t||t.length>180)continue;
-      if(t===cur||t.indexOf(cur)>=0||cur.indexOf(t)>=0){
-        var rr=n.getBoundingClientRect();
-        if(rr.width>20&&rr.height>15){var d=Math.abs(rr.left-vw*.45)+Math.abs(rr.top-vh*.5);if(d<hr){hr=d;hit=n;}}
-      }
+  if(!bookPath) return 'catalog-error:no-book-path';
+
+  var catalogUrl=location.origin+bookPath+'/catalog';
+
+  function choose(doc){
+    var links=[].slice.call(doc.querySelectorAll('.j_catalog_list .volume-item li a'));
+    if(!links.length){
+      links=[].slice.call(doc.querySelectorAll('.j_catalog_list a[href]'));
     }
-    if(!hit)return;
-    var row=hit;
-    for(var up=0;up<5&&row.parentElement;up++){
-      var p=row.parentElement,kids=[].slice.call(p.children||[]).filter(function(x){var rr=x.getBoundingClientRect();return rr.width>20&&rr.height>15;});
-      if(kids.length>=2){
-        var idx=kids.indexOf(row);
-        if(idx<0)for(var z=0;z<kids.length;z++)if(kids[z]===hit||kids[z].contains(hit)){idx=z;break;}
-        var ni='__DIR__'==='next'?idx+1:idx-1;
-        if(idx>=0&&kids[ni]){var target=kids[ni].querySelector('a,button,[role="button"]')||kids[ni];try{target.click();return;}catch(e){}}
-      }
-      row=p;
+    if(!links.length) return null;
+
+    var idx=-1;
+    for(var i=0;i<links.length;i++){
+      var a=links[i], href=cleanPath(a.href||a.getAttribute('href')||'');
+      if(href && href===curPath){idx=i;break;}
     }
-    var clickable=nodes.filter(function(x){
-      var rr=x.getBoundingClientRect(),t=norm(x.innerText||x.textContent);
-      return rr.width>30&&rr.height>15&&t.length>3&&t.length<180&&!t.includes('4 years ago')&&/chapter|prolog|part|episode|arc/.test(t);
-    });
-    var ci=-1;
-    for(var q=0;q<clickable.length;q++){var tt=norm(clickable[q].innerText||clickable[q].textContent);if(tt===cur||tt.indexOf(cur)>=0){ci=q;break;}}
-    var cand='__DIR__'==='next'?clickable[ci+1]:clickable[ci-1];
-    if(cand)try{cand.click();}catch(e){}
-  },350);
-  return 'list-clicked';
+
+    if(idx<0 && curTitle){
+      var best=-1,score=0;
+      for(var j=0;j<links.length;j++){
+        var a2=links[j], at=norm(a2.getAttribute('title')||a2.innerText||a2.textContent);
+        if(!at) continue;
+        var s=0;
+        if(at===curTitle)s=100;
+        else if(at.indexOf(curTitle)>=0||curTitle.indexOf(at)>=0)s=70;
+        else{
+          var words=curTitle.split(/\\s+/).filter(function(x){return x.length>2;});
+          for(var q=0;q<words.length;q++)if(at.indexOf(words[q])>=0)s+=2;
+        }
+        if(s>score){score=s;best=j;}
+      }
+      if(score>0)idx=best;
+    }
+
+    if(idx<0) return null;
+    var ni=dir==='next'?idx+1:idx-1;
+    if(ni<0||ni>=links.length) return 'edge';
+    var target=links[ni];
+    var href=target.href||target.getAttribute('href');
+    if(!href) return null;
+    return href;
+  }
+
+  function go(href){
+    try{
+      var u=new URL(href,location.href);
+      location.href=u.href;
+      return 'navigating';
+    }catch(e){return 'catalog-error:bad-target';}
+  }
+
+  // Fetch the server-rendered catalog rather than clicking the unreliable
+  // mobile reader Next arrow or trying to identify an icon by coordinates.
+  try{
+    fetch(catalogUrl,{credentials:'include',cache:'no-store'})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
+      .then(function(html){
+        var doc=new DOMParser().parseFromString(html,'text/html');
+        var target=choose(doc);
+        if(target==='edge'){console.log('[NovelStudio] WebNovel chapter edge');return;}
+        if(target) {go(target);return;}
+
+        // Fallback: if the catalog response changed shape, use the currently
+        // rendered chapter list/drawer with the same title/URL matching idea.
+        var local=document.querySelectorAll('.j_catalog_list .volume-item li a,.j_catalog_list a[href]');
+        if(local&&local.length){
+          var arr=[].slice.call(local), li=-1;
+          for(var k=0;k<arr.length;k++)if(cleanPath(arr[k].href||'')===curPath){li=k;break;}
+          if(li<0&&curTitle)for(var z=0;z<arr.length;z++){
+            var tt=norm(arr[z].getAttribute('title')||arr[z].innerText||arr[z].textContent);
+            if(tt===curTitle||tt.indexOf(curTitle)>=0||curTitle.indexOf(tt)>=0){li=z;break;}
+          }
+          var ln=dir==='next'?li+1:li-1;
+          if(li>=0&&arr[ln]){go(arr[ln].href);return;}
+        }
+        console.log('[NovelStudio] WebNovel chapter target not found');
+      })
+      .catch(function(e){
+        console.log('[NovelStudio] catalog fetch failed',e);
+        // Last fallback: use the visible reader's own Next/Prev control.
+        var sels=dir==='next'
+          ? ['#next','[data-testid="next"]','[aria-label*="Next" i]','[title*="Next" i]']
+          : ['#prev','[data-testid="prev"]','[aria-label*="Prev" i]','[aria-label*="Previous" i]','[title*="Prev" i]','[title*="Previous" i]'];
+        for(var s=0;s<sels.length;s++){
+          var b=document.querySelector(sels[s]);
+          if(b){try{b.click();return;}catch(x){}}
+        }
+      });
+  }catch(e){return 'catalog-error:'+e;}
+
+  return 'catalog-started';
 })()
 """.trimIndent()
             .replace("__TITLE__", safe)
             .replace("__DIR__", dir)
     }
+
 
 
 }
