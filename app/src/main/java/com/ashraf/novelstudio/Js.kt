@@ -142,28 +142,60 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // ---------------------------------------------------------------- click the site's own Next / Prev button
     private const val CLICK_BODY = """
 (function(){
-  var re=new RegExp('^('+'__ALTS__'+')$','i');
+  var re=new RegExp('^('+'__ALTS__'+')
+"""
+
+    fun clickNext(dir: String): String {
+        val alts = if (dir == "next")
+            "next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
+        else
+            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
+        val word = if (dir == "next") "next" else "prev(?!iew)"
+        return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
+    }
+}
+,'i');
   var wre=new RegExp('__WORD__','i');
-  var els=[].slice.call(document.querySelectorAll('a,button,[role=button],div,span,li,i'));
+  var dir='__DIR__';
+
+  // WebNovel's reader uses a real next/prev control but its DOM can be a
+  // custom element and may have no visible text. Prefer semantic/id controls.
+  var direct = dir==='next'
+    ? ['#next','[id="next"]','[data-testid="next"]','[aria-label="Next Chapter" i]','[title="Next Chapter" i]','button[title*="Next Chapter" i]','a[title*="Next Chapter" i]','mov-button#next']
+    : ['#prev','[id="prev"]','[data-testid="prev"]','[aria-label="Previous Chapter" i]','[title="Previous Chapter" i]','button[title*="Previous Chapter" i]','a[title*="Previous Chapter" i]','mov-button#prev'];
+
+  for(var d=0;d<direct.length;d++){
+    var ds=[];
+    try{ds=[].slice.call(document.querySelectorAll(direct[d]));}catch(e){ds=[];}
+    for(var q=0;q<ds.length;q++){
+      var de=ds[q],dr=de.getBoundingClientRect();
+      if(dr.width>=3&&dr.height>=3&&!de.disabled&&de.getAttribute('aria-disabled')!=='true'){
+        try{de.click();return 'clicked';}catch(x){}
+      }
+    }
+  }
+
+  // Then inspect anchors whose href itself looks like a chapter link.
+  var links=[].slice.call(document.querySelectorAll('a[href],button,[role=button],div,span,li,i'));
   var best=null,bs=0;
-  for(var i=0;i<els.length;i++){
-    var e=els[i];
-    var tc=(e.textContent||'').trim();
-    if(tc.length>25) continue;
+  for(var i=0;i<links.length;i++){
+    var e=links[i],tc=(e.textContent||'').trim();
+    if(tc.length>40) continue;
     var cn=(typeof e.className==='string')?e.className:'';
     var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+cn+' '+(e.id||'')+' '+(e.getAttribute('data-eventname')||'');
+    var href=(e.getAttribute('href')||'');
     var s=0;
-    if(re.test(tc)) s+=5; else if(tc.length<=20&&wre.test(tc)) s+=3;
-    if(wre.test(meta)) s+=2;
+    if(re.test(tc)) s+=6; else if(tc.length<=25&&wre.test(tc)) s+=4;
+    if(wre.test(meta)) s+=4;
+    if(/chapter|/book//i.test(href)&&wre.test(href)) s+=3;
     if(s===0) continue;
     if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true') continue;
     var r=e.getBoundingClientRect(); if(r.width<3||r.height<3) continue;
-    if(/chap/i.test(meta+tc)) s+=1;
+    if(/chap/i.test(meta+tc+href)) s+=1;
     if(s>bs){bs=s;best=e;}
   }
   if(!best) return 'none';
-  try{ best.click(); }catch(x){}
-  return 'clicked';
+  try{best.click();return 'clicked';}catch(x){return 'none';}
 })()
 """
 
