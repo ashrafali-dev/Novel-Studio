@@ -200,98 +200,185 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // and opens <book-path>/catalog, then walks the adjacent chapter.
     // This avoids guessing the mobile reader's icon/button DOM.
     fun webNovelNext(dir: String, currentTitle: String): String {
-        val safe = currentTitle.replace("\\\\", "\\\\\\\\").replace("'", "\\\\'")
+        // WebNovel's mobile reader often reuses /book/<id>/c and the
+        // reader's Next button is not reliable. Use the site's chapter-list
+        // endpoint first, then fall back to the real catalog DOM.
+        val safe = currentTitle
+            .replace("\\\\", "\\\\\\\\")
+            .replace("'", "\\\\'")
         return """
 (function(){
   var dir='__DIR__', title='__TITLE__';
-  var norm=function(s){return (s||'').replace(/\s+/g,' ').trim().toLowerCase();};
-  var clean=function(u){
-    try{return new URL(u,location.href).pathname.replace(/\/+$/,'');}
-    catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
+  var norm=function(s){
+    return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();
   };
-  var path=location.pathname, curPath=clean(location.href), curTitle=norm(title);
-  var bm=path.match(/^(\/book\/[^/]+)/i);
-  var bookPath=bm?bm[1]:path.replace(/\/chapter\/[^/]+.*$/i,'').replace(/\/read\/[^/]+.*$/i,'').replace(/\/+$/,'');
-  if(!bookPath)return 'catalog-error:no-book-path';
-  var catalogUrl=location.origin+bookPath+'/catalog';
+  var stripIndex=function(s){
+    return norm(s).replace(/^\\s*\\d+\\s*[-.:)]?\\s*/,'');
+  };
+  var clean=function(u){
+    try{return new URL(u,location.href).pathname.replace(/\\/+$/,'');}
+    catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\\/+$/,'');}
+  };
+  var path=location.pathname;
+  var bm=path.match(/^(\\/book\\/\\d+)/i);
+  var bookPath=bm?bm[1]:'';
+  var bookId=bm?bm[1].split('/').pop():'';
+  if(!bookId)return 'failed:no-book-id';
 
-  function pick(doc){
-    var all=[].slice.call(doc.querySelectorAll('a[href]')), links=[];
-    for(var i=0;i<all.length;i++){
-      var a=all[i],h=a.href||a.getAttribute('href')||'',p=clean(h),t=norm(a.getAttribute('title')||a.innerText||a.textContent);
-      if(!h||!t||t.length>220)continue;
-      if(p===clean(catalogUrl)||/\/catalog\/?$/i.test(p))continue;
-      if(p.indexOf(bookPath+'/')!==0)continue;
-      if(!/(chapter|prolog|part|episode|arc)/i.test(t))continue;
-      links.push({a:a,p:p,t:t});
+  var curTitle=stripIndex(title);
+  var currentCid='';
+  try{
+    var nodes=[].slice.call(document.querySelectorAll('[class*="j_chapter_"]'));
+    for(var i=0;i<nodes.length;i++){
+      var m=String(nodes[i].className||'').match(/(?:^|\\s)j_chapter_(\\d+)(?:\\s|$)/);
+      if(m){currentCid=m[1];break;}
     }
-    if(!links.length)return null;
+  }catch(e){}
 
+  function chapterTitle(x){
+    return stripIndex(x.chapterName||x.title||x.name||x.chapterTitle||'');
+  }
+  function chapterId(x){
+    return String(x.id||x.chapterId||x.cid||x.chapterID||'');
+  }
+  function flatten(data){
+    var out=[];
+    var vols=data&&data.volumeItems;
+    if(!Array.isArray(vols))return out;
+    for(var i=0;i<vols.length;i++){
+      var items=vols[i]&&vols[i].chapterItems;
+      if(!Array.isArray(items))continue;
+      for(var j=0;j<items.length;j++){
+        var x=items[j];
+        if(x&&x.chapterLevel!==undefined&&String(x.chapterLevel)!=='0')continue;
+        var id=chapterId(x);
+        if(id)out.push({id:id,title:chapterTitle(x),index:x.index!==undefined?Number(x.index):(x.chapterIndex!==undefined?Number(x.chapterIndex):out.length)});
+      }
+    }
+    return out;
+  }
+
+  function pickByTitle(list){
+    if(!curTitle)return -1;
+    var exact=-1;
+    for(var i=0;i<list.length;i++){
+      if(list[i].title===curTitle){exact=i;break;}
+    }
+    if(exact>=0)return exact;
+
+    // Match the most distinctive words, including "(part N)".
+    var words=curTitle.split(/\\s+/).filter(function(w){return w.length>=2;});
+    var best=-1,score=0;
+    for(var j=0;j<list.length;j++){
+      var t=list[j].title, sc=0;
+      for(var k=0;k<words.length;k++){
+        if(t.indexOf(words[k])>=0)sc += words[k].length>=5 ? 2 : 1;
+      }
+      if(sc>score){score=sc;best=j;}
+    }
+    return score>=3?best:-1;
+  }
+
+  function goId(id){
+    if(!id)return false;
+    try{
+      location.href=location.origin+bookPath+'/'+id;
+      return true;
+    }catch(e){return false;}
+  }
+
+  function parseResponse(txt){
+    var s=(txt||'').trim();
+    try{return JSON.parse(s);}catch(e){}
+    s=s.replace(/^[^(]*\\(/,'').replace(/\\);?\\s*$/,'');
+    try{return JSON.parse(s);}catch(e){}
+    return null;
+  }
+
+  function useList(list){
+    if(!list.length)return false;
     var idx=-1;
-    for(var x=0;x<links.length;x++){
-      if(links[x].p===curPath){idx=x;break;}
-    }
-    if(idx<0&&curTitle){
-      for(var y=0;y<links.length;y++){
-        if(links[y].t===curTitle){idx=y;break;}
+    if(currentCid){
+      for(var i=0;i<list.length;i++){
+        if(list[i].id===currentCid){idx=i;break;}
       }
     }
-    if(idx<0&&curTitle){
-      // Match the chapter number + distinctive title when the page title
-      // contains extra site text.
-      var cm=curTitle.match(/(?:chapter|prolog)\s*([0-9]+(?:\.[0-9]+)?)/i);
-      if(cm){
-        for(var z=0;z<links.length;z++){
-          var lm=links[z].t.match(/(?:chapter|prolog)\s*([0-9]+(?:\.[0-9]+)?)/i);
-          if(lm&&lm[1]===cm[1]){
-            var words=curTitle.split(/\s+/).filter(function(w){return w.length>3;});
-            var hits=0;
-            for(var q=0;q<words.length;q++)if(links[z].t.indexOf(words[q])>=0)hits++;
-            if(hits>=2){idx=z;break;}
-          }
-        }
-      }
-    }
-    if(idx<0)return null;
+    if(idx<0)idx=pickByTitle(list);
+    if(idx<0)return false;
     var ni=dir==='next'?idx+1:idx-1;
-    if(ni<0||ni>=links.length)return {edge:true};
-    return links[ni];
+    if(ni<0||ni>=list.length)return false;
+    return goId(list[ni].id);
   }
 
-  function go(h){
-    try{location.href=new URL(h,location.href).href;return true;}catch(e){return false;}
+  function getCsrf(){
+    try{
+      var m=document.cookie.match(/(?:^|;\\s*)_csrfToken=([^;]+)/);
+      return m?decodeURIComponent(m[1]):'';
+    }catch(e){return '';}
   }
 
-  // WebNovelReader and other open-source WebNovel clients use the catalog
-  // as the stable source of ordered chapters instead of the mobile reader's
-  // unreliable Next button.
-  fetch(catalogUrl,{credentials:'include',cache:'no-store',redirect:'follow'})
+  var csrf=getCsrf();
+  var api=location.origin+'/go/pcm/chapter/get-chapter-list?bookId='+
+      encodeURIComponent(bookId)+'&pageIndex=0&_='+(new Date().getTime())+
+      (csrf?'&_csrfToken='+encodeURIComponent(csrf):'');
+
+  fetch(api,{credentials:'include',cache:'no-store'})
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
-    .then(function(html){
-      var doc=new DOMParser().parseFromString(html,'text/html');
-      var target=pick(doc);
-      if(target&&target.edge){console.log('[NovelStudio] WebNovel chapter edge');return;}
-      if(target&&go(target.p)){return;}
+    .then(function(txt){
+      var j=parseResponse(txt);
+      var list=flatten(j&&j.data?j.data:j);
+      if(useList(list))return;
 
-      // If the catalog markup changes, use every chapter-looking anchor in
-      // the current page/drawer as a fallback.
-      var local=pick(document);
-      if(local&&local.edge){console.log('[NovelStudio] WebNovel chapter edge');return;}
-      if(local&&go(local.p)){return;}
-
-      // Final fallback: open the catalog itself so the user is not trapped
-      // on the old chapter.
-      location.href=catalogUrl;
+      // Fallback: parse the actual catalog markup used by WebNovelReader:
+      // .j_catalog_list .volume-item li a, with the chapter URL in href and
+      // the canonical title in the anchor's title attribute.
+      var catalogUrl=location.origin+bookPath+'/catalog';
+      return fetch(catalogUrl,{credentials:'include',cache:'no-store'})
+        .then(function(r){if(!r.ok)throw new Error('catalog HTTP '+r.status);return r.text();})
+        .then(function(html){
+          var doc=new DOMParser().parseFromString(html,'text/html');
+          var as=[].slice.call(doc.querySelectorAll('.j_catalog_list .volume-item li a[href], a[href]'));
+          var links=[];
+          for(var i=0;i<as.length;i++){
+            var a=as[i],h=a.getAttribute('href')||'',p=clean(h);
+            if(!h||p===clean(catalogUrl))continue;
+            var sameBook=p.indexOf(bookPath+'/')===0;
+            if(!sameBook)continue;
+            var t=stripIndex(a.getAttribute('title')||a.textContent||'');
+            links.push({p:p,t:t});
+          }
+          if(!links.length)throw new Error('no chapter links');
+          var idx=-1;
+          if(currentCid){
+            for(var x=0;x<links.length;x++){
+              if(links[x].p.split('/').pop()===currentCid){idx=x;break;}
+            }
+          }
+          if(idx<0){
+            for(var y=0;y<links.length;y++){
+              if(links[y].t===curTitle){idx=y;break;}
+            }
+          }
+          if(idx<0){
+            var best=-1,score=0,words=curTitle.split(/\\s+/).filter(function(w){return w.length>=2;});
+            for(var z=0;z<links.length;z++){
+              var sc=0;
+              for(var q=0;q<words.length;q++)if(links[z].t.indexOf(words[q])>=0)sc+=words[q].length>=5?2:1;
+              if(sc>score){score=sc;best=z;}
+            }
+            if(score>=3)idx=best;
+          }
+          if(idx<0)return 'failed:no-current-chapter';
+          var ni=dir==='next'?idx+1:idx-1;
+          if(ni<0||ni>=links.length)return 'failed:edge';
+          try{location.href=new URL(links[ni].p,location.href).href;return 'catalog-go';}
+          catch(e){return 'failed:bad-target';}
+        });
     })
     .catch(function(e){
-      console.log('[NovelStudio] WebNovel catalog navigation failed',e);
-      // Last-resort reader controls.
-      var sels=dir==='next'
-        ? ['#next','[data-testid="next"]','[aria-label*="Next" i]','[title*="Next" i]']
-        : ['#prev','[data-testid="prev"]','[aria-label*="Prev" i]','[aria-label*="Previous" i]','[title*="Prev" i]','[title*="Previous" i]'];
-      for(var i=0;i<sels.length;i++){var b=document.querySelector(sels[i]);if(b){try{b.click();return;}catch(x){}}}
+      console.log('[NovelStudio] WebNovel chapter navigation failed',e);
     });
-  return 'webnovel-catalog-started';
+  return 'webnovel-navigation-started';
 })()
 """.trimIndent()
             .replace("__TITLE__", safe)
