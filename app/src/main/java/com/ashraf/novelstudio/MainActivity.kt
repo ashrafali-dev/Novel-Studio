@@ -905,8 +905,13 @@ class MainActivity : Activity() {
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
             if (r.startsWith("ok:")) {
-                val n0 = r.substring(3).toIntOrNull() ?: 0
-                pollJob(tok, ch, n0, System.currentTimeMillis(), 0, 0)
+                val parts = r.substring(3).split(":")
+                val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                // Give the chatbot UI time to create the new assistant turn.
+                handler.postDelayed({
+                    if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
+                }, 1800)
             } else {
                 failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
             }
@@ -924,7 +929,7 @@ class MainActivity : Activity() {
         return (t.length * ratio).toInt().coerceAtLeast(200)
     }
 
-    private fun pollJob(tok: Int, ch: Chapter, n0: Int, started: Long, lastLen: Int, stable: Int) {
+    private fun pollJob(tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long, lastLen: Int, stable: Int) {
         handler.postDelayed({
             if (tok != runToken) return@postDelayed
             chatWv.evaluateJavascript(Js.readLen()) { raw ->
@@ -933,7 +938,9 @@ class MainActivity : Activity() {
                 val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val streaming = parts.getOrNull(1) == "1"
                 val len = parts.getOrNull(2)?.toIntOrNull() ?: 0
-                val got = n > n0
+                // Some chat UIs reuse the same assistant DOM node instead of
+                // creating a new one. Count alone is therefore not enough.
+                val got = n > n0 || (n == n0 && len > baseLen)
                 val effLen = if (got) len else 0
                 progress = if (!got) 3 else minOf(95, effLen * 100 / expectedLen(ch))
                 val st = if (got && effLen == lastLen) stable + 1 else 0
@@ -945,7 +952,7 @@ class MainActivity : Activity() {
                     done || doneSlow -> finishJob(tok, ch)
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "সময় শেষ (৬ মিনিট)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "চ্যাটবট উত্তর শুরু করেনি — মেসেজ যায়নি?")
-                    else -> pollJob(tok, ch, n0, started, effLen, st)
+                    else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
                 }
             }
         }, 1000)
