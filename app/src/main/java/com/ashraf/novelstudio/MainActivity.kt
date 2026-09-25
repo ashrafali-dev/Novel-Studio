@@ -707,12 +707,17 @@ class MainActivity : Activity() {
             }
             val target = if (dir == "next") base.next else base.prev
 
-            // Do not allow the old chapter DOM to survive into navigation.
-            // This is separate from the app-state reset above.
-            wipeStale(clearNovelDom = true)
-            navToken = token
-
-            if (target != null) loadAndWait(target, token, base) else clickAndWait(dir, base, token)
+            if (target != null) {
+                // Direct URL navigation: clear the old DOM before loading target.
+                wipeStale(clearNovelDom = true)
+                navToken = token
+                loadAndWait(target, token, base)
+            } else {
+                // JS-only Next/Prev needs the current DOM to find/click its
+                // button first. clickAndWait() clears the DOM immediately
+                // after the click has been issued.
+                clickAndWait(dir, base, token)
+            }
         }
     }
 
@@ -746,6 +751,11 @@ class MainActivity : Activity() {
                     toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
             } else {
+                // The click has already been issued, so now it is safe to
+                // destroy the old chapter DOM before the new body can be read.
+                wipeStale(clearNovelDom = true)
+                navToken = token
+
                 // A chapter button may change the URL/title first and the body
                 // later. Require BOTH URL and body to change.
                 waitChange(bodyHash(base), 0, token, false, base.url)
