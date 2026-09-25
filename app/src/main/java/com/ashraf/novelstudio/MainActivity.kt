@@ -734,33 +734,48 @@ class MainActivity : Activity() {
 
     // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
-        // Read the current chapter first so we know exactly where Next/Prev goes.
+        // Do not re-extract the current chapter before clicking Next/Prev.
+        // lastChapter already contains the current page, so waiting for a
+        // second full DOM extraction here can make navigation feel 5–7s slow.
         wipeStale()
+        showNavLoading()
         val token = navToken
-        toast("⏳ " + (if (dir == "next") "পরের" else "আগের") + " চ্যাপ্টার আনছি…")
-        extractNow { cur ->
-            if (token != navToken) return@extractNow
-            val base = cur ?: lastChapter
-            if (base == null) {
-                toast("❌ আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো")
-                return@extractNow
-            }
-            val target = if (dir == "next") base.next else base.prev
 
-            // WebNovel's mobile reader can expose a misleading/home URL as
-            // its extracted "next" link. Its real Next button is the source
-            // of truth, so always use the site's own control there.
+        fun navigate(base: Chapter) {
+            if (token != navToken) return
+            val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
+
             if (target != null && !webNovel) {
-                // Normal sites: direct target URL is fastest.
+                // Normal sites: remove the old page immediately, then load target.
                 wipeStale(clearNovelDom = true)
                 navToken = token
                 loadAndWait(target, token, base)
             } else {
-                // SPA/same-URL readers (including WebNovel): let the site's
-                // own Next/Prev handler perform the navigation.
+                // SPA/same-URL readers (including WebNovel): keep the live DOM
+                // only long enough for its own Next/Prev handler to run.
                 clickAndWait(dir, base, token)
             }
+        }
+
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+        val cached = lastChapter
+        if (cached != null && currentUrl.isNotEmpty() &&
+            cleanUrl(cached.url) == currentUrl) {
+            navigate(cached)
+            return
+        }
+
+        // First page / stale state: only then do a fresh extraction.
+        extractNow { cur ->
+            if (token != navToken) return@extractNow
+            val base = cur ?: lastChapter
+            if (base == null) {
+                hideNavLoading()
+                toast("❌ আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো")
+                return@extractNow
+            }
+            navigate(base)
         }
     }
 
