@@ -200,116 +200,98 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // and opens <book-path>/catalog, then walks the adjacent chapter.
     // This avoids guessing the mobile reader's icon/button DOM.
     fun webNovelNext(dir: String, currentTitle: String): String {
-        val safe = currentTitle.replace("\\", "\\\\").replace("'", "\\'")
+        val safe = currentTitle.replace("\\\\", "\\\\\\\\").replace("'", "\\\\'")
         return """
 (function(){
   var dir='__DIR__', title='__TITLE__';
   var norm=function(s){return (s||'').replace(/\s+/g,' ').trim().toLowerCase();};
-  var cleanPath=function(u){
-    try{
-      var x=new URL(u,location.href);
-      return x.pathname.replace(/\/+$/,'');
-    }catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
+  var clean=function(u){
+    try{return new URL(u,location.href).pathname.replace(/\/+$/,'');}
+    catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
   };
-  var curPath=cleanPath(location.href), curTitle=norm(title);
-
-  // WebnovelReader's proven catalog route: book URL + /catalog.
-  var m=location.pathname.match(/^(\/book\/[^/]+)/i);
-  var bookPath=m?m[1]:location.pathname
-    .replace(/\/chapter\/[^/]+.*$/i,'')
-    .replace(/\/read\/[^/]+.*$/i,'')
-    .replace(/\/+$/,'');
-  if(!bookPath) return 'catalog-error:no-book-path';
-
+  var path=location.pathname, curPath=clean(location.href), curTitle=norm(title);
+  var bm=path.match(/^(\/book\/[^/]+)/i);
+  var bookPath=bm?bm[1]:path.replace(/\/chapter\/[^/]+.*$/i,'').replace(/\/read\/[^/]+.*$/i,'').replace(/\/+$/,'');
+  if(!bookPath)return 'catalog-error:no-book-path';
   var catalogUrl=location.origin+bookPath+'/catalog';
 
-  function choose(doc){
-    var links=[].slice.call(doc.querySelectorAll('.j_catalog_list .volume-item li a'));
-    if(!links.length){
-      links=[].slice.call(doc.querySelectorAll('.j_catalog_list a[href]'));
+  function pick(doc){
+    var all=[].slice.call(doc.querySelectorAll('a[href]')), links=[];
+    for(var i=0;i<all.length;i++){
+      var a=all[i],h=a.href||a.getAttribute('href')||'',p=clean(h),t=norm(a.getAttribute('title')||a.innerText||a.textContent);
+      if(!h||!t||t.length>220)continue;
+      if(p===clean(catalogUrl)||/\/catalog\/?$/i.test(p))continue;
+      if(p.indexOf(bookPath+'/')!==0)continue;
+      if(!/(chapter|prolog|part|episode|arc)/i.test(t))continue;
+      links.push({a:a,p:p,t:t});
     }
-    if(!links.length) return null;
+    if(!links.length)return null;
 
     var idx=-1;
-    for(var i=0;i<links.length;i++){
-      var a=links[i], href=cleanPath(a.href||a.getAttribute('href')||'');
-      if(href && href===curPath){idx=i;break;}
+    for(var x=0;x<links.length;x++){
+      if(links[x].p===curPath){idx=x;break;}
     }
-
-    if(idx<0 && curTitle){
-      var best=-1,score=0;
-      for(var j=0;j<links.length;j++){
-        var a2=links[j], at=norm(a2.getAttribute('title')||a2.innerText||a2.textContent);
-        if(!at) continue;
-        var s=0;
-        if(at===curTitle)s=100;
-        else if(at.indexOf(curTitle)>=0||curTitle.indexOf(at)>=0)s=70;
-        else{
-          var words=curTitle.split(/\s+/).filter(function(x){return x.length>2;});
-          for(var q=0;q<words.length;q++)if(at.indexOf(words[q])>=0)s+=2;
-        }
-        if(s>score){score=s;best=j;}
+    if(idx<0&&curTitle){
+      for(var y=0;y<links.length;y++){
+        if(links[y].t===curTitle){idx=y;break;}
       }
-      if(score>0)idx=best;
     }
-
-    if(idx<0) return null;
-    var ni=dir==='next'?idx+1:idx-1;
-    if(ni<0||ni>=links.length) return 'edge';
-    var target=links[ni];
-    var href=target.href||target.getAttribute('href');
-    if(!href) return null;
-    return href;
-  }
-
-  function go(href){
-    try{
-      var u=new URL(href,location.href);
-      location.href=u.href;
-      return 'navigating';
-    }catch(e){return 'catalog-error:bad-target';}
-  }
-
-  // Fetch the server-rendered catalog rather than clicking the unreliable
-  // mobile reader Next arrow or trying to identify an icon by coordinates.
-  try{
-    fetch(catalogUrl,{credentials:'include',cache:'no-store'})
-      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
-      .then(function(html){
-        var doc=new DOMParser().parseFromString(html,'text/html');
-        var target=choose(doc);
-        if(target==='edge'){console.log('[NovelStudio] WebNovel chapter edge');return;}
-        if(target) {go(target);return;}
-
-        // Fallback: if the catalog response changed shape, use the currently
-        // rendered chapter list/drawer with the same title/URL matching idea.
-        var local=document.querySelectorAll('.j_catalog_list .volume-item li a,.j_catalog_list a[href]');
-        if(local&&local.length){
-          var arr=[].slice.call(local), li=-1;
-          for(var k=0;k<arr.length;k++)if(cleanPath(arr[k].href||'')===curPath){li=k;break;}
-          if(li<0&&curTitle)for(var z=0;z<arr.length;z++){
-            var tt=norm(arr[z].getAttribute('title')||arr[z].innerText||arr[z].textContent);
-            if(tt===curTitle||tt.indexOf(curTitle)>=0||curTitle.indexOf(tt)>=0){li=z;break;}
+    if(idx<0&&curTitle){
+      // Match the chapter number + distinctive title when the page title
+      // contains extra site text.
+      var cm=curTitle.match(/(?:chapter|prolog)\s*([0-9]+(?:\.[0-9]+)?)/i);
+      if(cm){
+        for(var z=0;z<links.length;z++){
+          var lm=links[z].t.match(/(?:chapter|prolog)\s*([0-9]+(?:\.[0-9]+)?)/i);
+          if(lm&&lm[1]===cm[1]){
+            var words=curTitle.split(/\s+/).filter(function(w){return w.length>3;});
+            var hits=0;
+            for(var q=0;q<words.length;q++)if(links[z].t.indexOf(words[q])>=0)hits++;
+            if(hits>=2){idx=z;break;}
           }
-          var ln=dir==='next'?li+1:li-1;
-          if(li>=0&&arr[ln]){go(arr[ln].href);return;}
         }
-        console.log('[NovelStudio] WebNovel chapter target not found');
-      })
-      .catch(function(e){
-        console.log('[NovelStudio] catalog fetch failed',e);
-        // Last fallback: use the visible reader's own Next/Prev control.
-        var sels=dir==='next'
-          ? ['#next','[data-testid="next"]','[aria-label*="Next" i]','[title*="Next" i]']
-          : ['#prev','[data-testid="prev"]','[aria-label*="Prev" i]','[aria-label*="Previous" i]','[title*="Prev" i]','[title*="Previous" i]'];
-        for(var s=0;s<sels.length;s++){
-          var b=document.querySelector(sels[s]);
-          if(b){try{b.click();return;}catch(x){}}
-        }
-      });
-  }catch(e){return 'catalog-error:'+e;}
+      }
+    }
+    if(idx<0)return null;
+    var ni=dir==='next'?idx+1:idx-1;
+    if(ni<0||ni>=links.length)return {edge:true};
+    return links[ni];
+  }
 
-  return 'catalog-started';
+  function go(h){
+    try{location.href=new URL(h,location.href).href;return true;}catch(e){return false;}
+  }
+
+  // WebNovelReader and other open-source WebNovel clients use the catalog
+  // as the stable source of ordered chapters instead of the mobile reader's
+  // unreliable Next button.
+  fetch(catalogUrl,{credentials:'include',cache:'no-store',redirect:'follow'})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
+    .then(function(html){
+      var doc=new DOMParser().parseFromString(html,'text/html');
+      var target=pick(doc);
+      if(target&&target.edge){console.log('[NovelStudio] WebNovel chapter edge');return;}
+      if(target&&go(target.p)){return;}
+
+      // If the catalog markup changes, use every chapter-looking anchor in
+      // the current page/drawer as a fallback.
+      var local=pick(document);
+      if(local&&local.edge){console.log('[NovelStudio] WebNovel chapter edge');return;}
+      if(local&&go(local.p)){return;}
+
+      // Final fallback: open the catalog itself so the user is not trapped
+      // on the old chapter.
+      location.href=catalogUrl;
+    })
+    .catch(function(e){
+      console.log('[NovelStudio] WebNovel catalog navigation failed',e);
+      // Last-resort reader controls.
+      var sels=dir==='next'
+        ? ['#next','[data-testid="next"]','[aria-label*="Next" i]','[title*="Next" i]']
+        : ['#prev','[data-testid="prev"]','[aria-label*="Prev" i]','[aria-label*="Previous" i]','[title*="Prev" i]','[title*="Previous" i]'];
+      for(var i=0;i<sels.length;i++){var b=document.querySelector(sels[i]);if(b){try{b.click();return;}catch(x){}}}
+    });
+  return 'webnovel-catalog-started';
 })()
 """.trimIndent()
             .replace("__TITLE__", safe)
