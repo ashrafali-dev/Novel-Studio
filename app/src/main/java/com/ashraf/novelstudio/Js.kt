@@ -38,19 +38,25 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
     box.dispatchEvent(new Event('input',{bubbles:true}));
   } else {
-    document.execCommand('selectAll',false,null);
+    var sel=window.getSelection(); var range=document.createRange();
+    range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
     document.execCommand('insertText',false,text);
-    if(!(box.innerText||'').trim()){
-      var dt=new DataTransfer(); dt.setData('text/plain',text);
-      box.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));
-    }
+    if(!(box.innerText||'').trim()) box.textContent=text;
+    box.dispatchEvent(new Event('input',{bubbles:true}));
+    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
   }
   if(doSend){
     setTimeout(function(){
-      var btn=p.send?document.querySelector(p.send):null;
+      var btn=null;
+      try{btn=p.send?document.querySelector(p.send):null;}catch(e){}
+      if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
       if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true') btn.click();
-      else box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
-    }, Math.min(4000,700+text.length/30));
+      else {
+        box.focus();
+        box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+      }
+    }, Math.min(2500,700+text.length/40));
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
