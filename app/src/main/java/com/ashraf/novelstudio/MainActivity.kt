@@ -604,6 +604,15 @@ class MainActivity : Activity() {
 
     private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
 
+    // Hash only the chapter body, not the heading. Some SPA readers update
+    // the chapter title before replacing the actual chapter text.
+    private fun bodyHash(ch: Chapter): Int {
+        val all = ch.text.trim()
+        val title = ch.title.trim()
+        val body = if (title.isNotEmpty() && all.startsWith(title)) all.removePrefix(title).trim() else all
+        return body.hashCode()
+    }
+
     private fun onChapter(ch: Chapter) {
         lastChapter = ch
         Store.touchBookmark(this, ch)
@@ -666,7 +675,8 @@ class MainActivity : Activity() {
 
     private fun loadAndWait(url: String, token: Int, base: Chapter) {
         pendUrl = novelWv.url ?: base.url
-        pendHash = base.text.hashCode()
+        // Ignore a title-only update: the old body can remain mounted briefly.
+        pendHash = bodyHash(base)
         autoCopy = true
         polling = false
         novelWv.loadUrl(url)
@@ -692,42 +702,54 @@ class MainActivity : Activity() {
                     toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
             } else {
-                waitChange(base.text.hashCode(), 0, token)
+                waitChange(bodyHash(base), 0, token)
             }
         }
     }
 
-    private fun waitChange(oldHash: Int, n: Int, token: Int) {
+    private fun waitChange(oldHash: Int, n: Int, token: Int, reloaded: Boolean = false) {
         handler.postDelayed({
             if (token != navToken) return@postDelayed
             extractNow { ch ->
                 if (token != navToken) return@extractNow
-                if (ch != null && ch.text.length > 300 && ch.text.hashCode() != oldHash && novelWv.progress >= 100) {
+                // Compare only the body. A new heading alone must never count as a new chapter.
+                if (ch != null && ch.text.length > 300 && bodyHash(ch) != oldHash && novelWv.progress >= 100) {
                     commit(ch, token)
                 } else if (n < 10) {
-                    waitChange(oldHash, n + 1, token)
+                    waitChange(oldHash, n + 1, token, reloaded)
+                } else if (!reloaded) {
+                    toast("🔄 পুরোনো চ্যাপ্টার আটকে গেছে — পেজ রিলোড করছি…")
+                    novelWv.reload()
+                    waitChange(oldHash, 0, token, true)
                 } else {
-                    toast("❌ বাটন চেপেছি কিন্তু নতুন চ্যাপ্টার আসেনি — চ্যাপ্টার লক/লগইন লাগতে পারে")
+                    toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
             }
         }, 1500)
     }
 
     // after a page load: only accept a chapter that is really NEW (different URL and different text)
-    private fun pollExtract(n: Int, token: Int) {
+    private fun pollExtract(n: Int, token: Int, reloaded: Boolean = false) {
         if (token != navToken) return
         extractNow { ch ->
             if (token != navToken) return@extractNow
-            if (ch != null && ch.text.length > 300 && ch.text.hashCode() != pendHash && ch.url != pendUrl) {
+            // Require both a new URL and a genuinely new BODY. This blocks the
+            // Chapter 39 heading + Chapter 38 body race seen on SPA readers.
+            if (ch != null && ch.text.length > 300 && bodyHash(ch) != pendHash && ch.url != pendUrl) {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
             } else if (n < 8) {
-                handler.postDelayed({ pollExtract(n + 1, token) }, 1200)
+                handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, 1200)
+            } else if (!reloaded) {
+                toast("🔄 পুরোনো চ্যাপ্টারের লেখা রয়ে গেছে — পেজ রিলোড করছি…")
+                polling = false
+                novelWv.reload()
+                handler.postDelayed({ pollExtract(0, token, true) }, 1800)
             } else {
                 autoCopy = false
                 polling = false
-                toast("❌ চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো")
+                toast("❌ নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো")
             }
         }
     }
