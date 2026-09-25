@@ -580,8 +580,12 @@ class MainActivity : Activity() {
                     if (target.startsWith("http")) {
                         pendHash = oldHash
                         pendUrl = cleanUrl(target)
+                        // Let the target chapter's onPageFinished() start
+                        // the normal extraction poll. If polling is already
+                        // true here, onPageFinished() intentionally does
+                        // nothing, which used to break Next auto-extraction.
                         autoCopy = true
-                        polling = true
+                        polling = false
                         view.loadUrl(target)
                     } else {
                         hideNavLoading()
