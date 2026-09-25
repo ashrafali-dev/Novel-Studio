@@ -637,9 +637,12 @@ class MainActivity : Activity() {
     private fun cleanUrl(u: String): String = u.substringBefore('#').trimEnd('/')
 
     private fun isNewPage(ch: Chapter, oldUrl: String, oldHash: Int): Boolean {
-        // Some readers (notably WebNovel) keep the exact same URL for every
-        // chapter. The chapter body is therefore the real change signal.
-        return ch.text.length > 300 && bodyHash(ch) != oldHash
+        // WebNovel can reuse the reader URL while replacing the chapter.
+        // Accept either a changed body OR a changed chapter title.
+        val oldTitle = lastChapter?.title?.trim()?.lowercase().orEmpty()
+        val newTitle = ch.title.trim().lowercase()
+        val titleChanged = oldTitle.isNotEmpty() && newTitle.isNotEmpty() && oldTitle != newTitle
+        return ch.text.length > 300 && (bodyHash(ch) != oldHash || titleChanged)
     }
 
     private fun onChapter(ch: Chapter) {
