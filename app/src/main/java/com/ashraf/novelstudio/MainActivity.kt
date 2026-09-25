@@ -561,7 +561,7 @@ class MainActivity : Activity() {
             if (autoCopy && !polling) {
                 polling = true
                 val tk = navToken
-                handler.postDelayed({ pollExtract(0, tk) }, 800)
+                handler.postDelayed({ pollExtract(0, tk) }, 150)
             }
         }
     }
@@ -637,12 +637,9 @@ class MainActivity : Activity() {
     private fun cleanUrl(u: String): String = u.substringBefore('#').trimEnd('/')
 
     private fun isNewPage(ch: Chapter, oldUrl: String, oldHash: Int): Boolean {
-        // WebView's numeric loading progress can stop at 99 on some sites.
-        // Chapter readiness is therefore decided from the actual DOM/body,
-        // not from the browser's cosmetic loading percentage.
-        return ch.text.length > 300 &&
-            cleanUrl(ch.url) != cleanUrl(oldUrl) &&
-            bodyHash(ch) != oldHash
+        // Some readers (notably WebNovel) keep the exact same URL for every
+        // chapter. The chapter body is therefore the real change signal.
+        return ch.text.length > 300 && bodyHash(ch) != oldHash
     }
 
     private fun onChapter(ch: Chapter) {
@@ -664,7 +661,36 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== ● ▶ ◀
-    // Throw away app state and, for chapter navigation, the old page DOM.
+    // Same-URL/SPA readers must keep their document alive after a JS click.
+    // We hide the old page immediately instead of destroying its DOM, because
+    // destroying documentElement can cancel the site's own chapter transition.
+    private fun showNavLoading() {
+        novelWv.evaluateJavascript(
+            """
+            (function(){
+                try {
+                    var old=document.getElementById('__ns_nav_loading');
+                    if(old) old.remove();
+                    var x=document.createElement('div');
+                    x.id='__ns_nav_loading';
+                    x.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#aaa;display:flex;align-items:center;justify-content:center;font:16px sans-serif;';
+                    x.textContent='Loading chapter…';
+                    (document.body||document.documentElement).appendChild(x);
+                } catch(e) {}
+                return 'loading';
+            })();
+            """.trimIndent(), null
+        )
+    }
+
+    private fun hideNavLoading() {
+        novelWv.evaluateJavascript(
+            "(function(){var x=document.getElementById('__ns_nav_loading');if(x)x.remove();return 'ok';})()",
+            null
+        )
+    }
+
+    // Throw away app state and, for direct URL navigation, the old page DOM.
     private fun wipeStale(clearNovelDom: Boolean = false) {
         navToken++
         autoCopy = false
@@ -747,9 +773,10 @@ class MainActivity : Activity() {
             if (token == navToken && autoCopy) {
                 autoCopy = false
                 polling = false
+                hideNavLoading()
                 toast("❌ পেজ লোড হয়নি — ⟳ চেপে আবার চেষ্টা করো")
             }
-        }, 60000)
+        }, 20000)
     }
 
     // No usable link in the page (JS "Next" button, e.g. webnovel.com): click the site's own button
@@ -765,61 +792,49 @@ class MainActivity : Activity() {
                     toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
                 }
             } else {
-                // The click has already been issued, so now it is safe to
-                // destroy the old chapter DOM before the new body can be read.
-                wipeStale(clearNovelDom = true)
+                // Keep the site's DOM alive. This is essential for same-URL
+                // SPA readers such as WebNovel.
+                showNavLoading()
                 navToken = token
-
-                // A chapter button may change the URL/title first and the body
-                // later. Require BOTH URL and body to change.
-                waitChange(bodyHash(base), 0, token, false, base.url)
+                waitChange(bodyHash(base), 0, token, base.url)
             }
         }
     }
 
-    private fun waitChange(oldHash: Int, n: Int, token: Int, reloaded: Boolean = false, oldUrl: String = "") {
+    private fun waitChange(oldHash: Int, n: Int, token: Int, oldUrl: String = "") {
         handler.postDelayed({
             if (token != navToken) return@postDelayed
             extractNow { ch ->
                 if (token != navToken) return@extractNow
                 if (ch != null && isNewPage(ch, oldUrl, oldHash)) {
                     commit(ch, token)
-                } else if (n < 10) {
-                    waitChange(oldHash, n + 1, token, reloaded, oldUrl)
-                } else if (!reloaded) {
-                    toast("🔄 পুরোনো চ্যাপ্টার আটকে গেছে — পেজ রিলোড করছি…")
-                    novelWv.reload()
-                    waitChange(oldHash, 0, token, true, oldUrl)
+                } else if (n < 40) {
+                    waitChange(oldHash, n + 1, token, oldUrl)
                 } else {
-                    toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
+                    hideNavLoading()
+                    toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — ● চেপে আবার চেষ্টা করো")
                 }
             }
-        }, 1500)
+        }, if (n < 8) 180L else 300L)
     }
 
-    // after a page load: only accept a chapter that is really NEW (different URL and different text)
+    // After a direct page load, accept a new body even when the URL is reused.
     private fun pollExtract(n: Int, token: Int, reloaded: Boolean = false) {
         if (token != navToken) return
         extractNow { ch ->
             if (token != navToken) return@extractNow
-            // Require the requested TARGET URL and a genuinely new BODY.
-            // A new Chapter 39 heading over the old Chapter 38 body must never pass.
             if (ch != null && ch.text.length > 300 &&
-                cleanUrl(ch.url) == pendUrl &&
-                bodyHash(ch) != pendHash) {
+                bodyHash(ch) != pendHash &&
+                (pendUrl.isEmpty() || cleanUrl(ch.url) == pendUrl || cleanUrl(ch.url) == cleanUrl(novelWv.url ?: ""))) {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
-            } else if (n < 12) {
-                handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, 1200)
-            } else if (!reloaded) {
-                toast("🔄 পুরোনো চ্যাপ্টারের লেখা রয়ে গেছে — পেজ রিলোড করছি…")
-                polling = false
-                novelWv.reload()
-                handler.postDelayed({ pollExtract(0, token, true) }, 2200)
+            } else if (n < 40) {
+                handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, if (n < 8) 180L else 300L)
             } else {
                 autoCopy = false
                 polling = false
+                hideNavLoading()
                 toast("❌ নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো")
             }
         }
@@ -827,6 +842,7 @@ class MainActivity : Activity() {
 
     // let the page finish rendering, read it once more, then use the fuller version
     private fun commit(ch: Chapter, token: Int) {
+        hideNavLoading()
         handler.postDelayed({
             if (token != navToken) return@postDelayed
             extractNow { c2 ->
