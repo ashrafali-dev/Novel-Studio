@@ -209,7 +209,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     try{
       var x=new URL(u,location.href);
       return x.pathname.replace(/\/+$/,'');
-    }catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\\/+$/,'');}
+    }catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
   };
   var curPath=cleanPath(location.href), curTitle=norm(title);
 
