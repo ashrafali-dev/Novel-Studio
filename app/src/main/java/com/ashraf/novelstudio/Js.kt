@@ -199,6 +199,97 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     //   .j_catalog_list .volume-item li a
     // and opens <book-path>/catalog, then walks the adjacent chapter.
     // This avoids guessing the mobile reader's icon/button DOM.
+
+    // Called after the WebView has loaded /book/<slug>/catalog.
+    // Returns the adjacent chapter URL without navigating the catalog page.
+    fun webNovelPickCatalog(dir: String, currentTitle: String): String {
+        val safe = currentTitle
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+        return """
+(function(){
+  var dir='__DIR__', title='__TITLE__';
+  var norm=function(s){return (s||'').replace(/\s+/g,' ').trim().toLowerCase();};
+  var stripIndex=function(s){return norm(s).replace(/^\s*\d+\s*[-.:)]?\s*/,'');};
+  var clean=function(u){
+    try{return new URL(u,location.href).pathname.replace(/\/+$/,'');}
+    catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
+  };
+
+  var path=location.pathname.replace(/\/+$/,'');
+  var bm=path.match(/^\/book\/[^/]+/i);
+  var bookPath=bm?bm[0]:'';
+  if(!bookPath)return 'none';
+
+  var curTitle=stripIndex(title);
+  var as=[].slice.call(document.querySelectorAll('.j_catalog_list .volume-item li a[href], .j_catalog_list a[href], a[href]'));
+  var links=[];
+
+  for(var i=0;i<as.length;i++){
+    var a=as[i], h=a.getAttribute('href')||'';
+    if(!h)continue;
+    var p=clean(h);
+    if(p===clean(location.href)||/\/catalog\/?$/i.test(p))continue;
+    if(p.indexOf(bookPath+'/')!==0)continue;
+
+    var t=stripIndex(
+      a.getAttribute('title') ||
+      a.getAttribute('aria-label') ||
+      a.textContent ||
+      ''
+    );
+    if(!t)continue;
+    links.push({p:p,t:t});
+  }
+
+  if(!links.length)return 'none';
+
+  var idx=-1;
+  for(var x=0;x<links.length;x++){
+    if(links[x].t===curTitle){idx=x;break;}
+  }
+
+  if(idx<0){
+    var normalizeTitle=function(s){
+      return norm(s)
+        .replace(/[“”"']/g,'')
+        .replace(/\s*[-–—:]\s*/g,' ')
+        .replace(/\s+/g,' ')
+        .trim();
+    };
+    var nt=normalizeTitle(curTitle);
+    for(var y=0;y<links.length;y++){
+      if(normalizeTitle(links[y].t)===nt){idx=y;break;}
+    }
+  }
+
+  if(idx<0){
+    var words=curTitle.split(/\s+/).filter(function(w){return w.length>=3;});
+    var part=(curTitle.match(/\(part\s+([0-9]+)\)/i)||[])[1]||'';
+    var best=-1,bestScore=0;
+    for(var z=0;z<links.length;z++){
+      var sc=0,t=links[z].t;
+      for(var q=0;q<words.length;q++){
+        if(t.indexOf(words[q])>=0)sc+=words[q].length>=5?3:1;
+      }
+      if(part&&new RegExp('\\(part\\s+'+part+'\\)','i').test(t))sc+=8;
+      if(sc>bestScore){bestScore=sc;best=z;}
+    }
+    if(bestScore>=6)idx=best;
+  }
+
+  if(idx<0)return 'none';
+  var ni=dir==='next'?idx+1:idx-1;
+  if(ni<0||ni>=links.length)return 'edge';
+
+  try{return new URL(links[ni].p,location.href).href;}
+  catch(e){return 'none';}
+})()
+""".trimIndent()
+            .replace("__TITLE__", safe)
+            .replace("__DIR__", dir)
+    }
+
     fun webNovelNext(dir: String, currentTitle: String): String {
         // WebNovel mobile can expose either /book/<numeric-id> or a slug.
         // Do not require a numeric bookId: the catalog URL works for both.
