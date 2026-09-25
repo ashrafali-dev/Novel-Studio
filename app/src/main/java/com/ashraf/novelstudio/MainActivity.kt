@@ -799,22 +799,31 @@ class MainActivity : Activity() {
 
     // No usable link in the page (JS "Next" button, e.g. webnovel.com): click the site's own button
     private fun clickAndWait(dir: String, base: Chapter, token: Int) {
-        novelWv.evaluateJavascript(Js.clickNext(dir)) { res ->
+        val script = if (base.url.contains("webnovel.com/", ignoreCase = true)) {
+            // WebNovel mobile: use its chapter-list drawer, not the unreliable
+            // reader Next arrow. The drawer contains the chapters in order.
+            Js.webNovelNext(dir, base.title)
+        } else {
+            Js.clickNext(dir)
+        }
+        novelWv.evaluateJavascript(script) { res ->
             if (token != navToken) return@evaluateJavascript
-            if (res != null && res.contains("none")) {
+            if (res != null && (res.contains("none") || res.contains("failed"))) {
                 val g = Extractor.bump(base.url, if (dir == "next") 1 else -1)
-                if (g != null) {
+                if (g != null && !base.url.contains("webnovel.com/", ignoreCase = true)) {
                     toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
                     loadAndWait(g, token, base)
                 } else {
-                    toast("❌ নেক্সট/প্রিভ বাটন পাওয়া যায়নি — নিজে পরের চ্যাপ্টারে গিয়ে ● চাপো")
+                    hideNavLoading()
+                    toast("❌ WebNovel chapter list পাওয়া যায়নি")
                 }
             } else {
-                // Keep the site's DOM alive. This is essential for same-URL
-                // SPA readers such as WebNovel.
-                showNavLoading()
-                navToken = token
-                waitChange(bodyHash(base), 0, token, base.url)
+                // Wait for the newly selected chapter, then extract automatically.
+                pendHash = bodyHash(base)
+                pendUrl = ""
+                autoCopy = true
+                polling = true
+                waitChange(pendHash, 0, token, base.url)
             }
         }
     }
@@ -861,14 +870,13 @@ class MainActivity : Activity() {
     // let the page finish rendering, read it once more, then use the fuller version
     private fun commit(ch: Chapter, token: Int) {
         hideNavLoading()
-        handler.postDelayed({
-            if (token != navToken) return@postDelayed
-            extractNow { c2 ->
-                if (token != navToken) return@extractNow
-                val fin = if (c2 != null && c2.url == ch.url && c2.text.length >= ch.text.length) c2 else ch
-                handleChapter(fin)
-            }
-        }, 900)
+        // The new chapter is already detected from its changed body hash.
+        // Do not add another 900ms delay before extraction.
+        extractNow { c2 ->
+            if (token != navToken) return@extractNow
+            val fin = if (c2 != null && cleanUrl(c2.url) == cleanUrl(ch.url) && c2.text.length >= ch.text.length) c2 else ch
+            handleChapter(fin)
+        }
     }
 
     private fun handleChapter(ch: Chapter) {
