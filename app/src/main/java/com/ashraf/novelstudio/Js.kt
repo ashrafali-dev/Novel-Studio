@@ -200,185 +200,108 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // and opens <book-path>/catalog, then walks the adjacent chapter.
     // This avoids guessing the mobile reader's icon/button DOM.
     fun webNovelNext(dir: String, currentTitle: String): String {
-        // WebNovel's mobile reader often reuses /book/<id>/c and the
-        // reader's Next button is not reliable. Use the site's chapter-list
-        // endpoint first, then fall back to the real catalog DOM.
+        // WebNovel mobile can expose either /book/<numeric-id> or a slug.
+        // Do not require a numeric bookId: the catalog URL works for both.
         val safe = currentTitle
             .replace("\\", "\\\\")
             .replace("'", "\\'")
         return """
 (function(){
   var dir='__DIR__', title='__TITLE__';
-  var norm=function(s){
-    return (s||'').replace(/\s+/g,' ').trim().toLowerCase();
-  };
-  var stripIndex=function(s){
-    return norm(s).replace(/^\s*\d+\s*[-.:)]?\s*/,'');
-  };
+  var norm=function(s){return (s||'').replace(/\s+/g,' ').trim().toLowerCase();};
+  var stripIndex=function(s){return norm(s).replace(/^\s*\d+\s*[-.:)]?\s*/,'');};
   var clean=function(u){
     try{return new URL(u,location.href).pathname.replace(/\/+$/,'');}
     catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
   };
-  var path=location.pathname;
-  var bm=path.match(/^(\/book\/\d+)/i);
-  var bookPath=bm?bm[1]:'';
-  var bookId=bm?bm[1].split('/').pop():'';
-  if(!bookId)return 'failed:no-book-id';
+
+  var path=location.pathname.replace(/\/+$/,'');
+  var bm=path.match(/^\/book\/[^/]+/i);
+  var bookPath=bm?bm[0]:'';
+  if(!bookPath)return 'failed:no-book-path';
 
   var curTitle=stripIndex(title);
-  var currentCid='';
-  try{
-    var nodes=[].slice.call(document.querySelectorAll('[class*="j_chapter_"]'));
-    for(var i=0;i<nodes.length;i++){
-      var m=String(nodes[i].className||'').match(/(?:^|\s)j_chapter_(\d+)(?:\s|$)/);
-      if(m){currentCid=m[1];break;}
+  var currentUrl=clean(location.href);
+
+  function scoreTitle(a,b){
+    if(a===b)return 100000;
+    var aw=a.split(/\s+/).filter(function(w){return w.length>=2;});
+    var score=0;
+    for(var i=0;i<aw.length;i++){
+      if(b.indexOf(aw[i])>=0)score+=aw[i].length>=5?3:1;
     }
-  }catch(e){}
+    return score;
+  }
 
-  function chapterTitle(x){
-    return stripIndex(x.chapterName||x.title||x.name||x.chapterTitle||'');
-  }
-  function chapterId(x){
-    return String(x.id||x.chapterId||x.cid||x.chapterID||'');
-  }
-  function flatten(data){
-    var out=[];
-    var vols=data&&data.volumeItems;
-    if(!Array.isArray(vols))return out;
-    for(var i=0;i<vols.length;i++){
-      var items=vols[i]&&vols[i].chapterItems;
-      if(!Array.isArray(items))continue;
-      for(var j=0;j<items.length;j++){
-        var x=items[j];
-        if(x&&x.chapterLevel!==undefined&&String(x.chapterLevel)!=='0')continue;
-        var id=chapterId(x);
-        if(id)out.push({id:id,title:chapterTitle(x),index:x.index!==undefined?Number(x.index):(x.chapterIndex!==undefined?Number(x.chapterIndex):out.length)});
-      }
+  function navigateFromCatalog(html){
+    var doc=new DOMParser().parseFromString(html,'text/html');
+    var as=[].slice.call(doc.querySelectorAll('.j_catalog_list .volume-item li a[href], a[href]'));
+    var links=[];
+    for(var i=0;i<as.length;i++){
+      var a=as[i], h=a.getAttribute('href')||'';
+      if(!h)continue;
+      var p=clean(h);
+      if(p===clean(bookPath+'/catalog')||p===clean(location.href))continue;
+      if(p.indexOf(bookPath+'/')!==0)continue;
+      var t=stripIndex(a.getAttribute('title')||a.textContent||'');
+      if(!t)continue;
+      links.push({p:p,t:t});
     }
-    return out;
-  }
+    if(!links.length)return 'failed:no-chapter-links';
 
-  function pickByTitle(list){
-    if(!curTitle)return -1;
-    var exact=-1;
-    for(var i=0;i<list.length;i++){
-      if(list[i].title===curTitle){exact=i;break;}
-    }
-    if(exact>=0)return exact;
-
-    // Match the most distinctive words, including "(part N)".
-    var words=curTitle.split(/\s+/).filter(function(w){return w.length>=2;});
-    var best=-1,score=0;
-    for(var j=0;j<list.length;j++){
-      var t=list[j].title, sc=0;
-      for(var k=0;k<words.length;k++){
-        if(t.indexOf(words[k])>=0)sc += words[k].length>=5 ? 2 : 1;
-      }
-      if(sc>score){score=sc;best=j;}
-    }
-    return score>=3?best:-1;
-  }
-
-  function goId(id){
-    if(!id)return false;
-    try{
-      location.href=location.origin+bookPath+'/'+id;
-      return true;
-    }catch(e){return false;}
-  }
-
-  function parseResponse(txt){
-    var s=(txt||'').trim();
-    try{return JSON.parse(s);}catch(e){}
-    s=s.replace(/^[^(]*\(/,'').replace(/\);?\s*$/,'');
-    try{return JSON.parse(s);}catch(e){}
-    return null;
-  }
-
-  function useList(list){
-    if(!list.length)return false;
+    // First try exact chapter URL, if the reader exposes one.
     var idx=-1;
-    if(currentCid){
-      for(var i=0;i<list.length;i++){
-        if(list[i].id===currentCid){idx=i;break;}
+    for(var x=0;x<links.length;x++){
+      if(links[x].p===currentUrl){idx=x;break;}
+    }
+
+    // Then exact normalized title. This correctly distinguishes:
+    // Chapter 1 ... (part 1), (part 2), (part 3).
+    if(idx<0){
+      for(var y=0;y<links.length;y++){
+        if(links[y].t===curTitle){idx=y;break;}
       }
     }
-    if(idx<0)idx=pickByTitle(list);
-    if(idx<0)return false;
+
+    // Last fallback: highest title similarity.
+    if(idx<0){
+      var best=-1,bestScore=0;
+      for(var z=0;z<links.length;z++){
+        var sc=scoreTitle(curTitle,links[z].t);
+        if(sc>bestScore){bestScore=sc;best=z;}
+      }
+      if(bestScore>=3)idx=best;
+    }
+
+    if(idx<0)return 'failed:no-current-chapter';
     var ni=dir==='next'?idx+1:idx-1;
-    if(ni<0||ni>=list.length)return false;
-    return goId(list[ni].id);
-  }
-
-  function getCsrf(){
+    if(ni<0||ni>=links.length)return 'failed:edge';
     try{
-      var m=document.cookie.match(/(?:^|;\s*)_csrfToken=([^;]+)/);
-      return m?decodeURIComponent(m[1]):'';
-    }catch(e){return '';}
+      location.href=new URL(links[ni].p,location.href).href;
+      return 'catalog-chapter-go';
+    }catch(e){return 'failed:bad-target';}
   }
 
-  var csrf=getCsrf();
-  var api=location.origin+'/go/pcm/chapter/get-chapter-list?bookId='+
-      encodeURIComponent(bookId)+'&pageIndex=0&_='+(new Date().getTime())+
-      (csrf?'&_csrfToken='+encodeURIComponent(csrf):'');
+  var catalogUrl=location.origin+bookPath+'/catalog';
 
-  fetch(api,{credentials:'include',cache:'no-store'})
-    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
-    .then(function(txt){
-      var j=parseResponse(txt);
-      var list=flatten(j&&j.data?j.data:j);
-      if(useList(list))return;
-
-      // Fallback: parse the actual catalog markup used by WebNovelReader:
-      // .j_catalog_list .volume-item li a, with the chapter URL in href and
-      // the canonical title in the anchor's title attribute.
-      var catalogUrl=location.origin+bookPath+'/catalog';
-      return fetch(catalogUrl,{credentials:'include',cache:'no-store'})
-        .then(function(r){if(!r.ok)throw new Error('catalog HTTP '+r.status);return r.text();})
-        .then(function(html){
-          var doc=new DOMParser().parseFromString(html,'text/html');
-          var as=[].slice.call(doc.querySelectorAll('.j_catalog_list .volume-item li a[href], a[href]'));
-          var links=[];
-          for(var i=0;i<as.length;i++){
-            var a=as[i],h=a.getAttribute('href')||'',p=clean(h);
-            if(!h||p===clean(catalogUrl))continue;
-            var sameBook=p.indexOf(bookPath+'/')===0;
-            if(!sameBook)continue;
-            var t=stripIndex(a.getAttribute('title')||a.textContent||'');
-            links.push({p:p,t:t});
-          }
-          if(!links.length)throw new Error('no chapter links');
-          var idx=-1;
-          if(currentCid){
-            for(var x=0;x<links.length;x++){
-              if(links[x].p.split('/').pop()===currentCid){idx=x;break;}
-            }
-          }
-          if(idx<0){
-            for(var y=0;y<links.length;y++){
-              if(links[y].t===curTitle){idx=y;break;}
-            }
-          }
-          if(idx<0){
-            var best=-1,score=0,words=curTitle.split(/\s+/).filter(function(w){return w.length>=2;});
-            for(var z=0;z<links.length;z++){
-              var sc=0;
-              for(var q=0;q<words.length;q++)if(links[z].t.indexOf(words[q])>=0)sc+=words[q].length>=5?2:1;
-              if(sc>score){score=sc;best=z;}
-            }
-            if(score>=3)idx=best;
-          }
-          if(idx<0)return 'failed:no-current-chapter';
-          var ni=dir==='next'?idx+1:idx-1;
-          if(ni<0||ni>=links.length)return 'failed:edge';
-          try{location.href=new URL(links[ni].p,location.href).href;return 'catalog-go';}
-          catch(e){return 'failed:bad-target';}
-        });
+  // The important part: this fetch is only used to read the ordered links.
+  // The catalog page itself is never loaded into the WebView.
+  fetch(catalogUrl,{credentials:'include',cache:'no-store'})
+    .then(function(r){
+      if(!r.ok)throw new Error('catalog HTTP '+r.status);
+      return r.text();
+    })
+    .then(function(html){
+      var result=navigateFromCatalog(html);
+      if(result.indexOf('failed:')===0){
+        console.log('[NovelStudio] WebNovel catalog parse:',result);
+      }
     })
     .catch(function(e){
-      console.log('[NovelStudio] WebNovel chapter navigation failed',e);
+      console.log('[NovelStudio] WebNovel catalog fetch failed',e);
     });
-  return 'webnovel-navigation-started';
+
+  return 'webnovel-catalog-reading';
 })()
 """.trimIndent()
             .replace("__TITLE__", safe)
