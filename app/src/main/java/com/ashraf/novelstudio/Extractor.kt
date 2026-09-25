@@ -90,7 +90,7 @@ object Extractor {
         for (sel in listOf(".chapter-title", ".chr-title", "#chapter-heading", "h1", "h2")) {
             val t = doc.selectFirst(sel)?.text()?.trim() ?: ""
             if (t.isNotEmpty() && t.length < 200) {
-                val actual = try { doc.selectFirst(sel)?.cssSelector() ?: sel } catch (_: Exception) { sel }
+                val actual = try { doc.selectFirst(sel)?.let { stableSelector(it) } ?: sel } catch (_: Exception) { sel }
                 return t to actual
             }
         }
@@ -138,6 +138,20 @@ object Extractor {
         return if (m3 != null && m3.value.length <= 5) m3.value else ""
     }
 
+    // Prefer selectors that survive chapter-to-chapter DOM changes.
+    // Jsoup's cssSelector() can generate positional :nth-child selectors,
+    // which are often useless after a SPA rerender.
+    private fun stableSelector(el: Element): String {
+        val id = el.id().trim()
+        if (id.matches(Regex("[A-Za-z_][A-Za-z0-9_-]*"))) return "#$id"
+        val tag = el.tagName()
+        val cls = el.classNames()
+            .filter { it.matches(Regex("[A-Za-z_][A-Za-z0-9_-]*")) }
+            .take(3)
+        if (cls.isNotEmpty()) return tag + cls.joinToString("") { ".$it" }
+        return tag
+    }
+
     // ------------------------------------------------------------ links
     private fun strip(u: String) = u.substringBefore('#')
 
@@ -181,7 +195,7 @@ object Extractor {
         if (rel != null) {
             val h = rel.absUrl("href")
             if (h.isNotEmpty() && strip(h) != strip(url) && plausible(url, h)) {
-                val actual = try { rel.cssSelector() } catch (_: Exception) { "" }
+                val actual = try { stableSelector(rel) } catch (_: Exception) { "" }
                 return h to actual
             }
         }
@@ -200,7 +214,7 @@ object Extractor {
         }
         if (best != null) {
             val el = doc.select("a[href]").firstOrNull { it.absUrl("href") == best }
-            val actual = try { el?.cssSelector() ?: "" } catch (_: Exception) { "" }
+            val actual = try { el?.let { stableSelector(it) } ?: "" } catch (_: Exception) { "" }
             return best to actual
         }
         return null to ""
@@ -237,7 +251,7 @@ object Extractor {
         val (next, nextSel) = findLink(doc, url, "next", preferredNext)
         val (prev, prevSel) = findLink(doc, url, "prev", preferredPrev)
         val text = if (body.startsWith(title)) body else title + "\n\n" + body
-        val sel = try { el.cssSelector() } catch (e: Exception) { "" }
+        val sel = try { stableSelector(el) } catch (e: Exception) { "" }
         return Chapter(
             title, text, next, prev, url, findNovel(doc, url, title),
             findNumber(title, url), sel, titleSel, nextSel, prevSel
