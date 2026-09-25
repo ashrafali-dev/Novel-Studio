@@ -745,7 +745,7 @@ class MainActivity : Activity() {
                             o.optJSONObject("prev")?.let {
                                 append("<a id=\"__ns_fast_prev\" href=\"")
                                 append(attr(it.optString("href", "")))
-                                append("">")
+                                append("\">")
                                 append(esc(it.optString("text", "")))
                                 append("</a>")
                             }
