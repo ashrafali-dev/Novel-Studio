@@ -204,23 +204,23 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         // reader's Next button is not reliable. Use the site's chapter-list
         // endpoint first, then fall back to the real catalog DOM.
         val safe = currentTitle
-            .replace("\\\\", "\\\\\\\\")
-            .replace("'", "\\\\'")
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
         return """
 (function(){
   var dir='__DIR__', title='__TITLE__';
   var norm=function(s){
-    return (s||'').replace(/\\s+/g,' ').trim().toLowerCase();
+    return (s||'').replace(/\s+/g,' ').trim().toLowerCase();
   };
   var stripIndex=function(s){
-    return norm(s).replace(/^\\s*\\d+\\s*[-.:)]?\\s*/,'');
+    return norm(s).replace(/^\s*\d+\s*[-.:)]?\s*/,'');
   };
   var clean=function(u){
-    try{return new URL(u,location.href).pathname.replace(/\\/+$/,'');}
-    catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\\/+$/,'');}
+    try{return new URL(u,location.href).pathname.replace(/\/+$/,'');}
+    catch(e){return String(u||'').split('?')[0].split('#')[0].replace(/\/+$/,'');}
   };
   var path=location.pathname;
-  var bm=path.match(/^(\\/book\\/\\d+)/i);
+  var bm=path.match(/^(\/book\/\d+)/i);
   var bookPath=bm?bm[1]:'';
   var bookId=bm?bm[1].split('/').pop():'';
   if(!bookId)return 'failed:no-book-id';
@@ -230,7 +230,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   try{
     var nodes=[].slice.call(document.querySelectorAll('[class*="j_chapter_"]'));
     for(var i=0;i<nodes.length;i++){
-      var m=String(nodes[i].className||'').match(/(?:^|\\s)j_chapter_(\\d+)(?:\\s|$)/);
+      var m=String(nodes[i].className||'').match(/(?:^|\s)j_chapter_(\d+)(?:\s|$)/);
       if(m){currentCid=m[1];break;}
     }
   }catch(e){}
@@ -267,7 +267,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     if(exact>=0)return exact;
 
     // Match the most distinctive words, including "(part N)".
-    var words=curTitle.split(/\\s+/).filter(function(w){return w.length>=2;});
+    var words=curTitle.split(/\s+/).filter(function(w){return w.length>=2;});
     var best=-1,score=0;
     for(var j=0;j<list.length;j++){
       var t=list[j].title, sc=0;
@@ -290,7 +290,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   function parseResponse(txt){
     var s=(txt||'').trim();
     try{return JSON.parse(s);}catch(e){}
-    s=s.replace(/^[^(]*\\(/,'').replace(/\\);?\\s*$/,'');
+    s=s.replace(/^[^(]*\(/,'').replace(/\);?\s*$/,'');
     try{return JSON.parse(s);}catch(e){}
     return null;
   }
@@ -312,7 +312,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   function getCsrf(){
     try{
-      var m=document.cookie.match(/(?:^|;\\s*)_csrfToken=([^;]+)/);
+      var m=document.cookie.match(/(?:^|;\s*)_csrfToken=([^;]+)/);
       return m?decodeURIComponent(m[1]):'';
     }catch(e){return '';}
   }
@@ -360,7 +360,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             }
           }
           if(idx<0){
-            var best=-1,score=0,words=curTitle.split(/\\s+/).filter(function(w){return w.length>=2;});
+            var best=-1,score=0,words=curTitle.split(/\s+/).filter(function(w){return w.length>=2;});
             for(var z=0;z<links.length;z++){
               var sc=0;
               for(var q=0;q<words.length;q++)if(links[z].t.indexOf(words[q])>=0)sc+=words[q].length>=5?2:1;
