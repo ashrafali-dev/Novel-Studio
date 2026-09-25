@@ -128,7 +128,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     fun stillApplied(sel: String): String =
         "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
         "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
-        "if(!el)el=document.querySelector('[data-ns="1"]');" +
+        "if(!el)el=document.querySelector('[data-ns=\"1\"]');" +
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
         org.json.JSONObject.quote(sel) + ")"
 
