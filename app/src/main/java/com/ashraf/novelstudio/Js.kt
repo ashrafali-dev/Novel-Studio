@@ -79,7 +79,41 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
 (function(sel,paras){
-  var el=document.querySelector(sel); if(!el) return 'noel';
+  var el=null;
+  try{ if(sel) el=document.querySelector(sel); }catch(e){}
+  // Jsoup's generated cssSelector can become stale after a SPA/navigation
+  // rerender. Fall back to the same content selectors used by Extractor.
+  if(!el){
+    var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
+      '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
+      '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
+      '#article','.article-content','.content','article'];
+    var best=null,bs=0;
+    for(var i=0;i<sels.length;i++){
+      var es=[];
+      try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
+      for(var j=0;j<es.length;j++){
+        var x=es[j], tx=(x.innerText||'').trim();
+        if(tx.length<500) continue;
+        var sc=tx.length;
+        sc+=(x.querySelectorAll('p').length*250);
+        if(sc>bs){bs=sc;best=x;}
+      }
+    }
+    if(!best){
+      var es=[].slice.call(document.querySelectorAll('article,main,section,div'));
+      for(var k=0;k<es.length;k++){
+        var x=es[k],tx=(x.innerText||'').trim();
+        if(tx.length<500) continue;
+        var ps=x.querySelectorAll('p').length;
+        if(ps<3) continue;
+        var sc=tx.length+ps*250;
+        if(sc>bs){bs=sc;best=x;}
+      }
+    }
+    el=best;
+  }
+  if(!el) return 'noel';
   if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
   var frag=document.createDocumentFragment();
   for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
