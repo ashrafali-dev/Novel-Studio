@@ -930,6 +930,10 @@ class MainActivity : Activity() {
             }
         }
 
+        // ● is a fresh request. Stop any previous chatbot generation immediately,
+        // so the idle-wait loop cannot hold extraction for several seconds.
+        if (Prefs.auto(this)) chatWv.evaluateJavascript(Js.stop(), null)
+
         // If the translated version is currently displayed, restore the original
         // chapter first. Otherwise extraction could read the old Bengali text and
         // feed that back into the translator.
@@ -1249,7 +1253,7 @@ class MainActivity : Activity() {
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
                 }
             }
-        }, 1000)
+        }, 300)
     }
 
     private fun cleanReply(t: String): String =

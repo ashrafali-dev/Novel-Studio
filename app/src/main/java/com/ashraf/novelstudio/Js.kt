@@ -83,9 +83,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     private const val APPLY_BODY = """
 (function(sel,paras){
   var el=null;
-  try{ if(sel) el=document.querySelector(sel); }catch(e){}
-  // Jsoup's generated cssSelector can become stale after a SPA/navigation
-  // rerender. Fall back to the same content selectors used by Extractor.
+  try{if(sel)el=document.querySelector(sel);}catch(e){}
   if(!el){
     var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
       '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
@@ -96,67 +94,45 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       var es=[];
       try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
       for(var j=0;j<es.length;j++){
-        var x=es[j], tx=(x.innerText||'').trim();
-        if(tx.length<500) continue;
-        var sc=tx.length;
-        sc+=(x.querySelectorAll('p').length*250);
-        if(sc>bs){bs=sc;best=x;}
-      }
-    }
-    if(!best){
-      var es=[].slice.call(document.querySelectorAll('article,main,section,div'));
-      for(var k=0;k<es.length;k++){
-        var x=es[k],tx=(x.innerText||'').trim();
-        if(tx.length<500) continue;
-        var ps=x.querySelectorAll('p').length;
-        if(ps<3) continue;
-        var sc=tx.length+ps*250;
+        var x=es[j],tx=(x.innerText||'').trim();
+        if(tx.length<500)continue;
+        var sc=tx.length+x.querySelectorAll('p').length*250;
         if(sc>bs){bs=sc;best=x;}
       }
     }
     el=best;
   }
-  if(!el) return 'noel';
-
-  // Keep the original site's block elements/classes/styles. Only replace
-  // their text so paragraph spacing, width, alignment and indentation survive.
+  if(!el)return 'noel';
   if(window.__nsEl!==el||window.__nsOrig==null){
-    window.__nsOrig=el.innerHTML;
-    window.__nsEl=el;
-  } else if(window.__nsShown && window.__nsOrig!=null){
+    window.__nsOrig=el.innerHTML;window.__nsEl=el;
+  }else if(window.__nsShown&&window.__nsOrig!=null){
     el.innerHTML=window.__nsOrig;
   }
-
-  var source=el.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,blockquote,pre');
+  var source=el.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,pre');
   var blocks=[];
-  for(var b=0;b<source.length;b++){
-    var se=source[b];
-    if(((se.innerText||se.textContent)||'').trim().length>0) blocks.push(se);
+  for(var s=0;s<source.length;s++){
+    if(((source[s].innerText||source[s].textContent)||'').trim())blocks.push(source[s]);
   }
   if(!blocks.length){
     var kids=el.children||[];
-    for(var c=0;c<kids.length;c++){
-      var ke=kids[c];
-      if(((ke.innerText||ke.textContent)||'').trim().length>0) blocks.push(ke);
+    for(var k=0;k<kids.length;k++){
+      if(((kids[k].innerText||kids[k].textContent)||'').trim())blocks.push(kids[k]);
     }
   }
-
+  function putText(root,value){
+    var w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null),first=null,n;
+    while(n=w.nextNode()){if(!first)first=n;else n.nodeValue='';}
+    if(first)first.nodeValue=value;else root.appendChild(document.createTextNode(value));
+  }
   var frag=document.createDocumentFragment();
   for(var i=0;i<paras.length;i++){
-    var template=blocks.length ? blocks[Math.min(i,blocks.length-1)] : null;
-    var p=template ? template.cloneNode(false) : document.createElement('p');
-    p.removeAttribute('id');
-    p.removeAttribute('data-ns');
-    p.textContent=paras[i];
-    frag.appendChild(p);
+    var t=blocks.length?blocks[Math.min(i,blocks.length-1)]:null;
+    var p=t?t.cloneNode(true):document.createElement('p');
+    p.removeAttribute('id');p.removeAttribute('data-ns');
+    putText(p,paras[i]);frag.appendChild(p);
   }
-
-  el.innerHTML='';
-  el.appendChild(frag);
-  el.setAttribute('data-ns','1');
-  window.__nsTr=el.innerHTML;
-  window.__nsShown=1;
-  return 'ok';
+  el.innerHTML='';el.appendChild(frag);el.setAttribute('data-ns','1');
+  window.__nsTr=el.innerHTML;window.__nsShown=1;return 'ok';
 })(__SEL__,__PARAS__)
     """
 
