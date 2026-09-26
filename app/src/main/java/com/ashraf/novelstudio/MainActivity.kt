@@ -646,43 +646,59 @@ class MainActivity : Activity() {
         val nextSel = SiteProfiles.selector(this, url, "next")
         val prevSel = SiteProfiles.selector(this, url, "prev")
 
-        // Fast path: ask the already-rendered WebView for plain chapter text.
-        // Do not serialize the whole page or feed a large HTML document to Jsoup.
-        val js = """
+        // IMPORTANT: do not return the whole chapter from one evaluateJavascript()
+        // result. Large WebView -> Android results cross an IPC boundary; sending a
+        // huge JSON string at once can truncate/fail on long chapters. Store the
+        // rendered text in the page and pull it in small chunks instead.
+        val initJs = """
             (function(){
-              function visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
+              function visible(e){
+                if(!e)return false;
+                var r=e.getBoundingClientRect();
+                return r.width>0&&r.height>0;
+              }
               function txt(e){return ((e&&(e.innerText||e.textContent))||'').trim();}
               function pick(sel){
                 if(!sel)return null;
                 try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
               }
-              function stable(e){
-                if(!e)return '';
-                var id=(e.id||'').trim();
-                if(id && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) return '#'+id;
-                var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
-                return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
-              }
-
               var content=pick(__CONTENT__);
-              if(!content){
-                var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
-                  '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
-                  '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
-                  '#article','.article-content','.content','article','main'];
+
+              var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
+                '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
+                '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
+                '#article','.article-content','.content','article','main'];
+
+              function bestCandidate(){
                 var best=null,score=0;
                 for(var i=0;i<sels.length;i++){
-                  var e=null;
-                  try{e=document.querySelector(sels[i]);}catch(x){continue;}
-                  if(!e||!visible(e))continue;
-                  var t=txt(e);
-                  if(t.length<300)continue;
-                  var sc=t.length+(e.querySelectorAll('p').length*250);
-                  if(sc>score){score=sc;best=e;}
+                  var es=[];
+                  try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(x){es=[];}
+                  for(var j=0;j<es.length;j++){
+                    var e=es[j];
+                    if(!e||!visible(e))continue;
+                    var t=txt(e);
+                    if(t.length<300)continue;
+                    var sc=t.length+(e.querySelectorAll('p').length*250);
+                    if(sc>score){score=sc;best=e;}
+                  }
                 }
-                content=best;
+                return best;
+              }
+
+              // A learned selector is preferred, but if it only contains a
+              // fraction of the actual chapter, choose the stronger chapter
+              // candidate instead of blindly trusting the old profile.
+              var learnedText=content?txt(content):'';
+              var candidate=bestCandidate();
+              var candidateText=candidate?txt(candidate):'';
+              if(!content || (candidateText.length > learnedText.length*1.35 && candidateText.length-learnedText.length>500)){
+                content=candidate;
               }
               if(!content)return JSON.stringify({ok:false});
+
+              var body=txt(content);
+              window.__nsExtractText=body;
 
               var titleEl=pick(__TITLE__);
               if(!titleEl){
@@ -699,7 +715,7 @@ class MainActivity : Activity() {
                     : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
                   try{e=document.querySelector(q);}catch(x){e=null;}
                 }
-                if(e&&e.href)return {href:e.href,text:txt(e),selector:stable(e)};
+                if(e&&e.href)return {href:e.href,text:txt(e),selector:(e.id?'#'+e.id:e.tagName.toLowerCase())};
                 return null;
               }
 
@@ -711,19 +727,19 @@ class MainActivity : Activity() {
               }catch(x){}
               if(!novel){
                 try{
-                  var a=document.querySelector('a[href*="/novel/"],a[href*="/book/"],a[href*="/series/"]');
-                  if(a)novel=txt(a);
+                  var aa=document.querySelector('a[href*="/novel/"],a[href*="/book/"],a[href*="/series/"]');
+                  if(aa)novel=txt(aa);
                 }catch(x){}
               }
 
               return JSON.stringify({
                 ok:true,
-                text:txt(content),
+                length:body.length,
                 title:title,
                 pageTitle:document.title||'',
                 novel:novel,
-                contentSel:stable(content),
-                titleSel:titleEl?stable(titleEl):'',
+                contentSel:(content.id?'#'+content.id:content.tagName.toLowerCase()),
+                titleSel:titleEl?(titleEl.id?'#'+titleEl.id:titleEl.tagName.toLowerCase()):'',
                 next:n,
                 prev:p
               });
@@ -734,7 +750,7 @@ class MainActivity : Activity() {
             .replace("__NEXT__", JSONObject.quote(nextSel))
             .replace("__PREV__", JSONObject.quote(prevSel))
 
-        novelWv.evaluateJavascript(js) { raw ->
+        novelWv.evaluateJavascript(initJs) { raw ->
             val payload = decode(raw)
             if (payload.isBlank()) { cb(null); return@evaluateJavascript }
 
@@ -745,63 +761,90 @@ class MainActivity : Activity() {
                     return@evaluateJavascript
                 }
 
-                val title = o.optString("title", "").trim()
-                val body = o.optString("text", "").trim()
-                if (body.length < 300) {
+                val expectedLength = o.optInt("length", 0)
+                if (expectedLength < 300) {
                     cb(null)
                     return@evaluateJavascript
                 }
 
-                fun cleanText(s: String): String = s
-                    .replace("\u00a0", " ")
-                    .replace(Regex("[ \\t]+"), " ")
-                    .replace(Regex(" ?\\n ?"), "\\n")
-                    .replace(Regex("\\n{3,}"), "\\n\\n")
-                    .trim()
+                val chunkSize = 48_000
+                val parts = ArrayList<String>()
+                fun readChunk(start: Int) {
+                    val chunkJs = "(function(){var s=window.__nsExtractText||'';return s.substring(" +
+                        start + "," + (start + chunkSize) + ");})()"
+                    novelWv.evaluateJavascript(chunkJs) { rr ->
+                        try {
+                            val piece = decode(rr)
+                            parts.add(piece)
+                            val nextStart = start + piece.length
+                            if (nextStart < expectedLength && piece.isNotEmpty()) {
+                                readChunk(nextStart)
+                                return@evaluateJavascript
+                            }
 
-                val cleanBody = cleanText(body)
-                val cleanTitle = cleanText(title)
-                val fullText = if (cleanTitle.isNotEmpty() && cleanBody.startsWith(cleanTitle)) {
-                    cleanBody
-                } else if (cleanTitle.isNotEmpty()) {
-                    cleanTitle + "\\n\\n" + cleanBody
-                } else {
-                    cleanBody
+                            val body = parts.joinToString("")
+                            if (body.length < 300) {
+                                cb(null)
+                                return@evaluateJavascript
+                            }
+
+                            fun cleanText(s: String): String = s
+                                .replace("\u00a0", " ")
+                                .replace(Regex("[ \\t]+"), " ")
+                                .replace(Regex(" ?\\n ?"), "\\n")
+                                .replace(Regex("\\n{3,}"), "\\n\\n")
+                                .trim()
+
+                            val cleanBody = cleanText(body)
+                            val cleanTitle = cleanText(o.optString("title", "").trim())
+                            val fullText = if (cleanTitle.isNotEmpty() && cleanBody.startsWith(cleanTitle)) {
+                                cleanBody
+                            } else if (cleanTitle.isNotEmpty()) {
+                                cleanTitle + "\n\n" + cleanBody
+                            } else {
+                                cleanBody
+                            }
+
+                            val next = o.optJSONObject("next")?.optString("href", "")?.takeIf { it.isNotBlank() }
+                            val prev = o.optJSONObject("prev")?.optString("href", "")?.takeIf { it.isNotBlank() }
+                            val novel = o.optString("novel", "").trim().ifBlank {
+                                url.substringAfter("://", "").substringBefore('/').removePrefix("www.")
+                            }
+
+                            val number = Regex(
+                                "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
+                                RegexOption.IGNORE_CASE
+                            ).find(cleanTitle)?.groupValues?.getOrNull(1)
+                                ?: Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
+
+                            val ch = Chapter(
+                                cleanTitle.ifBlank { o.optString("pageTitle", "").trim() },
+                                fullText,
+                                next,
+                                prev,
+                                url,
+                                novel,
+                                number,
+                                o.optString("contentSel", ""),
+                                o.optString("titleSel", ""),
+                                o.optJSONObject("next")?.optString("selector", "").orEmpty(),
+                                o.optJSONObject("prev")?.optString("selector", "").orEmpty()
+                            )
+
+                            SiteProfiles.remember(this@MainActivity, ch)
+                            cb(ch)
+                        } catch (_: Exception) {
+                            cb(null)
+                        }
+                    }
                 }
-
-                val next = o.optJSONObject("next")?.optString("href", "")?.takeIf { it.isNotBlank() }
-                val prev = o.optJSONObject("prev")?.optString("href", "")?.takeIf { it.isNotBlank() }
-                val novel = o.optString("novel", "").trim().ifBlank {
-                    url.substringAfter("://", "").substringBefore('/').removePrefix("www.")
-                }
-
-                val number = Regex(
-                    "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
-                    RegexOption.IGNORE_CASE
-                ).find(cleanTitle)?.groupValues?.getOrNull(1)
-                    ?: Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
-
-                val ch = Chapter(
-                    cleanTitle.ifBlank { o.optString("pageTitle", "").trim() },
-                    fullText,
-                    next,
-                    prev,
-                    url,
-                    novel,
-                    number,
-                    o.optString("contentSel", ""),
-                    o.optString("titleSel", ""),
-                    o.optJSONObject("next")?.optString("selector", "").orEmpty(),
-                    o.optJSONObject("prev")?.optString("selector", "").orEmpty()
-                )
-
-                SiteProfiles.remember(this@MainActivity, ch)
-                cb(ch)
+                readChunk(0)
             } catch (_: Exception) {
                 cb(null)
             }
         }
     }
+
     private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
 
     // Hash only the chapter body, not the heading. Some SPA readers update
