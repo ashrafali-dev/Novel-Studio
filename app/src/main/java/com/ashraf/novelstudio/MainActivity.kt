@@ -1434,7 +1434,7 @@ class MainActivity : Activity() {
                     updatePill()
                     if (retry) {   // some sites re-render the content a moment later — put it back once
                         handler.postDelayed({
-                            if (shownTranslated && lastChapter === ch) {
+                            if (shownTranslated && lastChapter != null && keyOf(lastChapter!!) == keyOf(ch)) {
                                 novelWv.evaluateJavascript(Js.stillApplied(selector)) { s ->
                                     if (s != null && s.contains("lost")) {
                                         attempt(selector, 2)
@@ -1448,7 +1448,7 @@ class MainActivity : Activity() {
                     // chatbot answer finishes. Retry the same selector instead
                     // of losing the already completed translation.
                     handler.postDelayed({
-                        if (lastChapter === ch && !isFinishing) attempt(selector, left - 1)
+                        if (lastChapter != null && keyOf(lastChapter!!) == keyOf(ch) && !isFinishing) attempt(selector, left - 1)
                     }, 350L)
                 } else {
                     // Re-read the site's current learned selector once. Some
@@ -1508,8 +1508,10 @@ class MainActivity : Activity() {
             }
         }
 
-        val initialSelector = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        attempt(initialSelector, 3)
+        // Gemini may finish after Next/Prev has replaced the reader DOM.
+        // Do not reuse the chapter's old CSS selector; let Js.apply() detect
+        // the currently visible chapter on every attempt.
+        attempt("", 6)
     }
 
     private fun toggleView() {
