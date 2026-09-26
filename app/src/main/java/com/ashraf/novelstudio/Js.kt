@@ -142,9 +142,9 @@ function __box(){
         run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
 
     // "<assistant msg count>|<streaming 0/1>|<length of last reply>"
-    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);var t=b?((b.innerText||b.textContent||'').trim()):'';if(location.hostname==='gemini.google.com'||location.hostname.endsWith('.gemini.google.com')){var k=(t.match(/(?:^|\\s)n(?=\\s)/g)||[]).length;if(k>=3)t=t.replace(/[ \\t]+n[ \\t]+/g,'\\n\\n');}var len=t.length;return n+'|'+__stream(p)+'|'+len;})()")
+    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);var len=b?((b.innerText||b.textContent||'').trim().length):0;return n+'|'+__stream(p)+'|'+len;})()")
 
-    fun readText(): String = run("(function(){var p=__prof();var e=__reply(p);if(!e)return '';var b=p.b?(e.querySelector(p.b)||e):e;var t=(b.innerText||b.textContent||'').trim();if(location.hostname==='gemini.google.com'||location.hostname.endsWith('.gemini.google.com')){var k=(t.match(/(?:^|\\s)n(?=\\s)/g)||[]).length;if(k>=3)t=t.replace(/[ \\t]+n[ \\t]+/g,'\\n\\n');}return t;})()")
+    fun readText(): String = run("(function(){var p=__prof();var e=__reply(p);if(!e)return '';var b=p.b?(e.querySelector(p.b)||e):e;return (b.innerText||b.textContent||'').trim();})()")
 
     fun stop(): String = run("(function(){var p=__prof();var b=p.stop?document.querySelector(p.stop):null;if(b&&b.tagName==='BUTTON')b.click();return 'k';})()")
 
