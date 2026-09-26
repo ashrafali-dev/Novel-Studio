@@ -1374,24 +1374,46 @@ class MainActivity : Activity() {
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
-        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString())) { r ->
-            if (r != null && r.contains("ok")) {
-                hasTr = true
-                shownTranslated = true
-                updatePill()
-                if (retry) {   // some sites re-render the content a moment later — put it back once
-                    handler.postDelayed({
-                        if (shownTranslated && lastChapter === ch) {
-                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
-                                if (s != null && s.contains("lost")) applyTranslation(ch, text, false)
+        val payload = JSONArray(paras).toString()
+
+        fun attempt(selector: String, left: Int) {
+            novelWv.evaluateJavascript(Js.apply(selector, payload)) { r ->
+                if (r != null && r.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {   // some sites re-render the content a moment later — put it back once
+                        handler.postDelayed({
+                            if (shownTranslated && lastChapter === ch) {
+                                novelWv.evaluateJavascript(Js.stillApplied(selector)) { s ->
+                                    if (s != null && s.contains("lost")) {
+                                        attempt(selector, 2)
+                                    }
+                                }
                             }
-                        }
-                    }, 2500)
+                        }, 2500)
+                    }
+                } else if (left > 0) {
+                    // The page can still be rebuilding its reader DOM when the
+                    // chatbot answer finishes. Retry the same selector instead
+                    // of losing the already completed translation.
+                    handler.postDelayed({
+                        if (lastChapter === ch && !isFinishing) attempt(selector, left - 1)
+                    }, 350L)
+                } else {
+                    // Re-read the site's current learned selector once. Some
+                    // readers replace their chapter container after rendering.
+                    val fresh = SiteProfiles.selector(this, novelWv.url ?: ch.url, "content")
+                    if (fresh.isNotBlank() && fresh != selector) {
+                        attempt(fresh, 2)
+                    } else {
+                        toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+                    }
                 }
-            } else {
-                toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
             }
         }
+
+        attempt(sel, 3)
     }
 
     private fun toggleView() {
