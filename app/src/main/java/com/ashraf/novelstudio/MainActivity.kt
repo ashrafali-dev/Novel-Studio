@@ -466,7 +466,10 @@ class MainActivity : Activity() {
     private fun isChatLoginUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         val path = (uri.path ?: "").lowercase()
-        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return true
+        // Do not intercept accounts.google.com globally. Gemini guest mode can use
+        // Google endpoints during normal navigation; treating every Google URL as a
+        // login page breaks unsigned Gemini access. Explicit Gemini /login or /signin
+        // URLs are still caught by the bot-specific check below.
         val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
             host.contains("gemini.google.com") || host.contains("claude.ai") ||
             host.contains("anthropic.com") || host.contains("deepseek.com") ||
