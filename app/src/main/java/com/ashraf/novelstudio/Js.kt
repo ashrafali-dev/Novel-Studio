@@ -134,15 +134,8 @@ function __box(){
 (function(sel,paras){
   var el=null;
   try{ if(sel) el=document.querySelector(sel); }catch(e){}
-
-  // Keep the exact insertion behavior that worked in the earlier build:
-  // replace only the chapter content container's contents with clean
-  // paragraph nodes, letting the site's own chapter-container CSS style them.
-  // This is intentionally separate from extraction/selector logic.
-  if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;
-
-  // If the learned selector is stale, use the same stable content selectors
-  // as the original Build-102 insertion path.
+  // Jsoup's generated cssSelector can become stale after a SPA/navigation
+  // rerender. Fall back to the same content selectors used by Extractor.
   if(!el){
     var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
       '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
@@ -153,35 +146,31 @@ function __box(){
       var es=[];
       try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
       for(var j=0;j<es.length;j++){
-        var x=es[j],tx=(x.innerText||'').trim();
-        if(tx.length<500)continue;
-        var sc=tx.length+(x.querySelectorAll('p').length*250);
+        var x=es[j], tx=(x.innerText||'').trim();
+        if(tx.length<500) continue;
+        var sc=tx.length;
+        sc+=(x.querySelectorAll('p').length*250);
+        if(sc>bs){bs=sc;best=x;}
+      }
+    }
+    if(!best){
+      var es=[].slice.call(document.querySelectorAll('article,main,section,div'));
+      for(var k=0;k<es.length;k++){
+        var x=es[k],tx=(x.innerText||'').trim();
+        if(tx.length<500) continue;
+        var ps=x.querySelectorAll('p').length;
+        if(ps<3) continue;
+        var sc=tx.length+ps*250;
         if(sc>bs){bs=sc;best=x;}
       }
     }
     el=best;
   }
-
-  if(!el)return 'noel';
-
-  // Save the exact original DOM once so Toggle can restore it.
-  if(window.__nsEl!==el||window.__nsOrig==null){
-    window.__nsEl=el;
-    window.__nsOrig=el.innerHTML;
-    window.__nsTr=null;
-  }
-
+  if(!el) return 'noel';
+  if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
   var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){
-    var p=document.createElement('p');
-    p.textContent=String(paras[i]||'');
-    frag.appendChild(p);
-  }
-
-  el.innerHTML='';
-  el.appendChild(frag);
-  el.setAttribute('data-ns','1');
-  window.__nsShown=1;
+  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
+  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
   return 'ok';
 })(__SEL__,__PARAS__)
 """
@@ -198,8 +187,7 @@ function __box(){
 
     val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
         "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
-        "else{if(window.__nsTr==null)return 'none';el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
-
+        "else{el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
 
     // ---------------------------------------------------------------- click the site's own Next / Prev button
     private const val CLICK_BODY = """
