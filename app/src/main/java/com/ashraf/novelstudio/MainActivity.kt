@@ -484,6 +484,7 @@ class MainActivity : Activity() {
             val scheme = r.url.scheme ?: ""
             if (scheme != "http" && scheme != "https") return true
             if (isChatLoginUrl(r.url)) {
+                if (Gemini.isInternalAuthUrl(r.url)) return false
                 openLoginInChrome(r.url.toString())
                 return true
             }
@@ -499,13 +500,16 @@ class MainActivity : Activity() {
             popup.webViewClient = object : WebViewClient() {
                 override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
                     if (url != null && isChatLoginUrl(Uri.parse(url))) {
-                        openLoginInChrome(url)
-                        v?.stopLoading()
+                        if (!Gemini.isInternalAuthUrl(Uri.parse(url))) {
+                            openLoginInChrome(url)
+                            v?.stopLoading()
+                        }
                     }
                 }
                 override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
                     val u = r?.url ?: return false
                     if (isChatLoginUrl(u)) {
+                        if (Gemini.isInternalAuthUrl(u)) return false
                         openLoginInChrome(u.toString())
                         v?.stopLoading()
                         return true
@@ -1291,7 +1295,12 @@ class MainActivity : Activity() {
         } else {
             ch.text
         }
-        chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
+        val sendCall: ((String, (String?) -> Unit) -> Unit) = if (Gemini.isGemini(chatWv.url)) {
+            { value, callback -> Gemini.send(chatWv, value, true, callback) }
+        } else {
+            { value, callback -> chatWv.evaluateJavascript(Js.send(value, true), callback) }
+        }
+        sendCall(full) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
             if (r.startsWith("ok:")) {
