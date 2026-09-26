@@ -1508,7 +1508,7 @@ class MainActivity : Activity() {
             }
         }
 
-        attempt(sel, 3)
+        val initialSelector = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
     }
 
     private fun toggleView() {
