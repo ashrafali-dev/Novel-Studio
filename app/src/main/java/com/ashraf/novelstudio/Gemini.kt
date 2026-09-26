@@ -10,6 +10,22 @@ object Gemini {
         return host == "gemini.google.com" || host.endsWith(".gemini.google.com")
     }
 
+    // The Gemini Web UI can expose the submitted "You said" block inside the
+    // last model-response container. Keep the exact text we sent so the final
+    // extraction can discard that echoed prompt before copy/save/insertion.
+    @Volatile private var lastSentText: String = ""
+
+    fun cleanResponse(text: String): String {
+        val sent = lastSentText.trim()
+        if (sent.isEmpty()) return text.trim()
+        val t = text.trim()
+        val at = t.indexOf(sent)
+        if (at >= 0) {
+            return t.substring(at + sent.length).trim()
+        }
+        return t
+    }
+
     fun isInternalAuthUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         return host == "accounts.google.com" ||
@@ -19,6 +35,7 @@ object Gemini {
     }
 
     fun send(webView: WebView, text: String, doSend: Boolean, callback: ValueCallback<String>?) {
+        lastSentText = text
         val quoted = org.json.JSONObject.quote(text)
         val js = """
 (function(text,doSend){
