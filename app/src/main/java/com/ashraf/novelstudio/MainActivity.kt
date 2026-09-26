@@ -1353,7 +1353,7 @@ class MainActivity : Activity() {
         // Gemini sometimes exposes paragraph separators as a literal standalone
         // "n" in the WebView text layer. Only normalize standalone n tokens.
         if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
-            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\\n\\n")
+            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\n\n")
             x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
         }
         return x.trim()
@@ -1457,35 +1457,47 @@ class MainActivity : Activity() {
 
     // Gemini-only page insertion path. It mirrors the working selector/
     // element insertion flow while keeping Gemini response cleanup isolated.
+    // Gemini-only page insertion path: same robust selector/retry logic
+    // as the working provider path, with only Gemini text normalization added.
     private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
         val normalized = cleanReply(text)
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val paras = normalized
-            .split(Regex("\\n\\s*\\n"))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
+        val paras = normalized.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        val payload = JSONArray(paras).toString()
 
-        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString())) { r ->
-            if (r != null && r.contains("ok")) {
-                hasTr = true
-                shownTranslated = true
-                updatePill()
-
-                if (retry) {
-                    handler.postDelayed({
-                        if (shownTranslated && lastChapter === ch) {
-                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { state ->
-                                if (state != null && state.contains("lost")) {
-                                    applyGeminiTranslation(ch, normalized, false)
+        fun attempt(selector: String, left: Int) {
+            novelWv.evaluateJavascript(Js.apply(selector, payload)) { r ->
+                if (r != null && r.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {
+                        handler.postDelayed({
+                            if (shownTranslated && lastChapter === ch) {
+                                novelWv.evaluateJavascript(Js.stillApplied(selector)) { state ->
+                                    if (state != null && state.contains("lost")) {
+                                        attempt(selector, 2)
+                                    }
                                 }
                             }
-                        }
-                    }, 2500)
+                        }, 2500)
+                    }
+                } else if (left > 0) {
+                    handler.postDelayed({
+                        if (lastChapter === ch && !isFinishing) attempt(selector, left - 1)
+                    }, 350L)
+                } else {
+                    val fresh = SiteProfiles.selector(this, novelWv.url ?: ch.url, "content")
+                    if (fresh.isNotBlank() && fresh != selector) {
+                        attempt(fresh, 2)
+                    } else {
+                        toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+                    }
                 }
-            } else {
-                toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
             }
         }
+
+        attempt(sel, 3)
     }
 
     private fun toggleView() {
