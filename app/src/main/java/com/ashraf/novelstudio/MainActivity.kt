@@ -97,6 +97,7 @@ class MainActivity : Activity() {
 
     // background translation queue
     private val queue = mutableListOf<Chapter>()
+    private val freshQueueKeys = mutableSetOf<String>()
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
@@ -1157,14 +1158,15 @@ class MainActivity : Activity() {
                 return
             }
         }
-        enqueue(ch)
+        enqueue(ch, forceFresh)
     }
 
-    private fun enqueue(ch: Chapter) {
+    private fun enqueue(ch: Chapter, forceFresh: Boolean = false) {
         val k = keyOf(ch)
         val r = running
         if ((r != null && keyOf(r) == k) || queue.any { keyOf(it) == k }) { updateProgressUi(); return }
         queue.add(ch)
+        if (forceFresh) freshQueueKeys.add(k)
         if (running == null) startNext() else updateProgressUi()
     }
 
@@ -1179,7 +1181,12 @@ class MainActivity : Activity() {
         progress = 0
         val tok = ++runToken
         updateProgressUi()
-        waitIdle(tok, ch, 0)
+        if (freshQueueKeys.remove(keyOf(ch))) {
+            // Manual ● = fresh request. Do not wait for the previous stream.
+            sendJob(tok, ch)
+        } else {
+            waitIdle(tok, ch, 0)
+        }
     }
 
     // make sure the chatbot is not still busy with something else before we send
