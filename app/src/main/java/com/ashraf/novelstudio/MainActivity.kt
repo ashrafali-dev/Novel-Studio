@@ -1391,7 +1391,7 @@ class MainActivity : Activity() {
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) {
+            if (shown != null && isCurrentChapter(shown, ch)) {
                 if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
                     applyGeminiTranslation(shown, t, true)
                 } else {
@@ -1427,6 +1427,19 @@ class MainActivity : Activity() {
         chatWv.evaluateJavascript(Js.stop(), null)
         updateProgressUi()
         toast("⏹ অটো অনুবাদ বন্ধ করলাম")
+    }
+
+    // A chapter can be represented by a different extracted key after Next
+    // (title/number metadata may change), while its URL still identifies the
+    // exact page being translated. Accept either identity when deciding where
+    // to place the finished translation.
+    private fun isCurrentChapter(shown: Chapter, translated: Chapter): Boolean {
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+        val shownUrl = cleanUrl(shown.url)
+        val translatedUrl = cleanUrl(translated.url)
+        return keyOf(shown) == keyOf(translated) ||
+            (currentUrl.isNotEmpty() && translatedUrl.isNotEmpty() && currentUrl == translatedUrl) ||
+            (currentUrl.isNotEmpty() && shownUrl.isNotEmpty() && currentUrl == shownUrl)
     }
 
     // ---- put the translation into the novel page itself
@@ -1491,7 +1504,7 @@ class MainActivity : Activity() {
                     updatePill()
                     if (retry) {
                         handler.postDelayed({
-                            if (shownTranslated && lastChapter != null && keyOf(lastChapter!!) == keyOf(ch)) {
+                            if (shownTranslated && lastChapter != null && isCurrentChapter(lastChapter!!, ch)) {
                                 novelWv.evaluateJavascript(Js.stillApplied("")) { state ->
                                     if (state != null && state.contains("lost")) attempt(2)
                                 }
