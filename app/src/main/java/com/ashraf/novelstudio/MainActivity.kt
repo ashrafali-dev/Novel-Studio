@@ -466,15 +466,12 @@ class MainActivity : Activity() {
     private fun isChatLoginUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         val path = (uri.path ?: "").lowercase()
-        // Do not intercept accounts.google.com globally. Gemini guest mode can use
-        // Google endpoints during normal navigation; treating every Google URL as a
-        // login page breaks unsigned Gemini access. Explicit Gemini /login or /signin
-        // URLs are still caught by the bot-specific check below.
+        // Keep Google/Gemini authentication inside this WebView so its cookies/session remain available.\n        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return false
         val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
-            host.contains("gemini.google.com") || host.contains("claude.ai") ||
+            host.contains("claude.ai") ||
             host.contains("anthropic.com") || host.contains("deepseek.com") ||
             host.contains("grok.com") || host == "x.com" || host.endsWith(".x.com")
-        return bot && (path.contains("/login") || path.contains("/signin") ||
+        if (host.contains("gemini.google.com")) return false\n        return bot && (path.contains("/login") || path.contains("/signin") ||
             path.contains("/sign-in") || path.contains("/auth") ||
             path.contains("/oauth") || path.contains("/authorize"))
     }
@@ -1286,12 +1283,7 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val p = Prefs.prompt(this)
-        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
-            p + "\n\n---\n\n" + ch.text
-        } else {
-            ch.text
-        }
+        val full = Prefs.prompt(this) + "\n\n---\n\n" + ch.text
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1349,20 +1341,8 @@ class MainActivity : Activity() {
         }, 300)
     }
 
-    private fun cleanReply(t: String): String {
-        var x = t.replace(
-            Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE),
-            ""
-        ).trim()
-
-        // Gemini can expose paragraph separators as a literal standalone
-        // "n" token. Remove only standalone n tokens; normal words are untouched.
-        if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
-            x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
-            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\\n\\n")
-        }
-        return x.trim()
-    }
+    private fun cleanReply(t: String): String =
+        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
 
     private fun finishJob(tok: Int, ch: Chapter) {
         chatWv.evaluateJavascript(Js.readText()) { raw ->
@@ -1380,14 +1360,7 @@ class MainActivity : Activity() {
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) {
-                if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
-                    applyGeminiTranslation(shown, t, true)
-                } else {
-                    // Keep the already-working ChatGPT/other-provider path untouched.
-                    applyTranslation(shown, t, true)
-                }
-            }
+            if (shown != null && keyOf(shown) == keyOf(ch)) {\n                if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {\n                    applyGeminiTranslation(shown, t, true)\n                } else {\n                    applyTranslation(shown, t, true)\n                }\n            }
             toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
@@ -1399,13 +1372,7 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         queue.clear()
         running = null
-        val p = Prefs.prompt(this)
-        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
-            p + "\n\n---\n\n" + ch.text
-        } else {
-            ch.text
-        }
-        copy(full)
+        copy(Prefs.prompt(this) + "\n\n---\n\n" + ch.text)
         toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
@@ -1434,7 +1401,7 @@ class MainActivity : Activity() {
                     updatePill()
                     if (retry) {   // some sites re-render the content a moment later — put it back once
                         handler.postDelayed({
-                            if (shownTranslated && lastChapter != null && keyOf(lastChapter!!) == keyOf(ch)) {
+                            if (shownTranslated && lastChapter === ch) {
                                 novelWv.evaluateJavascript(Js.stillApplied(selector)) { s ->
                                     if (s != null && s.contains("lost")) {
                                         attempt(selector, 2)
@@ -1448,7 +1415,7 @@ class MainActivity : Activity() {
                     // chatbot answer finishes. Retry the same selector instead
                     // of losing the already completed translation.
                     handler.postDelayed({
-                        if (lastChapter != null && keyOf(lastChapter!!) == keyOf(ch) && !isFinishing) attempt(selector, left - 1)
+                        if (lastChapter === ch && !isFinishing) attempt(selector, left - 1)
                     }, 350L)
                 } else {
                     // Re-read the site's current learned selector once. Some
@@ -1466,55 +1433,7 @@ class MainActivity : Activity() {
         attempt(sel, 3)
     }
 
-    // Gemini-only page insertion path. It mirrors the working selector/
-    // element insertion flow while keeping Gemini response cleanup isolated.
-    // Gemini-only page insertion path: same robust selector/retry logic
-    // as the working provider path, with only Gemini text normalization added.
-    private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
-        val normalized = cleanReply(text)
-        // Gemini runs after Next/Prev navigation can replace the reader DOM.\n        // Let the JS insertion path re-detect the current chapter container.\n        val sel = ""
-        val paras = normalized.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
-        val payload = JSONArray(paras).toString()
-
-        fun attempt(selector: String, left: Int) {
-            novelWv.evaluateJavascript(Js.apply(selector, payload)) { r ->
-                if (r != null && r.contains("ok")) {
-                    hasTr = true
-                    shownTranslated = true
-                    updatePill()
-                    if (retry) {
-                        handler.postDelayed({
-                            if (shownTranslated && lastChapter === ch) {
-                                novelWv.evaluateJavascript(Js.stillApplied(selector)) { state ->
-                                    if (state != null && state.contains("lost")) {
-                                        attempt(selector, 2)
-                                    }
-                                }
-                            }
-                        }, 2500)
-                    }
-                } else if (left > 0) {
-                    handler.postDelayed({
-                        if (lastChapter === ch && !isFinishing) attempt(selector, left - 1)
-                    }, 350L)
-                } else {
-                    val fresh = SiteProfiles.selector(this, novelWv.url ?: ch.url, "content")
-                    if (fresh.isNotBlank() && fresh != selector) {
-                        attempt(fresh, 2)
-                    } else {
-                        toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
-                    }
-                }
-            }
-        }
-
-        // Gemini may finish after Next/Prev has replaced the reader DOM.
-        // Do not reuse the chapter's old CSS selector; let Js.apply() detect
-        // the currently visible chapter on every attempt.
-        attempt("", 6)
-    }
-
-    private fun toggleView() {
+    // Gemini can finish after Next/Prev has replaced the reader DOM.\n    // Always let the JS insertion path detect the current chapter container.\n    private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {\n        val normalized = cleanReply(text)\n        val paras = normalized.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }\n        val payload = JSONArray(paras).toString()\n\n        fun attempt(left: Int) {\n            novelWv.evaluateJavascript(Js.apply("", payload)) { r ->\n                if (r != null && r.contains("ok")) {\n                    hasTr = true\n                    shownTranslated = true\n                    updatePill()\n                    if (retry) {\n                        handler.postDelayed({\n                            if (shownTranslated && lastChapter != null && keyOf(lastChapter!!) == keyOf(ch)) {\n                                novelWv.evaluateJavascript(Js.stillApplied("")) { state ->\n                                    if (state != null && state.contains("lost")) attempt(2)\n                                }\n                            }\n                        }, 2500)\n                    }\n                } else if (left > 0) {\n                    handler.postDelayed({\n                        if (lastChapter != null && keyOf(lastChapter!!) == keyOf(ch) && !isFinishing) attempt(left - 1)\n                    }, 400L)\n                } else {\n                    toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")\n                }\n            }\n        }\n\n        attempt(6)\n    }\n\n    private fun toggleView() {
         novelWv.evaluateJavascript(Js.TOGGLE) { r ->
             if (r != null && r.contains("orig")) shownTranslated = false
             else if (r != null && r.contains("tr")) shownTranslated = true
