@@ -173,9 +173,22 @@ function __box(){
   }
   if(!el) return 'noel';
   if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
-  var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
-  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
+  function __nsRender(){
+    var frag=document.createDocumentFragment();
+    for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
+    el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
+  }
+  __nsRender();
+  // Some SPA readers (React/Next/Vue) re-render this element on their own —
+  // scroll, selection, an interval, an ad refresh — and silently wipe the
+  // translation back to the original text. Watch the element and, whenever
+  // that happens while a translation should be showing, put it right back.
+  if(window.__nsObs){ try{window.__nsObs.disconnect();}catch(e){} }
+  window.__nsObs=new MutationObserver(function(){
+    if(window.__nsShown && document.contains(el) && el.getAttribute('data-ns')!=='1') __nsRender();
+  });
+  try{ window.__nsObs.observe(el,{childList:true,subtree:true,attributes:true,attributeFilter:['data-ns']}); }catch(e){}
+  try{ window.__nsObs.observe(el.parentNode||el,{childList:true}); }catch(e){}
   return 'ok';
 })(__SEL__,__PARAS__)
 """
