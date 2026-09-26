@@ -1472,7 +1472,7 @@ class MainActivity : Activity() {
     // as the working provider path, with only Gemini text normalization added.
     private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
         val normalized = cleanReply(text)
-        val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
+        // Gemini runs after Next/Prev navigation can replace the reader DOM.\n        // Let the JS insertion path re-detect the current chapter container.\n        val sel = ""
         val paras = normalized.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
         val payload = JSONArray(paras).toString()
 
