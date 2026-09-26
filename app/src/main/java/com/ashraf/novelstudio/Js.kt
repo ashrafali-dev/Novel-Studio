@@ -134,43 +134,103 @@ function __box(){
 (function(sel,paras){
   var el=null;
   try{ if(sel) el=document.querySelector(sel); }catch(e){}
-  // Jsoup's generated cssSelector can become stale after a SPA/navigation
-  // rerender. Fall back to the same content selectors used by Extractor.
-  if(!el){
-    var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
-      '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
-      '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
-      '#article','.article-content','.content','article'];
-    var best=null,bs=0;
-    for(var i=0;i<sels.length;i++){
-      var es=[];
-      try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
-      for(var j=0;j<es.length;j++){
-        var x=es[j], tx=(x.innerText||'').trim();
-        if(tx.length<500) continue;
-        var sc=tx.length;
-        sc+=(x.querySelectorAll('p').length*250);
-        if(sc>bs){bs=sc;best=x;}
-      }
-    }
-    if(!best){
-      var es=[].slice.call(document.querySelectorAll('article,main,section,div'));
-      for(var k=0;k<es.length;k++){
-        var x=es[k],tx=(x.innerText||'').trim();
-        if(tx.length<500) continue;
-        var ps=x.querySelectorAll('p').length;
-        if(ps<3) continue;
-        var sc=tx.length+ps*250;
-        if(sc>bs){bs=sc;best=x;}
-      }
-    }
-    el=best;
-  }
+  if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;
   if(!el) return 'noel';
-  if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
-  var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
-  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
+
+  // Preserve the reader's actual DOM instead of replacing it with new plain
+  // <p> elements. This keeps the site's own margins, padding, font, width,
+  // line-height, inline wrappers and paragraph classes.
+  if(window.__nsEl!==el||!window.__nsOrigBlocks){
+    window.__nsEl=el;
+    window.__nsShown=0;
+    window.__nsOrigBlocks=[];
+
+    var walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);
+    var groups=[];
+    var seen=[];
+    var n;
+    while(n=walker.nextNode()){
+      var raw=n.nodeValue||'';
+      if(!raw.trim())continue;
+      var p=n.parentElement;
+      if(!p)continue;
+      var block=null;
+      try{block=p.closest('p,blockquote,li,pre,h1,h2,h3,h4,h5,h6,div');}catch(e){}
+      if(!block||block===el)block=el;
+      if(!el.contains(block))block=el;
+
+      var idx=seen.indexOf(block);
+      if(idx<0){idx=seen.length;seen.push(block);groups[idx]=[];}
+      groups[idx].push({node:n,text:raw});
+    }
+
+    // Some readers use custom paragraph elements instead of normal block tags.
+    // If the text-node pass found too few blocks, use direct children that
+    // actually contain text while still preserving their existing DOM.
+    if(groups.length<paras.length){
+      var direct=[];
+      for(var di=0;di<el.children.length;di++){
+        var de=el.children[di];
+        if(((de.innerText||de.textContent||'').trim()).length>0)direct.push(de);
+      }
+      if(direct.length>groups.length){
+        groups=[];
+        for(var dj=0;dj<direct.length;dj++){
+          var dn=[];
+          var dw=document.createTreeWalker(direct[dj],NodeFilter.SHOW_TEXT,null);
+          var dt;
+          while(dt=dw.nextNode()){
+            if((dt.nodeValue||'').trim())dn.push({node:dt,text:dt.nodeValue||''});
+          }
+          if(dn.length)groups.push(dn);
+        }
+      }
+    }
+
+    window.__nsOrigBlocks=groups;
+  }
+
+  var blocks=window.__nsOrigBlocks||[];
+  if(!blocks.length)return 'noel';
+
+  // Map translated paragraphs onto the existing text-bearing blocks. We do
+  // not create or remove the reader's elements; only their text nodes change.
+  var mapped=[];
+  var count=Math.min(blocks.length,paras.length);
+
+  for(var i=0;i<count;i++){
+    var g=blocks[i], tg=[];
+    if(!g||!g.length)continue;
+    for(var j=0;j<g.length;j++){
+      tg.push({node:g[j].node,text:j===0?String(paras[i]||''):''});
+    }
+    mapped.push(tg);
+  }
+
+  // If the translation has fewer paragraphs, leave remaining original blocks
+  // untouched rather than destroying layout. If it has extra paragraphs,
+  // append them to the final existing text block so no translated text is lost.
+  if(paras.length>blocks.length){
+    var last=blocks[blocks.length-1];
+    if(last&&last.length){
+      var extra=[];
+      for(var k=blocks.length;k<paras.length;k++)extra.push(String(paras[k]||''));
+      if(extra.length){
+        mapped[mapped.length-1][0].text += '\\n\\n'+extra.join('\\n\\n');
+      }
+    }
+  }
+
+  window.__nsTrBlocks=mapped;
+  for(var a=0;a<window.__nsTrBlocks.length;a++){
+    var tg2=window.__nsTrBlocks[a];
+    for(var b=0;b<tg2.length;b++){
+      if(document.contains(tg2[b].node))tg2[b].node.nodeValue=tg2[b].text;
+    }
+  }
+
+  el.setAttribute('data-ns','1');
+  window.__nsShown=1;
   return 'ok';
 })(__SEL__,__PARAS__)
 """
@@ -189,18 +249,20 @@ function __box(){
   var el=window.__nsEl;
   if(!el||!document.contains(el)||!window.__nsOrigBlocks||!window.__nsTrBlocks)return 'none';
   function setGroup(group){
+    if(!group)return;
     for(var i=0;i<group.length;i++){
       var n=group[i].node;
       if(document.contains(n))n.nodeValue=group[i].text||'';
     }
   }
   if(window.__nsShown){
+    // Restore the exact original text nodes; the surrounding DOM is untouched.
     for(var i=0;i<window.__nsOrigBlocks.length;i++)setGroup(window.__nsOrigBlocks[i]);
     window.__nsShown=0;
     el.removeAttribute('data-ns');
     return 'orig';
   }else{
-    for(var j=0;j<window.__nsTrBlocks.length;j++)setGroup(window.__nsTrBlocks[j].textNodes||[]);
+    for(var j=0;j<window.__nsTrBlocks.length;j++)setGroup(window.__nsTrBlocks[j]);
     window.__nsShown=1;
     el.setAttribute('data-ns','1');
     return 'tr';
