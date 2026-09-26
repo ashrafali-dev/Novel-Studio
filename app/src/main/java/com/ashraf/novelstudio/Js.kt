@@ -185,9 +185,9 @@ function __box(){
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
         org.json.JSONObject.quote(sel) + ")"
 
-    val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
-        "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
-        "else{el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
+    val TOGGLE = "(function(){var el=window.__nsEl,nodes=window.__nsOrigNodes,orig=window.__nsOrigTexts;if(!el||!nodes||!orig||!document.contains(el))return 'none';" +
+        "if(window.__nsShown){for(var i=0;i<nodes.length;i++){if(nodes[i]&&orig[i]!=null)nodes[i].nodeValue=orig[i];}window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
+        "else{var p=window.__nsLastParas||[];for(var j=0;j<nodes.length&&j<p.length;j++)nodes[j].nodeValue=String(p[j]);window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
 
     // ---------------------------------------------------------------- click the site's own Next / Prev button
     private const val CLICK_BODY = """
