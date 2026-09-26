@@ -56,28 +56,47 @@ function __box(){
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
   var box=__box();
   if(!box) return 'nobox';
-  // Programmatic paste must NEVER focus the chat editor. Focusing a WebView
-  // contenteditable/textarea can implicitly open Android's soft keyboard.
-  // The user should be the one to focus the box when they want to type.
-  var isGemini=location.hostname==='gemini.google.com'||location.hostname.endsWith('.gemini.google.com');
-  if(isGemini && box.matches('div.ql-editor, rich-textarea [contenteditable="true"], [contenteditable="true"][role="textbox"]')){
-    // Gemini's composer is Quill/contenteditable. Updating textContent alone can
-    // leave Quill's internal model empty, so write a paragraph and fire input.
-    box.innerHTML='<p>'+String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')+'</p>';
-    box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
-    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
-  } else if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
+
+  var host=location.hostname;
+  var isGemini=host==='gemini.google.com'||host.endsWith('.gemini.google.com');
+  var isCE=box.isContentEditable || box.getAttribute('contenteditable')==='true' ||
+           box.getAttribute('role')==='textbox';
+
+  if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
+    // ChatGPT and other textarea-based composers: use the native value setter
+    // so React/Vue sees the new value, without focusing the field.
     var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
     box.dispatchEvent(new Event('input',{bubbles:true}));
+    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
+    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
+  } else if(isCE){
+    // Most other chatbots use contenteditable/ProseMirror/Quill editors.
+    // Mutate the editor DOM directly and send the same DOM events their
+    // frameworks listen for. Do NOT focus/select/execCommand: that is what
+    // makes Android open the soft keyboard during automatic extraction.
+    var esc=String(text)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+    var html=esc.replace(/\r?\n/g,'<br>');
+    if(isGemini){
+      box.innerHTML='<p>'+html+'</p>';
+    }else if(host.indexOf('claude.ai')>=0){
+      box.innerHTML='<p>'+html+'</p>';
+    }else{
+      box.innerHTML=html;
+    }
+    try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
+    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   } else {
-    // Do not use execCommand/select/focus here: those APIs can request IME focus.
+    // Last fallback for a textbox-like element. Still never focus it.
     box.textContent=text;
-    box.dispatchEvent(new Event('input',{bubbles:true}));
+    try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   }
+
   if(doSend){
     setTimeout(function(){
       var btn=null;
@@ -85,9 +104,10 @@ function __box(){
       if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
       if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true') btn.click();
       else {
+        // Sending is an explicit action; only this fallback may focus the box.
         box.focus();
         box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
       }
     }, 60);
   }
