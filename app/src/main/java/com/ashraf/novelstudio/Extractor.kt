@@ -251,7 +251,7 @@ object Extractor {
         val (next, nextSel) = findLink(doc, url, "next", preferredNext)
         val (prev, prevSel) = findLink(doc, url, "prev", preferredPrev)
         val text = if (body.startsWith(title)) body else title + "\n\n" + body
-        val sel = try { stableSelector(el) } catch (e: Exception) { "" }
+        val sel = try { el.cssSelector() } catch (e: Exception) { "" }
         return Chapter(
             title, text, next, prev, url, findNovel(doc, url, title),
             findNumber(title, url), sel, titleSel, nextSel, prevSel
