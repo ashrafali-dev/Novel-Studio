@@ -1373,7 +1373,12 @@ class MainActivity : Activity() {
     private fun finishJob(tok: Int, ch: Chapter) {
         chatWv.evaluateJavascript(Js.readText()) { raw ->
             if (tok != runToken) return@evaluateJavascript
-            val t = cleanReply(decode(raw))
+            val rawText = decode(raw)
+            val t = if (Gemini.isGemini(chatWv.url)) {
+                Gemini.cleanResponse(rawText)
+            } else {
+                cleanReply(rawText)
+            }
             if (t.length < 30) {
                 failJob(tok, ch, "উত্তর পড়া গেল না")
                 return@evaluateJavascript
