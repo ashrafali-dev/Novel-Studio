@@ -1286,7 +1286,12 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val full = Prefs.prompt(this) + "\n\n---\n\n" + ch.text
+        val p = Prefs.prompt(this)
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
+            p + "\n\n---\n\n" + ch.text
+        } else {
+            ch.text
+        }
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1394,7 +1399,13 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         queue.clear()
         running = null
-        copy(Prefs.prompt(this) + "\n\n---\n\n" + ch.text)
+        val p = Prefs.prompt(this)
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
+            p + "\n\n---\n\n" + ch.text
+        } else {
+            ch.text
+        }
+        copy(full)
         toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
