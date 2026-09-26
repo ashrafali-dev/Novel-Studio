@@ -40,6 +40,22 @@ object Gemini {
     try{var p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,v);}catch(x){e.value=v;}
     e.dispatchEvent(new Event('input',{bubbles:true}));try{e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:v}));}catch(x){}e.dispatchEvent(new Event('change',{bubbles:true}));
   }
+  // Capture the current Gemini assistant state before sending. MainActivity uses
+  // this contract to start polling for the newly generated answer.
+  function assistantNodes(){
+    var s='model-response,message-content,.model-response-text,.response-content';
+    var a=all(document,s,[]);
+    return a.filter(function(e){
+      var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();
+      if(!(r.width>0&&r.height>0&&tx.length>0))return false;
+      return !a.some(function(o){return o!==e&&o.contains(e);});
+    });
+  }
+  var before=assistantNodes(),n0=before.length,len0=0;
+  if(n0){
+    var last=before[n0-1];
+    len0=(last.innerText||last.textContent||'').trim().length;
+  }
   var box=findBox();if(!box)return 'nobox';
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){nativeSet(box,text);}
   else{
@@ -61,7 +77,7 @@ object Gemini {
     if(btn){btn.click();return;}
     try{box.focus();box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));}catch(e){}
   },120);
-  return 'ok';
+  return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
 """.trimIndent().replace("__TEXT__", quoted).replace("__SEND__", doSend.toString())
         webView.evaluateJavascript(js, callback)
