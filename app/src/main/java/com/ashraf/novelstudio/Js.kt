@@ -134,101 +134,52 @@ function __box(){
 (function(sel,paras){
   var el=null;
   try{ if(sel) el=document.querySelector(sel); }catch(e){}
+
+  // Keep the exact insertion behavior that worked in the earlier build:
+  // replace only the chapter content container's contents with clean
+  // paragraph nodes, letting the site's own chapter-container CSS style them.
+  // This is intentionally separate from extraction/selector logic.
   if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;
-  if(!el) return 'noel';
 
-  // Preserve the reader's actual DOM instead of replacing it with new plain
-  // <p> elements. This keeps the site's own margins, padding, font, width,
-  // line-height, inline wrappers and paragraph classes.
-  if(window.__nsEl!==el||!window.__nsOrigBlocks){
+  // If the learned selector is stale, use the same stable content selectors
+  // as the original Build-102 insertion path.
+  if(!el){
+    var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
+      '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
+      '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
+      '#article','.article-content','.content','article'];
+    var best=null,bs=0;
+    for(var i=0;i<sels.length;i++){
+      var es=[];
+      try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
+      for(var j=0;j<es.length;j++){
+        var x=es[j],tx=(x.innerText||'').trim();
+        if(tx.length<500)continue;
+        var sc=tx.length+(x.querySelectorAll('p').length*250);
+        if(sc>bs){bs=sc;best=x;}
+      }
+    }
+    el=best;
+  }
+
+  if(!el)return 'noel';
+
+  // Save the exact original DOM once so Toggle can restore it.
+  if(window.__nsEl!==el||window.__nsOrig==null){
     window.__nsEl=el;
-    window.__nsShown=0;
-    window.__nsOrigBlocks=[];
-
-    var walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);
-    var groups=[];
-    var seen=[];
-    var n;
-    while(n=walker.nextNode()){
-      var raw=n.nodeValue||'';
-      if(!raw.trim())continue;
-      var p=n.parentElement;
-      if(!p)continue;
-      var block=null;
-      try{block=p.closest('p,blockquote,li,pre,h1,h2,h3,h4,h5,h6,div');}catch(e){}
-      if(!block||block===el)block=el;
-      if(!el.contains(block))block=el;
-
-      var idx=seen.indexOf(block);
-      if(idx<0){idx=seen.length;seen.push(block);groups[idx]=[];}
-      groups[idx].push({node:n,text:raw});
-    }
-
-    // Some readers use custom paragraph elements instead of normal block tags.
-    // If the text-node pass found too few blocks, use direct children that
-    // actually contain text while still preserving their existing DOM.
-    if(groups.length<paras.length){
-      var direct=[];
-      for(var di=0;di<el.children.length;di++){
-        var de=el.children[di];
-        if(((de.innerText||de.textContent||'').trim()).length>0)direct.push(de);
-      }
-      if(direct.length>groups.length){
-        groups=[];
-        for(var dj=0;dj<direct.length;dj++){
-          var dn=[];
-          var dw=document.createTreeWalker(direct[dj],NodeFilter.SHOW_TEXT,null);
-          var dt;
-          while(dt=dw.nextNode()){
-            if((dt.nodeValue||'').trim())dn.push({node:dt,text:dt.nodeValue||''});
-          }
-          if(dn.length)groups.push(dn);
-        }
-      }
-    }
-
-    window.__nsOrigBlocks=groups;
+    window.__nsOrig=el.innerHTML;
+    window.__nsTr=null;
   }
 
-  var blocks=window.__nsOrigBlocks||[];
-  if(!blocks.length)return 'noel';
-
-  // Map translated paragraphs onto the existing text-bearing blocks. We do
-  // not create or remove the reader's elements; only their text nodes change.
-  var mapped=[];
-  var count=Math.min(blocks.length,paras.length);
-
-  for(var i=0;i<count;i++){
-    var g=blocks[i], tg=[];
-    if(!g||!g.length)continue;
-    for(var j=0;j<g.length;j++){
-      tg.push({node:g[j].node,text:j===0?String(paras[i]||''):''});
-    }
-    mapped.push(tg);
+  var frag=document.createDocumentFragment();
+  for(var i=0;i<paras.length;i++){
+    var p=document.createElement('p');
+    p.textContent=String(paras[i]||'');
+    frag.appendChild(p);
   }
 
-  // If the translation has fewer paragraphs, leave remaining original blocks
-  // untouched rather than destroying layout. If it has extra paragraphs,
-  // append them to the final existing text block so no translated text is lost.
-  if(paras.length>blocks.length){
-    var last=blocks[blocks.length-1];
-    if(last&&last.length){
-      var extra=[];
-      for(var k=blocks.length;k<paras.length;k++)extra.push(String(paras[k]||''));
-      if(extra.length){
-        mapped[mapped.length-1][0].text += '\\n\\n'+extra.join('\\n\\n');
-      }
-    }
-  }
-
-  window.__nsTrBlocks=mapped;
-  for(var a=0;a<window.__nsTrBlocks.length;a++){
-    var tg2=window.__nsTrBlocks[a];
-    for(var b=0;b<tg2.length;b++){
-      if(document.contains(tg2[b].node))tg2[b].node.nodeValue=tg2[b].text;
-    }
-  }
-
+  el.innerHTML='';
+  el.appendChild(frag);
   el.setAttribute('data-ns','1');
   window.__nsShown=1;
   return 'ok';
@@ -245,29 +196,9 @@ function __box(){
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
         org.json.JSONObject.quote(sel) + ")"
 
-    val TOGGLE = """(function(){
-  var el=window.__nsEl;
-  if(!el||!document.contains(el)||!window.__nsOrigBlocks||!window.__nsTrBlocks)return 'none';
-  function setGroup(group){
-    if(!group)return;
-    for(var i=0;i<group.length;i++){
-      var n=group[i].node;
-      if(document.contains(n))n.nodeValue=group[i].text||'';
-    }
-  }
-  if(window.__nsShown){
-    // Restore the exact original text nodes; the surrounding DOM is untouched.
-    for(var i=0;i<window.__nsOrigBlocks.length;i++)setGroup(window.__nsOrigBlocks[i]);
-    window.__nsShown=0;
-    el.removeAttribute('data-ns');
-    return 'orig';
-  }else{
-    for(var j=0;j<window.__nsTrBlocks.length;j++)setGroup(window.__nsTrBlocks[j]);
-    window.__nsShown=1;
-    el.setAttribute('data-ns','1');
-    return 'tr';
-  }
-})()"""
+    val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
+        "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
+        "else{if(window.__nsTr==null)return 'none';el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
 
 
     // ---------------------------------------------------------------- click the site's own Next / Prev button
