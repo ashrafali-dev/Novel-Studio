@@ -84,55 +84,109 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 (function(sel,paras){
   var el=null;
   try{if(sel)el=document.querySelector(sel);}catch(e){}
-  if(!el){
-    var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
-      '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
-      '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
-      '#article','.article-content','.content','article'];
-    var best=null,bs=0;
-    for(var i=0;i<sels.length;i++){
-      var es=[];
-      try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
-      for(var j=0;j<es.length;j++){
-        var x=es[j],tx=(x.innerText||'').trim();
-        if(tx.length<500)continue;
-        var sc=tx.length+x.querySelectorAll('p').length*250;
-        if(sc>bs){bs=sc;best=x;}
-      }
-    }
-    el=best;
-  }
   if(!el)return 'noel';
-  if(window.__nsEl!==el||window.__nsOrig==null){
-    window.__nsOrig=el.innerHTML;window.__nsEl=el;
-  }else if(window.__nsShown&&window.__nsOrig!=null){
-    el.innerHTML=window.__nsOrig;
-  }
-  var source=el.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,blockquote,pre');
+
+  function textOf(e){return ((e&&(e.innerText||e.textContent))||'').trim();}
+
   var blocks=[];
-  for(var s=0;s<source.length;s++){
-    if(((source[s].innerText||source[s].textContent)||'').trim())blocks.push(source[s]);
-  }
-  if(!blocks.length){
+  try{blocks=[].slice.call(el.querySelectorAll('p')).filter(function(x){return textOf(x).length>0;});}catch(e){blocks=[];}
+  if(blocks.length<3){
+    blocks=[];
     var kids=el.children||[];
     for(var k=0;k<kids.length;k++){
-      if(((kids[k].innerText||kids[k].textContent)||'').trim())blocks.push(kids[k]);
+      if(textOf(kids[k]).length>0)blocks.push(kids[k]);
     }
   }
+  if(blocks.length<1)return 'noel';
+
+  if(window.__nsEl!==el){
+    window.__nsEl=el;
+    window.__nsShown=0;
+    window.__nsOrigBlocks=[];
+    window.__nsTrBlocks=[];
+    for(var si=0;si<blocks.length;si++){
+      var nodes=[];
+      var w=document.createTreeWalker(blocks[si],NodeFilter.SHOW_TEXT,{
+        acceptNode:function(n){
+          var p=n.parentElement;
+          if(!p)return NodeFilter.FILTER_REJECT;
+          var tag=(p.tagName||'').toLowerCase();
+          return (tag==='script'||tag==='style')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT;
+        }
+      },false);
+      var n;
+      while(n=w.nextNode())nodes.push({node:n,text:n.nodeValue||''});
+      window.__nsOrigBlocks.push(nodes);
+    }
+  }
+
+  function textNodes(root){
+    var out=[];
+    var w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{
+      acceptNode:function(n){
+        var p=n.parentElement;
+        if(!p)return NodeFilter.FILTER_REJECT;
+        var tag=(p.tagName||'').toLowerCase();
+        return (tag==='script'||tag==='style')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT;
+      }
+    },false);
+    var n;
+    while(n=w.nextNode())out.push(n);
+    return out;
+  }
+
   function putText(root,value){
-    var w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null),first=null,n;
-    while(n=w.nextNode()){if(!first)first=n;else n.nodeValue='';}
-    if(first)first.nodeValue=value;else root.appendChild(document.createTextNode(value));
+    var ns=textNodes(root);
+    if(!ns.length){root.appendChild(document.createTextNode(value));return;}
+    var weights=[],total=0;
+    for(var i=0;i<ns.length;i++){
+      var w=Math.max(1,(ns[i].nodeValue||'').length);
+      weights.push(w);total+=w;
+    }
+    var pos=0;
+    for(var j=0;j<ns.length;j++){
+      var take=(j===ns.length-1)?(value.length-pos):Math.round(value.length*weights[j]/total);
+      if(take<0)take=0;
+      ns[j].nodeValue=value.substring(pos,pos+take);
+      pos+=take;
+    }
   }
-  var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){
-    var t=blocks.length?blocks[Math.min(i,blocks.length-1)]:null;
-    var p=t?t.cloneNode(true):document.createElement('p');
-    p.removeAttribute('id');p.removeAttribute('data-ns');
-    putText(p,paras[i]);frag.appendChild(p);
+
+  var use=paras.slice();
+  var first=(use[0]||'').trim();
+  var h1='';
+  try{
+    var he=el.querySelector('h1,h2,.chapter-title,.chr-title,#chapter-heading');
+    h1=textOf(he);
+  }catch(e){}
+  if(first&&h1){
+    var nf=first.toLowerCase().replace(/^chapter\s*\d+\s*[:.#-]?\s*/,'').trim();
+    var nh=h1.toLowerCase().replace(/^chapter\s*\d+\s*[:.#-]?\s*/,'').trim();
+    if(first===h1||nf===nh||first.indexOf(h1)===0||h1.indexOf(first)===0)use.shift();
   }
-  el.innerHTML='';el.appendChild(frag);el.setAttribute('data-ns','1');
-  window.__nsTr=el.innerHTML;window.__nsShown=1;return 'ok';
+
+  // If the model returned more paragraphs than the real DOM has, keep all
+  // translation text by appending the overflow to the last real paragraph.
+  if(use.length>blocks.length&&blocks.length>0){
+    var merged=use.slice(0,blocks.length-1);
+    merged.push(use.slice(blocks.length-1).join('\n\n'));
+    use=merged;
+  }
+
+  var trBlocks=[];
+  var count=Math.min(use.length,blocks.length);
+  for(var q=0;q<count;q++){
+    var value=(use[q]||'').trim();
+    putText(blocks[q],value);
+    trBlocks.push({
+      textNodes:textNodes(blocks[q]).map(function(n){return {node:n,text:n.nodeValue||''};})
+    });
+  }
+
+  window.__nsTrBlocks=trBlocks;
+  el.setAttribute('data-ns','1');
+  window.__nsShown=1;
+  return 'ok';
 })(__SEL__,__PARAS__)
     """
 
@@ -146,9 +200,28 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
         org.json.JSONObject.quote(sel) + ")"
 
-    val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
-        "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
-        "else{el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
+    val TOGGLE = """(function(){
+  var el=window.__nsEl;
+  if(!el||!document.contains(el)||!window.__nsOrigBlocks||!window.__nsTrBlocks)return 'none';
+  function setGroup(group){
+    for(var i=0;i<group.length;i++){
+      var n=group[i].node;
+      if(document.contains(n))n.nodeValue=group[i].text||'';
+    }
+  }
+  if(window.__nsShown){
+    for(var i=0;i<window.__nsOrigBlocks.length;i++)setGroup(window.__nsOrigBlocks[i]);
+    window.__nsShown=0;
+    el.removeAttribute('data-ns');
+    return 'orig';
+  }else{
+    for(var j=0;j<window.__nsTrBlocks.length;j++)setGroup(window.__nsTrBlocks[j].textNodes||[]);
+    window.__nsShown=1;
+    el.setAttribute('data-ns','1');
+    return 'tr';
+  }
+})()"""
+
 
     // ---------------------------------------------------------------- click the site's own Next / Prev button
     private const val CLICK_BODY = """

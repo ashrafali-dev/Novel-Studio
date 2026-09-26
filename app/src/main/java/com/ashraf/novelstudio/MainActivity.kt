@@ -935,6 +935,16 @@ class MainActivity : Activity() {
         // so the idle-wait loop cannot hold extraction for several seconds.
         if (Prefs.auto(this)) chatWv.evaluateJavascript(Js.stop(), null)
 
+        // Same current chapter: the original source is already in lastChapter.
+        // Do not restore/reparse the full translated DOM just to extract it again.
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+        val cached = lastChapter
+        if (Prefs.auto(this) && cached != null && currentUrl.isNotBlank() &&
+            cleanUrl(cached.url) == currentUrl) {
+            handleChapter(cached, forceFresh = true)
+            return
+        }
+
         // If the translated version is currently displayed, restore the original
         // chapter first. Otherwise extraction could read the old Bengali text and
         // feed that back into the translator.
