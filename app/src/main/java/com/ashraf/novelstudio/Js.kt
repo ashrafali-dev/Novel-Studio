@@ -22,7 +22,28 @@ function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
 function __reply(p){if(location.hostname==='gemini.google.com'){var g=__asst(p);if(g.length){var z=g[g.length-1],best=z,bt=((z.innerText||z.textContent||'').trim());var qs=['.markdown','.model-response-text','message-content','[class*="markdown" i]'];for(var qi=0;qi<qs.length;qi++){var aa=[];try{aa=[].slice.call(z.querySelectorAll(qs[qi]));}catch(e){aa=[];}for(var aj=0;aj<aa.length;aj++){var ae=aa[aj],ar=ae.getBoundingClientRect(),at=(ae.innerText||ae.textContent||'').trim();if(ar.width>0&&ar.height>0&&at.length>bt.length){best=ae;bt=at;}}}return best;}}var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
 function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
-function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
+function __box(){
+  var host=location.hostname;
+  var sels;
+  if(host==='gemini.google.com'||host.endsWith('.gemini.google.com')){
+    sels=['div.ql-editor','rich-textarea [contenteditable="true"]','[aria-label="Enter a prompt here"]','[contenteditable="true"][role="textbox"]','[role="textbox"]'];
+  }else{
+    sels=['#prompt-textarea','textarea','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]'];
+  }
+  var c=[];
+  for(var i=0;i<sels.length;i++){
+    var a=[];
+    try{a=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}
+    for(var j=0;j<a.length;j++){
+      var e=a[j],r=e.getBoundingClientRect();
+      if(r.width>0&&r.height>0&&!c.includes(e))c.push(e);
+    }
+    if(c.length&&host==='gemini.google.com')break;
+  }
+  if(!c.length)return null;
+  c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
+  return c[0];
+}
 """
 
     private fun run(body: String) = PRELUDE + "\n;" + body
@@ -38,7 +59,14 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   // Programmatic paste must NEVER focus the chat editor. Focusing a WebView
   // contenteditable/textarea can implicitly open Android's soft keyboard.
   // The user should be the one to focus the box when they want to type.
-  if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
+  var isGemini=location.hostname==='gemini.google.com'||location.hostname.endsWith('.gemini.google.com');
+  if(isGemini && box.matches('div.ql-editor, rich-textarea [contenteditable="true"], [contenteditable="true"][role="textbox"]')){
+    // Gemini's composer is Quill/contenteditable. Updating textContent alone can
+    // leave Quill's internal model empty, so write a paragraph and fire input.
+    box.innerHTML='<p>'+String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')+'</p>';
+    box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
+    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
+  } else if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
     var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
     box.dispatchEvent(new Event('input',{bubbles:true}));
@@ -85,112 +113,47 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     private const val APPLY_BODY = """
 (function(sel,paras){
   var el=null;
-  try{if(sel)el=document.querySelector(sel);}catch(e){}
-  if(!el)return 'noel';
-
-  function textOf(e){return ((e&&(e.innerText||e.textContent))||'').trim();}
-
-  var blocks=[];
-  try{blocks=[].slice.call(el.querySelectorAll('p')).filter(function(x){return textOf(x).length>0;});}catch(e){blocks=[];}
-  if(blocks.length<3){
-    blocks=[];
-    var kids=el.children||[];
-    for(var k=0;k<kids.length;k++){
-      if(textOf(kids[k]).length>0)blocks.push(kids[k]);
-    }
-  }
-  if(blocks.length<1)return 'noel';
-
-  if(window.__nsEl!==el){
-    window.__nsEl=el;
-    window.__nsShown=0;
-    window.__nsOrigBlocks=[];
-    window.__nsTrBlocks=[];
-    for(var si=0;si<blocks.length;si++){
-      var nodes=[];
-      var w=document.createTreeWalker(blocks[si],NodeFilter.SHOW_TEXT,{
-        acceptNode:function(n){
-          var p=n.parentElement;
-          if(!p)return NodeFilter.FILTER_REJECT;
-          var tag=(p.tagName||'').toLowerCase();
-          return (tag==='script'||tag==='style')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT;
-        }
-      },false);
-      var n;
-      while(n=w.nextNode())nodes.push({node:n,text:n.nodeValue||''});
-      window.__nsOrigBlocks.push(nodes);
-    }
-  }
-
-  function textNodes(root){
-    var out=[];
-    var w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{
-      acceptNode:function(n){
-        var p=n.parentElement;
-        if(!p)return NodeFilter.FILTER_REJECT;
-        var tag=(p.tagName||'').toLowerCase();
-        return (tag==='script'||tag==='style')?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT;
+  try{ if(sel) el=document.querySelector(sel); }catch(e){}
+  // Jsoup's generated cssSelector can become stale after a SPA/navigation
+  // rerender. Fall back to the same content selectors used by Extractor.
+  if(!el){
+    var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
+      '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
+      '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
+      '#article','.article-content','.content','article'];
+    var best=null,bs=0;
+    for(var i=0;i<sels.length;i++){
+      var es=[];
+      try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
+      for(var j=0;j<es.length;j++){
+        var x=es[j], tx=(x.innerText||'').trim();
+        if(tx.length<500) continue;
+        var sc=tx.length;
+        sc+=(x.querySelectorAll('p').length*250);
+        if(sc>bs){bs=sc;best=x;}
       }
-    },false);
-    var n;
-    while(n=w.nextNode())out.push(n);
-    return out;
-  }
-
-  function putText(root,value){
-    var ns=textNodes(root);
-    if(!ns.length){root.appendChild(document.createTextNode(value));return;}
-    var weights=[],total=0;
-    for(var i=0;i<ns.length;i++){
-      var w=Math.max(1,(ns[i].nodeValue||'').length);
-      weights.push(w);total+=w;
     }
-    var pos=0;
-    for(var j=0;j<ns.length;j++){
-      var take=(j===ns.length-1)?(value.length-pos):Math.round(value.length*weights[j]/total);
-      if(take<0)take=0;
-      ns[j].nodeValue=value.substring(pos,pos+take);
-      pos+=take;
+    if(!best){
+      var es=[].slice.call(document.querySelectorAll('article,main,section,div'));
+      for(var k=0;k<es.length;k++){
+        var x=es[k],tx=(x.innerText||'').trim();
+        if(tx.length<500) continue;
+        var ps=x.querySelectorAll('p').length;
+        if(ps<3) continue;
+        var sc=tx.length+ps*250;
+        if(sc>bs){bs=sc;best=x;}
+      }
     }
+    el=best;
   }
-
-  var use=paras.slice();
-  var first=(use[0]||'').trim();
-  var h1='';
-  try{
-    var he=el.querySelector('h1,h2,.chapter-title,.chr-title,#chapter-heading');
-    h1=textOf(he);
-  }catch(e){}
-  if(first&&h1){
-    var nf=first.toLowerCase().replace(/^chapter\s*\d+\s*[:.#-]?\s*/,'').trim();
-    var nh=h1.toLowerCase().replace(/^chapter\s*\d+\s*[:.#-]?\s*/,'').trim();
-    if(first===h1||nf===nh||first.indexOf(h1)===0||h1.indexOf(first)===0)use.shift();
-  }
-
-  // If the model returned more paragraphs than the real DOM has, keep all
-  // translation text by appending the overflow to the last real paragraph.
-  if(use.length>blocks.length&&blocks.length>0){
-    var merged=use.slice(0,blocks.length-1);
-    merged.push(use.slice(blocks.length-1).join('\n\n'));
-    use=merged;
-  }
-
-  var trBlocks=[];
-  var count=Math.min(use.length,blocks.length);
-  for(var q=0;q<count;q++){
-    var value=(use[q]||'').trim();
-    putText(blocks[q],value);
-    trBlocks.push({
-      textNodes:textNodes(blocks[q]).map(function(n){return {node:n,text:n.nodeValue||''};})
-    });
-  }
-
-  window.__nsTrBlocks=trBlocks;
-  el.setAttribute('data-ns','1');
-  window.__nsShown=1;
+  if(!el) return 'noel';
+  if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
+  var frag=document.createDocumentFragment();
+  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
+  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
   return 'ok';
 })(__SEL__,__PARAS__)
-    """
+"""
 
     fun apply(sel: String, parasJson: String): String =
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
