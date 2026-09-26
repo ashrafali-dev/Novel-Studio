@@ -59,7 +59,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
         box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
       }
-    }, Math.min(2500,700+text.length/40));
+    }, 60);
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
@@ -117,13 +117,48 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     el=best;
   }
   if(!el) return 'noel';
-  if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
+
+  // Keep the original site's block elements/classes/styles. Only replace
+  // their text so paragraph spacing, width, alignment and indentation survive.
+  if(window.__nsEl!==el||window.__nsOrig==null){
+    window.__nsOrig=el.innerHTML;
+    window.__nsEl=el;
+  } else if(window.__nsShown && window.__nsOrig!=null){
+    el.innerHTML=window.__nsOrig;
+  }
+
+  var source=el.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,blockquote,pre');
+  var blocks=[];
+  for(var b=0;b<source.length;b++){
+    var se=source[b];
+    if(((se.innerText||se.textContent)||'').trim().length>0) blocks.push(se);
+  }
+  if(!blocks.length){
+    var kids=el.children||[];
+    for(var c=0;c<kids.length;c++){
+      var ke=kids[c];
+      if(((ke.innerText||ke.textContent)||'').trim().length>0) blocks.push(ke);
+    }
+  }
+
   var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
-  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
+  for(var i=0;i<paras.length;i++){
+    var template=blocks.length ? blocks[Math.min(i,blocks.length-1)] : null;
+    var p=template ? template.cloneNode(false) : document.createElement('p');
+    p.removeAttribute('id');
+    p.removeAttribute('data-ns');
+    p.textContent=paras[i];
+    frag.appendChild(p);
+  }
+
+  el.innerHTML='';
+  el.appendChild(frag);
+  el.setAttribute('data-ns','1');
+  window.__nsTr=el.innerHTML;
+  window.__nsShown=1;
   return 'ok';
 })(__SEL__,__PARAS__)
-"""
+    """
 
     fun apply(sel: String, parasJson: String): String =
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)

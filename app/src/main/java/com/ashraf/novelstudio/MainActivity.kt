@@ -1205,7 +1205,7 @@ class MainActivity : Activity() {
                 // Give the chatbot UI time to create the new assistant turn.
                 handler.postDelayed({
                     if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
-                }, 1800)
+                }, 200)
             } else {
                 failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
             }
