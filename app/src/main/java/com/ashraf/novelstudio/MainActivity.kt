@@ -1394,6 +1394,7 @@ class MainActivity : Activity() {
 
         fun attempt(selector: String, left: Int) {
             novelWv.evaluateJavascript(Js.apply(selector, payload)) { r ->
+                if (left == 3) toast("🔧 sel=[$selector] r=$r")
                 if (r != null && r.contains("ok")) {
                     hasTr = true
                     shownTranslated = true
