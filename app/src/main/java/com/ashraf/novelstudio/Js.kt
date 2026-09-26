@@ -70,23 +70,28 @@ function __box(){
     box.dispatchEvent(new Event('input',{bubbles:true}));
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
-  } else if(isCE){
-    // Most other chatbots use contenteditable/ProseMirror/Quill editors.
-    // Mutate the editor DOM directly and send the same DOM events their
-    // frameworks listen for. Do NOT focus/select/execCommand: that is what
-    // makes Android open the soft keyboard during automatic extraction.
+  } else if(isCE && isGemini){
+    // Gemini's editor (Quill-based) does not reliably pick up execCommand,
+    // and focusing it pops the Android keyboard during automatic extraction.
+    // Mutate the editor DOM directly instead.
     var esc=String(text)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
       .replace(/"/g,'&quot;');
     var html=esc.replace(/\r?\n/g,'<br>');
-    if(isGemini){
-      box.innerHTML='<p>'+html+'</p>';
-    }else if(host.indexOf('claude.ai')>=0){
-      box.innerHTML='<p>'+html+'</p>';
-    }else{
-      box.innerHTML=html;
-    }
+    box.innerHTML='<p>'+html+'</p>';
     try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
+    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
+    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
+  } else if(isCE){
+    // ChatGPT, Claude and most other chatbots use ProseMirror/contenteditable
+    // editors that only register text typed through real selection + insertText
+    // (raw innerHTML overwrites are invisible to their internal state).
+    box.focus();
+    var sel=window.getSelection(); var range=document.createRange();
+    range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
+    document.execCommand('insertText',false,text);
+    if(!(box.innerText||'').trim()) box.textContent=text;
+    box.dispatchEvent(new Event('input',{bubbles:true}));
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   } else {
@@ -109,7 +114,7 @@ function __box(){
         box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
         box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
       }
-    }, 60);
+    }, isGemini ? 60 : Math.min(2500,700+text.length/40));
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
