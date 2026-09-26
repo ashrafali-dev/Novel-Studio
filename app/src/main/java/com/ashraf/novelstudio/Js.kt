@@ -12,7 +12,7 @@ object Js {
 var __P={
  'chatgpt.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'[data-testid="send-button"],button[aria-label*="Send" i]'},
  'chat.openai.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'[data-testid="send-button"],button[aria-label*="Send" i]'},
- 'gemini.google.com':{a:'model-response,.model-response-text,message-content',b:'.markdown',stop:'button[aria-label*="Stop" i]',send:'button[aria-label*="Send" i],button.send-button'},
+ 'gemini.google.com':{a:'model-response,message-content,.model-response-text,.response-content',b:'.markdown',stop:'[aria-busy="true"],button[aria-label*="Stop" i]',send:'button[aria-label="Send message" i],button[aria-label*="Send" i],.send-button,button.send-button'},
  'claude.ai':{a:'.font-claude-message,[data-testid="assistant-message"]',b:'',stop:'button[aria-label*="Stop" i],[data-is-streaming="true"]',send:'button[aria-label*="Send" i]'},
  'deepseek.com':{a:'.ds-markdown',b:'',stop:'',send:''},
  'grok.com':{a:'[class*="message-bubble"],[class*="response-content-markdown"]',b:'',stop:'button[aria-label*="Stop" i]',send:'button[type="submit"],button[aria-label*="Submit" i]'}
@@ -20,7 +20,7 @@ var __P={
 var __D={a:'[data-message-author-role="assistant"],.markdown,.prose',b:'',stop:'button[aria-label*="Stop" i]',send:'button[aria-label*="Send" i],button[type="submit"]'};
 function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith('.'+k))return __P[k];}return __D;}
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
-function __reply(p){if(location.hostname==='gemini.google.com'){var g=__asst(p);if(g.length){var z=g[g.length-1],best=z,bt=((z.innerText||z.textContent||'').trim());var qs=['.markdown','.model-response-text','message-content','[class*="markdown" i]'];for(var qi=0;qi<qs.length;qi++){var aa=[];try{aa=[].slice.call(z.querySelectorAll(qs[qi]));}catch(e){aa=[];}for(var aj=0;aj<aa.length;aj++){var ae=aa[aj],ar=ae.getBoundingClientRect(),at=(ae.innerText||ae.textContent||'').trim();if(ar.width>0&&ar.height>0&&at.length>bt.length){best=ae;bt=at;}}}return best;}}var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
+function __reply(p){var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
 function __stream(p){
   if(!p.stop)return 0;
   var a=[];
@@ -31,44 +31,17 @@ function __stream(p){
   }
   return 0;
 }
-function __deepQueryAll(root,sel,out){
-  if(!root)return;
-  var a=[];
-  try{a=[].slice.call(root.querySelectorAll(sel));}catch(e){}
-  for(var i=0;i<a.length;i++)if(!out.includes(a[i]))out.push(a[i]);
-  var all=[];
-  try{all=[].slice.call(root.querySelectorAll('*'));}catch(e){}
-  for(var j=0;j<all.length;j++){
-    var sr=null;try{sr=all[j].shadowRoot;}catch(e){}
-    if(sr)__deepQueryAll(sr,sel,out);
-  }
-}
-function __deepFindOne(sel){
-  var out=[];
-  __deepQueryAll(document,sel,out);
-  if(!out.length)return null;
-  out.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
-  return out[0];
-}
 function __box(){
   var host=location.hostname;
   var sels;
   if(host==='gemini.google.com'||host.endsWith('.gemini.google.com')){
-    // Gemini's mobile composer may live inside rich-textarea/input-area-v2
-    // (and, on some UI versions, an open shadow root). Search those versions
-    // without changing the ChatGPT selector path.
+    // Build 101 path: Gemini's normal web composer is a Quill ql-editor.
+    // Keep this provider-specific and deliberately simple.
     sels=[
       'div.ql-editor[contenteditable="true"]',
       'rich-textarea [contenteditable="true"]',
       '[aria-label="Enter a prompt here"]',
-      '[aria-label="Ask Gemini"]',
-      'input-area-v2 [contenteditable="true"]',
-      'input-area-v2 textarea',
-      'main [contenteditable="true"][role="textbox"]',
-      'main div[contenteditable="true"]',
-      'main textarea',
       '[contenteditable="true"][role="textbox"]',
-      '[contenteditable="true"]',
       '[role="textbox"]'
     ];
   }else{
@@ -77,11 +50,7 @@ function __box(){
   var c=[];
   for(var i=0;i<sels.length;i++){
     var a=[];
-    if(host==='gemini.google.com'||host.endsWith('.gemini.google.com')){
-      __deepQueryAll(document,sels[i],a);
-    }else{
-      try{a=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}
-    }
+    try{a=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}
     for(var j=0;j<a.length;j++){
       var e=a[j],r=e.getBoundingClientRect();
       if(r.width>0&&r.height>0&&!c.includes(e))c.push(e);
@@ -119,14 +88,14 @@ function __box(){
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   } else if(isCE && isGemini){
-    // Gemini's Quill composer accepts the DOM paragraph + input event path
-    // used by working Gemini extensions. Keep this isolated to Gemini.
-    var esc=String(text)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;');
-    var html=esc.replace(/\r?\n/g,'<br>');
-    box.innerHTML='<p>'+html+'</p>';
-    try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
+    // Build 101 Gemini path: real selection + insertText through the editor.
+    // Keep it isolated from the ChatGPT path below.
+    box.focus();
+    var sel=window.getSelection(); var range=document.createRange();
+    range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
+    document.execCommand('insertText',false,text);
+    if(!(box.innerText||'').trim()) box.textContent=text;
+    box.dispatchEvent(new Event('input',{bubbles:true}));
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   } else if(isCE){
@@ -153,13 +122,8 @@ function __box(){
   if(doSend){
     setTimeout(function(){
       var btn=null;
-      if(isGemini){
-        try{btn=p.send?__deepFindOne(p.send):null;}catch(e){}
-        if(!btn) btn=__deepFindOne('button[aria-label*="send" i],button[type="submit"],[role="button"][aria-label*="send" i]');
-      }else{
-        try{btn=p.send?document.querySelector(p.send):null;}catch(e){}
-        if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
-      }
+      try{btn=p.send?document.querySelector(p.send):null;}catch(e){}
+      if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
       if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true') btn.click();
       else {
         // Sending is an explicit action; only this fallback may focus the box.
