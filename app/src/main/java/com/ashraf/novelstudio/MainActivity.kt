@@ -1283,7 +1283,12 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val full = Prefs.prompt(this) + "\n\n---\n\n" + ch.text
+        val p = Prefs.prompt(this)
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
+            p + "\n\n---\n\n" + ch.text
+        } else {
+            ch.text
+        }
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1341,8 +1346,17 @@ class MainActivity : Activity() {
         }, 300)
     }
 
-    private fun cleanReply(t: String): String =
-        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
+    private fun cleanReply(t: String): String {
+        var x = t.replace(
+            Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+        if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
+            x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
+            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\n\n")
+        }
+        return x.trim()
+    }
 
     private fun finishJob(tok: Int, ch: Chapter) {
         chatWv.evaluateJavascript(Js.readText()) { raw ->
@@ -1360,7 +1374,13 @@ class MainActivity : Activity() {
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) {\n                if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {\n                    applyGeminiTranslation(shown, t, true)\n                } else {\n                    applyTranslation(shown, t, true)\n                }\n            }
+            if (shown != null && keyOf(shown) == keyOf(ch)) {
+                if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
+                    applyGeminiTranslation(shown, t, true)
+                } else {
+                    applyTranslation(shown, t, true)
+                }
+            }
             toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
@@ -1372,7 +1392,13 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         queue.clear()
         running = null
-        copy(Prefs.prompt(this) + "\n\n---\n\n" + ch.text)
+        val p = Prefs.prompt(this)
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
+            p + "\n\n---\n\n" + ch.text
+        } else {
+            ch.text
+        }
+        copy(full)
         toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
@@ -1433,7 +1459,40 @@ class MainActivity : Activity() {
         attempt(sel, 3)
     }
 
-    // Gemini can finish after Next/Prev has replaced the reader DOM.\n    // Always let the JS insertion path detect the current chapter container.\n    private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {\n        val normalized = cleanReply(text)\n        val paras = normalized.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }\n        val payload = JSONArray(paras).toString()\n\n        fun attempt(left: Int) {\n            novelWv.evaluateJavascript(Js.apply("", payload)) { r ->\n                if (r != null && r.contains("ok")) {\n                    hasTr = true\n                    shownTranslated = true\n                    updatePill()\n                    if (retry) {\n                        handler.postDelayed({\n                            if (shownTranslated && lastChapter != null && keyOf(lastChapter!!) == keyOf(ch)) {\n                                novelWv.evaluateJavascript(Js.stillApplied("")) { state ->\n                                    if (state != null && state.contains("lost")) attempt(2)\n                                }\n                            }\n                        }, 2500)\n                    }\n                } else if (left > 0) {\n                    handler.postDelayed({\n                        if (lastChapter != null && keyOf(lastChapter!!) == keyOf(ch) && !isFinishing) attempt(left - 1)\n                    }, 400L)\n                } else {\n                    toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")\n                }\n            }\n        }\n\n        attempt(6)\n    }\n\n    private fun toggleView() {
+    // Gemini can finish after Next/Prev has replaced the reader DOM.
+    // Always let the JS insertion path detect the current chapter container.
+    private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
+        val normalized = cleanReply(text)
+        val paras = normalized.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        val payload = JSONArray(paras).toString()
+
+        fun attempt(left: Int) {
+            novelWv.evaluateJavascript(Js.apply("", payload)) { r ->
+                if (r != null && r.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {
+                        handler.postDelayed({
+                            if (shownTranslated && lastChapter != null && keyOf(lastChapter!!) == keyOf(ch)) {
+                                novelWv.evaluateJavascript(Js.stillApplied("")) { state ->
+                                    if (state != null && state.contains("lost")) attempt(2)
+                                }
+                            }
+                        }, 2500)
+                    }
+                } else if (left > 0) {
+                    handler.postDelayed({
+                        if (lastChapter != null && keyOf(lastChapter!!) == keyOf(ch) && !isFinishing) attempt(left - 1)
+                    }, 400L)
+                } else {
+                    toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+                }
+            }
+        }
+
+        attempt(6)
+    }\n\n    private fun toggleView() {
         novelWv.evaluateJavascript(Js.TOGGLE) { r ->
             if (r != null && r.contains("orig")) shownTranslated = false
             else if (r != null && r.contains("tr")) shownTranslated = true
