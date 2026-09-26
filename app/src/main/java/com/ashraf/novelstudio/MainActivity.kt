@@ -1301,18 +1301,19 @@ class MainActivity : Activity() {
             { value, callback -> chatWv.evaluateJavascript(Js.send(value, true), callback) }
         }
         sendCall(full) { raw ->
-            if (tok != runToken) return@evaluateJavascript
-            val r = decode(raw)
-            if (r.startsWith("ok:")) {
-                val parts = r.substring(3).split(":")
-                val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
-                val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                // Give the chatbot UI time to create the new assistant turn.
-                handler.postDelayed({
-                    if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
-                }, 200)
-            } else {
-                failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
+            if (tok == runToken) {
+                val r = decode(raw)
+                if (r.startsWith("ok:")) {
+                    val parts = r.substring(3).split(":")
+                    val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                    val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                    // Give the chatbot UI time to create the new assistant turn.
+                    handler.postDelayed({
+                        if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
+                    }, 200)
+                } else {
+                    failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
+                }
             }
         }
     }
