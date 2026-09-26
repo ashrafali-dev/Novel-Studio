@@ -1490,38 +1490,47 @@ class MainActivity : Activity() {
     }
 
     // Gemini can finish after Next/Prev has replaced the reader DOM.
-    // Always let the JS insertion path detect the current chapter container.
+    // A slower SPA chapter render may take longer than the first few retries,
+    // so keep the Gemini-only insertion retry alive for about 6 seconds.
     private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
         val normalized = cleanReply(text)
         val paras = normalized.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
         val payload = JSONArray(paras).toString()
 
+        fun sameChapter(): Boolean {
+            val current = lastChapter ?: return false
+            return isCurrentChapter(current, ch)
+        }
+
         fun attempt(left: Int) {
+            if (!sameChapter() || isFinishing) return
             novelWv.evaluateJavascript(Js.apply("", payload)) { r ->
-                if (r != null && r.contains("ok")) {
+                if (sameChapter() && r != null && r.contains("ok")) {
                     hasTr = true
                     shownTranslated = true
                     updatePill()
                     if (retry) {
                         handler.postDelayed({
-                            if (shownTranslated && lastChapter != null && isCurrentChapter(lastChapter!!, ch)) {
+                            if (shownTranslated && sameChapter()) {
                                 novelWv.evaluateJavascript(Js.stillApplied("")) { state ->
-                                    if (state != null && state.contains("lost")) attempt(2)
+                                    if (state != null && state.contains("lost")) attempt(3)
                                 }
                             }
                         }, 2500)
                     }
                 } else if (left > 0) {
                     handler.postDelayed({
-                        if (lastChapter != null && keyOf(lastChapter!!) == keyOf(ch) && !isFinishing) attempt(left - 1)
-                    }, 400L)
+                        if (sameChapter() && !isFinishing) attempt(left - 1)
+                    }, 500L)
                 } else {
                     toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
                 }
             }
         }
 
-        attempt(6)
+        // Next/Prev can rebuild the reader after the translation is already
+        // complete. Do not touch the ChatGPT insertion path.
+        attempt(12)
     }
 
     private fun toggleView() {
