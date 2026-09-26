@@ -1350,11 +1350,11 @@ class MainActivity : Activity() {
             ""
         ).trim()
 
-        // Gemini sometimes exposes paragraph separators as a literal standalone
-        // "n" in the WebView text layer. Only normalize standalone n tokens.
+        // Gemini can expose paragraph separators as a literal standalone
+        // "n" token. Remove only standalone n tokens; normal words are untouched.
         if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
-            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\n\n")
             x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
+            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\\n\\n")
         }
         return x.trim()
     }
