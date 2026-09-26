@@ -466,14 +466,12 @@ class MainActivity : Activity() {
     private fun isChatLoginUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         val path = (uri.path ?: "").lowercase()
-        // Keep Google/Gemini authentication inside this WebView so its cookies/session remain available.
-if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return false
+        // Keep Google/Gemini authentication inside this WebView so its cookies/session remain available.\n        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return false
         val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
             host.contains("claude.ai") ||
             host.contains("anthropic.com") || host.contains("deepseek.com") ||
             host.contains("grok.com") || host == "x.com" || host.endsWith(".x.com")
-        if (host.contains("gemini.google.com")) return false
-return bot && (path.contains("/login") || path.contains("/signin") ||
+        if (host.contains("gemini.google.com")) return false\n        return bot && (path.contains("/login") || path.contains("/signin") ||
             path.contains("/sign-in") || path.contains("/auth") ||
             path.contains("/oauth") || path.contains("/authorize"))
     }
@@ -809,13 +807,8 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
                             fun cleanText(s: String): String = s
                                 .replace("\u00a0", " ")
                                 .replace(Regex("[ \\t]+"), " ")
-                                .replace(Regex(" ?\
-?"), "\
-")
-                                .replace(Regex("\
-{3,}"), "\
-\
-")
+                                .replace(Regex(" ?\\n ?"), "\\n")
+                                .replace(Regex("\\n{3,}"), "\\n\\n")
                                 .trim()
 
                             val cleanBody = cleanText(body)
@@ -823,9 +816,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
                             val fullText = if (cleanTitle.isNotEmpty() && cleanBody.startsWith(cleanTitle)) {
                                 cleanBody
                             } else if (cleanTitle.isNotEmpty()) {
-                                cleanTitle + "
-
-" + cleanBody
+                                cleanTitle + "\n\n" + cleanBody
                             } else {
                                 cleanBody
                             }
@@ -1206,11 +1197,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
     // ================================================================== copy mode (⚡ off)
     private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
-        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "
-
----
-
-" + ch.text else ch.text
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
         deliver(full, tag)
     }
@@ -1298,11 +1285,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
     private fun sendJob(tok: Int, ch: Chapter) {
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
-            p + "
-
----
-
-" + ch.text
+            p + "\n\n---\n\n" + ch.text
         } else {
             ch.text
         }
@@ -1370,9 +1353,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
         ).trim()
         if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
             x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
-            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "
-
-")
+            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\n\n")
         }
         return x.trim()
     }
@@ -1413,17 +1394,12 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
         running = null
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
-            p + "
-
----
-
-" + ch.text
+            p + "\n\n---\n\n" + ch.text
         } else {
             ch.text
         }
         copy(full)
-        toast("❌ $msg
-📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
+        toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
 
@@ -1439,9 +1415,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val paras = text.split(Regex("
-\\s*
-")).map { it.trim() }.filter { it.isNotEmpty() }
+        val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
         val payload = JSONArray(paras).toString()
 
         fun attempt(selector: String, left: Int) {
@@ -1489,9 +1463,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
     // Always let the JS insertion path detect the current chapter container.
     private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
         val normalized = cleanReply(text)
-        val paras = normalized.split(Regex("\
-\\s*\
-")).map { it.trim() }.filter { it.isNotEmpty() }
+        val paras = normalized.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
         val payload = JSONArray(paras).toString()
 
         fun attempt(left: Int) {
@@ -1520,9 +1492,7 @@ return bot && (path.contains("/login") || path.contains("/signin") ||
         }
 
         attempt(6)
-    }
-
-private fun toggleView() {
+    }\n\n    private fun toggleView() {
         novelWv.evaluateJavascript(Js.TOGGLE) { r ->
             if (r != null && r.contains("orig")) shownTranslated = false
             else if (r != null && r.contains("tr")) shownTranslated = true
@@ -1820,8 +1790,7 @@ private fun toggleView() {
     private fun bookmarkList() {
         val l = Store.bookmarks(this)
         if (l.isEmpty()) return toast("বুকমার্ক খালি")
-        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "
-↳ " + it.lastTitle else "") }
+        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "\n↳ " + it.lastTitle else "") }
         listDialog("🔖 বুকমার্ক (লং প্রেসে মোছো)", labels,
             { i ->
                 if (mode == Mode.CHAT) setMode(Mode.SPLIT)
