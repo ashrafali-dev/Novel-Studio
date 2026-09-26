@@ -466,12 +466,14 @@ class MainActivity : Activity() {
     private fun isChatLoginUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         val path = (uri.path ?: "").lowercase()
-        // Keep Google/Gemini authentication inside this WebView so its cookies/session remain available.\n        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return false
+        // Keep Google/Gemini authentication inside this WebView so its cookies/session remain available.
+        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return false
         val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
             host.contains("claude.ai") ||
             host.contains("anthropic.com") || host.contains("deepseek.com") ||
             host.contains("grok.com") || host == "x.com" || host.endsWith(".x.com")
-        if (host.contains("gemini.google.com")) return false\n        return bot && (path.contains("/login") || path.contains("/signin") ||
+        if (host.contains("gemini.google.com")) return false
+        return bot && (path.contains("/login") || path.contains("/signin") ||
             path.contains("/sign-in") || path.contains("/auth") ||
             path.contains("/oauth") || path.contains("/authorize"))
     }
@@ -1492,7 +1494,9 @@ class MainActivity : Activity() {
         }
 
         attempt(6)
-    }\n\n    private fun toggleView() {
+    }
+
+    private fun toggleView() {
         novelWv.evaluateJavascript(Js.TOGGLE) { r ->
             if (r != null && r.contains("orig")) shownTranslated = false
             else if (r != null && r.contains("tr")) shownTranslated = true
