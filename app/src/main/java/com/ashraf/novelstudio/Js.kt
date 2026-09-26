@@ -35,18 +35,20 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
   var box=__box();
   if(!box) return 'nobox';
-  box.focus();
+  // Programmatic paste must NEVER focus the chat editor. Focusing a WebView
+  // contenteditable/textarea can implicitly open Android's soft keyboard.
+  // The user should be the one to focus the box when they want to type.
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
     var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
     box.dispatchEvent(new Event('input',{bubbles:true}));
+    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   } else {
-    var sel=window.getSelection(); var range=document.createRange();
-    range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
-    document.execCommand('insertText',false,text);
-    if(!(box.innerText||'').trim()) box.textContent=text;
+    // Do not use execCommand/select/focus here: those APIs can request IME focus.
+    box.textContent=text;
     box.dispatchEvent(new Event('input',{bubbles:true}));
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
+    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   }
   if(doSend){
     setTimeout(function(){
