@@ -913,35 +913,12 @@ class MainActivity : Activity() {
 
     // ● : auto mode + translation shown -> switch original/translation; otherwise handle the chapter on the page now
     private fun extractCopy() {
+        if (Prefs.auto(this) && hasTr) { toggleView(); return }
         navToken++
         val token = navToken
-
-        fun extractFresh() {
-            if (token != navToken) return
-            extractNow { ch ->
-                if (token != navToken) return@extractNow
-                if (ch == null) {
-                    toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
-                } else {
-                    // Middle ● is an explicit fresh extraction/translation request.
-                    // Never reuse a saved translation for this action.
-                    handleChapter(ch, forceFresh = true)
-                }
-            }
-        }
-
-        // If the translated version is currently displayed, restore the original
-        // chapter first. Otherwise extraction could read the old Bengali text and
-        // feed that back into the translator.
-        if (Prefs.auto(this) && hasTr && shownTranslated) {
-            novelWv.evaluateJavascript(Js.TOGGLE) { r ->
-                if (token != navToken) return@evaluateJavascript
-                shownTranslated = false
-                updatePill()
-                extractFresh()
-            }
-        } else {
-            extractFresh()
+        extractNow { ch ->
+            if (token != navToken) return@extractNow
+            if (ch == null) toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি") else handleChapter(ch)
         }
     }
 
@@ -1115,9 +1092,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun handleChapter(ch: Chapter, forceFresh: Boolean = false) {
+    private fun handleChapter(ch: Chapter) {
         onChapter(ch)
-        if (Prefs.auto(this)) autoFlow(ch, forceFresh) else copyChapter(ch)
+        if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
     }
 
     // ================================================================== copy mode (⚡ off)
@@ -1142,18 +1119,14 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== auto mode (⚡ on)
-    private fun autoFlow(ch: Chapter, forceFresh: Boolean = false) {
-        // A manual ● press means "extract and translate again". Do not reuse
-        // the previously saved translation for that explicit request.
-        if (!forceFresh) {
-            val saved = Store.find(this, ch)
-            if (saved != null) {
-                applyTranslation(ch, Store.read(this, saved.id), true)
-                toast("📖 সেভ করা অনুবাদ বসালাম")
-                return
-            }
+    private fun autoFlow(ch: Chapter) {
+        val saved = Store.find(this, ch)
+        if (saved != null) {
+            applyTranslation(ch, Store.read(this, saved.id), true)
+            toast("📖 সেভ করা অনুবাদ বসালাম")
+        } else {
+            enqueue(ch)
         }
-        enqueue(ch)
     }
 
     private fun enqueue(ch: Chapter) {
