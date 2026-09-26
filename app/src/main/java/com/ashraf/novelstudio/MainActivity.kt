@@ -1344,8 +1344,20 @@ class MainActivity : Activity() {
         }, 300)
     }
 
-    private fun cleanReply(t: String): String =
-        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
+    private fun cleanReply(t: String): String {
+        var x = t.replace(
+            Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+
+        // Gemini sometimes exposes paragraph separators as a literal standalone
+        // "n" in the WebView text layer. Only normalize standalone n tokens.
+        if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
+            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\\n\\n")
+            x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
+        }
+        return x.trim()
+    }
 
     private fun finishJob(tok: Int, ch: Chapter) {
         chatWv.evaluateJavascript(Js.readText()) { raw ->
@@ -1363,7 +1375,14 @@ class MainActivity : Activity() {
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) applyTranslation(shown, t, true)
+            if (shown != null && keyOf(shown) == keyOf(ch)) {
+                if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
+                    applyGeminiTranslation(shown, t, true)
+                } else {
+                    // Keep the already-working ChatGPT/other-provider path untouched.
+                    applyTranslation(shown, t, true)
+                }
+            }
             toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
@@ -1434,6 +1453,39 @@ class MainActivity : Activity() {
         }
 
         attempt(sel, 3)
+    }
+
+    // Gemini-only page insertion path. It mirrors the working selector/
+    // element insertion flow while keeping Gemini response cleanup isolated.
+    private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
+        val normalized = cleanReply(text)
+        val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
+        val paras = normalized
+            .split(Regex("\\n\\s*\\n"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString())) { r ->
+            if (r != null && r.contains("ok")) {
+                hasTr = true
+                shownTranslated = true
+                updatePill()
+
+                if (retry) {
+                    handler.postDelayed({
+                        if (shownTranslated && lastChapter === ch) {
+                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { state ->
+                                if (state != null && state.contains("lost")) {
+                                    applyGeminiTranslation(ch, normalized, false)
+                                }
+                            }
+                        }
+                    }, 2500)
+                }
+            } else {
+                toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+            }
+        }
     }
 
     private fun toggleView() {
