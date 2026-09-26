@@ -658,6 +658,22 @@ class MainActivity : Activity() {
                 return r.width>0&&r.height>0;
               }
               function txt(e){return ((e&&(e.innerText||e.textContent))||'').trim();}
+              // A bare tag name ("div", "article") matches dozens of elements
+              // on most pages, so document.querySelector(sel) later can grab
+              // the wrong one silently (no error, just replaces the wrong
+              // element). Prefer id, then tag+classnames; if neither gives a
+              // reasonably specific selector, return '' so the caller falls
+              // back to its own content-detection instead of trusting a
+              // selector that matches almost anything.
+              function stableSel(e){
+                if(!e)return '';
+                if(e.id&&/^[A-Za-z_][A-Za-z0-9_-]*$/.test(e.id))return '#'+e.id;
+                var cls=(e.className&&typeof e.className==='string')
+                  ? e.className.split(/\s+/).filter(function(c){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(c);}).slice(0,3)
+                  : [];
+                if(cls.length)return e.tagName.toLowerCase()+'.'+cls.join('.');
+                return '';
+              }
               function pick(sel){
                 if(!sel)return null;
                 try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
@@ -715,7 +731,7 @@ class MainActivity : Activity() {
                     : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
                   try{e=document.querySelector(q);}catch(x){e=null;}
                 }
-                if(e&&e.href)return {href:e.href,text:txt(e),selector:(e.id?'#'+e.id:e.tagName.toLowerCase())};
+                if(e&&e.href)return {href:e.href,text:txt(e),selector:stableSel(e)};
                 return null;
               }
 
@@ -738,8 +754,8 @@ class MainActivity : Activity() {
                 title:title,
                 pageTitle:document.title||'',
                 novel:novel,
-                contentSel:(content.id?'#'+content.id:content.tagName.toLowerCase()),
-                titleSel:titleEl?(titleEl.id?'#'+titleEl.id:titleEl.tagName.toLowerCase()):'',
+                contentSel:stableSel(content),
+                titleSel:titleEl?stableSel(titleEl):'',
                 next:n,
                 prev:p
               });
