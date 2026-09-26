@@ -26,7 +26,22 @@ function __box(){
   var host=location.hostname;
   var sels;
   if(host==='gemini.google.com'||host.endsWith('.gemini.google.com')){
-    sels=['div.ql-editor','rich-textarea [contenteditable="true"]','[aria-label="Enter a prompt here"]','[contenteditable="true"][role="textbox"]','[role="textbox"]'];
+    // Gemini has used several versions of input-area-v2. Keep the search
+    // broad so signed-out text chat is still found after a UI refresh.
+    sels=[
+      'main rich-textarea .ql-editor[contenteditable="true"]',
+      'rich-textarea .ql-editor[contenteditable="true"]',
+      'div.ql-editor[contenteditable="true"]',
+      'main [contenteditable="true"][role="textbox"]',
+      'main div[contenteditable="true"]',
+      'main textarea',
+      '.text-input-field_textarea[contenteditable="true"]',
+      '.text-input-field_textarea textarea',
+      '[aria-label="Enter a prompt here"]',
+      '[contenteditable="true"][role="textbox"]',
+      '[contenteditable="true"]',
+      '[role="textbox"]'
+    ];
   }else{
     sels=['#prompt-textarea','textarea','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]'];
   }
@@ -70,22 +85,11 @@ function __box(){
     box.dispatchEvent(new Event('input',{bubbles:true}));
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
     try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
-  } else if(isCE && isGemini){
-    // Gemini's editor (Quill-based) does not reliably pick up execCommand,
-    // and focusing it pops the Android keyboard during automatic extraction.
-    // Mutate the editor DOM directly instead.
-    var esc=String(text)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;');
-    var html=esc.replace(/\r?\n/g,'<br>');
-    box.innerHTML='<p>'+html+'</p>';
-    try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   } else if(isCE){
-    // ChatGPT, Claude and most other chatbots use ProseMirror/contenteditable
-    // editors that only register text typed through real selection + insertText
-    // (raw innerHTML overwrites are invisible to their internal state).
+    // Gemini's Quill editor must receive a real insertText operation so its
+    // internal model sees the prompt. Direct innerHTML/textContent writes can
+    // leave the visible box filled while Gemini still thinks it is empty.
+    // This is the same path that worked before the Gemini adapter change.
     box.focus();
     var sel=window.getSelection(); var range=document.createRange();
     range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
@@ -114,7 +118,7 @@ function __box(){
         box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
         box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
       }
-    }, isGemini ? 60 : Math.min(2500,700+text.length/40));
+    }, Math.min(2500,700+text.length/40));
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
