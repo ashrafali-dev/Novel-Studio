@@ -1193,6 +1193,15 @@ class MainActivity : Activity() {
             val send = Prefs.bool(this, "autoSend")
             handler.postDelayed({
                 chatWv.evaluateJavascript(Js.send(full, send)) { r ->
+                    // Never leave the WebView holding IME focus after automatic paste.
+                    // The keyboard must appear only after the user taps the chat box.
+                    chatWv.clearFocus()
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.hideSoftInputFromWindow(chatWv.windowToken, 0)
+                    handler.postDelayed({
+                        chatWv.clearFocus()
+                        imm.hideSoftInputFromWindow(chatWv.windowToken, 0)
+                    }, 120)
                     if (decode(r).startsWith("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
                 }
             }, 400)
