@@ -34,7 +34,8 @@
         <activity
             android:name=".WebtoonActivity"
             android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode" />
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
+            android:windowSoftInputMode="stateHidden|adjustResize" />
 
         <!-- Ask Google Play services to download the thin OCR models after install. -->
         <meta-data
