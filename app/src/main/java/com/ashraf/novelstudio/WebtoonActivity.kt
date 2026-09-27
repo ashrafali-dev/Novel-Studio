@@ -712,7 +712,7 @@ class WebtoonActivity : Activity() {
             if (!text.any { it.isLetterOrDigit() }) continue
 
             val xs = item.points.map { it.x }
-            val ys = item.box.points.map { it.y }
+            val ys = item.points.map { it.y }
             val x0 = xs.minOrNull()?.coerceIn(0f, ref.naturalWidth.toFloat()) ?: continue
             val y0 = ys.minOrNull()?.coerceIn(0f, ref.naturalHeight.toFloat()) ?: continue
             val x1 = xs.maxOrNull()?.coerceIn(0f, ref.naturalWidth.toFloat()) ?: continue
