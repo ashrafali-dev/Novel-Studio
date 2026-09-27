@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -20,6 +21,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
@@ -47,6 +51,8 @@ class WebtoonActivity : Activity() {
 
     private lateinit var webView: WebView
     private lateinit var chatWebView: WebView
+    private lateinit var rootLinear: LinearLayout
+    private lateinit var bottomBar: LinearLayout
     private lateinit var urlBar: EditText
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
@@ -71,6 +77,12 @@ class WebtoonActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+
+        // Edge-to-edge so we can control keyboard insets ourselves; fixes the
+        // screen-shot bug where the bottom bar floats over the soft keyboard.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+
         CookieManager.getInstance().setAcceptCookie(true)
 
         ocr = WebtoonOcr(this)
@@ -78,8 +90,9 @@ class WebtoonActivity : Activity() {
         translationCache = WebtoonCache(this, "webtoon_translation_cache.json", 1400)
 
         buildUi()
-        auto = Prefs.bool(this, "webtoonAuto", true)
+        applyKeyboardInsets()
 
+        auto = Prefs.bool(this, "webtoonAuto", true)
         val startUrl = intent.getStringExtra("url").orEmpty().ifBlank {
             Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")
         }
@@ -91,8 +104,7 @@ class WebtoonActivity : Activity() {
         if (auto) handler.postDelayed(scanLoop, 900L)
     }
 
-    private fun dp(v: Int): Int =
-        (v * resources.displayMetrics.density).toInt()
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun btn(label: String, action: () -> Unit): TextView =
         TextView(this).apply {
@@ -178,15 +190,12 @@ class WebtoonActivity : Activity() {
             addView(status, LinearLayout.LayoutParams(mp, wc))
         }
 
-        val bottom = LinearLayout(this).apply {
+        bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(0xFF17171B.toInt())
             addView(btn("🖼 Scan") { scanNow() })
             addView(btn("⚡ Auto") { toggleAuto() })
-            addView(btn("🧪 Demo") {
-                webView.loadUrl("https://raw.githubusercontent.com/ashrafali-dev/Novel-Studio/main/webtoon_test.html")
-            })
             addView(btn("🧹 Clear") { clearOverlay() })
             addView(btn("✕") { finish() })
         }
@@ -197,15 +206,38 @@ class WebtoonActivity : Activity() {
             addView(statusBox, FrameLayout.LayoutParams(mp, wc, Gravity.TOP))
         }
 
-        setContentView(
-            LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(0xFF111114.toInt())
-                addView(top, LinearLayout.LayoutParams(mp, wc))
-                addView(layers, LinearLayout.LayoutParams(mp, 0, 1f))
-                addView(bottom, LinearLayout.LayoutParams(mp, wc))
+        rootLinear = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF111114.toInt())
+            addView(top, LinearLayout.LayoutParams(mp, wc))
+            addView(layers, LinearLayout.LayoutParams(mp, 0, 1f))
+            addView(bottomBar, LinearLayout.LayoutParams(mp, wc))
+        }
+        setContentView(rootLinear)
+    }
+
+    // The actual fix for your screen-shot: when the soft keyboard appears,
+    // push the bottom bar up by exactly the keyboard height, so it never
+    // overlaps the input box or floats across the QWERTY row.
+    private fun applyKeyboardInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(rootLinear) { _, insets ->
+            val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val bottom = max(sys.bottom, ime.bottom)
+
+            // status box: respect the status bar so the top dark bar doesn't slip under it
+            (rootLinear.getChildAt(0) as? LinearLayout)?.let {
+                it.setPadding(0, sys.top, 0, 0)
             }
-        )
+            // bottomBar: push up by keyboard height; touch the children so children fill new height
+            bottomBar.setPadding(0, 0, 0, 0)
+            (bottomBar.layoutParams as LinearLayout.LayoutParams).let { lp ->
+                lp.bottomMargin = bottom
+                bottomBar.layoutParams = lp
+            }
+            // WebView container stays between top bar and bottom bar
+            WindowInsetsCompat.CONSUMED
+        }
     }
 
     private fun setupWebView(v: WebView) {
@@ -238,25 +270,28 @@ class WebtoonActivity : Activity() {
         setStatus("OCR engine প্রস্তুত করছি…", 5)
         executor.submit {
             try {
+                // First model can take 10–30s on a cold install — Play Services
+                // streams the language pack on demand. We show progress every step
+                // and never block forever.
                 ocr.prepare { p ->
                     handler.post {
                         if (!destroyed) {
                             progress.progress = p.percent
-                            status.text = "🧠 " + p.stage + "  " + p.percent + "%"
+                            status.text = "🧠 " + p.stage
                         }
                     }
                 }
                 handler.post {
                     if (!destroyed) {
                         ocrReady = true
-                        setStatus("✅ OCR ready — পড়তে থাকো, পিছনে অনুবাদ হবে", 100)
+                        setStatus("✅ OCR ready — স্ক্রল করো, পিছনে অনুবাদ হবে", 100)
                         scanNow()
                     }
                 }
             } catch (t: Throwable) {
                 handler.post {
                     if (!destroyed) {
-                        setStatus("❌ OCR প্রস্তুত হয়নি: " + (t.message ?: "unknown error"), 0)
+                        setStatus("❌ OCR প্রস্তুত হয়নি: " + (t.message ?: "unknown"), 0)
                     }
                 }
             }
@@ -305,7 +340,7 @@ class WebtoonActivity : Activity() {
                     .thenBy { it.distance }
                     .thenBy { it.top }
             )
-            for (ref in list.distinctBy { it.id }.take(7)) {
+            for (ref in list.distinctBy { it.id }.take(12)) {
                 if (ocrReady) processImage(ref)
             }
         }
@@ -333,15 +368,12 @@ class WebtoonActivity : Activity() {
         loadBytes(ref) { bytes ->
             if (bytes == null || bytes.isEmpty()) {
                 states[ref.id] = ImageState(WebtoonImageState.FAILED, System.currentTimeMillis())
-                setStatus("⚠️ panel image পাওয়া যায়নি", 0)
+                setStatus("⚠️ panel image পাওয়া যায়নি — অন্য webtoon URL দাও", 0)
                 return@loadBytes
             }
 
             executor.submit {
                 try {
-                    // Lazy-loaded Webtoon images often report naturalWidth/naturalHeight = 0
-                    // even though the downloaded bytes contain the full panel. OCR coordinates
-                    // must use the real bitmap dimensions, not the placeholder DOM dimensions.
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                     val actualRef = if (bounds.outWidth > 0 && bounds.outHeight > 0) {
@@ -746,7 +778,7 @@ class WebtoonActivity : Activity() {
                     val nx = min(last.x, r.x)
                     val ny = min(last.y, r.y)
                     val rx = max(last.x + last.width, r.x + r.width)
-                    val by = max(last.y + last.height, r.y + r.height)
+                    val by = max(last.y + last.height, r.y + last.height)
                     val mergedText = last.text + "\n" + r.text
                     merged[merged.lastIndex] = last.copy(
                         id = "wt_" + WebtoonHash.key(
@@ -836,7 +868,10 @@ class WebtoonActivity : Activity() {
         status.text = "🖼 ready:" + ready +
             "  queue:" + queued +
             if (translating) " • AI batch চলছে" else ""
+        progress.progress = if (queueSize() == 0 && ready > 0) 100 else 60
     }
+
+    private fun queueSize(): Int = queue.sumOf { it.items.size }
 
     private fun setStatus(s: String, pct: Int) {
         status.text = s
