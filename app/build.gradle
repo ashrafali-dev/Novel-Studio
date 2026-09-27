@@ -51,4 +51,9 @@ dependencies {
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'androidx.webkit:webkit:1.10.0'
     implementation 'androidx.browser:browser:1.8.0'
+    // Thin ML Kit OCR: models live in Google Play services, keeping the APK small.
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.1'
 }
