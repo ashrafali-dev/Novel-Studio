@@ -13,6 +13,8 @@ data class Tr(val id: Long, val novel: String, val number: String, val title: St
 
 data class Bookmark(val name: String, val url: String, var lastUrl: String, var lastTitle: String)
 
+data class HistoryEntry(val url: String, val title: String, val time: Long)
+
 object Store {
     // ---------- offline library (saved translations) ----------
     private fun idx(c: Context) = File(c.filesDir, "translations.json")
@@ -94,6 +96,36 @@ object Store {
         return names.joinToString("\n\n########################\n\n") { n ->
             "📖 $n\n\n" + chapters(c, n).joinToString("\n\n==========\n\n") { it.label() + "\n\n" + read(c, it.id) }
         }
+    }
+
+    // ---------- browser history ----------
+    fun history(c: Context): List<HistoryEntry> {
+        val raw = Prefs.get(c, "browserHistory")
+        if (raw.isEmpty()) return emptyList()
+        return try {
+            val a = JSONArray(raw)
+            (0 until a.length()).map {
+                val o = a.getJSONObject(it)
+                HistoryEntry(o.optString("url"), o.optString("title"), o.optLong("time"))
+            }.sortedByDescending { it.time }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    fun addHistory(c: Context, url: String, title: String) {
+        if (!url.startsWith("http")) return
+        val host = Uri.parse(url).host ?: return
+        if (host.isBlank()) return
+        val old = history(c).filter { it.url != url }.take(99).toMutableList()
+        old.add(0, HistoryEntry(url, title.ifBlank { host }, System.currentTimeMillis()))
+        val a = JSONArray()
+        old.forEach { h ->
+            a.put(JSONObject().put("url", h.url).put("title", h.title).put("time", h.time))
+        }
+        Prefs.put(c, "browserHistory", a.toString())
+    }
+
+    fun clearHistory(c: Context) {
+        Prefs.put(c, "browserHistory", "[]")
     }
 
     // ---------- bookmarks of novel sites ----------
