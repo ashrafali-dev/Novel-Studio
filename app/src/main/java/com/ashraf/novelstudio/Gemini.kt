@@ -10,9 +10,6 @@ object Gemini {
         return host == "gemini.google.com" || host.endsWith(".gemini.google.com")
     }
 
-    // The Gemini Web UI can expose the submitted "You said" block inside the
-    // last model-response container. Keep the exact text we sent so the final
-    // extraction can discard that echoed prompt before copy/save/insertion.
     @Volatile private var lastSentText: String = ""
 
     fun cleanResponse(text: String): String {
@@ -20,9 +17,7 @@ object Gemini {
         if (sent.isEmpty()) return text.trim()
         val t = text.trim()
         val at = t.indexOf(sent)
-        if (at >= 0) {
-            return t.substring(at + sent.length).trim()
-        }
+        if (at >= 0) return t.substring(at + sent.length).trim()
         return t
     }
 
@@ -40,22 +35,10 @@ object Gemini {
         val js = """
 (function(text,doSend){
   function visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
-  // Walk the (huge) Gemini DOM for shadow roots ONCE per send, not once per selector.
-  var __roots=null;
-  function roots(){
-    if(__roots)return __roots;
-    __roots=[document];
-    for(var k=0;k<__roots.length;k++){
-      try{var nodes=__roots[k].querySelectorAll('*');for(var j=0;j<nodes.length;j++)if(nodes[j].shadowRoot)__roots.push(nodes[j].shadowRoot);}catch(e){}
-    }
-    return __roots;
-  }
   function all(root,selector,out){
     out=out||[];
-    var rs=roots();
-    for(var i=0;i<rs.length;i++){
-      try{var a=rs[i].querySelectorAll(selector);for(var q=0;q<a.length;q++)out.push(a[q]);}catch(e){}
-    }
+    try{var a=root.querySelectorAll(selector);for(var i=0;i<a.length;i++)out.push(a[i]);}catch(e){}
+    try{var nodes=root.querySelectorAll('*');for(var j=0;j<nodes.length;j++)if(nodes[j].shadowRoot)all(nodes[j].shadowRoot,selector,out);}catch(e){}
     return out;
   }
   function findBox(){
@@ -69,25 +52,17 @@ object Gemini {
     try{var p=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,v);}catch(x){e.value=v;}
     e.dispatchEvent(new Event('input',{bubbles:true}));try{e.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:v}));}catch(x){}e.dispatchEvent(new Event('change',{bubbles:true}));
   }
-  // Capture the current Gemini assistant state before sending. MainActivity uses
-  // this contract to start polling for the newly generated answer.
   function assistantNodes(){
     var s='model-response,message-content,.model-response-text,.response-content';
-    var a=all(document,s,[]),out=[],tp=null;
-    for(var i=0;i<a.length;i++){
-      var e=a[i];
-      if(tp&&tp.contains(e))continue;
-      tp=e;
-      var r=e.getBoundingClientRect();
-      if(r.width>0&&r.height>0&&/\S/.test(e.textContent||''))out.push(e);
-    }
-    return out;
+    var a=all(document,s,[]);
+    return a.filter(function(e){
+      var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();
+      if(!(r.width>0&&r.height>0&&tx.length>0))return false;
+      return !a.some(function(o){return o!==e&&o.contains(e);});
+    });
   }
   var before=assistantNodes(),n0=before.length,len0=0;
-  if(n0){
-    var last=before[n0-1];
-    len0=(last.innerText||last.textContent||'').trim().length;
-  }
+  if(n0){var last=before[n0-1];len0=(last.innerText||last.textContent||'').trim().length;}
   var box=findBox();if(!box)return 'nobox';
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){nativeSet(box,text);}
   else{
