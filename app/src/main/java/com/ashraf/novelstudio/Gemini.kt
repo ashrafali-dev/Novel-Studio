@@ -41,7 +41,30 @@ object Gemini {
     try{var nodes=root.querySelectorAll('*');for(var j=0;j<nodes.length;j++)if(nodes[j].shadowRoot)all(nodes[j].shadowRoot,selector,out);}catch(e){}
     return out;
   }
+  function direct(selectors){
+    for(var i=0;i<selectors.length;i++){
+      try{
+        var a=document.querySelectorAll(selectors[i]);
+        for(var j=0;j<a.length;j++) if(visible(a[j])) return a[j];
+      }catch(e){}
+    }
+    return null;
+  }
   function findBox(){
+    // Gemini normally exposes the composer in the main document. Try the
+    // cheap path first; scan shadow roots only when the direct lookup fails.
+    var directBox=direct([
+      'rich-textarea .ql-editor',
+      'rich-textarea [contenteditable="true"]',
+      'div.ql-editor[contenteditable="true"]',
+      '[aria-label="Enter a prompt here"]',
+      '[contenteditable="true"][role="textbox"]',
+      'textarea',
+      '[role="textbox"]',
+      '[contenteditable="true"]'
+    ]);
+    if(directBox)return directBox;
+
     var s=['rich-textarea .ql-editor','rich-textarea [contenteditable="true"]','div.ql-editor[contenteditable="true"]','[aria-label="Enter a prompt here"]','[contenteditable="true"][role="textbox"]','[contenteditable="true"]','textarea','[role="textbox"]'];
     var c=[];
     for(var i=0;i<s.length;i++){var a=all(document,s[i],[]);for(var j=0;j<a.length;j++)if(visible(a[j])&&!c.includes(a[j]))c.push(a[j]);}
@@ -54,7 +77,11 @@ object Gemini {
   }
   function assistantNodes(){
     var s='model-response,message-content,.model-response-text,.response-content';
-    var a=all(document,s,[]);
+    var a=[];
+    try{a=Array.from(document.querySelectorAll(s));}catch(e){}
+    // Avoid the expensive recursive shadow-root walk unless Gemini's normal
+    // response nodes are not present in the main document.
+    if(!a.length)a=all(document,s,[]);
     return a.filter(function(e){
       var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();
       if(!(r.width>0&&r.height>0&&tx.length>0))return false;
@@ -80,7 +107,18 @@ object Gemini {
   }
   if(doSend)setTimeout(function(){
     var s=['button[aria-label*="Send" i]','button[aria-label*="Submit" i]','button.send-button','button[data-testid*="send" i]'],btn=null;
-    for(var i=0;i<s.length&&!btn;i++){var a=all(document,s[i],[]);for(var j=0;j<a.length;j++){var b=a[j];if(visible(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){btn=b;break;}}}
+    for(var i=0;i<s.length&&!btn;i++){
+      var directButtons=[];
+      try{directButtons=Array.from(document.querySelectorAll(s[i]));}catch(e){}
+      for(var j=0;j<directButtons.length;j++){
+        var b=directButtons[j];
+        if(visible(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){btn=b;break;}
+      }
+      if(!btn){
+        var a=all(document,s[i],[]);
+        for(var k=0;k<a.length;k++){var b2=a[k];if(visible(b2)&&!b2.disabled&&b2.getAttribute('aria-disabled')!=='true'){btn=b2;break;}}
+      }
+    }
     if(btn){btn.click();return;}
     try{box.focus();box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));}catch(e){}
   },120);
