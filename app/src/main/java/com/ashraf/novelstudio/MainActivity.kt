@@ -254,7 +254,6 @@ class MainActivity : Activity() {
             addView(barBtn("▶") { step("next") })
             addView(barBtn("💾") { saveAnswer() })
             addView(autoBtn)
-            addView(barBtn("🖼") { openWebtoon() })
             addView(barBtn("☰") { menu() })
         }
 
@@ -1405,14 +1404,6 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== menu
-    private fun openWebtoon() {
-        val url = novelWv.url.orEmpty()
-        startActivity(
-            Intent(this, WebtoonActivity::class.java).apply {
-                putExtra("url", url)
-            }
-        )
-    }
 
     private fun menu() {
         val labels = arrayListOf(
