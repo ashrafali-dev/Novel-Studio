@@ -637,7 +637,40 @@ class MainActivity : Activity() {
      * Fast chapter extraction: serialize only the chapter node, not the whole page.
      * This avoids multi-MB outerHTML parsing on ad-heavy sites.
      */
+    // WebNovel uses a reader DOM that the fast direct-text extractor can miss.
+    // Keep its proven commit-96 extraction path isolated from every other site.
+    private fun extractWebNovelNow(cb: (Chapter?) -> Unit) {
+        novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
+            val url = novelWv.url ?: ""
+            Thread {
+                val ch: Chapter? = try {
+                    val html = decode(raw)
+                    if (html.isEmpty()) null else {
+                        val doc = Jsoup.parse(html, url)
+                        Extractor.extract(
+                            doc, url,
+                            SiteProfiles.selector(this@MainActivity, url, "content"),
+                            SiteProfiles.selector(this@MainActivity, url, "title"),
+                            SiteProfiles.selector(this@MainActivity, url, "next"),
+                            SiteProfiles.selector(this@MainActivity, url, "prev")
+                        )
+                    }
+                } catch (e: Exception) { null }
+                runOnUiThread {
+                    if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
+                    cb(ch)
+                }
+            }.start()
+        }
+    }
+
     private fun extractNow(cb: (Chapter?) -> Unit) {
+        val url = novelWv.url ?: ""
+        if (url.isBlank()) { cb(null); return }
+        if ((novelWv.url ?: "").substringAfter("://").substringBefore('/').lowercase().removePrefix("www.") == "webnovel.com") {
+            extractWebNovelNow(cb)
+            return
+        }
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
 
