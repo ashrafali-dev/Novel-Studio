@@ -667,12 +667,10 @@ class MainActivity : Activity() {
     private fun extractNow(cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
-        if ((novelWv.url ?: "").substringAfter("://").substringBefore('/').lowercase().removePrefix("www.") == "webnovel.com") {
+        if (url.substringAfter("://").substringBefore('/').lowercase().removePrefix("www.") == "webnovel.com") {
             extractWebNovelNow(cb)
             return
         }
-        val url = novelWv.url ?: ""
-        if (url.isBlank()) { cb(null); return }
 
         val contentSel = SiteProfiles.selector(this, url, "content")
         val titleSel = SiteProfiles.selector(this, url, "title")
