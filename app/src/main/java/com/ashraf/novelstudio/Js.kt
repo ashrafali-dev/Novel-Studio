@@ -189,9 +189,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     fun clickNext(dir: String): String {
         val alts = if (dir == "next")
-            "next|next chapter|next â€º|next Â»|â€º|Â»|â†’|ä¸‹ä¸€ç« |ä¸‹ä¸€é¡µ|ä¸‹ä¸€è¯|ä¸‹ä¸€ç¯€|ë‹¤ìŒ|ë‹¤ìŒí™”|æ¬¡ã¸|æ¬¡ã®è©±|à¦ªà¦°à¦¬à¦°à§à¦¤à§€|à¦¨à§‡à¦•à§à¦¸à¦Ÿ"
+            "next|next chapter|next ›|next »|›|»|→|下一章 |下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
         else
-            "prev|previous|prev chapter|previous chapter|â€¹|Â«|â†|ä¸Šä¸€ç« |ä¸Šä¸€é¡µ|ä¸Šä¸€è¯|ì´ì „|ì´ì „í™”|å‰ã¸|å‰ã®è©±|à¦†à¦—à§‡à¦°|à¦ªà§‚à¦°à§à¦¬à¦¬à¦°à§à¦¤à§€"
+            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章 |上一页|上一话|이전|이전í™”|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
         return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
     }    // WebNovel navigation based on the open-source WebnovelReader crawler.
@@ -252,8 +252,8 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(idx<0){
     var normalizeTitle=function(s){
       return norm(s)
-        .replace(/[â€œâ€"']/g,'')
-        .replace(/\s*[-â€“â€”:]\s*/g,' ')
+        .replace(/[“”"']/g,'')
+        .replace(/\s*[-–—:]\s*/g,' ')
         .replace(/\s+/g,' ')
         .trim();
     };
