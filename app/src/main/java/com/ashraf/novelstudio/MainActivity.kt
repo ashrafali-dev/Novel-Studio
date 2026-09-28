@@ -46,6 +46,12 @@ import org.jsoup.Jsoup
 import java.io.ByteArrayInputStream
 import java.net.URLEncoder
 
+private data class BrowserTab(
+    var label: String,
+    var url: String,
+    var state: Bundle? = null
+)
+
 class MainActivity : Activity() {
     private enum class Mode { NOVEL, CHAT, SPLIT }
 
@@ -62,6 +68,8 @@ class MainActivity : Activity() {
     private lateinit var novelBox: FrameLayout
     private lateinit var chatBox: LinearLayout
     private lateinit var strip: LinearLayout
+    private lateinit var tabStrip: LinearLayout
+    private lateinit var shortcutStrip: LinearLayout
     private lateinit var modeBtn: TextView
     private lateinit var autoBtn: TextView
     private lateinit var progressBox: LinearLayout
@@ -85,6 +93,12 @@ class MainActivity : Activity() {
     private var polling = false
     private var pendUrl = ""
     private var pendHash = 0
+
+    // lightweight browser layer: one WebView, multiple saved navigation sessions
+    private val browserTabs = mutableListOf<BrowserTab>()
+    private var activeTabIndex = 0
+    private var restoringTab = false
+    private var searchShortcutsVisible = false
 
     // WebNovel navigation: load the catalog in the same WebView, keep it
     // behind the loading overlay, extract the adjacent chapter URL, then
@@ -149,15 +163,27 @@ class MainActivity : Activity() {
         novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
 
-        // ---- top bar
+        // ---- browser chrome: tabs + address/search bar + focused site shortcuts
         urlBar = EditText(this).apply {
-            hint = "সার্চ করো বা লিংক দাও"
+            hint = "Search or enter address"
             setSingleLine()
             textSize = 14f
             imeOptions = EditorInfo.IME_ACTION_GO
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setPadding(dp(14), 0, dp(10), 0)
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF8E8E98.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = dp(22).toFloat()
+                setColor(0xFF303038.toInt())
+            }
             setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
+            onFocusChangeListener = View.OnFocusChangeListener { _, has ->
+                searchShortcutsVisible = has
+                shortcutStrip.visibility = if (has) View.VISIBLE else View.GONE
+            }
         }
+
         val reloadBtn = TextView(this).apply {
             text = "⟳"
             gravity = Gravity.CENTER
@@ -167,20 +193,49 @@ class MainActivity : Activity() {
             setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
         }
         val goBtn = TextView(this).apply {
-            text = "Go"
+            text = "→"
             gravity = Gravity.CENTER
-            textSize = 16f
+            textSize = 22f
             setTextColor(0xFF4F7CFF.toInt())
             setOnClickListener { go(urlBar.text.toString()) }
         }
-        val top = LinearLayout(this).apply {
+
+        tabStrip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+        }
+        val tabScroll = HorizontalScrollView(this).apply {
+            setBackgroundColor(0xFF18181C.toInt())
+            isHorizontalScrollBarEnabled = false
+            addView(tabStrip, HorizontalScrollView.LayoutParams(WC, dp(38)))
+        }
+
+        shortcutStrip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(4), 0, dp(4), 0)
+            visibility = View.GONE
+        }
+        val shortcutScroll = HorizontalScrollView(this).apply {
             setBackgroundColor(0xFF202024.toInt())
-            setPadding(dp(6), dp(2), dp(6), dp(2))
-            addView(urlBar, LinearLayout.LayoutParams(0, WC, 1f))
-            addView(reloadBtn, LinearLayout.LayoutParams(dp(44), dp(40)))
-            addView(goBtn, LinearLayout.LayoutParams(dp(48), dp(40)))
+            isHorizontalScrollBarEnabled = false
+            addView(shortcutStrip, HorizontalScrollView.LayoutParams(WC, dp(44)))
+        }
+
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+            addView(urlBar, LinearLayout.LayoutParams(0, dp(42), 1f))
+            addView(reloadBtn, LinearLayout.LayoutParams(dp(44), dp(42)))
+            addView(goBtn, LinearLayout.LayoutParams(dp(42), dp(42)))
+            setBackgroundColor(0xFF202024.toInt())
+        }
+
+        val browserChrome = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(tabScroll, LinearLayout.LayoutParams(MP, dp(38)))
+            addView(topBar, LinearLayout.LayoutParams(MP, dp(50)))
+            addView(shortcutScroll, LinearLayout.LayoutParams(MP, dp(44)))
         }
 
         // ---- panes (both always full-size and alive; the one on top is the one you see)
@@ -260,17 +315,21 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF111114.toInt())
-            addView(top, LinearLayout.LayoutParams(MP, WC))
+            addView(browserChrome, LinearLayout.LayoutParams(MP, WC))
             addView(content, LinearLayout.LayoutParams(MP, 0, 1f))
             addView(bar, LinearLayout.LayoutParams(MP, WC))
         }
         setContentView(root)
 
         buildStrip()
+        buildSiteShortcuts()
+        initBrowserTabs()
         setMode(Mode.SPLIT)
         refreshAutoBtn()
         applyDark()
-        novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
+        if (browserTabs.firstOrNull()?.url.isNullOrBlank()) {
+            novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
+        }
         val firstBot = bots().getJSONObject(0).getString("u")
         chatWv.loadUrl(Prefs.get(this, "botUrl", firstBot))
         handleIntent(intent)
@@ -295,6 +354,9 @@ class MainActivity : Activity() {
         val s = wv.settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
+        s.databaseEnabled = true
+        s.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+        s.loadsImagesAutomatically = true
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportZoom(true)
@@ -302,6 +364,10 @@ class MainActivity : Activity() {
         s.displayZoomControls = false
         s.userAgentString = UA
         wv.setBackgroundColor(0xFF111114.toInt())
+        wv.overScrollMode = View.OVER_SCROLL_NEVER
+        wv.isVerticalScrollBarEnabled = false
+        wv.isHorizontalScrollBarEnabled = false
+        wv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
             WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, emptySet())
@@ -313,6 +379,146 @@ class MainActivity : Activity() {
         val wv = if (mode == Mode.CHAT) chatWv else activeWv
         wv.reload()
         toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
+    }
+
+    // ================================================================== browser tabs / shortcuts / history
+    private fun initBrowserTabs() {
+        browserTabs.clear()
+        browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")))
+        activeTabIndex = 0
+        renderTabs()
+    }
+
+    private fun siteShortcuts(): List<Pair<String, String>> = listOf(
+        "WTR-LAB" to "https://wtr-lab.com/",
+        "WebNovel" to "https://www.webnovel.com/",
+        "NovelBin" to "https://novelbin.com/",
+        "BoxNovel" to "https://boxnovel.com/",
+        "AsianNovel" to "https://www.asianovel.com/",
+        "NovelFull" to "https://novelfull.net/",
+        "LightNovelPub" to "https://lightnovelpub.com/",
+        "NovelNext" to "https://novelnext.com/",
+        "ReadNovelFull" to "https://readnovelfull.com/"
+    )
+
+    private fun buildSiteShortcuts() {
+        shortcutStrip.removeAllViews()
+        siteShortcuts().forEach { (name, url) ->
+            shortcutStrip.addView(chip(name, {
+                newBrowserTab(url)
+                urlBar.clearFocus()
+            }, null))
+        }
+    }
+
+    private fun renderTabs() {
+        if (!::tabStrip.isInitialized) return
+        tabStrip.removeAllViews()
+        browserTabs.forEachIndexed { i, tab ->
+            val label = if (tab.label.length > 20) tab.label.take(20) + "…" else tab.label
+            val b = TextView(this).apply {
+                text = (if (i == activeTabIndex) "● " else "") + label + "  ×"
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setTextColor(if (i == activeTabIndex) 0xFFFFFFFF.toInt() else 0xFFAAAAAF.toInt())
+                setPadding(dp(12), dp(5), dp(10), dp(5))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(15).toFloat()
+                    setColor(if (i == activeTabIndex) 0xFF3A3A44.toInt() else 0xFF24242A.toInt())
+                }
+                layoutParams = LinearLayout.LayoutParams(WC, dp(32)).also {
+                    it.setMargins(dp(3), dp(3), dp(3), dp(3))
+                }
+                setOnClickListener { switchBrowserTab(i) }
+                setOnLongClickListener { closeBrowserTab(i); true }
+            }
+            tabStrip.addView(b)
+        }
+        tabStrip.addView(chip("＋", { newBrowserTab("https://duckduckgo.com/") }, null))
+    }
+
+    private fun saveCurrentTabState() {
+        if (browserTabs.isEmpty() || restoringTab) return
+        val tab = browserTabs[activeTabIndex]
+        tab.url = novelWv.url ?: tab.url
+        tab.label = (novelWv.title ?: "").ifBlank { Uri.parse(tab.url).host ?: "New Tab" }
+        tab.state = Bundle()
+        try { novelWv.saveState(tab.state) } catch (_: Exception) {}
+        Prefs.put(this, "lastNovelUrl", tab.url)
+    }
+
+    private fun switchBrowserTab(index: Int) {
+        if (index !in browserTabs.indices || index == activeTabIndex) return
+        saveCurrentTabState()
+        activeTabIndex = index
+        val tab = browserTabs[index]
+        lastChapter = null
+        hasTr = false
+        shownTranslated = false
+        updatePill()
+        restoringTab = true
+        try {
+            novelWv.stopLoading()
+            if (tab.state != null) {
+                novelWv.restoreState(tab.state!!)
+            } else {
+                novelWv.loadUrl(tab.url)
+            }
+        } catch (_: Exception) {
+            novelWv.loadUrl(tab.url)
+        }
+        restoringTab = false
+        renderTabs()
+        urlBar.setText(tab.url)
+    }
+
+    private fun newBrowserTab(url: String) {
+        saveCurrentTabState()
+        browserTabs.add(BrowserTab("New Tab", url))
+        activeTabIndex = browserTabs.lastIndex
+        lastChapter = null
+        hasTr = false
+        shownTranslated = false
+        updatePill()
+        novelWv.stopLoading()
+        novelWv.loadUrl(url)
+        renderTabs()
+        urlBar.setText(url)
+    }
+
+    private fun closeBrowserTab(index: Int) {
+        if (browserTabs.size <= 1) {
+            browserTabs[0] = BrowserTab("New Tab", "https://duckduckgo.com/")
+            activeTabIndex = 0
+            novelWv.loadUrl(browserTabs[0].url)
+        } else {
+            browserTabs.removeAt(index)
+            activeTabIndex = (activeTabIndex.coerceAtMost(browserTabs.lastIndex))
+            val tab = browserTabs[activeTabIndex]
+            if (tab.state != null) {
+                try { novelWv.restoreState(tab.state!!) } catch (_: Exception) { novelWv.loadUrl(tab.url) }
+            } else novelWv.loadUrl(tab.url)
+        }
+        lastChapter = null
+        hasTr = false
+        shownTranslated = false
+        updatePill()
+        renderTabs()
+    }
+
+    private fun browserHistoryDialog() {
+        val h = Store.history(this)
+        if (h.isEmpty()) return toast("🕘 হিস্ট্রি খালি")
+        val labels = h.map {
+            val host = Uri.parse(it.url).host ?: it.url
+            "${it.title.ifBlank { host }}\n$host"
+        }
+        listDialog("🕘 ব্রাউজ হিস্ট্রি", labels, { i ->
+            if (i in h.indices) {
+                if (mode == Mode.CHAT) setMode(Mode.SPLIT)
+                newBrowserTab(h[i].url)
+            }
+        }, null)
     }
 
     // ================================================================== dark mode (0 off, 1 auto, 2 force)
@@ -527,6 +733,9 @@ class MainActivity : Activity() {
             else -> "https://duckduckgo.com/?q=" + URLEncoder.encode(s, "UTF-8")
         }
         if (mode == Mode.CHAT) setMode(Mode.SPLIT)
+        if (browserTabs.isEmpty()) initBrowserTabs()
+        browserTabs[activeTabIndex].url = u
+        browserTabs[activeTabIndex].state = null
         novelWv.loadUrl(u)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(urlBar.windowToken, 0)
@@ -556,7 +765,10 @@ class MainActivity : Activity() {
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-            if (url != null && !urlBar.hasFocus()) urlBar.setText(url)
+            if (view === novelWv && url != null) {
+                browserTabs.getOrNull(activeTabIndex)?.url = url
+                if (!urlBar.hasFocus()) urlBar.setText(url)
+            }
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
@@ -566,7 +778,16 @@ class MainActivity : Activity() {
         override fun onPageFinished(view: WebView?, url: String?) {
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
-            if (url != null) Prefs.put(this@MainActivity, "lastNovelUrl", url)
+            if (url != null) {
+                Prefs.put(this@MainActivity, "lastNovelUrl", url)
+                if (view === novelWv && !restoringTab) {
+                    browserTabs.getOrNull(activeTabIndex)?.url = url
+                    browserTabs.getOrNull(activeTabIndex)?.label =
+                        (view.title ?: "").ifBlank { Uri.parse(url).host ?: "Novel" }
+                    Store.addHistory(this@MainActivity, url, view.title ?: "")
+                    renderTabs()
+                }
+            }
 
             if (view === novelWv && webNovelCatalogPending) {
                 val tk = webNovelCatalogToken
@@ -1408,6 +1629,7 @@ class MainActivity : Activity() {
     private fun menu() {
         val labels = arrayListOf(
             "📚 লাইব্রেরি (অফলাইনে পড়ো)",
+            "🕘 ব্রাউজ হিস্ট্রি",
             "⬇️ সব অনুবাদ txt এক্সপোর্ট",
             "🔖 এই পেজ বুকমার্ক করো",
             "🔖 বুকমার্ক লিস্ট",
@@ -1438,16 +1660,17 @@ class MainActivity : Activity() {
         lv.setOnItemClickListener { _, _, i, _ ->
             when (i) {
                 0 -> { dlg.dismiss(); libraryNovels() }
-                1 -> { dlg.dismiss(); exportAll(null) }
-                2 -> { dlg.dismiss(); saveBookmark() }
-                3 -> { dlg.dismiss(); bookmarkList() }
-                4 -> { dlg.dismiss(); editPrompt() }
-                5 -> {
+                1 -> { dlg.dismiss(); browserHistoryDialog() }
+                2 -> { dlg.dismiss(); exportAll(null) }
+                3 -> { dlg.dismiss(); saveBookmark() }
+                4 -> { dlg.dismiss(); bookmarkList() }
+                5 -> { dlg.dismiss(); editPrompt() }
+                6 -> {
                     toggleAuto()
                     labels[i] = menuAutoLabel()
                     adapter.notifyDataSetChanged()
                 }
-                6 -> {
+                7 -> {
                     val ch = lastChapter
                     if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
                     else {
@@ -1456,58 +1679,58 @@ class MainActivity : Activity() {
                     }
                     dlg.dismiss()
                 }
-                7 -> { cancelAll(); dlg.dismiss() }
-                8 -> {
+                8 -> { cancelAll(); dlg.dismiss() }
+                9 -> {
                     val d = darkMode()
                     Prefs.put(this, "dark", ((d + 1) % 3).toString())
                     applyDark()
                     labels[i] = menuDarkLabel()
                     adapter.notifyDataSetChanged()
                 }
-                9 -> {
+                10 -> {
                     val v = !Prefs.bool(this, "autoPaste")
                     Prefs.putBool(this, "autoPaste", v)
                     labels[i] = menuAutoPasteLabel()
                     adapter.notifyDataSetChanged()
                 }
-                10 -> {
+                11 -> {
                     val v = !Prefs.bool(this, "autoSend")
                     Prefs.putBool(this, "autoSend", v)
                     labels[i] = menuAutoSendLabel()
                     adapter.notifyDataSetChanged()
                 }
-                11 -> {
+                12 -> {
                     val v = !Prefs.bool(this, "withPrompt")
                     Prefs.putBool(this, "withPrompt", v)
                     labels[i] = menuPromptLabel()
                     adapter.notifyDataSetChanged()
                 }
-                12 -> {
+                13 -> {
                     val next = !Prefs.bool(this, "noSaveNext")
                     Prefs.putBool(this, "noSaveNext", !next)
                     labels[i] = menuSaveNextLabel()
                     adapter.notifyDataSetChanged()
                 }
-                13 -> {
+                14 -> {
                     val v = !Prefs.bool(this, "autoExtractNext", true)
                     Prefs.putBool(this, "autoExtractNext", v)
                     labels[i] = menuNextExtractLabel()
                     adapter.notifyDataSetChanged()
                 }
-                14 -> {
+                15 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
                     labels[i] = menuAdBlockLabel()
                     adapter.notifyDataSetChanged()
                 }
-                15 -> {
+                16 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n ->
                         toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
-                16 -> { dlg.dismiss(); novelWv.reload() }
-                17 -> { dlg.dismiss(); chatWv.reload() }
+                17 -> { dlg.dismiss(); novelWv.reload() }
+                18 -> { dlg.dismiss(); chatWv.reload() }
             }
         }
         dlg.show()
@@ -1654,6 +1877,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        if (!isFinishing) saveCurrentTabState()
         CookieManager.getInstance().flush()
         super.onPause()
     }
