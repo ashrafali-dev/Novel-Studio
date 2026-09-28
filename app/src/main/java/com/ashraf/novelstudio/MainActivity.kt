@@ -207,7 +207,7 @@ class MainActivity : Activity() {
         val tabScroll = HorizontalScrollView(this).apply {
             setBackgroundColor(0xFF18181C.toInt())
             isHorizontalScrollBarEnabled = false
-            addView(tabStrip, HorizontalScrollView.LayoutParams(WC, dp(38)))
+            addView(tabStrip, ViewGroup.LayoutParams(WC, dp(38)))
         }
 
         shortcutStrip = LinearLayout(this).apply {
@@ -218,7 +218,7 @@ class MainActivity : Activity() {
         val shortcutScroll = HorizontalScrollView(this).apply {
             setBackgroundColor(0xFF202024.toInt())
             isHorizontalScrollBarEnabled = false
-            addView(shortcutStrip, HorizontalScrollView.LayoutParams(WC, dp(44)))
+            addView(shortcutStrip, ViewGroup.LayoutParams(WC, dp(44)))
         }
 
         val topBar = LinearLayout(this).apply {
@@ -442,8 +442,9 @@ class MainActivity : Activity() {
         val tab = browserTabs[activeTabIndex]
         tab.url = novelWv.url ?: tab.url
         tab.label = (novelWv.title ?: "").ifBlank { Uri.parse(tab.url).host ?: "New Tab" }
-        tab.state = Bundle()
-        try { novelWv.saveState(tab.state) } catch (_: Exception) {}
+        val state = Bundle()
+        tab.state = state
+        try { novelWv.saveState(state) } catch (_: Exception) {}
         Prefs.put(this, "lastNovelUrl", tab.url)
     }
 
