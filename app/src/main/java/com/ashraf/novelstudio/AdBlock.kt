@@ -23,7 +23,13 @@ object AdBlock {
         "histats.com", "quantserve.com", "casalemedia.com", "contextweb.com", "serving-sys.com",
         "advertising.com", "adsrvr.org", "bidswitch.net", "media.net", "cpmstar.com", "adtng.com"
     )
-    private val PATTERNS = listOf("/pagead/", "/adserver/", "adsbygoogle.js", "/ads/banner")
+    private val PATTERNS = listOf(
+        "/pagead/", "/adserver/", "/ads/", "/ads.", "/adframe", "/adservice", "/adclick",
+        "adsbygoogle.js", "googlesyndication", "doubleclick", "googleadservices",
+        "popunder", "popup_ad", "/banner-ad", "/banners/", "/advert/", "/advertising/",
+        "/sponsor/", "prebid", "bidder", "tracking-pixel", "analytics.js", "gtag/js",
+        "collect?v=", "/beacon", "fingerprint"
+    )
 
     @Volatile private var hosts: Set<String> = builtIn.toHashSet()
 
@@ -49,12 +55,37 @@ object AdBlock {
     }
 
     fun cosmeticJs(): String {
-        val css = ".adsbygoogle,ins.adsbygoogle,[id^=google_ads],[id^=div-gpt-ad],[id*=taboola],[id*=outbrain]," +
-            "[class*=adsbygoogle],.ad-banner,.ad-container,.advert,.advertisement,.ads-wrapper,.ad-slot," +
-            "iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=adsterra],[class*=sponsored-ad]" +
-            "{display:none!important}"
-        return "(function(){try{var s=document.createElement('style');s.textContent='" + css +
-            "';(document.head||document.documentElement).appendChild(s);}catch(e){}})();"
+        val css = ".adsbygoogle,ins.adsbygoogle,[id^=google_ads],[id*=div-gpt-ad],[id*=taboola],[id*=outbrain]," +
+            "[class*=adsbygoogle],[class*=ad-banner],[class*=ad-container],[class*=advert],[class*=advertisement]," +
+            "[class*=ads-wrapper],[class*=ad-slot],[class*=popup],[class*=popunder],[id*=ad-banner],[id*=advert]," +
+            "[id*=popup],[id*=popunder],[class*=sponsored],[class*=social-share],[class*=push-notification]," +
+            "iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=adsterra]" +
+            "{display:none!important;visibility:hidden!important;pointer-events:none!important}"
+        return """(function(){
+          try{
+            var css=${org.json.JSONObject.quote(css)};
+            var s=document.getElementById('__nsAdStyle');
+            if(!s){s=document.createElement('style');s.id='__nsAdStyle';(document.head||document.documentElement).appendChild(s);}
+            s.textContent=css;
+            var kill=function(root){
+              try{
+                root.querySelectorAll('[class*="ad-"],[id*="ad-"],[class*="advert"],[id*="advert"],[class*="popup"],[id*="popup"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"]').forEach(function(e){
+                  if(e.tagName==='BODY'||e.tagName==='HTML')return;
+                  e.remove();
+                });
+              }catch(e){}
+            };
+            kill(document);
+            if(window.__nsAdObs)window.__nsAdObs.disconnect();
+            window.__nsAdObs=new MutationObserver(function(ms){
+              for(var i=0;i<ms.length;i++)for(var j=0;j<ms[i].addedNodes.length;j++){
+                var n=ms[i].addedNodes[j];
+                if(n.nodeType===1)kill(n.parentNode||document);
+              }
+            });
+            window.__nsAdObs.observe(document.documentElement,{childList:true,subtree:true});
+          }catch(e){}
+        })();"""
     }
 
     // Downloads a bigger public ad-server hosts list and merges it with the built-in one
