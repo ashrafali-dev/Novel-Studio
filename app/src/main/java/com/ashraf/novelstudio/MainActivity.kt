@@ -87,7 +87,7 @@ class MainActivity : Activity() {
     private var shownTranslated = false
     private val handler = Handler(Looper.getMainLooper())
 
-    // navigation (â–¶ â—€ â—) â€” every action gets a fresh token, old callbacks with an old token are ignored
+    // navigation (▶ ◀ ●) — every action gets a fresh token, old callbacks with an old token are ignored
     private var navToken = 0
     private var autoCopy = false
     private var polling = false
@@ -185,15 +185,15 @@ class MainActivity : Activity() {
         }
 
         val reloadBtn = TextView(this).apply {
-            text = "âŸ³"
+            text = "⟳"
             gravity = Gravity.CENTER
             textSize = 22f
             setTextColor(0xFFFFFFFF.toInt())
             setOnClickListener { reloadPage() }
-            setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("ðŸ”„ à¦¦à§à¦Ÿà§‹à¦‡ à¦°à¦¿à¦²à§‹à¦¡ à¦¹à¦šà§à¦›à§‡"); true }
+            setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
         }
         val goBtn = TextView(this).apply {
-            text = "â†’"
+            text = "→"
             gravity = Gravity.CENTER
             textSize = 22f
             setTextColor(0xFF4F7CFF.toInt())
@@ -297,19 +297,19 @@ class MainActivity : Activity() {
         }
 
         // ---- bottom bar
-        modeBtn = barBtn("â—«") { cycleMode() }
-        autoBtn = barBtn("âš¡") { toggleAuto() }
+        modeBtn = barBtn("◫") { cycleMode() }
+        autoBtn = barBtn("⚡") { toggleAuto() }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(0xFF202024.toInt())
             addView(modeBtn)
-            addView(barBtn("ðŸ“") { deliver(Prefs.prompt(this@MainActivity), "à¦ªà§à¦°à¦®à§à¦ªà¦Ÿ") })
-            addView(barBtn("â—€") { step("prev") })
-            addView(barBtn("â—") { extractCopy() })
-            addView(barBtn("â–¶") { step("next") })
-            addView(barBtn("ðŸ’¾") { saveAnswer() })
+            addView(barBtn("📝") { deliver(Prefs.prompt(this@MainActivity), "প্রম্পট") })
+            addView(barBtn("◀") { step("prev") })
+            addView(barBtn("●") { extractCopy() })
+            addView(barBtn("▶") { step("next") })
+            addView(barBtn("💾") { saveAnswer() })
             addView(autoBtn)
-            addView(barBtn("â˜°") { menu() })
+            addView(barBtn("☰") { menu() })
         }
 
         val root = LinearLayout(this).apply {
@@ -374,11 +374,11 @@ class MainActivity : Activity() {
         }
     }
 
-    // âŸ³ : reload the pane you are looking at (long press = reload both)
+    // ⟳ : reload the pane you are looking at (long press = reload both)
     private fun reloadPage() {
         val wv = if (mode == Mode.CHAT) chatWv else activeWv
         wv.reload()
-        toast(if (wv === chatWv) "ðŸ”„ à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿ à¦°à¦¿à¦²à§‹à¦¡ à¦¹à¦šà§à¦›à§‡â€¦" else "ðŸ”„ à¦¨à§‹à¦­à§‡à¦² à¦ªà§‡à¦œ à¦°à¦¿à¦²à§‹à¦¡ à¦¹à¦šà§à¦›à§‡â€¦")
+        toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
     }
 
     // ================================================================== browser tabs / shortcuts / history
@@ -415,9 +415,9 @@ class MainActivity : Activity() {
         if (!::tabStrip.isInitialized) return
         tabStrip.removeAllViews()
         browserTabs.forEachIndexed { i, tab ->
-            val label = if (tab.label.length > 20) tab.label.take(20) + "â€¦" else tab.label
+            val label = if (tab.label.length > 20) tab.label.take(20) + "…" else tab.label
             val b = TextView(this).apply {
-                text = (if (i == activeTabIndex) "â— " else "") + label + "  Ã—"
+                text = (if (i == activeTabIndex) "● " else "") + label + "  ×"
                 textSize = 13f
                 gravity = Gravity.CENTER
                 setTextColor(if (i == activeTabIndex) 0xFFFFFFFF.toInt() else 0xFFAAAAAF.toInt())
@@ -434,7 +434,7 @@ class MainActivity : Activity() {
             }
             tabStrip.addView(b)
         }
-        tabStrip.addView(chip("ï¼‹", { newBrowserTab("https://duckduckgo.com/") }, null))
+        tabStrip.addView(chip("＋", { newBrowserTab("https://duckduckgo.com/") }, null))
     }
 
     private fun saveCurrentTabState() {
@@ -509,12 +509,12 @@ class MainActivity : Activity() {
 
     private fun browserHistoryDialog() {
         val h = Store.history(this)
-        if (h.isEmpty()) return toast("ðŸ•˜ à¦¹à¦¿à¦¸à§à¦Ÿà§à¦°à¦¿ à¦–à¦¾à¦²à¦¿")
+        if (h.isEmpty()) return toast("🕘 হিস্ট্রি খালি")
         val labels = h.map {
             val host = Uri.parse(it.url).host ?: it.url
             "${it.title.ifBlank { host }}\n$host"
         }
-        listDialog("ðŸ•˜ à¦¬à§à¦°à¦¾à¦‰à¦œ à¦¹à¦¿à¦¸à§à¦Ÿà§à¦°à¦¿", labels, { i ->
+        listDialog("🕘 ব্রাউজ হিস্ট্রি", labels, { i ->
             if (i in h.indices) {
                 if (mode == Mode.CHAT) setMode(Mode.SPLIT)
                 newBrowserTab(h[i].url)
@@ -543,9 +543,9 @@ class MainActivity : Activity() {
     private fun setMode(m: Mode) {
         mode = m
         modeBtn.text = when (m) {
-            Mode.NOVEL -> "ðŸ“–"
-            Mode.CHAT -> "ðŸ’¬"
-            Mode.SPLIT -> "â—«"
+            Mode.NOVEL -> "📖"
+            Mode.CHAT -> "💬"
+            Mode.SPLIT -> "◫"
         }
         activeWv = if (m == Mode.CHAT) chatWv else novelWv
         applyLayout()
@@ -606,7 +606,7 @@ class MainActivity : Activity() {
             val o = a.getJSONObject(i)
             strip.addView(chip(o.getString("n"), { openBot(o.getString("u")) }, { removeBot(i) }))
         }
-        strip.addView(chip("ï¼‹", { addBotDialog() }, null))
+        strip.addView(chip("＋", { addBotDialog() }, null))
     }
 
     private fun openBot(u: String) {
@@ -616,21 +616,21 @@ class MainActivity : Activity() {
 
     private fun removeBot(i: Int) {
         AlertDialog.Builder(this)
-            .setMessage("à¦à¦‡ à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿ à¦²à¦¿à¦¸à§à¦Ÿ à¦¥à§‡à¦•à§‡ à¦®à§à¦›à¦¬à§‡?")
-            .setPositiveButton("à¦®à§à¦›à§‹") { _, _ ->
+            .setMessage("এই চ্যাটবট লিস্ট থেকে মুছবে?")
+            .setPositiveButton("মুছো") { _, _ ->
                 val a = bots()
                 a.remove(i)
                 Prefs.put(this, "bots", a.toString())
                 buildStrip()
             }
-            .setNegativeButton("à¦¨à¦¾", null)
+            .setNegativeButton("না", null)
             .show()
     }
 
     private fun addBotDialog() {
-        val n = EditText(this).apply { hint = "à¦¨à¦¾à¦®" }
+        val n = EditText(this).apply { hint = "নাম" }
         val u = EditText(this).apply {
-            hint = "https://â€¦"
+            hint = "https://…"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         val l = LinearLayout(this).apply {
@@ -640,9 +640,9 @@ class MainActivity : Activity() {
             addView(u)
         }
         AlertDialog.Builder(this)
-            .setTitle("à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿ à¦¯à§‹à¦— à¦•à¦°à§‹")
+            .setTitle("চ্যাটবট যোগ করো")
             .setView(l)
-            .setPositiveButton("à¦¯à§‹à¦—") { _, _ ->
+            .setPositiveButton("যোগ") { _, _ ->
                 var url = u.text.toString().trim()
                 if (url.isEmpty()) return@setPositiveButton
                 if (!url.startsWith("http")) url = "https://$url"
@@ -651,7 +651,7 @@ class MainActivity : Activity() {
                 Prefs.put(this, "bots", a.toString())
                 buildStrip()
             }
-            .setNegativeButton("à¦¬à¦¾à¦¤à¦¿à¦²", null)
+            .setNegativeButton("বাতিল", null)
             .show()
     }
 
@@ -662,10 +662,10 @@ class MainActivity : Activity() {
         }
         try {
             tab.launchUrl(this, Uri.parse(url))
-            toast("ðŸ” à¦²à¦—à¦‡à¦¨ Chrome-à¦ à¦–à§à¦²à§‡à¦›à¦¿ â€” à¦¶à§‡à¦· à¦¹à¦²à§‡ Novel Studio-à¦¤à§‡ à¦«à¦¿à¦°à§‡ à¦†à¦¸à§‹")
+            toast("🔐 লগইন Chrome-এ খুলেছি — শেষ হলে Novel Studio-তে ফিরে আসো")
         } catch (_: Exception) {
             try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-            catch (_: Exception) { toast("âŒ à¦²à¦—à¦‡à¦¨ à¦ªà§‡à¦œ à¦–à§‹à¦²à¦¾ à¦—à§‡à¦² à¦¨à¦¾") }
+            catch (_: Exception) { toast("❌ লগইন পেজ খোলা গেল না") }
         }
     }
 
@@ -811,8 +811,8 @@ class MainActivity : Activity() {
                         autoCopy = false
                         polling = false
                         toast(
-                            if (target == "edge") "â„¹ï¸ à¦†à¦° à¦•à§‹à¦¨à§‹ chapter à¦¨à§‡à¦‡"
-                            else "âŒ WebNovel chapter link à¦ªà¦¾à¦“à¦¯à¦¼à¦¾ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿"
+                            if (target == "edge") "ℹ️ আর কোনো chapter নেই"
+                            else "❌ WebNovel chapter link পাওয়া যায়নি"
                         )
                     }
                 }
@@ -1103,7 +1103,7 @@ class MainActivity : Activity() {
         lastCopied = ""
     }
 
-    // ================================================================== â— â–¶ â—€
+    // ================================================================== ● ▶ ◀
     // Same-URL/SPA readers must keep their document alive after a JS click.
     // We hide the old page immediately instead of destroying its DOM, because
     // destroying documentElement can cancel the site's own chapter transition.
@@ -1117,7 +1117,7 @@ class MainActivity : Activity() {
                     var x=document.createElement('div');
                     x.id='__ns_nav_loading';
                     x.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#aaa;display:flex;align-items:center;justify-content:center;font:16px sans-serif;';
-                    x.textContent='Loading chapterâ€¦';
+                    x.textContent='Loading chapter…';
                     (document.body||document.documentElement).appendChild(x);
                 } catch(e) {}
                 return 'loading';
@@ -1160,9 +1160,9 @@ class MainActivity : Activity() {
                 (function(){
                     try {
                         document.documentElement.innerHTML =
-                            '<head><title>Loadingâ€¦</title></head>' +
+                            '<head><title>Loading…</title></head>' +
                             '<body style="background:#111;color:#aaa;font-family:sans-serif">' +
-                            '<div style="padding:32px;text-align:center">Loading chapterâ€¦</div>' +
+                            '<div style="padding:32px;text-align:center">Loading chapter…</div>' +
                             '</body>';
                     } catch(e) {}
                     return "cleared";
@@ -1175,18 +1175,18 @@ class MainActivity : Activity() {
         updateProgressUi()
     }
 
-    // â— : auto mode + translation shown -> switch original/translation; otherwise handle the chapter on the page now
+    // ● : auto mode + translation shown -> switch original/translation; otherwise handle the chapter on the page now
     private fun extractCopy() {
         if (Prefs.auto(this) && hasTr) { toggleView(); return }
         navToken++
         val token = navToken
         extractNow { ch ->
             if (token != navToken) return@extractNow
-            if (ch == null) toast("âŒ à¦à¦‡ à¦ªà§‡à¦œà§‡ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦°à§‡à¦° à¦²à§‡à¦–à¦¾ à¦ªà¦¾à¦“à¦¯à¦¼à¦¾ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿") else handleChapter(ch)
+            if (ch == null) toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি") else handleChapter(ch)
         }
     }
 
-    // â–¶ / â—€ : go to next/prev chapter and handle it. Screen mode is never changed.
+    // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
         // Capture the current chapter BEFORE invalidating navigation state.
         // wipeStale() intentionally clears lastChapter so no old chapter can
@@ -1229,7 +1229,7 @@ class MainActivity : Activity() {
             val base = cur ?: lastChapter
             if (base == null) {
                 hideNavLoading()
-                toast("âŒ à¦†à¦—à§‡ à¦¨à§‹à¦­à§‡à¦²à§‡à¦° à¦à¦•à¦Ÿà¦¾ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦° à¦ªà§‡à¦œ à¦–à§‹à¦²à§‹")
+                toast("❌ আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো")
                 return@extractNow
             }
             navigate(base)
@@ -1251,7 +1251,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 hideNavLoading()
-                toast("âŒ à¦ªà§‡à¦œ à¦²à§‹à¦¡ à¦¹à¦¯à¦¼à¦¨à¦¿ â€” âŸ³ à¦šà§‡à¦ªà§‡ à¦†à¦¬à¦¾à¦° à¦šà§‡à¦·à§à¦Ÿà¦¾ à¦•à¦°à§‹")
+                toast("❌ পেজ লোড হয়নি — ⟳ চেপে আবার চেষ্টা করো")
             }
         }, 20000)
     }
@@ -1268,7 +1268,7 @@ class MainActivity : Activity() {
             val match = Regex("^(/book/[^/]+)", RegexOption.IGNORE_CASE).find(path)
             if (match == null || parsed.scheme.isNullOrEmpty() || parsed.authority.isNullOrEmpty()) {
                 hideNavLoading()
-                toast("âŒ WebNovel book URL à¦¬à§‹à¦à¦¾ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿")
+                toast("❌ WebNovel book URL বোঝা যায়নি")
                 return
             }
             val catalogUrl = parsed.scheme + "://" + parsed.authority + match.value + "/catalog"
@@ -1287,11 +1287,11 @@ class MainActivity : Activity() {
             if (res != null && (res.contains("none") || res.contains("failed"))) {
                 val g = Extractor.bump(base.url, if (dir == "next") 1 else -1)
                 if (g != null) {
-                    toast("âš ï¸ à¦¬à¦¾à¦Ÿà¦¨ à¦ªà¦¾à¦‡à¦¨à¦¿ â€” URL à¦¨à¦®à§à¦¬à¦° à¦¦à¦¿à¦¯à¦¼à§‡ à¦…à¦¨à§à¦®à¦¾à¦¨ à¦•à¦°à¦›à¦¿")
+                    toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
                     loadAndWait(g, token, base)
                 } else {
                     hideNavLoading()
-                    toast("âŒ à¦¨à¦¤à§à¦¨ chapter link à¦ªà¦¾à¦“à¦¯à¦¼à¦¾ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿")
+                    toast("❌ নতুন chapter link পাওয়া যায়নি")
                 }
             } else {
                 val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
@@ -1319,7 +1319,7 @@ class MainActivity : Activity() {
                     waitChange(oldHash, n + 1, token, oldUrl)
                 } else {
                     hideNavLoading()
-                    toast("âŒ à¦¨à¦¤à§à¦¨ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦°à§‡à¦° à¦²à§‡à¦–à¦¾ à¦†à¦¸à§‡à¦¨à¦¿ â€” â— à¦šà§‡à¦ªà§‡ à¦†à¦¬à¦¾à¦° à¦šà§‡à¦·à§à¦Ÿà¦¾ à¦•à¦°à§‹")
+                    toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — ● চেপে আবার চেষ্টা করো")
                 }
             }
         }, if (n < 4) 150L else 220L)
@@ -1342,7 +1342,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 hideNavLoading()
-                toast("âŒ à¦¨à¦¤à§à¦¨ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦°à§‡à¦° à¦²à§‡à¦–à¦¾ à¦ªà¦¾à¦“à¦¯à¦¼à¦¾ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿ â€” â— à¦šà§‡à¦ªà§‡ à¦†à¦¬à¦¾à¦° à¦šà§‡à¦·à§à¦Ÿà¦¾ à¦•à¦°à§‹")
+                toast("❌ নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো")
             }
         }
     }
@@ -1364,35 +1364,35 @@ class MainActivity : Activity() {
         if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
     }
 
-    // ================================================================== copy mode (âš¡ off)
+    // ================================================================== copy mode (⚡ off)
     private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
-        val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} â€” " else "") + ch.title
+        val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
         deliver(full, tag)
     }
 
     private fun deliver(full: String, label: String) {
         copy(full)
-        toast("ðŸ“‹ à¦•à¦ªà¦¿ à¦¹à¦¯à¦¼à§‡à¦›à§‡: $label (${full.length} à¦…à¦•à§à¦·à¦°)")
+        toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
         if (Prefs.bool(this, "autoPaste")) {
             val send = Prefs.bool(this, "autoSend")
             val token = navToken
             handler.postDelayed({
                 if (token != navToken) return@postDelayed
                 chatWv.evaluateJavascript(Js.send(full, send)) { r ->
-                    if (decode(r).startsWith("nobox")) toast("âš ï¸ à¦šà§à¦¯à¦¾à¦Ÿ à¦¬à¦•à§à¦¸ à¦ªà¦¾à¦‡à¦¨à¦¿ â€” à¦•à¦ªà¦¿ à¦¹à¦¯à¦¼à§‡ à¦†à¦›à§‡, à¦¨à¦¿à¦œà§‡ à¦ªà§‡à¦¸à§à¦Ÿ à¦•à¦°à§‹")
+                    if (decode(r).startsWith("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
                 }
             }, 400)
         }
     }
 
-    // ================================================================== auto mode (âš¡ on)
+    // ================================================================== auto mode (⚡ on)
     private fun autoFlow(ch: Chapter) {
         val saved = Store.find(this, ch)
         if (saved != null) {
             applyTranslation(ch, Store.read(this, saved.id), true)
-            toast("ðŸ“– à¦¸à§‡à¦­ à¦•à¦°à¦¾ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¬à¦¸à¦¾à¦²à¦¾à¦®")
+            toast("📖 সেভ করা অনুবাদ বসালাম")
         } else {
             enqueue(ch)
         }
@@ -1449,7 +1449,7 @@ class MainActivity : Activity() {
                     if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
                 }, 1800)
             } else {
-                failJob(tok, ch, "à¦šà§à¦¯à¦¾à¦Ÿ à¦¬à¦•à§à¦¸ à¦ªà¦¾à¦“à¦¯à¦¼à¦¾ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿ â€” à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿà§‡ à¦²à¦—à¦‡à¦¨ à¦†à¦›à§‡ à¦•à¦¿ à¦¦à§‡à¦–à§‹")
+                failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
             }
         }
     }
@@ -1486,8 +1486,8 @@ class MainActivity : Activity() {
                 val doneSlow = got && st >= 15 && effLen > 50
                 when {
                     done || doneSlow -> finishJob(tok, ch)
-                    elapsed > 6 * 60_000 -> failJob(tok, ch, "à¦¸à¦®à¦¯à¦¼ à¦¶à§‡à¦· (à§¬ à¦®à¦¿à¦¨à¦¿à¦Ÿ)")
-                    !got && elapsed > 60_000 -> failJob(tok, ch, "à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿ à¦‰à¦¤à§à¦¤à¦° à¦¶à§à¦°à§ à¦•à¦°à§‡à¦¨à¦¿ â€” à¦®à§‡à¦¸à§‡à¦œ à¦¯à¦¾à¦¯à¦¼à¦¨à¦¿?")
+                    elapsed > 6 * 60_000 -> failJob(tok, ch, "সময় শেষ (৬ মিনিট)")
+                    !got && elapsed > 60_000 -> failJob(tok, ch, "চ্যাটবট উত্তর শুরু করেনি — মেসেজ যায়নি?")
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
                 }
             }
@@ -1495,7 +1495,7 @@ class MainActivity : Activity() {
     }
 
     private fun cleanReply(t: String): String =
-        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:ï¼š]?\\s*", RegexOption.IGNORE_CASE), "").trim()
+        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
 
     private fun finishJob(tok: Int, ch: Chapter) {
         if (tok != runToken) return
@@ -1503,7 +1503,7 @@ class MainActivity : Activity() {
             if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
             val t = cleanReply(decode(raw))
             if (t.length < 30) {
-                failJob(tok, ch, "à¦‰à¦¤à§à¦¤à¦° à¦ªà¦¡à¦¼à¦¾ à¦—à§‡à¦² à¦¨à¦¾")
+                failJob(tok, ch, "উত্তর পড়া গেল না")
                 return@evaluateJavascript
             }
             // The chatbot response is complete here, so copy the FINAL
@@ -1515,7 +1515,7 @@ class MainActivity : Activity() {
             updateProgressUi()
             val shown = lastChapter
             if (shown != null && keyOf(shown) == keyOf(ch)) applyTranslation(shown, t, true)
-            toast("âœ… à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¸à§‡à¦­ à¦¹à¦¯à¦¼à§‡à¦›à§‡" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
+            toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
         }
@@ -1527,7 +1527,7 @@ class MainActivity : Activity() {
         queue.clear()
         running = null
         copy(Prefs.prompt(this) + "\n\n---\n\n" + ch.text)
-        toast("âŒ $msg\nðŸ“‹ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦° à¦•à¦ªà¦¿ à¦•à¦°à§‡ à¦°à¦¾à¦–à¦²à¦¾à¦® â€” à¦¨à¦¿à¦œà§‡ à¦šà§à¦¯à¦¾à¦Ÿà§‡ à¦ªà§‡à¦¸à§à¦Ÿ à¦•à¦°à§‡ Copy â†’ ðŸ’¾ à¦•à¦°à§‹")
+        toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
 
@@ -1537,7 +1537,7 @@ class MainActivity : Activity() {
         running = null
         chatWv.evaluateJavascript(Js.stop(), null)
         updateProgressUi()
-        toast("â¹ à¦…à¦Ÿà§‹ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¬à¦¨à§à¦§ à¦•à¦°à¦²à¦¾à¦®")
+        toast("⏹ অটো অনুবাদ বন্ধ করলাম")
     }
 
     // ---- put the translation into the novel page itself
@@ -1554,7 +1554,7 @@ class MainActivity : Activity() {
                 hasTr = true
                 shownTranslated = true
                 updatePill()
-                if (retry) {   // some sites re-render the content a moment later â€” put it back once
+                if (retry) {   // some sites re-render the content a moment later — put it back once
                     handler.postDelayed({
                         if (shownTranslated && lastChapter === ch) {
                             novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
@@ -1566,7 +1566,7 @@ class MainActivity : Activity() {
                     }, 2500)
                 }
             } else {
-                toast("âš ï¸ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¬à¦¸à¦¾à¦¨à§‹ à¦—à§‡à¦² à¦¨à¦¾ â€” à¦²à¦¾à¦‡à¦¬à§à¦°à§‡à¦°à¦¿à¦¤à§‡ à¦¸à§‡à¦­ à¦†à¦›à§‡")
+                toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
             }
         }
     }
@@ -1581,7 +1581,7 @@ class MainActivity : Activity() {
 
     private fun updatePill() {
         togglePill.visibility = if (hasTr && mode != Mode.CHAT) View.VISIBLE else View.GONE
-        togglePill.text = if (shownTranslated) "ðŸŒ à¦®à§‚à¦² à¦¦à§‡à¦–à§‹" else "ðŸŒ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¦à§‡à¦–à§‹"
+        togglePill.text = if (shownTranslated) "🌐 মূল দেখো" else "🌐 অনুবাদ দেখো"
     }
 
     // ---- progress overlay
@@ -1595,16 +1595,16 @@ class MainActivity : Activity() {
         val label: String
         var pct = 0
         if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
-            label = "ðŸŒ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦šà¦²à¦›à§‡â€¦  $progress%"
+            label = "🌐 অনুবাদ চলছে…  $progress%"
             pct = progress
         } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
             val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
-            label = "â³ à¦²à¦¾à¦‡à¦¨à§‡ à¦†à¦›à§‡ â€” à¦†à¦—à§‡ $ahead à¦Ÿà¦¾ à¦¬à¦¾à¦•à¦¿"
+            label = "⏳ লাইনে আছে — আগে $ahead টা বাকি"
         } else {
-            label = "ðŸŒ à¦ªà§‡à¦›à¦¨à§‡ à¦…à¦¨à§à¦¯ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦°à§‡à¦° à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦šà¦²à¦›à§‡  $progress%"
+            label = "🌐 পেছনে অন্য চ্যাপ্টারের অনুবাদ চলছে  $progress%"
             pct = progress
         }
-        progressTv.text = label + "   (à¦¥à¦¾à¦®à¦¾à¦¤à§‡ à¦Ÿà§à¦¯à¦¾à¦ª)"
+        progressTv.text = label + "   (থামাতে ট্যাপ)"
         progressBar.progress = pct
         setProgressVisible(true)
     }
@@ -1631,7 +1631,7 @@ class MainActivity : Activity() {
         val on = !Prefs.auto(this)
         Prefs.putBool(this, "noAuto", !on)
         refreshAutoBtn()
-        toast(if (on) "âš¡ à¦…à¦Ÿà§‹ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦šà¦¾à¦²à§ â€” â–¶ à¦šà¦¾à¦ªà¦²à§‡à¦‡ à¦¬à§à¦¯à¦¾à¦•à¦—à§à¦°à¦¾à¦‰à¦¨à§à¦¡à§‡ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¹à¦¯à¦¼à§‡ à¦¸à¦¾à¦‡à¦Ÿà§‡ à¦¬à¦¸à¦¬à§‡" else "âš¡ à¦•à¦ªà¦¿ à¦®à§‹à¦¡ â€” â–¶ à¦šà¦¾à¦ªà¦²à§‡ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦° à¦•à¦ªà¦¿ à¦¹à¦¬à§‡")
+        toast(if (on) "⚡ অটো অনুবাদ চালু — ▶ চাপলেই ব্যাকগ্রাউন্ডে অনুবাদ হয়ে সাইটে বসবে" else "⚡ কপি মোড — ▶ চাপলে চ্যাপ্টার কপি হবে")
     }
 
     private fun refreshAutoBtn() {
@@ -1642,10 +1642,10 @@ class MainActivity : Activity() {
     private fun saveAnswer() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim() ?: ""
-        if (t.length < 30) return toast("âŒ à¦•à§à¦²à¦¿à¦ªà¦¬à§‹à¦°à§à¦¡à§‡ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¨à§‡à¦‡ â€” à¦†à¦—à§‡ à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿà§‡à¦° à¦‰à¦¤à§à¦¤à¦°à§‡à¦° Copy à¦¬à¦¾à¦Ÿà¦¨ à¦šà¦¾à¦ªà§‹")
-        if (t == lastCopied.trim()) return toast("âŒ à¦à¦Ÿà¦¾ à¦¤à§‹ à¦¸à§‹à¦°à§à¦¸ à¦Ÿà§‡à¦•à§à¦¸à¦Ÿ â€” à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿà§‡à¦° à¦‰à¦¤à§à¦¤à¦°à§‡à¦° Copy à¦¬à¦¾à¦Ÿà¦¨ à¦šà¦¾à¦ªà§‹")
+        if (t.length < 30) return toast("❌ ক্লিপবোর্ডে অনুবাদ নেই — আগে চ্যাটবটের উত্তরের Copy বাটন চাপো")
+        if (t == lastCopied.trim()) return toast("❌ এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো")
         val tr = Store.save(this, lastChapter, t)
-        toast("ðŸ’¾ à¦²à¦¾à¦‡à¦¬à§à¦°à§‡à¦°à¦¿à¦¤à§‡ à¦¸à§‡à¦­: ${tr.novel} â€” ${tr.label()}")
+        toast("💾 লাইব্রেরিতে সেভ: ${tr.novel} — ${tr.label()}")
         if (!Prefs.bool(this, "noSaveNext")) step("next")
     }
 
@@ -1653,15 +1653,15 @@ class MainActivity : Activity() {
 
     private fun menu() {
         val labels = arrayListOf(
-            "ðŸ“š à¦²à¦¾à¦‡à¦¬à§à¦°à§‡à¦°à¦¿ (à¦…à¦«à¦²à¦¾à¦‡à¦¨à§‡ à¦ªà¦¡à¦¼à§‹)",
-            "ðŸ•˜ à¦¬à§à¦°à¦¾à¦‰à¦œ à¦¹à¦¿à¦¸à§à¦Ÿà§à¦°à¦¿",
-            "â¬‡ï¸ à¦¸à¦¬ à¦…à¦¨à§à¦¬à¦¾à¦¦ txt à¦à¦•à§à¦¸à¦ªà§‹à¦°à§à¦Ÿ",
-            "ðŸ”– à¦à¦‡ à¦ªà§‡à¦œ à¦¬à§à¦•à¦®à¦¾à¦°à§à¦• à¦•à¦°à§‹",
-            "ðŸ”– à¦¬à§à¦•à¦®à¦¾à¦°à§à¦• à¦²à¦¿à¦¸à§à¦Ÿ",
-            "ðŸ“ à¦ªà§à¦°à¦®à§à¦ªà¦Ÿ à¦à¦¡à¦¿à¦Ÿ",
+            "📚 লাইব্রেরি (অফলাইনে পড়ো)",
+            "🕘 ব্রাউজ হিস্ট্রি",
+            "⬇️ সব অনুবাদ txt এক্সপোর্ট",
+            "🔖 এই পেজ বুকমার্ক করো",
+            "🔖 বুকমার্ক লিস্ট",
+            "📝 প্রম্পট এডিট",
             menuAutoLabel(),
-            "ðŸ” à¦à¦‡ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦° à¦†à¦¬à¦¾à¦° à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦•à¦°à¦¾à¦“",
-            "â¹ à¦šà¦²à¦®à¦¾à¦¨ à¦…à¦Ÿà§‹ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¬à¦¨à§à¦§",
+            "🔁 এই চ্যাপ্টার আবার অনুবাদ করাও",
+            "⏹ চলমান অটো অনুবাদ বন্ধ",
             menuDarkLabel(),
             menuAutoPasteLabel(),
             menuAutoSendLabel(),
@@ -1669,17 +1669,17 @@ class MainActivity : Activity() {
             menuSaveNextLabel(),
             menuNextExtractLabel(),
             menuAdBlockLabel(),
-            "ðŸ”„ Ad Block à¦²à¦¿à¦¸à§à¦Ÿ à¦†à¦ªà¦¡à§‡à¦Ÿ",
-            "ðŸ”„ à¦¨à§‹à¦­à§‡à¦² à¦ªà§‡à¦œ à¦°à¦¿à¦²à§‹à¦¡",
-            "ðŸ”„ à¦šà§à¦¯à¦¾à¦Ÿà¦¬à¦Ÿ à¦°à¦¿à¦²à§‹à¦¡"
+            "🔄 Ad Block লিস্ট আপডেট",
+            "🔄 নোভেল পেজ রিলোড",
+            "🔄 চ্যাটবট রিলোড"
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
         lv.adapter = adapter
         val dlg = AlertDialog.Builder(this)
-            .setTitle("â˜° à¦®à§‡à¦¨à§")
+            .setTitle("☰ মেনু")
             .setView(lv)
-            .setNegativeButton("à¦¬à¦¨à§à¦§", null)
+            .setNegativeButton("বন্ধ", null)
             .create()
 
         lv.setOnItemClickListener { _, _, i, _ ->
@@ -1697,10 +1697,10 @@ class MainActivity : Activity() {
                 }
                 7 -> {
                     val ch = lastChapter
-                    if (ch == null) toast("âŒ à¦†à¦—à§‡ à¦à¦•à¦Ÿà¦¾ à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦° à¦–à§‹à¦²à§‹")
+                    if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
                     else {
                         enqueue(ch)
-                        toast("â³ à¦†à¦¬à¦¾à¦° à¦…à¦¨à§à¦¬à¦¾à¦¦à§‡ à¦¦à§‡à¦“à¦¯à¦¼à¦¾ à¦¹à¦²à§‹")
+                        toast("⏳ আবার অনুবাদে দেওয়া হলো")
                     }
                     dlg.dismiss()
                 }
@@ -1749,9 +1749,9 @@ class MainActivity : Activity() {
                     adapter.notifyDataSetChanged()
                 }
                 16 -> {
-                    toast("â³ à¦²à¦¿à¦¸à§à¦Ÿ à¦¨à¦¾à¦®à¦¾à¦šà§à¦›à¦¿â€¦")
+                    toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n ->
-                        toast(if (n > 0) "âœ… $n à¦Ÿà¦¾ à¦¹à§‹à¦¸à§à¦Ÿ à¦¯à§‹à¦— à¦¹à¦¯à¦¼à§‡à¦›à§‡" else "âŒ à¦†à¦ªà¦¡à§‡à¦Ÿ à¦¹à¦¯à¦¼à¦¨à¦¿")
+                        toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
                 17 -> { dlg.dismiss(); novelWv.reload() }
@@ -1762,33 +1762,33 @@ class MainActivity : Activity() {
     }
 
     private fun menuAutoLabel(): String =
-        (if (Prefs.auto(this)) "âœ…" else "â¬œ") + " âš¡ à¦…à¦Ÿà§‹ à¦…à¦¨à§à¦¬à¦¾à¦¦ (à¦¬à§à¦¯à¦¾à¦•à¦—à§à¦°à¦¾à¦‰à¦¨à§à¦¡à§‡, à¦¸à¦¾à¦‡à¦Ÿà§‡ à¦¬à¦¸à¦¬à§‡)"
+        (if (Prefs.auto(this)) "✅" else "⬜") + " ⚡ অটো অনুবাদ (ব্যাকগ্রাউন্ডে, সাইটে বসবে)"
 
     private fun menuDarkLabel(): String =
-        "ðŸŒ™ à¦¡à¦¾à¦°à§à¦• à¦®à§‹à¦¡: " + arrayOf("à¦¬à¦¨à§à¦§", "à¦…à¦Ÿà§‹", "à¦«à§‹à¦°à§à¦¸")[darkMode()] + "  (à¦Ÿà§à¦¯à¦¾à¦ª à¦•à¦°à¦²à§‡ à¦¬à¦¦à¦²à¦¾à¦¯à¦¼)"
+        "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[darkMode()] + "  (ট্যাপ করলে বদলায়)"
 
     private fun menuAutoPasteLabel(): String =
-        (if (Prefs.bool(this, "autoPaste")) "âœ…" else "â¬œ") + " à¦•à¦ªà¦¿ à¦®à§‹à¦¡: à¦…à¦Ÿà§‹ à¦ªà§‡à¦¸à§à¦Ÿ"
+        (if (Prefs.bool(this, "autoPaste")) "✅" else "⬜") + " কপি মোড: অটো পেস্ট"
 
     private fun menuAutoSendLabel(): String =
-        (if (Prefs.bool(this, "autoSend")) "âœ…" else "â¬œ") + " à¦•à¦ªà¦¿ à¦®à§‹à¦¡: à¦…à¦Ÿà§‹ à¦¸à§‡à¦¨à§à¦¡"
+        (if (Prefs.bool(this, "autoSend")) "✅" else "⬜") + " কপি মোড: অটো সেন্ড"
 
     private fun menuPromptLabel(): String =
-        (if (Prefs.bool(this, "withPrompt")) "âœ…" else "â¬œ") + " à¦•à¦ªà¦¿ à¦®à§‹à¦¡: à¦•à¦ªà¦¿à¦° à¦¸à¦¾à¦¥à§‡ à¦ªà§à¦°à¦®à§à¦ªà¦Ÿ"
+        (if (Prefs.bool(this, "withPrompt")) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট"
 
     private fun menuNextExtractLabel(): String =
-        (if (Prefs.bool(this, "autoExtractNext", true)) "âœ…" else "â¬œ") + " â–¶ Next/Prev à¦à¦° à¦ªà¦° à¦…à¦Ÿà§‹ Extract"
+        (if (Prefs.bool(this, "autoExtractNext", true)) "✅" else "⬜") + " ▶ Next/Prev এর পর অটো Extract"
 
     private fun menuSaveNextLabel(): String =
-        (if (!Prefs.bool(this, "noSaveNext")) "âœ…" else "â¬œ") + " à¦•à¦ªà¦¿ à¦®à§‹à¦¡: ðŸ’¾ à¦à¦° à¦ªà¦° à¦ªà¦°à§‡à¦° à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦°"
+        (if (!Prefs.bool(this, "noSaveNext")) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার"
 
     private fun menuAdBlockLabel(): String =
-        (if (Prefs.adblock(this)) "âœ…" else "â¬œ") + " Ad Block"
+        (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
 
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
         val lv = ListView(this)
         lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
-        val dlg = AlertDialog.Builder(this).setTitle(title).setView(lv).setNegativeButton("à¦¬à¦¨à§à¦§", null).create()
+        val dlg = AlertDialog.Builder(this).setTitle(title).setView(lv).setNegativeButton("বন্ধ", null).create()
         lv.setOnItemClickListener { _, _, i, _ -> dlg.dismiss(); onClick(i) }
         if (onLong != null) lv.setOnItemLongClickListener { _, _, i, _ -> dlg.dismiss(); onLong(i); true }
         dlg.show()
@@ -1797,21 +1797,21 @@ class MainActivity : Activity() {
     // ---------- offline library ----------
     private fun libraryNovels() {
         val names = Store.novelNames(this)
-        if (names.isEmpty()) return toast("à¦²à¦¾à¦‡à¦¬à§à¦°à§‡à¦°à¦¿ à¦–à¦¾à¦²à¦¿ â€” à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¹à¦²à§‡ à¦à¦–à¦¾à¦¨à§‡ à¦œà¦®à¦¬à§‡")
-        val labels = names.map { it + "   (" + Store.chapters(this, it).size + " à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦°)" }
-        listDialog("ðŸ“š à¦²à¦¾à¦‡à¦¬à§à¦°à§‡à¦°à¦¿", labels, { i -> novelActions(names[i]) }, null)
+        if (names.isEmpty()) return toast("লাইব্রেরি খালি — অনুবাদ হলে এখানে জমবে")
+        val labels = names.map { it + "   (" + Store.chapters(this, it).size + " চ্যাপ্টার)" }
+        listDialog("📚 লাইব্রেরি", labels, { i -> novelActions(names[i]) }, null)
     }
 
     private fun novelActions(name: String) {
         AlertDialog.Builder(this).setTitle(name)
-            .setItems(arrayOf("ðŸ“– à¦šà§à¦¯à¦¾à¦ªà§à¦Ÿà¦¾à¦° à¦²à¦¿à¦¸à§à¦Ÿ", "â¬‡ï¸ à¦à¦‡ à¦¨à§‹à¦­à§‡à¦² txt à¦à¦•à§à¦¸à¦ªà§‹à¦°à§à¦Ÿ", "âœï¸ à¦¨à¦¾à¦® à¦¬à¦¦à¦²à¦¾à¦“", "ðŸ—‘ à¦ªà§à¦°à§‹ à¦¨à§‹à¦­à§‡à¦² à¦®à§à¦›à§‹")) { _, k ->
+            .setItems(arrayOf("📖 চ্যাপ্টার লিস্ট", "⬇️ এই নোভেল txt এক্সপোর্ট", "✏️ নাম বদলাও", "🗑 পুরো নোভেল মুছো")) { _, k ->
                 when (k) {
                     0 -> chapterList(name)
                     1 -> exportAll(name)
                     2 -> renameNovel(name)
-                    3 -> AlertDialog.Builder(this).setMessage("\"$name\" à¦à¦° à¦¸à¦¬ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦®à§à¦›à¦¬à§‡?")
-                        .setPositiveButton("à¦®à§à¦›à§‹") { _, _ -> Store.deleteNovel(this, name) }
-                        .setNegativeButton("à¦¨à¦¾", null).show()
+                    3 -> AlertDialog.Builder(this).setMessage("\"$name\" এর সব অনুবাদ মুছবে?")
+                        .setPositiveButton("মুছো") { _, _ -> Store.deleteNovel(this, name) }
+                        .setNegativeButton("না", null).show()
                     else -> {}
                 }
             }.show()
@@ -1820,25 +1820,25 @@ class MainActivity : Activity() {
     private fun chapterList(name: String) {
         val l = Store.chapters(this, name)
         if (l.isEmpty()) return
-        listDialog(name + " (à¦²à¦‚ à¦ªà§à¦°à§‡à¦¸à§‡ à¦®à§‹à¦›à§‹)", l.map { it.label() },
+        listDialog(name + " (লং প্রেসে মোছো)", l.map { it.label() },
             { i -> startActivity(Intent(this, ReaderActivity::class.java).putExtra("novel", name).putExtra("id", l[i].id)) },
             { i ->
-                AlertDialog.Builder(this).setMessage("${l[i].label()} à¦®à§à¦›à¦¬à§‡?")
-                    .setPositiveButton("à¦®à§à¦›à§‹") { _, _ -> Store.delete(this, l[i].id) }
-                    .setNegativeButton("à¦¨à¦¾", null).show()
+                AlertDialog.Builder(this).setMessage("${l[i].label()} মুছবে?")
+                    .setPositiveButton("মুছো") { _, _ -> Store.delete(this, l[i].id) }
+                    .setNegativeButton("না", null).show()
             })
     }
 
     private fun renameNovel(old: String) {
         val et = EditText(this).apply { setText(old) }
-        AlertDialog.Builder(this).setTitle("à¦¨à§‹à¦­à§‡à¦²à§‡à¦° à¦¨à¦¾à¦®")
+        AlertDialog.Builder(this).setTitle("নোভেলের নাম")
             .setView(et)
-            .setPositiveButton("à¦¸à§‡à¦­") { _, _ -> Store.rename(this, old, et.text.toString().trim()) }
-            .setNegativeButton("à¦¬à¦¾à¦¤à¦¿à¦²", null).show()
+            .setPositiveButton("সেভ") { _, _ -> Store.rename(this, old, et.text.toString().trim()) }
+            .setNegativeButton("বাতিল", null).show()
     }
 
     private fun exportAll(novel: String?) {
-        if (Store.list(this).isEmpty()) return toast("à¦à¦•à§à¦¸à¦ªà§‹à¦°à§à¦Ÿ à¦•à¦°à¦¾à¦° à¦®à¦¤à§‹ à¦…à¦¨à§à¦¬à¦¾à¦¦ à¦¨à§‡à¦‡")
+        if (Store.list(this).isEmpty()) return toast("এক্সপোর্ট করার মতো অনুবাদ নেই")
         exportNovel = novel
         val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -1854,9 +1854,9 @@ class MainActivity : Activity() {
             val u = data?.data ?: return
             try {
                 contentResolver.openOutputStream(u)?.use { it.write(Store.export(this, exportNovel).toByteArray()) }
-                toast("âœ… à¦à¦•à§à¦¸à¦ªà§‹à¦°à§à¦Ÿ à¦¹à¦¯à¦¼à§‡à¦›à§‡")
+                toast("✅ এক্সপোর্ট হয়েছে")
             } catch (e: Exception) {
-                toast("âŒ " + (e.message ?: "à¦¬à§à¦¯à¦°à§à¦¥"))
+                toast("❌ " + (e.message ?: "ব্যর্থ"))
             }
         }
     }
@@ -1866,14 +1866,14 @@ class MainActivity : Activity() {
         val u = novelWv.url ?: return
         val name = (novelWv.title ?: "").ifBlank { Uri.parse(u).host ?: u }
         Store.addBookmark(this, Bookmark(name, u, u, ""))
-        toast("ðŸ”– à¦¸à§‡à¦­ à¦¹à¦¯à¦¼à§‡à¦›à§‡: $name")
+        toast("🔖 সেভ হয়েছে: $name")
     }
 
     private fun bookmarkList() {
         val l = Store.bookmarks(this)
-        if (l.isEmpty()) return toast("à¦¬à§à¦•à¦®à¦¾à¦°à§à¦• à¦–à¦¾à¦²à¦¿")
-        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "\nâ†³ " + it.lastTitle else "") }
-        listDialog("ðŸ”– à¦¬à§à¦•à¦®à¦¾à¦°à§à¦• (à¦²à¦‚ à¦ªà§à¦°à§‡à¦¸à§‡ à¦®à§‹à¦›à§‹)", labels,
+        if (l.isEmpty()) return toast("বুকমার্ক খালি")
+        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "\n↳ " + it.lastTitle else "") }
+        listDialog("🔖 বুকমার্ক (লং প্রেসে মোছো)", labels,
             { i ->
                 if (mode == Mode.CHAT) setMode(Mode.SPLIT)
                 novelWv.loadUrl(l[i].lastUrl.ifEmpty { l[i].url })
@@ -1888,10 +1888,10 @@ class MainActivity : Activity() {
             gravity = Gravity.TOP
         }
         AlertDialog.Builder(this)
-            .setTitle("à¦ªà§à¦°à¦®à§à¦ªà¦Ÿ")
+            .setTitle("প্রম্পট")
             .setView(et)
-            .setPositiveButton("à¦¸à§‡à¦­") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
-            .setNegativeButton("à¦¬à¦¾à¦¤à¦¿à¦²", null)
+            .setPositiveButton("সেভ") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
+            .setNegativeButton("বাতিল", null)
             .show()
     }
 
