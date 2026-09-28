@@ -1134,13 +1134,24 @@ class MainActivity : Activity() {
 
     // Throw away app state and, for direct URL navigation, the old page DOM.
     private fun wipeStale(clearNovelDom: Boolean = false) {
+        // Navigation is a hard boundary: every async extraction/translation
+        // started for the previous chapter becomes invalid immediately.
         navToken++
+        runToken++
+        queue.clear()
+        running = null
         autoCopy = false
         polling = false
         hasTr = false
         shownTranslated = false
+        lastChapter = null
         updatePill()
         clearClipboard()
+
+        // Never leave the previous chapter's prompt in the chatbot input.
+        // This must happen in Auto mode too.
+        chatWv.evaluateJavascript(Js.stop(), null)
+        chatWv.evaluateJavascript(Js.clearBox(), null)
 
         if (clearNovelDom) {
             novelWv.evaluateJavascript(
@@ -1176,9 +1187,14 @@ class MainActivity : Activity() {
 
     // â–¶ / â—€ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
+        // Capture the current chapter BEFORE invalidating navigation state.
+        // wipeStale() intentionally clears lastChapter so no old chapter can
+        // be committed by a late async callback.
+        val cached = lastChapter
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+
         // Do not re-extract the current chapter before clicking Next/Prev.
-        // lastChapter already contains the current page, so waiting for a
-        // second full DOM extraction here can make navigation feel 5â€“7s slow.
+        // The cached chapter already contains its adjacent URL.
         wipeStale()
         showNavLoading()
         val token = navToken
@@ -1200,8 +1216,6 @@ class MainActivity : Activity() {
             }
         }
 
-        val currentUrl = cleanUrl(novelWv.url ?: "")
-        val cached = lastChapter
         if (cached != null && currentUrl.isNotEmpty() &&
             cleanUrl(cached.url) == currentUrl) {
             navigate(cached)
@@ -1362,7 +1376,9 @@ class MainActivity : Activity() {
         toast("ðŸ“‹ à¦•à¦ªà¦¿ à¦¹à¦¯à¦¼à§‡à¦›à§‡: $label (${full.length} à¦…à¦•à§à¦·à¦°)")
         if (Prefs.bool(this, "autoPaste")) {
             val send = Prefs.bool(this, "autoSend")
+            val token = navToken
             handler.postDelayed({
+                if (token != navToken) return@postDelayed
                 chatWv.evaluateJavascript(Js.send(full, send)) { r ->
                     if (decode(r).startsWith("nobox")) toast("âš ï¸ à¦šà§à¦¯à¦¾à¦Ÿ à¦¬à¦•à§à¦¸ à¦ªà¦¾à¦‡à¦¨à¦¿ â€” à¦•à¦ªà¦¿ à¦¹à¦¯à¦¼à§‡ à¦†à¦›à§‡, à¦¨à¦¿à¦œà§‡ à¦ªà§‡à¦¸à§à¦Ÿ à¦•à¦°à§‹")
                 }
@@ -1481,8 +1497,9 @@ class MainActivity : Activity() {
         t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:ï¼š]?\\s*", RegexOption.IGNORE_CASE), "").trim()
 
     private fun finishJob(tok: Int, ch: Chapter) {
+        if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
-            if (tok != runToken) return@evaluateJavascript
+            if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
             val t = cleanReply(decode(raw))
             if (t.length < 30) {
                 failJob(tok, ch, "à¦‰à¦¤à§à¦¤à¦° à¦ªà¦¡à¦¼à¦¾ à¦—à§‡à¦² à¦¨à¦¾")
@@ -1526,7 +1543,12 @@ class MainActivity : Activity() {
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        // A translation callback can arrive long after the user pressed Next.
+        // Never write an old chapter's translation into the current page.
+        if (lastChapter !== ch) return
+
         novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString())) { r ->
+            if (lastChapter !== ch) return@evaluateJavascript
             if (r != null && r.contains("ok")) {
                 hasTr = true
                 shownTranslated = true
@@ -1535,7 +1557,9 @@ class MainActivity : Activity() {
                     handler.postDelayed({
                         if (shownTranslated && lastChapter === ch) {
                             novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
-                                if (s != null && s.contains("lost")) applyTranslation(ch, text, false)
+                                if (lastChapter === ch && s != null && s.contains("lost")) {
+                                    applyTranslation(ch, text, false)
+                                }
                             }
                         }
                     }, 2500)
