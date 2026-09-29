@@ -2,6 +2,7 @@ package com.ashraf.novelstudio
 
 import android.app.Activity
 import android.os.Bundle
+import android.graphics.Typeface
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -47,13 +48,11 @@ class ReaderActivity : Activity() {
             setPadding(dp(14), dp(10), dp(14), dp(6))
         }
         body = TextView(this).apply {
+            // Book-like serif face; Android will use its Bengali serif fallback.
+            typeface = Typeface.create("serif", Typeface.NORMAL)
             setPadding(dp(16), dp(8), dp(16), dp(24))
             setLineSpacing(0f, 1.35f)
             setTextIsSelectable(true)
-            // Use the device's serif fallback for Bengali: it gives the
-            // offline reader a more book-like/stylish appearance without
-            // changing the translation or rendering mechanism.
-            typeface = android.graphics.Typeface.create("serif", android.graphics.Typeface.NORMAL)
         }
         scroll = ScrollView(this).apply { addView(body) }
         bar = LinearLayout(this).apply {
