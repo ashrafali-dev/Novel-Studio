@@ -66,7 +66,7 @@ object GlossaryStore {
         for (chunk in all.chunked(120)) {
             val aliasEntries = chunk.flatMap { e -> e.aliases.map { alias -> alias to e } }
                 .sortedByDescending { it.first.length }
-            val aliasMap = aliasEntries.associateBy { key(it.first) }
+            val aliasMap = aliasEntries.associate { it.first.let { alias -> key(alias) } to it.second }
             val parts = aliasEntries.map { (alias, entry) ->
                 val a = Regex.escape(alias)
                 val pattern = if (needsBoundary(alias)) {
