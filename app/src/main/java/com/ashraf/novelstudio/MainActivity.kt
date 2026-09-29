@@ -91,6 +91,8 @@ class MainActivity : Activity() {
     private var navToken = 0
     private var autoCopy = false
     private var polling = false
+    // Next/Prev: the target page is reloaded once (fast) before extraction starts.
+    private var refreshPending = false
     private var pendUrl = ""
     private var pendHash = 0
 
@@ -777,6 +779,13 @@ class MainActivity : Activity() {
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
+            if (view === novelWv && refreshPending && !webNovelCatalogPending) {
+                // Next/Prev landed on the new chapter: refresh it right away.
+                // Extraction (if enabled) starts on the finish of this reload.
+                refreshPending = false
+                view.reload()
+                return
+            }
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
             if (url != null) {
@@ -805,6 +814,7 @@ class MainActivity : Activity() {
                         val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
                         autoCopy = autoExtract
                         polling = false
+                        refreshPending = true
                         view.loadUrl(target)
                     } else {
                         hideNavLoading()
@@ -1143,6 +1153,7 @@ class MainActivity : Activity() {
         running = null
         autoCopy = false
         polling = false
+        refreshPending = false
         hasTr = false
         shownTranslated = false
         lastChapter = null
@@ -1243,13 +1254,15 @@ class MainActivity : Activity() {
         pendHash = bodyHash(base)
         val autoExtract = Prefs.bool(this, "autoExtractNext", true)
         autoCopy = autoExtract
-        // Let onPageFinished start the first fast extraction.
+        // Let onPageFinished refresh the page first, then start extraction.
         polling = false
+        refreshPending = true
         novelWv.loadUrl(url)
         handler.postDelayed({
             if (token == navToken && autoCopy) {
                 autoCopy = false
                 polling = false
+                refreshPending = false
                 hideNavLoading()
                 toast("❌ পেজ লোড হয়নি — ⟳ চেপে আবার চেষ্টা করো")
             }
@@ -1299,11 +1312,20 @@ class MainActivity : Activity() {
                 pendUrl = ""
                 autoCopy = autoExtract
                 polling = false
-                if (autoExtract) {
-                    waitChange(pendHash, 0, token, base.url)
-                } else {
-                    hideNavLoading()
-                }
+                // Refresh the new chapter first; extraction waits for it.
+                // If the click caused a real page load, onPageFinished already
+                // consumed refreshPending and reloaded, so nothing more here.
+                refreshPending = true
+                handler.postDelayed({
+                    if (token != navToken || !refreshPending) return@postDelayed
+                    refreshPending = false
+                    novelWv.reload()
+                    if (autoExtract) {
+                        waitChange(pendHash, 0, token, base.url)
+                    } else {
+                        hideNavLoading()
+                    }
+                }, 300)
             }
         }
     }
