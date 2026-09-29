@@ -50,6 +50,10 @@ class ReaderActivity : Activity() {
             setPadding(dp(16), dp(8), dp(16), dp(24))
             setLineSpacing(0f, 1.35f)
             setTextIsSelectable(true)
+            // Use the device's serif fallback for Bengali: it gives the
+            // offline reader a more book-like/stylish appearance without
+            // changing the translation or rendering mechanism.
+            typeface = android.graphics.Typeface.create("serif", android.graphics.Typeface.NORMAL)
         }
         scroll = ScrollView(this).apply { addView(body) }
         bar = LinearLayout(this).apply {

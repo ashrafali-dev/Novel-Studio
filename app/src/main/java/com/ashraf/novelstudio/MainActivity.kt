@@ -1389,7 +1389,12 @@ class MainActivity : Activity() {
     // ================================================================== copy mode (⚡ off)
     private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
-        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p + "\n\n---\n\n" + ch.text else ch.text
+        val glossary = GlossaryStore.formatMatches(this, ch.text)
+        val glossaryBlock = if (glossary.isNotBlank()) "\n\nGLOSSARY (use these exact Bengali terms):\n$glossary" else ""
+        val base = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) p else ""
+        val full = listOf(base, glossaryBlock.trim(), ch.text)
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n---\n\n")
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
         deliver(full, tag)
     }
@@ -1458,7 +1463,9 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val full = Prefs.prompt(this) + "\n\n---\n\n" + ch.text
+        val glossary = GlossaryStore.formatMatches(this, ch.text)
+        val glossaryBlock = if (glossary.isNotBlank()) "\n\nGLOSSARY (use these exact Bengali terms):\n$glossary" else ""
+        val full = Prefs.prompt(this) + glossaryBlock + "\n\n---\n\n" + ch.text
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1681,6 +1688,7 @@ class MainActivity : Activity() {
             "🔖 এই পেজ বুকমার্ক করো",
             "🔖 বুকমার্ক লিস্ট",
             "📝 প্রম্পট এডিট",
+            "📚 গ্লসারি",
             menuAutoLabel(),
             "🔁 এই চ্যাপ্টার আবার অনুবাদ করাও",
             "⏹ চলমান অটো অনুবাদ বন্ধ",
@@ -1712,12 +1720,13 @@ class MainActivity : Activity() {
                 3 -> { dlg.dismiss(); saveBookmark() }
                 4 -> { dlg.dismiss(); bookmarkList() }
                 5 -> { dlg.dismiss(); editPrompt() }
-                6 -> {
+                6 -> { dlg.dismiss(); editGlossary() }
+                7 -> {
                     toggleAuto()
                     labels[i] = menuAutoLabel()
                     adapter.notifyDataSetChanged()
                 }
-                7 -> {
+                8 -> {
                     val ch = lastChapter
                     if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
                     else {
@@ -1726,58 +1735,58 @@ class MainActivity : Activity() {
                     }
                     dlg.dismiss()
                 }
-                8 -> { cancelAll(); dlg.dismiss() }
-                9 -> {
+                9 -> { cancelAll(); dlg.dismiss() }
+                10 -> {
                     val d = darkMode()
                     Prefs.put(this, "dark", ((d + 1) % 3).toString())
                     applyDark()
                     labels[i] = menuDarkLabel()
                     adapter.notifyDataSetChanged()
                 }
-                10 -> {
+                11 -> {
                     val v = !Prefs.bool(this, "autoPaste")
                     Prefs.putBool(this, "autoPaste", v)
                     labels[i] = menuAutoPasteLabel()
                     adapter.notifyDataSetChanged()
                 }
-                11 -> {
+                12 -> {
                     val v = !Prefs.bool(this, "autoSend")
                     Prefs.putBool(this, "autoSend", v)
                     labels[i] = menuAutoSendLabel()
                     adapter.notifyDataSetChanged()
                 }
-                12 -> {
+                13 -> {
                     val v = !Prefs.bool(this, "withPrompt")
                     Prefs.putBool(this, "withPrompt", v)
                     labels[i] = menuPromptLabel()
                     adapter.notifyDataSetChanged()
                 }
-                13 -> {
+                14 -> {
                     val next = !Prefs.bool(this, "noSaveNext")
                     Prefs.putBool(this, "noSaveNext", !next)
                     labels[i] = menuSaveNextLabel()
                     adapter.notifyDataSetChanged()
                 }
-                14 -> {
+                15 -> {
                     val v = !Prefs.bool(this, "autoExtractNext", true)
                     Prefs.putBool(this, "autoExtractNext", v)
                     labels[i] = menuNextExtractLabel()
                     adapter.notifyDataSetChanged()
                 }
-                15 -> {
+                16 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
                     labels[i] = menuAdBlockLabel()
                     adapter.notifyDataSetChanged()
                 }
-                16 -> {
+                17 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n ->
                         toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
-                17 -> { dlg.dismiss(); novelWv.reload() }
-                18 -> { dlg.dismiss(); chatWv.reload() }
+                18 -> { dlg.dismiss(); novelWv.reload() }
+                19 -> { dlg.dismiss(); chatWv.reload() }
             }
         }
         dlg.show()
@@ -1901,6 +1910,109 @@ class MainActivity : Activity() {
                 novelWv.loadUrl(l[i].lastUrl.ifEmpty { l[i].url })
             },
             { i -> Store.removeBookmark(this, i) })
+    }
+
+    private fun editGlossary() {
+        fun showEditor(existingIndex: Int = -1) {
+            val old = if (existingIndex >= 0) GlossaryStore.list(this)[existingIndex] else null
+
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(24, 8, 24, 0)
+            }
+
+            val source = EditText(this).apply {
+                hint = "মূল শব্দ / নাম / টার্ম"
+                setSingleLine(true)
+                setText(old?.source.orEmpty())
+                typeface = android.graphics.Typeface.create("serif", android.graphics.Typeface.NORMAL)
+            }
+            val variants = EditText(this).apply {
+                hint = "অন্য বানান/রূপ (| দিয়ে আলাদা)"
+                setSingleLine(true)
+                setText(old?.variants?.joinToString(" | ").orEmpty())
+                typeface = android.graphics.Typeface.create("serif", android.graphics.Typeface.NORMAL)
+            }
+            val translation = EditText(this).apply {
+                hint = "নির্দিষ্ট বাংলা অনুবাদ"
+                setSingleLine(true)
+                setText(old?.translation.orEmpty())
+                typeface = android.graphics.Typeface.create("serif", android.graphics.Typeface.NORMAL)
+            }
+
+            box.addView(source)
+            box.addView(variants)
+            box.addView(translation)
+
+            AlertDialog.Builder(this)
+                .setTitle(if (old == null) "📚 নতুন Glossary" else "📚 Glossary সম্পাদনা")
+                .setView(box)
+                .setPositiveButton("সেভ") { _, _ ->
+                    val entries = GlossaryStore.list(this).toMutableList()
+                    val entry = GlossaryEntry(
+                        source.text.toString().trim(),
+                        variants.text.toString().split("|").map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+                        translation.text.toString().trim()
+                    )
+                    if (entry.source.isBlank() || entry.translation.isBlank()) {
+                        toast("⚠️ মূল শব্দ ও বাংলা অনুবাদ দুটোই দিতে হবে")
+                        return@setPositiveButton
+                    }
+                    if (existingIndex >= 0 && existingIndex < entries.size) entries[existingIndex] = entry
+                    else {
+                        val same = entries.indexOfFirst { it.source.equals(entry.source, true) }
+                        if (same >= 0) entries[same] = entry else entries.add(entry)
+                    }
+                    GlossaryStore.save(this, entries)
+                    editGlossary()
+                }
+                .setNegativeButton("বাতিল", null)
+                .show()
+        }
+
+        fun showList() {
+            val entries = GlossaryStore.list(this)
+            val labels = if (entries.isEmpty()) {
+                listOf("এখনও কোনো term যোগ করা হয়নি", "➕ নতুন term যোগ করুন")
+            } else {
+                entries.map { "${it.source} → ${it.translation}" } + "➕ নতুন term যোগ করুন"
+            }
+
+            val lv = ListView(this)
+            lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+            val dlg = AlertDialog.Builder(this)
+                .setTitle("📚 Glossary (${entries.size})")
+                .setView(lv)
+                .setNegativeButton("বন্ধ", null)
+                .create()
+
+            lv.setOnItemClickListener { _, _, pos, _ ->
+                if (entries.isEmpty() || pos == entries.size) {
+                    dlg.dismiss()
+                    showEditor()
+                } else {
+                    dlg.dismiss()
+                    showEditor(pos)
+                }
+            }
+            lv.setOnItemLongClickListener { _, _, pos, _ ->
+                if (pos < entries.size) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Term মুছে ফেলবে?")
+                        .setMessage(entries[pos].source)
+                        .setPositiveButton("মুছুন") { _, _ ->
+                            GlossaryStore.remove(this, pos)
+                            editGlossary()
+                        }
+                        .setNegativeButton("না", null)
+                        .show()
+                    true
+                } else false
+            }
+            dlg.show()
+        }
+
+        showList()
     }
 
     private fun editPrompt() {
