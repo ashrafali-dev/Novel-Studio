@@ -42,7 +42,15 @@ object AdBlock {
 
     fun root(h: String): String = h.split('.').takeLast(2).joinToString(".")
 
+    // webnovel.com serves its reader (chapter text, API, next/prev) from its own
+    // domain; the broad URL patterns and cosmetic rules below break it.
+    fun exempt(host: String?): Boolean {
+        val h = (host ?: return false).lowercase()
+        return h == "webnovel.com" || h.endsWith(".webnovel.com")
+    }
+
     fun blocked(u: Uri): Boolean {
+        if (exempt(u.host)) return false
         val full = u.toString()
         if (PATTERNS.any { full.contains(it) }) return true
         var h = u.host ?: return false

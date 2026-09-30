@@ -20,30 +20,9 @@ var __P={
 var __D={a:'[data-message-author-role="assistant"],.markdown,.prose',b:'',stop:'button[aria-label*="Stop" i]',send:'button[aria-label*="Send" i],button[type="submit"]'};
 function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith('.'+k))return __P[k];}return __D;}
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
-function __reply(p){if(location.hostname==='gemini.google.com'){var g=__asst(p);if(g.length){var z=g[g.length-1],best=z,bt=((z.innerText||z.textContent||'').trim());var qs=['.markdown','.model-response-text','message-content','[class*="markdown" i]'];for(var qi=0;qi<qs.length;qi++){var aa=[];try{aa=[].slice.call(z.querySelectorAll(qs[qi]));}catch(e){aa=[];}for(var aj=0;aj<aa.length;aj++){var ae=aa[aj],ar=ae.getBoundingClientRect(),at=(ae.innerText||ae.textContent||'').trim();if(ar.width>0&&ar.height>0&&at.length>bt.length){best=ae;bt=at;}}}return best;}}var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
+function __reply(p){var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
 function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
-function __box(){
-  var host=location.hostname;
-  var sels;
-  if(host==='gemini.google.com'||host.endsWith('.gemini.google.com')){
-    sels=['div.ql-editor','rich-textarea [contenteditable="true"]','[aria-label="Enter a prompt here"]','[contenteditable="true"][role="textbox"]','[role="textbox"]'];
-  }else{
-    sels=['#prompt-textarea','textarea','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]'];
-  }
-  var c=[];
-  for(var i=0;i<sels.length;i++){
-    var a=[];
-    try{a=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}
-    for(var j=0;j<a.length;j++){
-      var e=a[j],r=e.getBoundingClientRect();
-      if(r.width>0&&r.height>0&&!c.includes(e))c.push(e);
-    }
-    if(c.length&&host==='gemini.google.com')break;
-  }
-  if(!c.length)return null;
-  c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});
-  return c[0];
-}
+function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
 
     private fun run(body: String) = PRELUDE + "\n;" + body
@@ -56,52 +35,19 @@ function __box(){
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
   var box=__box();
   if(!box) return 'nobox';
-
-  var host=location.hostname;
-  var isGemini=host==='gemini.google.com'||host.endsWith('.gemini.google.com');
-  var isCE=box.isContentEditable || box.getAttribute('contenteditable')==='true' ||
-           box.getAttribute('role')==='textbox';
-
+  box.focus();
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
-    // ChatGPT and other textarea-based composers: use the native value setter
-    // so React/Vue sees the new value, without focusing the field.
     var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
     box.dispatchEvent(new Event('input',{bubbles:true}));
-    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
-  } else if(isCE && isGemini){
-    // Gemini's editor (Quill-based) does not reliably pick up execCommand,
-    // and focusing it pops the Android keyboard during automatic extraction.
-    // Mutate the editor DOM directly instead.
-    var esc=String(text)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;');
-    var html=esc.replace(/\r?\n/g,'<br>');
-    box.innerHTML='<p>'+html+'</p>';
-    try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
-  } else if(isCE){
-    // ChatGPT, Claude and most other chatbots use ProseMirror/contenteditable
-    // editors that only register text typed through real selection + insertText
-    // (raw innerHTML overwrites are invisible to their internal state).
-    box.focus();
+  } else {
     var sel=window.getSelection(); var range=document.createRange();
     range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
     document.execCommand('insertText',false,text);
     if(!(box.innerText||'').trim()) box.textContent=text;
     box.dispatchEvent(new Event('input',{bubbles:true}));
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
-  } else {
-    // Last fallback for a textbox-like element. Still never focus it.
-    box.textContent=text;
-    try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
-    try{box.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
   }
-
   if(doSend){
     setTimeout(function(){
       var btn=null;
@@ -109,12 +55,11 @@ function __box(){
       if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
       if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true') btn.click();
       else {
-        // Sending is an explicit action; only this fallback may focus the box.
         box.focus();
         box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));
+        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
       }
-    }, isGemini ? 60 : Math.min(2500,700+text.length/40));
+    }, Math.min(2500,700+text.length/40));
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
@@ -138,23 +83,7 @@ function __box(){
     private const val APPLY_BODY = """
 (function(sel,paras,font){
   var el=null;
-  try{
-    if(sel){
-      var matches=[].slice.call(document.querySelectorAll(sel));
-      // Some readers keep the previous chapter's container in the DOM
-      // (hidden, not destroyed) during a same-page/SPA navigation. A plain
-      // querySelector() would grab whichever matches first in DOM order,
-      // which can be that stale hidden node. Prefer the one actually
-      // visible on screen right now; if several are visible, the largest.
-      var vis=matches.filter(function(m){var r=m.getBoundingClientRect();return r.width>0&&r.height>0;});
-      if(vis.length){
-        vis.sort(function(a,b){var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();return (rb.width*rb.height)-(ra.width*ra.height);});
-        el=vis[0];
-      } else if(matches.length){
-        el=matches[0];
-      }
-    }
-  }catch(e){}
+  try{ if(sel) el=document.querySelector(sel); }catch(e){}
   // Jsoup's generated cssSelector can become stale after a SPA/navigation
   // rerender. Fall back to the same content selectors used by Extractor.
   if(!el){
@@ -198,48 +127,9 @@ function __box(){
       fam="'NSBn',sans-serif";
     }catch(e){}
   }
-  function __nsRender(){
-    var frag=document.createDocumentFragment();
-    for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} frag.appendChild(p); }
-    el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
-  }
-  __nsRender();
-  // Some SPA readers (React/Next/Vue) re-render this element on their own —
-  // scroll, selection, an interval, an ad refresh — and silently wipe the
-  // translation back to the original text. Watch the element and, whenever
-  // that happens while a translation should be showing, put it right back.
-  if(window.__nsObs){ try{window.__nsObs.disconnect();}catch(e){} }
-  window.__nsObs=new MutationObserver(function(){
-    if(window.__nsShown && document.contains(el) && el.getAttribute('data-ns')!=='1') __nsRender();
-  });
-  try{ window.__nsObs.observe(el,{childList:true,subtree:true,attributes:true,attributeFilter:['data-ns']}); }catch(e){}
-  try{ window.__nsObs.observe(el.parentNode||el,{childList:true}); }catch(e){}
-  // Belt-and-suspenders: some SPAs replace the whole content node (not just
-  // its children) synchronously enough that the MutationObserver above never
-  // gets a chance to react — by the time it would fire, `el` is already
-  // detached and the new node has no observer on it at all. Re-run the exact
-  // same selector lookup on a short timer for a few seconds and re-render
-  // whenever the live match doesn't carry our marker, independent of the
-  // observer catching anything.
-  if(window.__nsGuard){ try{clearInterval(window.__nsGuard);}catch(e){} }
-  (function(){
-    var tries=0;
-    window.__nsGuard=setInterval(function(){
-      tries++;
-      if(tries>20||!window.__nsShown){ clearInterval(window.__nsGuard); window.__nsGuard=null; return; }
-      var live=null;
-      try{
-        if(sel){
-          var ms=[].slice.call(document.querySelectorAll(sel));
-          var vs=ms.filter(function(m){var r=m.getBoundingClientRect();return r.width>0&&r.height>0;});
-          live=vs.length?vs[0]:(ms.length?ms[0]:null);
-        } else { live=el; }
-      }catch(e){ live=el; }
-      if(!live||!document.contains(live)) return;
-      if(live!==el){ el=live; }
-      if(el.getAttribute('data-ns')!=='1') __nsRender();
-    },250);
-  })();
+  var frag=document.createDocumentFragment();
+  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} frag.appendChild(p); }
+  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
   return 'ok';
 })(__SEL__,__PARAS__,__FONT__)
 """
@@ -248,22 +138,8 @@ function __box(){
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
             .replace("__FONT__", org.json.JSONObject.quote(font))
 
-    // Clears the applied-translation state (element ref, observer, original
-    // text) on the novel page. Must run whenever a NEW chapter is registered:
-    // several sites navigate chapters without a full page reload (same
-    // document, client-side routing), so without this reset the previous
-    // chapter's element reference and MutationObserver stay alive and can
-    // re-insert the OLD chapter's translation into the NEW chapter's
-    // container the moment the site re-renders it.
-    fun resetApply(): String =
-        "(function(){try{if(window.__nsObs)window.__nsObs.disconnect();}catch(e){}" +
-        "try{if(window.__nsGuard)clearInterval(window.__nsGuard);}catch(e){}" +
-        "window.__nsObs=null;window.__nsGuard=null;window.__nsEl=null;window.__nsOrig=null;window.__nsShown=0;window.__nsTr=null;return 'r';})()"
-
     fun stillApplied(sel: String): String =
-        "(function(sel){var el=null;try{if(sel){var ms=[].slice.call(document.querySelectorAll(sel));" +
-        "var vis=ms.filter(function(m){var r=m.getBoundingClientRect();return r.width>0&&r.height>0;});" +
-        "el=vis.length?vis[0]:(ms.length?ms[0]:null);}}catch(e){}" +
+        "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
         "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
         "if(!el)el=document.querySelector('[data-ns=\"1\"]');" +
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
@@ -323,9 +199,9 @@ function __box(){
 
     fun clickNext(dir: String): String {
         val alts = if (dir == "next")
-            "next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
+            "next|next chapter|next ›|next »|›|»|→|下一章 |下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
         else
-            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
+            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章 |上一页|上一话|이전|이전í™”|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
         return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
     }    // WebNovel navigation based on the open-source WebnovelReader crawler.
