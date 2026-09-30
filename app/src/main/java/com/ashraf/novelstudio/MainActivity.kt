@@ -46,12 +46,6 @@ import org.jsoup.Jsoup
 import java.io.ByteArrayInputStream
 import java.net.URLEncoder
 
-private data class BrowserTab(
-    var label: String,
-    var url: String,
-    var state: Bundle? = null
-)
-
 class MainActivity : Activity() {
     private enum class Mode { NOVEL, CHAT, SPLIT }
 
@@ -68,8 +62,6 @@ class MainActivity : Activity() {
     private lateinit var novelBox: FrameLayout
     private lateinit var chatBox: LinearLayout
     private lateinit var strip: LinearLayout
-    private lateinit var tabStrip: LinearLayout
-    private lateinit var shortcutStrip: LinearLayout
     private lateinit var modeBtn: TextView
     private lateinit var autoBtn: TextView
     private lateinit var progressBox: LinearLayout
@@ -91,16 +83,11 @@ class MainActivity : Activity() {
     private var navToken = 0
     private var autoCopy = false
     private var polling = false
-    // Next/Prev: the target page is reloaded once (fast) before extraction starts.
+    // Next/Prev: reload the new chapter page once (fast) before extraction starts.
     private var refreshPending = false
+    private var refreshToken = 0
     private var pendUrl = ""
     private var pendHash = 0
-
-    // lightweight browser layer: one WebView, multiple saved navigation sessions
-    private val browserTabs = mutableListOf<BrowserTab>()
-    private var activeTabIndex = 0
-    private var restoringTab = false
-    private var searchShortcutsVisible = false
 
     // WebNovel navigation: load the catalog in the same WebView, keep it
     // behind the loading overlay, extract the adjacent chapter URL, then
@@ -113,6 +100,7 @@ class MainActivity : Activity() {
 
     // background translation queue
     private val queue = mutableListOf<Chapter>()
+    private val freshQueueKeys = mutableSetOf<String>()
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
@@ -166,27 +154,15 @@ class MainActivity : Activity() {
         novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
 
-        // ---- browser chrome: tabs + address/search bar + focused site shortcuts
+        // ---- top bar
         urlBar = EditText(this).apply {
-            hint = "Search or enter address"
+            hint = "সার্চ করো বা লিংক দাও"
             setSingleLine()
             textSize = 14f
             imeOptions = EditorInfo.IME_ACTION_GO
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setPadding(dp(14), 0, dp(10), 0)
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF8E8E98.toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = dp(22).toFloat()
-                setColor(0xFF303038.toInt())
-            }
             setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
-            onFocusChangeListener = View.OnFocusChangeListener { _, has ->
-                searchShortcutsVisible = has
-                shortcutStrip.visibility = if (has) View.VISIBLE else View.GONE
-            }
         }
-
         val reloadBtn = TextView(this).apply {
             text = "⟳"
             gravity = Gravity.CENTER
@@ -196,49 +172,20 @@ class MainActivity : Activity() {
             setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
         }
         val goBtn = TextView(this).apply {
-            text = "→"
+            text = "Go"
             gravity = Gravity.CENTER
-            textSize = 22f
+            textSize = 16f
             setTextColor(0xFF4F7CFF.toInt())
             setOnClickListener { go(urlBar.text.toString()) }
         }
-
-        tabStrip = LinearLayout(this).apply {
+        val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-        }
-        val tabScroll = HorizontalScrollView(this).apply {
-            setBackgroundColor(0xFF18181C.toInt())
-            isHorizontalScrollBarEnabled = false
-            addView(tabStrip, ViewGroup.LayoutParams(WC, dp(38)))
-        }
-
-        shortcutStrip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(4), 0, dp(4), 0)
-            visibility = View.GONE
-        }
-        val shortcutScroll = HorizontalScrollView(this).apply {
             setBackgroundColor(0xFF202024.toInt())
-            isHorizontalScrollBarEnabled = false
-            addView(shortcutStrip, ViewGroup.LayoutParams(WC, dp(44)))
-        }
-
-        val topBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-            addView(urlBar, LinearLayout.LayoutParams(0, dp(42), 1f))
-            addView(reloadBtn, LinearLayout.LayoutParams(dp(44), dp(42)))
-            addView(goBtn, LinearLayout.LayoutParams(dp(42), dp(42)))
-            setBackgroundColor(0xFF202024.toInt())
-        }
-
-        val browserChrome = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(tabScroll, LinearLayout.LayoutParams(MP, dp(38)))
-            addView(topBar, LinearLayout.LayoutParams(MP, dp(50)))
-            addView(shortcutScroll, LinearLayout.LayoutParams(MP, dp(44)))
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+            addView(urlBar, LinearLayout.LayoutParams(0, WC, 1f))
+            addView(reloadBtn, LinearLayout.LayoutParams(dp(44), dp(40)))
+            addView(goBtn, LinearLayout.LayoutParams(dp(48), dp(40)))
         }
 
         // ---- panes (both always full-size and alive; the one on top is the one you see)
@@ -318,21 +265,17 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF111114.toInt())
-            addView(browserChrome, LinearLayout.LayoutParams(MP, WC))
+            addView(top, LinearLayout.LayoutParams(MP, WC))
             addView(content, LinearLayout.LayoutParams(MP, 0, 1f))
             addView(bar, LinearLayout.LayoutParams(MP, WC))
         }
         setContentView(root)
 
         buildStrip()
-        buildSiteShortcuts()
-        initBrowserTabs()
         setMode(Mode.SPLIT)
         refreshAutoBtn()
         applyDark()
-        if (browserTabs.firstOrNull()?.url.isNullOrBlank()) {
-            novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
-        }
+        novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
         val firstBot = bots().getJSONObject(0).getString("u")
         chatWv.loadUrl(Prefs.get(this, "botUrl", firstBot))
         handleIntent(intent)
@@ -357,9 +300,6 @@ class MainActivity : Activity() {
         val s = wv.settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
-        s.databaseEnabled = true
-        s.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-        s.loadsImagesAutomatically = true
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportZoom(true)
@@ -367,10 +307,6 @@ class MainActivity : Activity() {
         s.displayZoomControls = false
         s.userAgentString = UA
         wv.setBackgroundColor(0xFF111114.toInt())
-        wv.overScrollMode = View.OVER_SCROLL_NEVER
-        wv.isVerticalScrollBarEnabled = false
-        wv.isHorizontalScrollBarEnabled = false
-        wv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
             WebSettingsCompat.setRequestedWithHeaderOriginAllowList(s, emptySet())
@@ -382,147 +318,6 @@ class MainActivity : Activity() {
         val wv = if (mode == Mode.CHAT) chatWv else activeWv
         wv.reload()
         toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
-    }
-
-    // ================================================================== browser tabs / shortcuts / history
-    private fun initBrowserTabs() {
-        browserTabs.clear()
-        browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")))
-        activeTabIndex = 0
-        renderTabs()
-    }
-
-    private fun siteShortcuts(): List<Pair<String, String>> = listOf(
-        "WTR-LAB" to "https://wtr-lab.com/",
-        "WebNovel" to "https://www.webnovel.com/",
-        "NovelBin" to "https://novelbin.com/",
-        "BoxNovel" to "https://boxnovel.com/",
-        "AsianNovel" to "https://www.asianovel.com/",
-        "NovelFull" to "https://novelfull.net/",
-        "LightNovelPub" to "https://lightnovelpub.com/",
-        "NovelNext" to "https://novelnext.com/",
-        "ReadNovelFull" to "https://readnovelfull.com/"
-    )
-
-    private fun buildSiteShortcuts() {
-        shortcutStrip.removeAllViews()
-        siteShortcuts().forEach { (name, url) ->
-            shortcutStrip.addView(chip(name, {
-                newBrowserTab(url)
-                urlBar.clearFocus()
-            }, null))
-        }
-    }
-
-    private fun renderTabs() {
-        if (!::tabStrip.isInitialized) return
-        tabStrip.removeAllViews()
-        browserTabs.forEachIndexed { i, tab ->
-            val label = if (tab.label.length > 20) tab.label.take(20) + "…" else tab.label
-            val b = TextView(this).apply {
-                text = (if (i == activeTabIndex) "● " else "") + label + "  ×"
-                textSize = 13f
-                gravity = Gravity.CENTER
-                setTextColor(if (i == activeTabIndex) 0xFFFFFFFF.toInt() else 0xFFAAAAAF.toInt())
-                setPadding(dp(12), dp(5), dp(10), dp(5))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(15).toFloat()
-                    setColor(if (i == activeTabIndex) 0xFF3A3A44.toInt() else 0xFF24242A.toInt())
-                }
-                layoutParams = LinearLayout.LayoutParams(WC, dp(32)).also {
-                    it.setMargins(dp(3), dp(3), dp(3), dp(3))
-                }
-                setOnClickListener { switchBrowserTab(i) }
-                setOnLongClickListener { closeBrowserTab(i); true }
-            }
-            tabStrip.addView(b)
-        }
-        tabStrip.addView(chip("＋", { newBrowserTab("https://duckduckgo.com/") }, null))
-    }
-
-    private fun saveCurrentTabState() {
-        if (browserTabs.isEmpty() || restoringTab) return
-        val tab = browserTabs[activeTabIndex]
-        tab.url = novelWv.url ?: tab.url
-        tab.label = (novelWv.title ?: "").ifBlank { Uri.parse(tab.url).host ?: "New Tab" }
-        val state = Bundle()
-        tab.state = state
-        try { novelWv.saveState(state) } catch (_: Exception) {}
-        Prefs.put(this, "lastNovelUrl", tab.url)
-    }
-
-    private fun switchBrowserTab(index: Int) {
-        if (index !in browserTabs.indices || index == activeTabIndex) return
-        saveCurrentTabState()
-        activeTabIndex = index
-        val tab = browserTabs[index]
-        lastChapter = null
-        hasTr = false
-        shownTranslated = false
-        updatePill()
-        restoringTab = true
-        try {
-            novelWv.stopLoading()
-            if (tab.state != null) {
-                novelWv.restoreState(tab.state!!)
-            } else {
-                novelWv.loadUrl(tab.url)
-            }
-        } catch (_: Exception) {
-            novelWv.loadUrl(tab.url)
-        }
-        restoringTab = false
-        renderTabs()
-        urlBar.setText(tab.url)
-    }
-
-    private fun newBrowserTab(url: String) {
-        saveCurrentTabState()
-        browserTabs.add(BrowserTab("New Tab", url))
-        activeTabIndex = browserTabs.lastIndex
-        lastChapter = null
-        hasTr = false
-        shownTranslated = false
-        updatePill()
-        novelWv.stopLoading()
-        novelWv.loadUrl(url)
-        renderTabs()
-        urlBar.setText(url)
-    }
-
-    private fun closeBrowserTab(index: Int) {
-        if (browserTabs.size <= 1) {
-            browserTabs[0] = BrowserTab("New Tab", "https://duckduckgo.com/")
-            activeTabIndex = 0
-            novelWv.loadUrl(browserTabs[0].url)
-        } else {
-            browserTabs.removeAt(index)
-            activeTabIndex = (activeTabIndex.coerceAtMost(browserTabs.lastIndex))
-            val tab = browserTabs[activeTabIndex]
-            if (tab.state != null) {
-                try { novelWv.restoreState(tab.state!!) } catch (_: Exception) { novelWv.loadUrl(tab.url) }
-            } else novelWv.loadUrl(tab.url)
-        }
-        lastChapter = null
-        hasTr = false
-        shownTranslated = false
-        updatePill()
-        renderTabs()
-    }
-
-    private fun browserHistoryDialog() {
-        val h = Store.history(this)
-        if (h.isEmpty()) return toast("🕘 হিস্ট্রি খালি")
-        val labels = h.map {
-            val host = Uri.parse(it.url).host ?: it.url
-            "${it.title.ifBlank { host }}\n$host"
-        }
-        listDialog("🕘 ব্রাউজ হিস্ট্রি", labels, { i ->
-            if (i in h.indices) {
-                if (mode == Mode.CHAT) setMode(Mode.SPLIT)
-                newBrowserTab(h[i].url)
-            }
-        }, null)
     }
 
     // ================================================================== dark mode (0 off, 1 auto, 2 force)
@@ -675,11 +470,13 @@ class MainActivity : Activity() {
     private fun isChatLoginUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         val path = (uri.path ?: "").lowercase()
-        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return true
+        // Keep Google/Gemini authentication inside this WebView so its cookies/session remain available.
+        if (host == "accounts.google.com" || host.endsWith(".accounts.google.com")) return false
         val bot = host.contains("chatgpt.com") || host.contains("openai.com") ||
-            host.contains("gemini.google.com") || host.contains("claude.ai") ||
+            host.contains("claude.ai") ||
             host.contains("anthropic.com") || host.contains("deepseek.com") ||
             host.contains("grok.com") || host == "x.com" || host.endsWith(".x.com")
+        if (host.contains("gemini.google.com")) return false
         return bot && (path.contains("/login") || path.contains("/signin") ||
             path.contains("/sign-in") || path.contains("/auth") ||
             path.contains("/oauth") || path.contains("/authorize"))
@@ -691,6 +488,7 @@ class MainActivity : Activity() {
             val scheme = r.url.scheme ?: ""
             if (scheme != "http" && scheme != "https") return true
             if (isChatLoginUrl(r.url)) {
+                if (Gemini.isInternalAuthUrl(r.url)) return false
                 openLoginInChrome(r.url.toString())
                 return true
             }
@@ -706,13 +504,16 @@ class MainActivity : Activity() {
             popup.webViewClient = object : WebViewClient() {
                 override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
                     if (url != null && isChatLoginUrl(Uri.parse(url))) {
-                        openLoginInChrome(url)
-                        v?.stopLoading()
+                        if (!Gemini.isInternalAuthUrl(Uri.parse(url))) {
+                            openLoginInChrome(url)
+                            v?.stopLoading()
+                        }
                     }
                 }
                 override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
                     val u = r?.url ?: return false
                     if (isChatLoginUrl(u)) {
+                        if (Gemini.isInternalAuthUrl(u)) return false
                         openLoginInChrome(u.toString())
                         v?.stopLoading()
                         return true
@@ -737,9 +538,6 @@ class MainActivity : Activity() {
             else -> "https://duckduckgo.com/?q=" + URLEncoder.encode(s, "UTF-8")
         }
         if (mode == Mode.CHAT) setMode(Mode.SPLIT)
-        if (browserTabs.isEmpty()) initBrowserTabs()
-        browserTabs[activeTabIndex].url = u
-        browserTabs[activeTabIndex].state = null
         novelWv.loadUrl(u)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(urlBar.windowToken, 0)
@@ -751,7 +549,7 @@ class MainActivity : Activity() {
             val r = request ?: return null
             if (r.url.host == "ns.local") {
                 val name = (r.url.lastPathSegment ?: "").removeSuffix(".ttf")
-                if (name in Prefs.FONT_FILES && name.isNotEmpty()) {
+                if (name.isNotEmpty() && name in Prefs.FONT_FILES) {
                     return try {
                         WebResourceResponse("font/ttf", null, 200, "OK",
                             mapOf("Access-Control-Allow-Origin" to "*", "Cache-Control" to "max-age=86400"),
@@ -779,10 +577,7 @@ class MainActivity : Activity() {
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-            if (view === novelWv && url != null) {
-                browserTabs.getOrNull(activeTabIndex)?.url = url
-                if (!urlBar.hasFocus()) urlBar.setText(url)
-            }
+            if (url != null && !urlBar.hasFocus()) urlBar.setText(url)
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
@@ -790,25 +585,16 @@ class MainActivity : Activity() {
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            if (view === novelWv && refreshPending && !webNovelCatalogPending) {
+            if (view === novelWv && refreshPending && refreshToken == navToken && !webNovelCatalogPending) {
                 // Next/Prev landed on the new chapter: refresh it right away.
-                // Extraction (if enabled) starts on the finish of this reload.
+                // Extraction (if enabled) starts when this reload finishes.
                 refreshPending = false
                 view.reload()
                 return
             }
             if (Prefs.adblock(this@MainActivity)) view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
-            if (url != null) {
-                Prefs.put(this@MainActivity, "lastNovelUrl", url)
-                if (view === novelWv && !restoringTab) {
-                    browserTabs.getOrNull(activeTabIndex)?.url = url
-                    browserTabs.getOrNull(activeTabIndex)?.label =
-                        (view.title ?: "").ifBlank { Uri.parse(url).host ?: "Novel" }
-                    Store.addHistory(this@MainActivity, url, view.title ?: "")
-                    renderTabs()
-                }
-            }
+            if (url != null) Prefs.put(this@MainActivity, "lastNovelUrl", url)
 
             if (view === novelWv && webNovelCatalogPending) {
                 val tk = webNovelCatalogToken
@@ -826,6 +612,7 @@ class MainActivity : Activity() {
                         autoCopy = autoExtract
                         polling = false
                         refreshPending = true
+                        refreshToken = navToken
                         view.loadUrl(target)
                     } else {
                         hideNavLoading()
@@ -879,9 +666,7 @@ class MainActivity : Activity() {
      * Fast chapter extraction: serialize only the chapter node, not the whole page.
      * This avoids multi-MB outerHTML parsing on ad-heavy sites.
      */
-    // WebNovel uses a reader DOM that the fast direct-text extractor can miss.
-    // Keep its proven commit-96 extraction path isolated from every other site.
-    private fun extractWebNovelNow(cb: (Chapter?) -> Unit) {
+    private fun extractNow(cb: (Chapter?) -> Unit) {
         novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
             val url = novelWv.url ?: ""
             Thread {
@@ -906,175 +691,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun extractNow(cb: (Chapter?) -> Unit) {
-        val url = novelWv.url ?: ""
-        if (url.isBlank()) { cb(null); return }
-        if (url.substringAfter("://").substringBefore('/').lowercase().removePrefix("www.") == "webnovel.com") {
-            extractWebNovelNow(cb)
-            return
-        }
-
-        val contentSel = SiteProfiles.selector(this, url, "content")
-        val titleSel = SiteProfiles.selector(this, url, "title")
-        val nextSel = SiteProfiles.selector(this, url, "next")
-        val prevSel = SiteProfiles.selector(this, url, "prev")
-
-        // Fast path: ask the already-rendered WebView for plain chapter text.
-        // Do not serialize the whole page or feed a large HTML document to Jsoup.
-        val js = """
-            (function(){
-              function visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
-              function txt(e){return ((e&&(e.innerText||e.textContent))||'').trim();}
-              function pick(sel){
-                if(!sel)return null;
-                try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
-              }
-              function stable(e){
-                if(!e)return '';
-                var id=(e.id||'').trim();
-                if(id && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) return '#'+id;
-                var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
-                return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
-              }
-
-              var content=pick(__CONTENT__);
-              if(!content){
-                var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
-                  '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
-                  '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
-                  '#article','.article-content','.content','article','main'];
-                var best=null,score=0;
-                for(var i=0;i<sels.length;i++){
-                  var e=null;
-                  try{e=document.querySelector(sels[i]);}catch(x){continue;}
-                  if(!e||!visible(e))continue;
-                  var t=txt(e);
-                  if(t.length<300)continue;
-                  var sc=t.length+(e.querySelectorAll('p').length*250);
-                  if(sc>score){score=sc;best=e;}
-                }
-                content=best;
-              }
-              if(!content)return JSON.stringify({ok:false});
-
-              var titleEl=pick(__TITLE__);
-              if(!titleEl){
-                try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}
-              }
-              var title=txt(titleEl);
-              if(!title)title=document.title||'';
-
-              function link(kind,sel){
-                var e=pick(sel);
-                if(!e){
-                  var q=kind==='next'
-                    ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-                    : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-                  try{e=document.querySelector(q);}catch(x){e=null;}
-                }
-                if(e&&e.href)return {href:e.href,text:txt(e),selector:stable(e)};
-                return null;
-              }
-
-              var n=link('next',__NEXT__),p=link('prev',__PREV__);
-              var novel='';
-              try{
-                var m=document.querySelector('meta[property="og:novel:book_name"],meta[property="og:novel:novel_name"],meta[name="book_name"]');
-                novel=m?(m.getAttribute('content')||'').trim():'';
-              }catch(x){}
-              if(!novel){
-                try{
-                  var a=document.querySelector('a[href*="/novel/"],a[href*="/book/"],a[href*="/series/"]');
-                  if(a)novel=txt(a);
-                }catch(x){}
-              }
-
-              return JSON.stringify({
-                ok:true,
-                text:txt(content),
-                title:title,
-                pageTitle:document.title||'',
-                novel:novel,
-                contentSel:stable(content),
-                titleSel:titleEl?stable(titleEl):'',
-                next:n,
-                prev:p
-              });
-            })()
-        """.trimIndent()
-            .replace("__CONTENT__", JSONObject.quote(contentSel))
-            .replace("__TITLE__", JSONObject.quote(titleSel))
-            .replace("__NEXT__", JSONObject.quote(nextSel))
-            .replace("__PREV__", JSONObject.quote(prevSel))
-
-        novelWv.evaluateJavascript(js) { raw ->
-            val payload = decode(raw)
-            if (payload.isBlank()) { cb(null); return@evaluateJavascript }
-
-            try {
-                val o = JSONObject(payload)
-                if (!o.optBoolean("ok", false)) {
-                    cb(null)
-                    return@evaluateJavascript
-                }
-
-                val title = o.optString("title", "").trim()
-                val body = o.optString("text", "").trim()
-                if (body.length < 300) {
-                    cb(null)
-                    return@evaluateJavascript
-                }
-
-                fun cleanText(s: String): String = s
-                    .replace("\u00a0", " ")
-                    .replace(Regex("[ \\t]+"), " ")
-                    .replace(Regex(" ?\\n ?"), "\\n")
-                    .replace(Regex("\\n{3,}"), "\\n\\n")
-                    .trim()
-
-                val cleanBody = cleanText(body)
-                val cleanTitle = cleanText(title)
-                val fullText = if (cleanTitle.isNotEmpty() && cleanBody.startsWith(cleanTitle)) {
-                    cleanBody
-                } else if (cleanTitle.isNotEmpty()) {
-                    cleanTitle + "\\n\\n" + cleanBody
-                } else {
-                    cleanBody
-                }
-
-                val next = o.optJSONObject("next")?.optString("href", "")?.takeIf { it.isNotBlank() }
-                val prev = o.optJSONObject("prev")?.optString("href", "")?.takeIf { it.isNotBlank() }
-                val novel = o.optString("novel", "").trim().ifBlank {
-                    url.substringAfter("://", "").substringBefore('/').removePrefix("www.")
-                }
-
-                val number = Regex(
-                    "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
-                    RegexOption.IGNORE_CASE
-                ).find(cleanTitle)?.groupValues?.getOrNull(1)
-                    ?: Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
-
-                val ch = Chapter(
-                    cleanTitle.ifBlank { o.optString("pageTitle", "").trim() },
-                    fullText,
-                    next,
-                    prev,
-                    url,
-                    novel,
-                    number,
-                    o.optString("contentSel", ""),
-                    o.optString("titleSel", ""),
-                    o.optJSONObject("next")?.optString("selector", "").orEmpty(),
-                    o.optJSONObject("prev")?.optString("selector", "").orEmpty()
-                )
-
-                SiteProfiles.remember(this@MainActivity, ch)
-                cb(ch)
-            } catch (_: Exception) {
-                cb(null)
-            }
-        }
-    }
     private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
 
     // Hash only the chapter body, not the heading. Some SPA readers update
@@ -1108,6 +724,9 @@ class MainActivity : Activity() {
 
     private fun onChapter(ch: Chapter) {
         lastChapter = ch
+        // New chapter registered — wipe any leftover applied-translation
+        // state from the previous chapter (see Js.resetApply comment).
+        novelWv.evaluateJavascript(Js.resetApply(), null)
         Store.touchBookmark(this, ch)
         updateProgressUi()
     }
@@ -1156,25 +775,14 @@ class MainActivity : Activity() {
 
     // Throw away app state and, for direct URL navigation, the old page DOM.
     private fun wipeStale(clearNovelDom: Boolean = false) {
-        // Navigation is a hard boundary: every async extraction/translation
-        // started for the previous chapter becomes invalid immediately.
         navToken++
-        runToken++
-        queue.clear()
-        running = null
         autoCopy = false
         polling = false
         refreshPending = false
         hasTr = false
         shownTranslated = false
-        lastChapter = null
         updatePill()
         clearClipboard()
-
-        // Never leave the previous chapter's prompt in the chatbot input.
-        // This must happen in Auto mode too.
-        chatWv.evaluateJavascript(Js.stop(), null)
-        chatWv.evaluateJavascript(Js.clearBox(), null)
 
         if (clearNovelDom) {
             novelWv.evaluateJavascript(
@@ -1199,25 +807,57 @@ class MainActivity : Activity() {
 
     // ● : auto mode + translation shown -> switch original/translation; otherwise handle the chapter on the page now
     private fun extractCopy() {
-        if (Prefs.auto(this) && hasTr) { toggleView(); return }
         navToken++
         val token = navToken
-        extractNow { ch ->
-            if (token != navToken) return@extractNow
-            if (ch == null) toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি") else handleChapter(ch)
+
+        fun extractFresh() {
+            if (token != navToken) return
+            extractNow { ch ->
+                if (token != navToken) return@extractNow
+                if (ch == null) {
+                    toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
+                } else {
+                    // Middle ● is an explicit fresh extraction/translation request.
+                    // Never reuse a saved translation for this action.
+                    handleChapter(ch, forceFresh = true)
+                }
+            }
+        }
+
+        // ● is a fresh request. Stop any previous chatbot generation immediately,
+        // so the idle-wait loop cannot hold extraction for several seconds.
+        if (Prefs.auto(this)) chatWv.evaluateJavascript(Js.stop(), null)
+
+        // Same current chapter: the original source is already in lastChapter.
+        // Do not restore/reparse the full translated DOM just to extract it again.
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+        val cached = lastChapter
+        if (Prefs.auto(this) && cached != null && currentUrl.isNotBlank() &&
+            cleanUrl(cached.url) == currentUrl) {
+            handleChapter(cached, forceFresh = true)
+            return
+        }
+
+        // If the translated version is currently displayed, restore the original
+        // chapter first. Otherwise extraction could read the old Bengali text and
+        // feed that back into the translator.
+        if (Prefs.auto(this) && hasTr && shownTranslated) {
+            novelWv.evaluateJavascript(Js.TOGGLE) { r ->
+                if (token != navToken) return@evaluateJavascript
+                shownTranslated = false
+                updatePill()
+                extractFresh()
+            }
+        } else {
+            extractFresh()
         }
     }
 
     // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
-        // Capture the current chapter BEFORE invalidating navigation state.
-        // wipeStale() intentionally clears lastChapter so no old chapter can
-        // be committed by a late async callback.
-        val cached = lastChapter
-        val currentUrl = cleanUrl(novelWv.url ?: "")
-
         // Do not re-extract the current chapter before clicking Next/Prev.
-        // The cached chapter already contains its adjacent URL.
+        // lastChapter already contains the current page, so waiting for a
+        // second full DOM extraction here can make navigation feel 5–7s slow.
         wipeStale()
         showNavLoading()
         val token = navToken
@@ -1239,6 +879,8 @@ class MainActivity : Activity() {
             }
         }
 
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+        val cached = lastChapter
         if (cached != null && currentUrl.isNotEmpty() &&
             cleanUrl(cached.url) == currentUrl) {
             navigate(cached)
@@ -1265,9 +907,10 @@ class MainActivity : Activity() {
         pendHash = bodyHash(base)
         val autoExtract = Prefs.bool(this, "autoExtractNext", true)
         autoCopy = autoExtract
-        // Let onPageFinished refresh the page first, then start extraction.
+        // onPageFinished refreshes the page first, then starts extraction.
         polling = false
         refreshPending = true
+        refreshToken = navToken
         novelWv.loadUrl(url)
         handler.postDelayed({
             if (token == navToken && autoCopy) {
@@ -1325,8 +968,9 @@ class MainActivity : Activity() {
                 polling = false
                 // Refresh the new chapter first; extraction waits for it.
                 // If the click caused a real page load, onPageFinished already
-                // consumed refreshPending and reloaded, so nothing more here.
+                // reloaded it and consumed refreshPending, so nothing more here.
                 refreshPending = true
+                refreshToken = navToken
                 handler.postDelayed({
                     if (token != navToken || !refreshPending) return@postDelayed
                     refreshPending = false
@@ -1392,23 +1036,25 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun handleChapter(ch: Chapter) {
+    private fun handleChapter(ch: Chapter, forceFresh: Boolean = false) {
         onChapter(ch)
-        if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
+        if (Prefs.auto(this)) autoFlow(ch, forceFresh) else copyChapter(ch)
     }
 
     // ================================================================== copy mode (⚡ off)
     private fun copyChapter(ch: Chapter) {
-        val p = Prefs.prompt(this)
-        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) promptWithGlossary(p, ch.text) + ch.text else ch.text
+        val full = buildMessage(ch.text)
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
         deliver(full, tag)
     }
 
-    // "<prompt>\n\n[glossary of terms found in this chapter]\n\n---\n\n" — chapter text is appended by the caller
-    private fun promptWithGlossary(prompt: String, chapterText: String): String {
-        val g = if (Prefs.glossaryOn(this)) Glossary.block(chapterText) else ""
-        return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
+    // [prompt] + [glossary terms found in this chapter] + "---" + chapter text
+    private fun buildMessage(chapterText: String): String {
+        val head = ArrayList<String>()
+        val p = Prefs.prompt(this)
+        if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) head.add(p)
+        if (Prefs.glossaryOn(this)) Glossary.block(chapterText).let { if (it.isNotEmpty()) head.add(it) }
+        return if (head.isEmpty()) chapterText else head.joinToString("\n\n") + "\n\n---\n\n" + chapterText
     }
 
     private fun deliver(full: String, label: String) {
@@ -1416,10 +1062,17 @@ class MainActivity : Activity() {
         toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
         if (Prefs.bool(this, "autoPaste")) {
             val send = Prefs.bool(this, "autoSend")
-            val token = navToken
             handler.postDelayed({
-                if (token != navToken) return@postDelayed
                 chatWv.evaluateJavascript(Js.send(full, send)) { r ->
+                    // Never leave the WebView holding IME focus after automatic paste.
+                    // The keyboard must appear only after the user taps the chat box.
+                    chatWv.clearFocus()
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.hideSoftInputFromWindow(chatWv.windowToken, 0)
+                    handler.postDelayed({
+                        chatWv.clearFocus()
+                        imm.hideSoftInputFromWindow(chatWv.windowToken, 0)
+                    }, 120)
                     if (decode(r).startsWith("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
                 }
             }, 400)
@@ -1427,21 +1080,26 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== auto mode (⚡ on)
-    private fun autoFlow(ch: Chapter) {
-        val saved = Store.find(this, ch)
-        if (saved != null) {
-            applyTranslation(ch, Store.read(this, saved.id), true)
-            toast("📖 সেভ করা অনুবাদ বসালাম")
-        } else {
-            enqueue(ch)
+    private fun autoFlow(ch: Chapter, forceFresh: Boolean = false) {
+        // A manual ● press means "extract and translate again". Do not reuse
+        // the previously saved translation for that explicit request.
+        if (!forceFresh) {
+            val saved = Store.find(this, ch)
+            if (saved != null) {
+                applyTranslation(ch, Store.read(this, saved.id), true)
+                toast("📖 সেভ করা অনুবাদ বসালাম")
+                return
+            }
         }
+        enqueue(ch, forceFresh)
     }
 
-    private fun enqueue(ch: Chapter) {
+    private fun enqueue(ch: Chapter, forceFresh: Boolean = false) {
         val k = keyOf(ch)
         val r = running
         if ((r != null && keyOf(r) == k) || queue.any { keyOf(it) == k }) { updateProgressUi(); return }
         queue.add(ch)
+        if (forceFresh) freshQueueKeys.add(k)
         if (running == null) startNext() else updateProgressUi()
     }
 
@@ -1456,7 +1114,12 @@ class MainActivity : Activity() {
         progress = 0
         val tok = ++runToken
         updateProgressUi()
-        waitIdle(tok, ch, 0)
+        if (freshQueueKeys.remove(keyOf(ch))) {
+            // Manual ● = fresh request. Do not wait for the previous stream.
+            sendJob(tok, ch)
+        } else {
+            waitIdle(tok, ch, 0)
+        }
     }
 
     // make sure the chatbot is not still busy with something else before we send
@@ -1475,20 +1138,26 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val full = promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text
-        chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
-            if (tok != runToken) return@evaluateJavascript
-            val r = decode(raw)
-            if (r.startsWith("ok:")) {
-                val parts = r.substring(3).split(":")
-                val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
-                val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                // Give the chatbot UI time to create the new assistant turn.
-                handler.postDelayed({
-                    if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
-                }, 1800)
-            } else {
-                failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
+        val full = buildMessage(ch.text)
+        val sendCall: ((String, (String?) -> Unit) -> Unit) = if (Gemini.isGemini(chatWv.url)) {
+            { value, callback -> Gemini.send(chatWv, value, true, callback) }
+        } else {
+            { value, callback -> chatWv.evaluateJavascript(Js.send(value, true), callback) }
+        }
+        sendCall(full) { raw ->
+            if (tok == runToken) {
+                val r = decode(raw)
+                if (r.startsWith("ok:")) {
+                    val parts = r.substring(3).split(":")
+                    val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                    val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                    // Give the chatbot UI time to create the new assistant turn.
+                    handler.postDelayed({
+                        if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
+                    }, 200)
+                } else {
+                    failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
+                }
             }
         }
     }
@@ -1530,17 +1199,30 @@ class MainActivity : Activity() {
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
                 }
             }
-        }, 1000)
+        }, 300)
     }
 
-    private fun cleanReply(t: String): String =
-        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
+    private fun cleanReply(t: String): String {
+        var x = t.replace(
+            Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+        if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
+            x = x.replace(Regex("(?m)^\\s*n\\s*$"), "")
+            x = x.replace(Regex("(?<=\\S)\\s+n\\s+(?=\\S)"), "\n\n")
+        }
+        return x.trim()
+    }
 
     private fun finishJob(tok: Int, ch: Chapter) {
-        if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
-            if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
-            val t = cleanReply(decode(raw))
+            if (tok != runToken) return@evaluateJavascript
+            val rawText = decode(raw)
+            val t = if (Gemini.isGemini(chatWv.url)) {
+                Gemini.cleanResponse(rawText)
+            } else {
+                cleanReply(rawText)
+            }
             if (t.length < 30) {
                 failJob(tok, ch, "উত্তর পড়া গেল না")
                 return@evaluateJavascript
@@ -1553,7 +1235,13 @@ class MainActivity : Activity() {
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) applyTranslation(shown, t, true)
+            if (shown != null && isCurrentChapter(shown, ch)) {
+                if (chatWv.url?.contains("gemini.google.com", ignoreCase = true) == true) {
+                    applyGeminiTranslation(shown, t, true)
+                } else {
+                    applyTranslation(shown, t, true)
+                }
+            }
             toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
@@ -1565,7 +1253,8 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         queue.clear()
         running = null
-        copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
+        val full = buildMessage(ch.text)
+        copy(full)
         toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
@@ -1579,35 +1268,114 @@ class MainActivity : Activity() {
         toast("⏹ অটো অনুবাদ বন্ধ করলাম")
     }
 
+    // A chapter can be represented by a different extracted key after Next
+    // (title/number metadata may change), while its URL still identifies the
+    // exact page being translated. Accept either identity when deciding where
+    // to place the finished translation.
+    private fun isCurrentChapter(shown: Chapter, translated: Chapter): Boolean {
+        val currentUrl = cleanUrl(novelWv.url ?: "")
+        val shownUrl = cleanUrl(shown.url)
+        val translatedUrl = cleanUrl(translated.url)
+        return keyOf(shown) == keyOf(translated) ||
+            (currentUrl.isNotEmpty() && translatedUrl.isNotEmpty() && currentUrl == translatedUrl) ||
+            (currentUrl.isNotEmpty() && shownUrl.isNotEmpty() && currentUrl == shownUrl)
+    }
+
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
-        // A translation callback can arrive long after the user pressed Next.
-        // Never write an old chapter's translation into the current page.
-        if (lastChapter !== ch) return
+        val payload = JSONArray(paras).toString()
 
-        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this))) { r ->
-            if (lastChapter !== ch) return@evaluateJavascript
-            if (r != null && r.contains("ok")) {
-                hasTr = true
-                shownTranslated = true
-                updatePill()
-                if (retry) {   // some sites re-render the content a moment later — put it back once
-                    handler.postDelayed({
-                        if (shownTranslated && lastChapter === ch) {
-                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
-                                if (lastChapter === ch && s != null && s.contains("lost")) {
-                                    applyTranslation(ch, text, false)
+        fun attempt(selector: String, left: Int) {
+            novelWv.evaluateJavascript(Js.apply(selector, payload, Prefs.fontFile(this))) { r ->
+                if (r != null && r.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {   // some sites re-render the content a moment later — put it back once
+                        handler.postDelayed({
+                            if (shownTranslated && lastChapter === ch) {
+                                novelWv.evaluateJavascript(Js.stillApplied(selector)) { s ->
+                                    if (s != null && s.contains("lost")) {
+                                        attempt(selector, 2)
+                                    }
                                 }
                             }
-                        }
-                    }, 2500)
+                        }, 2500)
+                    }
+                } else if (left > 0) {
+                    // The page can still be rebuilding its reader DOM when the
+                    // chatbot answer finishes. Retry the same selector instead
+                    // of losing the already completed translation.
+                    handler.postDelayed({
+                        if (lastChapter === ch && !isFinishing) attempt(selector, left - 1)
+                    }, 350L)
+                } else {
+                    // Re-read the site's current learned selector once. Some
+                    // readers replace their chapter container after rendering.
+                    val fresh = SiteProfiles.selector(this, novelWv.url ?: ch.url, "content")
+                    if (fresh.isNotBlank() && fresh != selector) {
+                        attempt(fresh, 2)
+                    } else {
+                        toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+                    }
                 }
-            } else {
-                toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
             }
         }
+
+        attempt(sel, 3)
+    }
+
+    // Gemini can finish after Next/Prev has replaced the reader DOM, so this
+    // keeps its own short retry loop — but reuses the chapter's already-known
+    // content selector instead of rescanning the whole page every attempt,
+    // which was the main cause of Gemini's long apply delay.
+    private fun applyGeminiTranslation(ch: Chapter, text: String, retry: Boolean) {
+        val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
+        val normalized = cleanReply(text)
+        val paras = normalized.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        val payload = JSONArray(paras).toString()
+
+        fun sameChapter(): Boolean {
+            val current = lastChapter ?: return false
+            return isCurrentChapter(current, ch)
+        }
+
+        fun attempt(selector: String, left: Int) {
+            if (!sameChapter()) { toast("🔧 [gemini] sameChapter()=false — বসানোর চেষ্টাই হয়নি"); return }
+            if (isFinishing) return
+            novelWv.evaluateJavascript(Js.apply(selector, payload, Prefs.fontFile(this))) { r ->
+                if (left == 3) toast("🔧 [gemini] sel=[$selector] r=$r")
+                if (sameChapter() && r != null && r.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {
+                        handler.postDelayed({
+                            if (shownTranslated && sameChapter()) {
+                                novelWv.evaluateJavascript(Js.stillApplied(selector)) { state ->
+                                    if (state != null && state.contains("lost")) attempt(selector, 2)
+                                }
+                            }
+                        }, 2500)
+                    }
+                } else if (left > 0) {
+                    handler.postDelayed({
+                        if (sameChapter() && !isFinishing) attempt(selector, left - 1)
+                    }, 350L)
+                } else {
+                    val fresh = SiteProfiles.selector(this, novelWv.url ?: ch.url, "content")
+                    if (fresh.isNotBlank() && fresh != selector) {
+                        attempt(fresh, 2)
+                    } else {
+                        toast("⚠️ Gemini-এর অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+                    }
+                }
+            }
+        }
+
+        attempt(sel, 3)
     }
 
     private fun toggleView() {
@@ -1689,11 +1457,9 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== menu
-
     private fun menu() {
         val labels = arrayListOf(
             "📚 লাইব্রেরি (অফলাইনে পড়ো)",
-            "🕘 ব্রাউজ হিস্ট্রি",
             "⬇️ সব অনুবাদ txt এক্সপোর্ট",
             "🔖 এই পেজ বুকমার্ক করো",
             "🔖 বুকমার্ক লিস্ট",
@@ -1726,17 +1492,16 @@ class MainActivity : Activity() {
         lv.setOnItemClickListener { _, _, i, _ ->
             when (i) {
                 0 -> { dlg.dismiss(); libraryNovels() }
-                1 -> { dlg.dismiss(); browserHistoryDialog() }
-                2 -> { dlg.dismiss(); exportAll(null) }
-                3 -> { dlg.dismiss(); saveBookmark() }
-                4 -> { dlg.dismiss(); bookmarkList() }
-                5 -> { dlg.dismiss(); editPrompt() }
-                6 -> {
+                1 -> { dlg.dismiss(); exportAll(null) }
+                2 -> { dlg.dismiss(); saveBookmark() }
+                3 -> { dlg.dismiss(); bookmarkList() }
+                4 -> { dlg.dismiss(); editPrompt() }
+                5 -> {
                     toggleAuto()
                     labels[i] = menuAutoLabel()
                     adapter.notifyDataSetChanged()
                 }
-                7 -> {
+                6 -> {
                     val ch = lastChapter
                     if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
                     else {
@@ -1745,60 +1510,60 @@ class MainActivity : Activity() {
                     }
                     dlg.dismiss()
                 }
-                8 -> { cancelAll(); dlg.dismiss() }
-                9 -> {
+                7 -> { cancelAll(); dlg.dismiss() }
+                8 -> {
                     val d = darkMode()
                     Prefs.put(this, "dark", ((d + 1) % 3).toString())
                     applyDark()
                     labels[i] = menuDarkLabel()
                     adapter.notifyDataSetChanged()
                 }
-                10 -> {
+                9 -> {
                     val v = !Prefs.bool(this, "autoPaste")
                     Prefs.putBool(this, "autoPaste", v)
                     labels[i] = menuAutoPasteLabel()
                     adapter.notifyDataSetChanged()
                 }
-                11 -> {
+                10 -> {
                     val v = !Prefs.bool(this, "autoSend")
                     Prefs.putBool(this, "autoSend", v)
                     labels[i] = menuAutoSendLabel()
                     adapter.notifyDataSetChanged()
                 }
-                12 -> {
+                11 -> {
                     val v = !Prefs.bool(this, "withPrompt")
                     Prefs.putBool(this, "withPrompt", v)
                     labels[i] = menuPromptLabel()
                     adapter.notifyDataSetChanged()
                 }
-                13 -> {
+                12 -> {
                     val next = !Prefs.bool(this, "noSaveNext")
                     Prefs.putBool(this, "noSaveNext", !next)
                     labels[i] = menuSaveNextLabel()
                     adapter.notifyDataSetChanged()
                 }
-                14 -> {
+                13 -> {
                     val v = !Prefs.bool(this, "autoExtractNext", true)
                     Prefs.putBool(this, "autoExtractNext", v)
                     labels[i] = menuNextExtractLabel()
                     adapter.notifyDataSetChanged()
                 }
-                15 -> {
+                14 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
                     labels[i] = menuAdBlockLabel()
                     adapter.notifyDataSetChanged()
                 }
-                16 -> {
+                15 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n ->
                         toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
-                17 -> { dlg.dismiss(); novelWv.reload() }
-                18 -> { dlg.dismiss(); chatWv.reload() }
-                19 -> { dlg.dismiss(); glossaryDialog() }
-                20 -> {
+                16 -> { dlg.dismiss(); novelWv.reload() }
+                17 -> { dlg.dismiss(); chatWv.reload() }
+                18 -> { dlg.dismiss(); glossaryDialog() }
+                19 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     labels[i] = menuFontLabel()
                     adapter.notifyDataSetChanged()
@@ -1822,7 +1587,7 @@ class MainActivity : Activity() {
         val opts = arrayOf(
             "➕ একটা শব্দ যোগ (english = বাংলা)",
             "📥 অনেক শব্দ পেস্ট করো",
-            (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " প্রম্পটে গ্লোসারি জোড়া চালু",
+            (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " মেসেজে গ্লোসারি জোড়া চালু",
             "📋 পুরো গ্লোসারি কপি করো",
             "🗑 সব মুছে ফেলো"
         )
@@ -1851,7 +1616,7 @@ class MainActivity : Activity() {
     private fun glossaryInput(bulk: Boolean) {
         val et = EditText(this).apply {
             hint = if (bulk) "dantian | dan tian | 丹田 => ডান্টিয়ান\n(প্রতি লাইনে একটা)" else "young master = ইয়াং মাস্টার"
-            if (bulk) { minLines = 8; gravity = Gravity.TOP } else setSingleLine(false)
+            if (bulk) { minLines = 8; gravity = Gravity.TOP }
         }
         val b = AlertDialog.Builder(this)
             .setTitle(if (bulk) "📥 পেস্ট করো" else "➕ নতুন শব্দ")
@@ -2009,7 +1774,6 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
-        if (!isFinishing) saveCurrentTabState()
         CookieManager.getInstance().flush()
         super.onPause()
     }
