@@ -1417,6 +1417,12 @@ class MainActivity : Activity() {
 
     // "<prompt>\n\n[glossary of terms found in this chapter]\n\n---\n\n" — chapter text is appended by the caller
     private fun promptWithGlossary(prompt: String, chapterText: String): String {
+        // Some sites (e.g. fanqienovel) draw text with a scrambled font: the copied text is
+        // full of private-use characters and cannot be translated.
+        val pua = chapterText.count { it in '\uE000'..'\uF8FF' }
+        if (pua > 20 && pua * 20 > chapterText.length) {
+            toast("⚠ এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে")
+        }
         val g = if (Prefs.glossaryOn(this)) Glossary.block(chapterText) else ""
         return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
     }
@@ -1597,7 +1603,7 @@ class MainActivity : Activity() {
         // Never write an old chapter's translation into the current page.
         if (lastChapter !== ch) return
 
-        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this))) { r ->
+        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this), Prefs.sizePx(this))) { r ->
             if (lastChapter !== ch) return@evaluateJavascript
             if (r != null && r.contains("ok")) {
                 hasTr = true
@@ -1724,7 +1730,8 @@ class MainActivity : Activity() {
             menuGlossaryLabel(),
             menuFontLabel(),
             "🌐 সাইট সেটিং (যে সাইট চলে না)",
-            "🔍 এই পেজ পরীক্ষা করো (রিপোর্ট কপি)"
+            "🔍 এই পেজ পরীক্ষা করো (রিপোর্ট কপি)",
+            menuSizeLabel()
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
@@ -1812,6 +1819,15 @@ class MainActivity : Activity() {
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 21 -> { dlg.dismiss(); siteRulesDialog() }
                 22 -> { dlg.dismiss(); diagnosePage() }
+                23 -> {
+                    Prefs.put(this, "trSize", ((Prefs.sizeIdx(this) + 1) % Prefs.SIZES.size).toString())
+                    labels[i] = menuSizeLabel()
+                    adapter.notifyDataSetChanged()
+                    val ch = lastChapter
+                    if (ch != null && hasTr) {
+                        Store.find(this, ch)?.let { applyTranslation(ch, Store.read(this, it.id), false) }
+                    }
+                }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     labels[i] = menuFontLabel()
@@ -1938,6 +1954,9 @@ class MainActivity : Activity() {
 
     private fun menuGlossaryLabel(): String =
         (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " 📖 গ্লোসারি (" + Glossary.count + " টা) — এডিট/যোগ"
+
+    private fun menuSizeLabel(): String =
+        "🔠 অনুবাদের অক্ষরের সাইজ: " + Prefs.sizePx(this) + "px  (ট্যাপ করলে বদলায়)"
 
     private fun menuFontLabel(): String =
         "🔤 অনুবাদের ফন্ট: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)] + "  (ট্যাপ করলে বদলায়)"

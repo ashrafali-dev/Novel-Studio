@@ -81,7 +81,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
-(function(sel,paras,font){
+(function(sel,paras,font,size){
   var el=null;
   try{ if(sel) el=document.querySelector(sel); }catch(e){}
   // Jsoup's generated cssSelector can become stale after a SPA/navigation
@@ -116,6 +116,15 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
     el=best;
   }
+  // Never write into a page-wide wrapper (#app, body, a bare 'div'...): that wipes the
+  // site's own UI and breaks navigation. Use the element that really holds the <p> lines.
+  function dp(x){var n=0;for(var q=0;q<x.children.length;q++){if(x.children[q].tagName==='P')n++;}return n;}
+  if(el&&dp(el)<5&&!el.getAttribute('data-ns')){
+    var bd=null,bn=0,cs=[].slice.call(el.querySelectorAll('div,article,section,main'));
+    for(var z=0;z<cs.length;z++){var nn=dp(cs[z]);if(nn>bn){bn=nn;bd=cs[z];}}
+    if(bd&&bn>=5) el=bd;
+    else if(el===document.body||el===document.documentElement||/^(app|root|__next|__nuxt)$/.test(el.id||'')) el=null;
+  }
   if(!el) return 'noel';
   if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
   var fam='';
@@ -127,16 +136,24 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       fam="'NSBn',sans-serif";
     }catch(e){}
   }
+  // side margin: only when the site's own container hugs the screen edge
+  var rc=el.getBoundingClientRect(), cst=getComputedStyle(el);
+  var padL=Math.max(0,16-Math.max(rc.left,0)-(parseFloat(cst.paddingLeft)||0));
+  var padR=Math.max(0,16-Math.max(window.innerWidth-rc.right,0)-(parseFloat(cst.paddingRight)||0));
+  var wrap=document.createElement('div');
+  wrap.style.cssText='box-sizing:border-box;max-width:100%;text-align:left;overflow-wrap:anywhere;'
+    +'padding:0 '+padR+'px 0 '+padL+'px;font-size:'+(size||18)+'px;';
   var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} frag.appendChild(p); }
+  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} wrap.appendChild(p); }
+  frag.appendChild(wrap);
   el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
   return 'ok';
-})(__SEL__,__PARAS__,__FONT__)
+})(__SEL__,__PARAS__,__FONT__,__SIZE__)
 """
 
-    fun apply(sel: String, parasJson: String, font: String = ""): String =
+    fun apply(sel: String, parasJson: String, font: String = "", size: Int = 18): String =
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
-            .replace("__FONT__", org.json.JSONObject.quote(font))
+            .replace("__FONT__", org.json.JSONObject.quote(font)).replace("__SIZE__", size.toString())
 
     fun stillApplied(sel: String): String =
         "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +

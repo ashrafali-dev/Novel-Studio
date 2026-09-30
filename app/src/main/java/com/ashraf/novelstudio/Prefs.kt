@@ -29,5 +29,8 @@ object Prefs {
     val FONT_NAMES = arrayOf("সাধারণ", "Tiro Bangla (সেরিফ)", "Hind Siliguri (পরিষ্কার)", "Galada (স্টাইলিশ)")
     fun fontIdx(c: Context): Int = (get(c, "trFont", "1").toIntOrNull() ?: 1).coerceIn(0, FONT_FILES.size - 1)
     fun fontFile(c: Context): String = FONT_FILES[fontIdx(c)]
+    val SIZES = intArrayOf(16, 18, 20, 22, 24)
+    fun sizeIdx(c: Context): Int = (get(c, "trSize", "1").toIntOrNull() ?: 1).coerceIn(0, SIZES.size - 1)
+    fun sizePx(c: Context): Int = SIZES[sizeIdx(c)]
     fun glossaryOn(c: Context): Boolean = !bool(c, "noGlossary")
 }
