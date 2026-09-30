@@ -1723,7 +1723,8 @@ class MainActivity : Activity() {
             "🔄 চ্যাটবট রিলোড",
             menuGlossaryLabel(),
             menuFontLabel(),
-            "🌐 সাইট সেটিং (যে সাইট চলে না)"
+            "🌐 সাইট সেটিং (যে সাইট চলে না)",
+            "🔍 এই পেজ পরীক্ষা করো (রিপোর্ট কপি)"
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
@@ -1810,6 +1811,7 @@ class MainActivity : Activity() {
                 18 -> { dlg.dismiss(); chatWv.reload() }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 21 -> { dlg.dismiss(); siteRulesDialog() }
+                22 -> { dlg.dismiss(); diagnosePage() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     labels[i] = menuFontLabel()
@@ -1822,6 +1824,56 @@ class MainActivity : Activity() {
             }
         }
         dlg.show()
+    }
+
+    // ---------------------------------------------------------------- page diagnosis
+    private fun diagnosePage() {
+        val js = """
+            (function(){
+              function vis(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
+              function sel(e){
+                var id=(e.id||'').trim();
+                if(id&&/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id))return '#'+id;
+                var c=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
+                return e.tagName.toLowerCase()+(c.length?'.'+c.join('.'):'');
+              }
+              var out=[];
+              out.push('URL: '+location.href);
+              out.push('title: '+document.title);
+              out.push('iframes: '+document.querySelectorAll('iframe').length+', canvas: '+document.querySelectorAll('canvas').length);
+              var els=Array.from(document.querySelectorAll('div,article,section,main,p')),cand=[];
+              for(var i=0;i<els.length;i++){
+                var e=els[i]; var t=(e.innerText||'').trim();
+                if(t.length<150)continue;
+                var direct=0; for(var k=0;k<e.children.length;k++){ if(e.children[k].tagName==='P')direct++; }
+                cand.push({s:sel(e),len:t.length,p:direct,v:vis(e),txt:t});
+              }
+              cand.sort(function(a,b){return (b.p*300+b.len/50)-(a.p*300+a.len/50);});
+              out.push('--- text containers (top 5) ---');
+              cand.slice(0,5).forEach(function(c){
+                var pua=0; for(var j=0;j<c.txt.length;j++){var cc=c.txt.charCodeAt(j); if(cc>=0xE000&&cc<=0xF8FF)pua++;}
+                out.push(c.s+' | len='+c.len+' | p='+c.p+' | visible='+c.v+' | privateUseChars='+pua+' | start: '+c.txt.slice(0,40).replace(/\s+/g,' '));
+              });
+              out.push('--- next/prev candidates ---');
+              var re=/next|prev|下一|上一|다음|이전|次|前|›|»|‹|«/i, n=0;
+              var all=Array.from(document.querySelectorAll('a,button,[role=button],div,span'));
+              for(var m=0;m<all.length&&n<10;m++){
+                var e=all[m]; if(e.children.length>2)continue;
+                var t=((e.innerText||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.title||'')).trim();
+                if(t.length>0&&t.length<20&&re.test(t)&&vis(e)){ n++; out.push(sel(e)+' | '+e.tagName+' | "'+t.replace(/\s+/g,' ')+'"'+(e.href?' | href='+e.href:'')); }
+              }
+              return out.join('\n');
+            })()
+        """.trimIndent()
+        novelWv.evaluateJavascript(js) { r ->
+            val page = try { JSONArray("[" + (r ?: "null") + "]").optString(0, "") } catch (e: Exception) { "" }
+            val state = "app: polling=$polling autoCopy=$autoCopy refreshPending=$refreshPending hasTr=$hasTr " +
+                "catalogPending=$webNovelCatalogPending navToken=$navToken\n" +
+                "siteRule=" + (SiteRules.find(this, novelWv.url ?: "")?.let { it.host + " compat=" + it.compat } ?: "none")
+            val report = state + "\n" + page
+            copy(report)
+            toast("🔍 রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো")
+        }
     }
 
     // ---------------------------------------------------------------- site rules
