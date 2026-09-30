@@ -23,4 +23,11 @@ object Prefs {
     fun prompt(c: Context): String = get(c, "prompt", DEFAULT_PROMPT)
     fun adblock(c: Context): Boolean = !bool(c, "noAdblock")
     fun auto(c: Context): Boolean = !bool(c, "noAuto")
+
+    // Bengali font for the translated text: 0 = normal, 1..3 = bundled fonts in assets/fonts
+    val FONT_FILES = arrayOf("", "tiro", "hind", "galada")
+    val FONT_NAMES = arrayOf("সাধারণ", "Tiro Bangla (সেরিফ)", "Hind Siliguri (পরিষ্কার)", "Galada (স্টাইলিশ)")
+    fun fontIdx(c: Context): Int = (get(c, "trFont", "1").toIntOrNull() ?: 1).coerceIn(0, FONT_FILES.size - 1)
+    fun fontFile(c: Context): String = FONT_FILES[fontIdx(c)]
+    fun glossaryOn(c: Context): Boolean = !bool(c, "noGlossary")
 }
