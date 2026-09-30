@@ -913,7 +913,8 @@ class MainActivity : Activity() {
     private fun extractNow(cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
-        if (url.substringAfter("://").substringBefore('/').lowercase().removePrefix("www.") == "webnovel.com") {
+        val host0 = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
+        if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com")) {
             extractWebNovelNow(cb)
             return
         }
