@@ -1,8 +1,8 @@
 package com.ashraf.novelstudio
 
 import android.app.Activity
-import android.os.Bundle
 import android.graphics.Typeface
+import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -48,11 +48,12 @@ class ReaderActivity : Activity() {
             setPadding(dp(14), dp(10), dp(14), dp(6))
         }
         body = TextView(this).apply {
-            // Book-like serif face; Android will use its Bengali serif fallback.
-            typeface = Typeface.create("serif", Typeface.NORMAL)
             setPadding(dp(16), dp(8), dp(16), dp(24))
             setLineSpacing(0f, 1.35f)
             setTextIsSelectable(true)
+        }
+        Prefs.fontFile(this).takeIf { it.isNotEmpty() }?.let {
+            try { body.typeface = Typeface.createFromAsset(assets, "fonts/$it.ttf") } catch (e: Exception) { }
         }
         scroll = ScrollView(this).apply { addView(body) }
         bar = LinearLayout(this).apply {

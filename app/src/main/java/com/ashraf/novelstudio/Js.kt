@@ -81,7 +81,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
-(function(sel,paras){
+(function(sel,paras,font){
   var el=null;
   try{ if(sel) el=document.querySelector(sel); }catch(e){}
   // Jsoup's generated cssSelector can become stale after a SPA/navigation
@@ -118,15 +118,25 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
   if(!el) return 'noel';
   if(window.__nsEl!==el||window.__nsOrig==null){ window.__nsOrig=el.innerHTML; window.__nsEl=el; }
+  var fam='';
+  if(font&&font.length){
+    try{
+      var st=document.getElementById('__ns_font');
+      if(!st){ st=document.createElement('style'); st.id='__ns_font'; (document.head||document.documentElement).appendChild(st); }
+      st.textContent="@font-face{font-family:'NSBn';src:url('https://ns.local/fonts/"+font+".ttf') format('truetype');font-display:swap;}";
+      fam="'NSBn',sans-serif";
+    }catch(e){}
+  }
   var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; frag.appendChild(p); }
+  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} frag.appendChild(p); }
   el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
   return 'ok';
-})(__SEL__,__PARAS__)
+})(__SEL__,__PARAS__,__FONT__)
 """
 
-    fun apply(sel: String, parasJson: String): String =
+    fun apply(sel: String, parasJson: String, font: String = ""): String =
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
+            .replace("__FONT__", org.json.JSONObject.quote(font))
 
     fun stillApplied(sel: String): String =
         "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +

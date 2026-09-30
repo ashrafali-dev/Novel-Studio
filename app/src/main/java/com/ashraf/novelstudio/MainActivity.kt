@@ -147,6 +147,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AdBlock.load(this)
+        Glossary.reload(this)
         CookieManager.getInstance().setAcceptCookie(true)
 
         novelWv = WebView(this)
@@ -748,6 +749,16 @@ class MainActivity : Activity() {
     private inner class NovelClient : WebViewClient() {
         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             val r = request ?: return null
+            if (r.url.host == "ns.local") {
+                val name = (r.url.lastPathSegment ?: "").removeSuffix(".ttf")
+                if (name in Prefs.FONT_FILES && name.isNotEmpty()) {
+                    return try {
+                        WebResourceResponse("font/ttf", null, 200, "OK",
+                            mapOf("Access-Control-Allow-Origin" to "*", "Cache-Control" to "max-age=86400"),
+                            assets.open("fonts/$name.ttf"))
+                    } catch (e: Exception) { null }
+                }
+            }
             if (Prefs.adblock(this@MainActivity) && !r.isForMainFrame && AdBlock.blocked(r.url)) {
                 return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
             }
@@ -1389,13 +1400,15 @@ class MainActivity : Activity() {
     // ================================================================== copy mode (⚡ off)
     private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
-        val glossary = GlossaryStore.contextFor(this, ch.text)
-        val promptPart = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) {
-            p + glossary + "\n\n---\n\n"
-        } else ""
-        val full = promptPart + ch.text
+        val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) promptWithGlossary(p, ch.text) + ch.text else ch.text
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
         deliver(full, tag)
+    }
+
+    // "<prompt>\n\n[glossary of terms found in this chapter]\n\n---\n\n" — chapter text is appended by the caller
+    private fun promptWithGlossary(prompt: String, chapterText: String): String {
+        val g = if (Prefs.glossaryOn(this)) Glossary.block(chapterText) else ""
+        return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
     }
 
     private fun deliver(full: String, label: String) {
@@ -1462,8 +1475,7 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val glossary = GlossaryStore.contextFor(this, ch.text)
-        val full = Prefs.prompt(this) + glossary + "\n\n---\n\n" + ch.text
+        val full = promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1553,7 +1565,7 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         queue.clear()
         running = null
-        copy(Prefs.prompt(this) + "\n\n---\n\n" + ch.text)
+        copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
         toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
         updateProgressUi()
     }
@@ -1575,7 +1587,7 @@ class MainActivity : Activity() {
         // Never write an old chapter's translation into the current page.
         if (lastChapter !== ch) return
 
-        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString())) { r ->
+        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this))) { r ->
             if (lastChapter !== ch) return@evaluateJavascript
             if (r != null && r.contains("ok")) {
                 hasTr = true
@@ -1686,7 +1698,6 @@ class MainActivity : Activity() {
             "🔖 এই পেজ বুকমার্ক করো",
             "🔖 বুকমার্ক লিস্ট",
             "📝 প্রম্পট এডিট",
-            "📚 গ্লোসারি",
             menuAutoLabel(),
             "🔁 এই চ্যাপ্টার আবার অনুবাদ করাও",
             "⏹ চলমান অটো অনুবাদ বন্ধ",
@@ -1699,7 +1710,9 @@ class MainActivity : Activity() {
             menuAdBlockLabel(),
             "🔄 Ad Block লিস্ট আপডেট",
             "🔄 নোভেল পেজ রিলোড",
-            "🔄 চ্যাটবট রিলোড"
+            "🔄 চ্যাটবট রিলোড",
+            menuGlossaryLabel(),
+            menuFontLabel()
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
@@ -1718,13 +1731,12 @@ class MainActivity : Activity() {
                 3 -> { dlg.dismiss(); saveBookmark() }
                 4 -> { dlg.dismiss(); bookmarkList() }
                 5 -> { dlg.dismiss(); editPrompt() }
-                6 -> { dlg.dismiss(); editGlossary() }
-                7 -> {
+                6 -> {
                     toggleAuto()
                     labels[i] = menuAutoLabel()
                     adapter.notifyDataSetChanged()
                 }
-                8 -> {
+                7 -> {
                     val ch = lastChapter
                     if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
                     else {
@@ -1733,61 +1745,127 @@ class MainActivity : Activity() {
                     }
                     dlg.dismiss()
                 }
-                9 -> { cancelAll(); dlg.dismiss() }
-                10 -> {
+                8 -> { cancelAll(); dlg.dismiss() }
+                9 -> {
                     val d = darkMode()
                     Prefs.put(this, "dark", ((d + 1) % 3).toString())
                     applyDark()
                     labels[i] = menuDarkLabel()
                     adapter.notifyDataSetChanged()
                 }
-                11 -> {
+                10 -> {
                     val v = !Prefs.bool(this, "autoPaste")
                     Prefs.putBool(this, "autoPaste", v)
                     labels[i] = menuAutoPasteLabel()
                     adapter.notifyDataSetChanged()
                 }
-                12 -> {
+                11 -> {
                     val v = !Prefs.bool(this, "autoSend")
                     Prefs.putBool(this, "autoSend", v)
                     labels[i] = menuAutoSendLabel()
                     adapter.notifyDataSetChanged()
                 }
-                13 -> {
+                12 -> {
                     val v = !Prefs.bool(this, "withPrompt")
                     Prefs.putBool(this, "withPrompt", v)
                     labels[i] = menuPromptLabel()
                     adapter.notifyDataSetChanged()
                 }
-                14 -> {
+                13 -> {
                     val next = !Prefs.bool(this, "noSaveNext")
                     Prefs.putBool(this, "noSaveNext", !next)
                     labels[i] = menuSaveNextLabel()
                     adapter.notifyDataSetChanged()
                 }
-                15 -> {
+                14 -> {
                     val v = !Prefs.bool(this, "autoExtractNext", true)
                     Prefs.putBool(this, "autoExtractNext", v)
                     labels[i] = menuNextExtractLabel()
                     adapter.notifyDataSetChanged()
                 }
-                16 -> {
+                15 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
                     labels[i] = menuAdBlockLabel()
                     adapter.notifyDataSetChanged()
                 }
-                17 -> {
+                16 -> {
                     toast("⏳ লিস্ট নামাচ্ছি…")
                     AdBlock.update(this) { n ->
                         toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
-                18 -> { dlg.dismiss(); novelWv.reload() }
-                19 -> { dlg.dismiss(); chatWv.reload() }
+                17 -> { dlg.dismiss(); novelWv.reload() }
+                18 -> { dlg.dismiss(); chatWv.reload() }
+                19 -> { dlg.dismiss(); glossaryDialog() }
+                20 -> {
+                    Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
+                    labels[i] = menuFontLabel()
+                    adapter.notifyDataSetChanged()
+                    val ch = lastChapter
+                    if (ch != null && hasTr) {
+                        Store.find(this, ch)?.let { applyTranslation(ch, Store.read(this, it.id), false) }
+                    }
+                }
             }
         }
         dlg.show()
+    }
+
+    private fun menuGlossaryLabel(): String =
+        (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " 📖 গ্লোসারি (" + Glossary.count + " টা) — এডিট/যোগ"
+
+    private fun menuFontLabel(): String =
+        "🔤 অনুবাদের ফন্ট: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)] + "  (ট্যাপ করলে বদলায়)"
+
+    private fun glossaryDialog() {
+        val opts = arrayOf(
+            "➕ একটা শব্দ যোগ (english = বাংলা)",
+            "📥 অনেক শব্দ পেস্ট করো",
+            (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " প্রম্পটে গ্লোসারি জোড়া চালু",
+            "📋 পুরো গ্লোসারি কপি করো",
+            "🗑 সব মুছে ফেলো"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("📖 গ্লোসারি — ${Glossary.count} টা এন্ট্রি")
+            .setItems(opts) { _, i ->
+                when (i) {
+                    0 -> glossaryInput(false)
+                    1 -> glossaryInput(true)
+                    2 -> {
+                        Prefs.putBool(this, "noGlossary", Prefs.glossaryOn(this))
+                        toast(if (Prefs.glossaryOn(this)) "✅ গ্লোসারি চালু" else "⬜ গ্লোসারি বন্ধ")
+                    }
+                    3 -> { copy(Glossary.read(this)); toast("📋 গ্লোসারি কপি হয়েছে") }
+                    4 -> AlertDialog.Builder(this)
+                        .setMessage("পুরো গ্লোসারি মুছে যাবে। নিশ্চিত?")
+                        .setPositiveButton("মুছো") { _, _ -> Glossary.write(this, ""); toast("🗑 মুছে ফেলা হয়েছে") }
+                        .setNegativeButton("বাতিল", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("বন্ধ", null)
+            .show()
+    }
+
+    private fun glossaryInput(bulk: Boolean) {
+        val et = EditText(this).apply {
+            hint = if (bulk) "dantian | dan tian | 丹田 => ডান্টিয়ান\n(প্রতি লাইনে একটা)" else "young master = ইয়াং মাস্টার"
+            if (bulk) { minLines = 8; gravity = Gravity.TOP } else setSingleLine(false)
+        }
+        val b = AlertDialog.Builder(this)
+            .setTitle(if (bulk) "📥 পেস্ট করো" else "➕ নতুন শব্দ")
+            .setView(et)
+            .setPositiveButton("যোগ করো") { _, _ ->
+                Glossary.append(this, et.text.toString())
+                toast("✅ যোগ হয়েছে")
+            }
+            .setNegativeButton("বাতিল", null)
+        if (bulk) b.setNeutralButton("সব বদলে দাও") { _, _ ->
+            Glossary.write(this, et.text.toString())
+            toast("✅ গ্লোসারি বদলানো হয়েছে")
+        }
+        b.show()
     }
 
     private fun menuAutoLabel(): String =
@@ -1920,26 +1998,6 @@ class MainActivity : Activity() {
             .setTitle("প্রম্পট")
             .setView(et)
             .setPositiveButton("সেভ") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
-            .setNegativeButton("বাতিল", null)
-            .show()
-    }
-
-    private fun editGlossary() {
-        val et = EditText(this).apply {
-            setText(GlossaryStore.raw(this@MainActivity))
-            minLines = 14
-            gravity = Gravity.TOP
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            hint = "source | variant | 原文 => বাংলা\n\nউদাহরণ:\nme = আমাকে"
-        }
-        AlertDialog.Builder(this)
-            .setTitle("📚 Glossary")
-            .setMessage("এক লাইনে একটি term। একই অনুবাদের জন্য | দিয়ে variant দাও।\n=> বা = — দুটোই চলবে।\n\nউদাহরণ: dantian | 丹田 => ডান্টিয়ান")
-            .setView(et)
-            .setPositiveButton("সেভ") { _, _ ->
-                GlossaryStore.save(this, et.text.toString())
-                toast("✅ Glossary সেভ হয়েছে")
-            }
             .setNegativeButton("বাতিল", null)
             .show()
     }
