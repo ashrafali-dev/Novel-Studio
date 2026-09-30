@@ -29,6 +29,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
+import android.widget.ScrollView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -149,6 +151,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         AdBlock.load(this)
         Glossary.reload(this)
+        SiteRules.sync(this)
         CookieManager.getInstance().setAcceptCookie(true)
 
         novelWv = WebView(this)
@@ -914,7 +917,7 @@ class MainActivity : Activity() {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
         val host0 = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
-        if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com")) {
+        if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com") || SiteRules.compat(this, url)) {
             extractWebNovelNow(cb)
             return
         }
@@ -1719,7 +1722,8 @@ class MainActivity : Activity() {
             "🔄 নোভেল পেজ রিলোড",
             "🔄 চ্যাটবট রিলোড",
             menuGlossaryLabel(),
-            menuFontLabel()
+            menuFontLabel(),
+            "🌐 সাইট সেটিং (যে সাইট চলে না)"
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
@@ -1805,6 +1809,7 @@ class MainActivity : Activity() {
                 17 -> { dlg.dismiss(); novelWv.reload() }
                 18 -> { dlg.dismiss(); chatWv.reload() }
                 19 -> { dlg.dismiss(); glossaryDialog() }
+                21 -> { dlg.dismiss(); siteRulesDialog() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     labels[i] = menuFontLabel()
@@ -1817,6 +1822,66 @@ class MainActivity : Activity() {
             }
         }
         dlg.show()
+    }
+
+    // ---------------------------------------------------------------- site rules
+    private fun siteRulesDialog() {
+        val rules = SiteRules.all(this)
+        val labels = ArrayList<String>()
+        labels.add("➕ নতুন সাইট যোগ করো")
+        rules.forEach {
+            labels.add(it.host + "\n" + listOfNotNull(
+                if (it.compat) "পুরো পেজ পড়ে" else null,
+                if (it.noAds) "অ্যাডব্লক বন্ধ" else null,
+                if (it.content.isNotBlank()) "content সেট" else null
+            ).joinToString(" • "))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("🌐 সাইট সেটিং")
+            .setItems(labels.toTypedArray()) { _, i ->
+                if (i == 0) siteRuleEditor(null) else siteRuleEditor(rules[i - 1])
+            }
+            .setNegativeButton("বন্ধ", null)
+            .show()
+    }
+
+    private fun siteRuleEditor(old: SiteRules.Rule?) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val cur = SiteRules.hostOf(novelWv.url ?: "")
+        val host = EditText(this).apply {
+            hint = "ডোমেইন, যেমন example.com"
+            setSingleLine(true)
+            setText(old?.host ?: cur)
+        }
+        val compat = CheckBox(this).apply { text = "পুরো পেজ পড়ে লেখা বের করো (JS সাইটের জন্য)"; isChecked = old?.compat ?: true }
+        val noAds = CheckBox(this).apply { text = "এই সাইটে অ্যাডব্লক বন্ধ রাখো"; isChecked = old?.noAds ?: true }
+        fun field(h: String, v: String?) = EditText(this).apply { hint = h; setSingleLine(true); setText(v ?: "") }
+        val content = field("content selector (ঐচ্ছিক) যেমন #chapter-content", old?.content)
+        val next = field("next selector (ঐচ্ছিক)", old?.next)
+        val prev = field("prev selector (ঐচ্ছিক)", old?.prev)
+        listOf<View>(host, compat, noAds, content, next, prev).forEach { col.addView(it) }
+        val sv = ScrollView(this).apply { addView(col) }
+
+        val b = AlertDialog.Builder(this)
+            .setTitle(if (old == null) "➕ সাইট যোগ" else "✏️ ${old.host}")
+            .setView(sv)
+            .setPositiveButton("সেভ") { _, _ ->
+                val h = SiteRules.hostOf(host.text.toString())
+                if (h.isEmpty() || !h.contains('.')) { toast("❌ ঠিক ডোমেইন লেখো"); return@setPositiveButton }
+                if (old != null && old.host != h) SiteRules.remove(this, old.host)
+                SiteRules.upsert(this, SiteRules.Rule(
+                    h, compat.isChecked, noAds.isChecked,
+                    content.text.toString().trim(), next.text.toString().trim(), prev.text.toString().trim()
+                ))
+                toast("✅ $h সেভ হয়েছে — পেজ রিলোড করে ● চাপো")
+            }
+            .setNegativeButton("বাতিল", null)
+        if (old != null) b.setNeutralButton("🗑 মুছো") { _, _ ->
+            SiteRules.remove(this, old.host)
+            toast("🗑 মুছে ফেলা হয়েছে")
+        }
+        b.show()
     }
 
     private fun menuGlossaryLabel(): String =

@@ -44,9 +44,13 @@ object AdBlock {
 
     // webnovel.com serves its reader (chapter text, API, next/prev) from its own
     // domain; the broad URL patterns and cosmetic rules below break it.
+    @Volatile var extraExempt: Set<String> = emptySet()   // user rules (SiteRules)
+
     fun exempt(host: String?): Boolean {
         val h = (host ?: return false).lowercase()
-        return h == "webnovel.com" || h.endsWith(".webnovel.com")
+        if (h == "webnovel.com" || h.endsWith(".webnovel.com")) return true
+        for (x in extraExempt) if (h == x || h.endsWith(".$x")) return true
+        return false
     }
 
     fun blocked(u: Uri): Boolean {

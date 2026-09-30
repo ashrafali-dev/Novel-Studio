@@ -26,6 +26,7 @@ object SiteProfiles {
     }
 
     fun selector(c: Context, url: String, field: String): String {
+        SiteRules.selector(c, url, field).let { if (it.isNotBlank()) return it }   // user override wins
         val host = hostOf(url)
         if (host.isEmpty()) return ""
         return try { all(c).optJSONObject(host)?.optString(field, "") ?: "" }
