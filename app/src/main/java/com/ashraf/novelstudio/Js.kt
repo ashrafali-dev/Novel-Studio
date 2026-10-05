@@ -25,7 +25,43 @@ function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
 function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
 
-    private fun run(body: String) = PRELUDE + "\n;" + body
+    private const val FAST_PRELUDE = """
+function __providerFast(){
+  var h=location.hostname.toLowerCase();
+  if(h==='chatgpt.com'||h.endsWith('.chatgpt.com')||h==='chat.openai.com'||h.endsWith('.chat.openai.com'))return 'chatgpt';
+  if(h==='gemini.google.com'||h.endsWith('.gemini.google.com'))return 'gemini';
+  if(h==='deepseek.com'||h.endsWith('.deepseek.com'))return 'deepseek';
+  if(h==='grok.com'||h.endsWith('.grok.com'))return 'grok';
+  if(h==='claude.ai'||h.endsWith('.claude.ai'))return 'claude';
+  return 'generic';
+}
+function __boxFast(){
+  var p=__providerFast(),e=null;
+  try{
+    if(p==='gemini'){
+      e=document.querySelector('rich-textarea .ql-editor[contenteditable="true"]:not(.ql-clipboard)') ||
+        document.querySelector('[contenteditable="true"][aria-label="Enter a prompt for Gemini"]') ||
+        document.querySelector('[contenteditable="true"][aria-label*="prompt for Gemini" i]');
+    }else if(p==='chatgpt'){
+      e=document.querySelector('#prompt-textarea') || document.querySelector('div.ProseMirror[contenteditable="true"]');
+    }else if(p==='deepseek'){
+      e=document.querySelector('textarea#chat-input') || document.querySelector('textarea');
+    }
+  }catch(x){}
+  if(!e){
+    var a=[];
+    try{a=[].slice.call(document.querySelectorAll('textarea,div[contenteditable="true"],div[contenteditable="plaintext-only"],[role="textbox"]'));}catch(x){}
+    a=a.filter(function(x){
+      if(x.classList&&x.classList.contains('ql-clipboard'))return false;
+      var r=x.getBoundingClientRect();
+      return r.width>0&&r.height>0;
+    });
+    a.sort(function(x,y){return y.getBoundingClientRect().bottom-x.getBoundingClientRect().bottom;});
+    e=a[0]||null;
+  }
+  return e;
+}
+\n    private fun run(body: String) = PRELUDE + "\n;" + FAST_PRELUDE + "\n;" + body
 
     private const val SEND_BODY = """
 (function(text,doSend){
@@ -66,8 +102,82 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 """
 
     // type the text into the chat box (and press send if asked). Returns "ok:<assistant message count>" or "nobox"
-    fun send(text: String, doSend: Boolean): String =
-        run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
+    private const val FAST_SEND_BODY = """
+(function(text,doSend){
+  var p=__prof(),before=__asst(p),n0=before.length,len0=0,old=__reply(p);
+  if(old)len0=((old.innerText||old.textContent||'').trim().length);
+  var box=__boxFast();
+  if(!box)return 'nobox';
+  var prov=__providerFast();
+  function ev(e,n,d){
+    try{e.dispatchEvent(new Event(n,{bubbles:true,composed:true}));}catch(x){}
+    if(d){try{e.dispatchEvent(new InputEvent(n,{bubbles:true,composed:true,inputType:'insertText',data:d}));}catch(x){}}
+  }
+  box.focus();
+  if(prov==='gemini'&&box.isContentEditable){
+    var html=String(text).split('\\n').map(function(line){
+      if(!line.trim())return '<p><br></p>';
+      return '<p>'+String(line).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</p>';
+    }).join('');
+    box.innerHTML=html;
+    try{
+      var range=document.createRange(),sel=window.getSelection(),last=box.lastElementChild||box;
+      range.selectNodeContents(last);range.collapse(false);sel.removeAllRanges();sel.addRange(range);
+    }catch(x){}
+    ev(box,'focus');ev(box,'beforeinput',text);ev(box,'input');ev(box,'input',text);ev(box,'change');
+  }else if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
+    var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+    try{Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);}catch(x){box.value=text;}
+    ev(box,'input');ev(box,'change');
+  }else{
+    try{
+      var sel2=window.getSelection(),range2=document.createRange();
+      range2.selectNodeContents(box);sel2.removeAllRanges();sel2.addRange(range2);
+      document.execCommand('insertText',false,text);
+    }catch(x){box.textContent=text;}
+    if(!((box.innerText||box.textContent||'').trim()))box.textContent=text;
+    ev(box,'beforeinput',text);ev(box,'input');ev(box,'input',text);ev(box,'change');
+  }
+  if(doSend){
+    var tries=0;
+    function submit(){
+      var btn=null;
+      try{
+        if(p.send){
+          var bs=[].slice.call(document.querySelectorAll(p.send));
+          for(var i=0;i<bs.length;i++){
+            if(__visibleFast(bs[i])&&!bs[i].disabled&&bs[i].getAttribute('aria-disabled')!=='true'){btn=bs[i];break;}
+          }
+        }
+      }catch(x){}
+      if(!btn){
+        try{
+          var fs=[].slice.call(document.querySelectorAll('button[data-testid*="send" i],button[aria-label*="send" i],button[aria-label*="submit" i],button[type="submit"]'));
+          for(var j=0;j<fs.length;j++){
+            if(__visibleFast(fs[j])&&!fs[j].disabled&&fs[j].getAttribute('aria-disabled')!=='true'){btn=fs[j];break;}
+          }
+        }catch(x){}
+      }
+      if(btn){btn.click();return;}
+      if(++tries<12){setTimeout(submit,40);return;}
+      try{
+        box.focus();
+        box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true,composed:true}));
+        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,composed:true}));
+      }catch(x){}
+    }
+    setTimeout(submit,0);
+  }
+  return 'ok:'+n0+':'+len0;
+})(__TEXT__,__SEND__)
+""";
+
+function __visibleFast(e){
+  if(!e)return false;
+  var r=e.getBoundingClientRect();
+  return r.width>0&&r.height>0;
+}
+\n    fun send(text: String, doSend: Boolean): String =\n        run(FAST_SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
 
     // "<assistant msg count>|<streaming 0/1>|<length of last reply>"
     fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);var len=b?((b.innerText||b.textContent||'').trim().length):0;return n+'|'+__stream(p)+'|'+len;})()")
