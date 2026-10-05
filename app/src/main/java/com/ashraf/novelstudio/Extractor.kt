@@ -15,7 +15,9 @@ data class Chapter(
     val contentSel: String,
     val titleSel: String = "",
     val nextSel: String = "",
-    val prevSel: String = ""
+    val prevSel: String = "",
+    /** JSON array of DOM text blocks captured during extraction. */
+    val segmentsJson: String = ""
 )
 
 object Extractor {
