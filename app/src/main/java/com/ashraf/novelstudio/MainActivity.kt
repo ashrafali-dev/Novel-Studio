@@ -1621,7 +1621,11 @@ class MainActivity : Activity() {
             // response to Android clipboard automatically. This uses the
             // same clipboard path as manual Copy/Save.
             copy(t)
-            Store.save(this, ch, t)
+            if (ch.segmentsJson.isNotBlank()) {
+                Store.saveMapped(this, ch, t, ch.segmentsJson, mapped.toString())
+            } else {
+                Store.save(this, ch, t)
+            }
             progress = 100
             updateProgressUi()
             val shown = lastChapter
