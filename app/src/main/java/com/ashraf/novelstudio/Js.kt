@@ -189,6 +189,75 @@ function __visibleFast(e){
     // wipes a long leftover text (previous chapter) from the chat box
     fun clearBox(): String = run("(function(){var b=__box();if(!b)return 'n';var t=(b.value!==undefined?b.value:b.innerText)||'';if(t.length<150)return 's';b.focus();if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){Object.getOwnPropertyDescriptor(b.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(b,'');b.dispatchEvent(new Event('input',{bubbles:true}));}else{document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);}return 'c';})()")
 
+    fun captureSegments(contentSel: String, titleSel: String): String =
+        run("""
+(function(rootSel,titleSel){
+  var root=null,titleEl=null;
+  try{if(rootSel)root=document.querySelector(rootSel);}catch(e){}
+  try{if(titleSel)titleEl=document.querySelector(titleSel);}catch(e){}
+  if(!root)return JSON.stringify({ok:false});
+
+  function norm(t){return String(t||'').replace(/[\\t ]+/g,' ').replace(/\\n{3,}/g,'\\n\\n').trim();}
+  function vis(e){return __visibleFast(e);}
+  function mark(e,id){
+    try{
+      e.setAttribute('data-ns-source-id',id);
+      e.setAttribute('data-ns-source-text',norm(e.innerText||e.textContent).slice(0,220));
+    }catch(x){}
+  }
+
+  var out=[],used={};
+  if(titleEl&&vis(titleEl)){
+    var tt=norm(titleEl.innerText||titleEl.textContent);
+    if(tt){
+      mark(titleEl,'000');
+      out.push({id:'000',text:tt,selector:'[data-ns-source-id="000"]'});
+      used['000']=1;
+    }
+  }
+
+  var candidates=[];
+  try{
+    candidates=[].slice.call(root.querySelectorAll('p,blockquote,li'));
+  }catch(e){}
+  if(!candidates.length){
+    try{candidates=[].slice.call(root.querySelectorAll('div'));}catch(e){}
+  }
+
+  // Prefer leaf-ish text blocks; nested wrappers are skipped when they contain
+  // another candidate with nearly the same text.
+  var filtered=[];
+  for(var i=0;i<candidates.length;i++){
+    var e=candidates[i],t=norm(e.innerText||e.textContent);
+    if(!vis(e)||!t||t.length<1)continue;
+    var child=false;
+    for(var j=0;j<candidates.length;j++){
+      if(i!==j&&candidates[j].contains(e)&&norm(candidates[j].innerText||candidates[j].textContent)===t){child=true;break;}
+    }
+    if(child)continue;
+    filtered.push(e);
+  }
+
+  if(!filtered.length){
+    var all=[].slice.call(root.children||[]);
+    filtered=all.filter(function(e){return vis(e)&&norm(e.innerText||e.textContent).length>0;});
+  }
+
+  for(var k=0;k<filtered.length;k++){
+    var el=filtered[k],text=norm(el.innerText||el.textContent);
+    if(!text)continue;
+    var id=String(k+1).padStart(3,'0');
+    while(used[id])id='0'+id;
+    mark(el,id);
+    out.push({id:id,text:text,selector:'[data-ns-source-id="'+id+'"]'});
+    used[id]=1;
+  }
+
+  return JSON.stringify({ok:out.length>0,segments:out});
+})(__ROOT__,__TITLE__)
+""".replace("__ROOT__", org.json.JSONObject.quote(contentSel))
+ .replace("__TITLE__", org.json.JSONObject.quote(titleSel)))
+
     fun captureSiteSnapshot(sel: String): String =
         run("""
 (function(sel){
