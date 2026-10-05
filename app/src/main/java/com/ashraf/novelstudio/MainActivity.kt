@@ -1589,7 +1589,11 @@ class MainActivity : Activity() {
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
                 }
             }
-        }, 1000)
+        }, when {
+            System.currentTimeMillis() - started < 8_000 -> 120L
+            System.currentTimeMillis() - started < 30_000 -> 250L
+            else -> 700L
+        })
     }
 
     private fun cleanReply(t: String): String =
