@@ -64,6 +64,28 @@ object Store {
         return tr
     }
 
+    fun saveMapped(
+        c: Context,
+        ch: Chapter,
+        text: String,
+        segmentsJson: String,
+        mapJson: String
+    ): Tr {
+        val tr = save(c, ch, text)
+        val meta = JSONObject()
+            .put("segments", segmentsJson)
+            .put("map", mapJson)
+            .put("version", 1)
+        try { File(dir(c), "${tr.id}.map.json").writeText(meta.toString()) } catch (_: Exception) {}
+        return tr
+    }
+
+    fun readMapped(c: Context, id: Long): JSONObject? =
+        try {
+            val f = File(dir(c), "${id}.map.json")
+            if (!f.exists()) null else JSONObject(f.readText())
+        } catch (_: Exception) { null }
+
     // saved translation for this chapter (matched by URL, or novel name + chapter number)
     fun find(c: Context, ch: Chapter): Tr? {
         val raw = ch.novel.ifBlank { "Unknown" }
