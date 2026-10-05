@@ -403,16 +403,18 @@ function __visibleFast(e){
 (function(){
   var p=__prof(),e=__reply(p);
   if(!e)return 'none';
-  var els=[];
-  try{els=[].slice.call(e.querySelectorAll('p,div,span'));}catch(x){}
-  var n=0;
-  for(var i=0;i<els.length;i++){
-    var t=(els[i].innerText||els[i].textContent||'').trim();
-    if(/^\[\d{1,4}\]$/.test(t)){els[i].style.display='none';n++;}
+  var walker=document.createTreeWalker(e,NodeFilter.SHOW_TEXT);
+  var n,changed=0;
+  while(n=walker.nextNode()){
+    var v=n.nodeValue||'';
+    if(/\[\d{1,4}\]/.test(v)){
+      var nv=v.replace(/\s*\[\d{1,4}\]\s*/g,' ');
+      if(nv!==v){n.nodeValue=nv;changed++;}
+    }
   }
-  return 'hidden:'+n;
-})()
-"""
+  return 'hidden:'+changed;
+})
+""
 
     fun hideReplyMarkers(): String = run(HIDE_REPLY_MARKERS)
 
