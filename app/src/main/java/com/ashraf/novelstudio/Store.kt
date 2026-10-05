@@ -99,11 +99,15 @@ object Store {
 
     fun delete(c: Context, id: Long) {
         File(dir(c), "$id.txt").delete()
+        File(dir(c), "$id.map.json").delete()
         writeIdx(c, list(c).filter { it.id != id })
     }
 
     fun deleteNovel(c: Context, novel: String) {
-        for (t in list(c)) if (t.novel == novel) File(dir(c), "${t.id}.txt").delete()
+        for (t in list(c)) if (t.novel == novel) {
+            File(dir(c), "${t.id}.txt").delete()
+            File(dir(c), "${t.id}.map.json").delete()
+        }
         writeIdx(c, list(c).filter { it.novel != novel })
     }
 
