@@ -61,7 +61,8 @@ function __boxFast(){
   }
   return e;
 }
-\n    private fun run(body: String) = PRELUDE + "\n;" + FAST_PRELUDE + "\n;" + body
+
+    private fun run(body: String) = PRELUDE + "\n;" + FAST_PRELUDE + "\n;" + body
 
     private const val SEND_BODY = """
 (function(text,doSend){
@@ -177,7 +178,9 @@ function __visibleFast(e){
   var r=e.getBoundingClientRect();
   return r.width>0&&r.height>0;
 }
-\n    fun send(text: String, doSend: Boolean): String =\n        run(FAST_SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
+
+    fun send(text: String, doSend: Boolean): String =
+        run(FAST_SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
 
     // "<assistant msg count>|<streaming 0/1>|<length of last reply>"
     fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);var len=b?((b.innerText||b.textContent||'').trim().length):0;return n+'|'+__stream(p)+'|'+len;})()")
@@ -401,7 +404,8 @@ function __visibleFast(e){
 """
 
     fun hideReplyMarkers(): String = run(HIDE_REPLY_MARKERS)
-\n    // ---------------------------------------------------------------- novel page: replace text / toggle
+
+    // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
 (function(sel,paras,font,size){
   var el=null;
