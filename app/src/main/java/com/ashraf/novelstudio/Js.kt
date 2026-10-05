@@ -124,7 +124,7 @@ function __visibleFast(e){
   }
   box.focus();
   if(prov==='gemini'&&box.isContentEditable){
-    var html=String(text).split('\\n').map(function(line){
+    var html=String(text).split('\n').map(function(line){
       if(!line.trim())return '<p><br></p>';
       return '<p>'+String(line).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</p>';
     }).join('');
@@ -203,7 +203,7 @@ function __visibleFast(e){
   try{if(titleSel)titleEl=document.querySelector(titleSel);}catch(e){}
   if(!root)return JSON.stringify({ok:false});
 
-  function norm(t){return String(t||'').replace(/[\\t ]+/g,' ').replace(/\\n{3,}/g,'\\n\\n').trim();}
+  function norm(t){return String(t||'').replace(/[\t ]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();}
   function vis(e){return __visibleFast(e);}
   function mark(e,id){
     try{
@@ -279,7 +279,7 @@ function __visibleFast(e){
     for(var i=0;i<document.styleSheets.length;i++){
       try{
         var rs=document.styleSheets[i].cssRules;
-        if(rs){for(var j=0;j<rs.length;j++){css+=(rs[j].cssText||'')+'\\n';if(css.length>=220000)break;}}
+        if(rs){for(var j=0;j<rs.length;j++){css+=(rs[j].cssText||'')+'\n';if(css.length>=220000)break;}}
       }catch(e){}
       if(css.length>=220000)break;
     }
@@ -289,7 +289,7 @@ function __visibleFast(e){
     for(var k=0;k<sscr.length;k++){
       var sc=sscr[k];
       if(sc.src)scripts.push(sc.src);
-      else if((sc.textContent||'').trim())inline+=(sc.textContent||'').slice(0,10000)+'\\n';
+      else if((sc.textContent||'').trim())inline+=(sc.textContent||'').slice(0,10000)+'\n';
       if(scripts.length>=120&&inline.length>=60000)break;
     }
   }catch(e){}
@@ -326,7 +326,7 @@ function __visibleFast(e){
     window.__nsMapRoot=root;
   }
 
-  function norm(s){return String(s||'').replace(/\\s+/g,' ').trim();}
+  function norm(s){return String(s||'').replace(/\s+/g,' ').trim();}
   function findId(id){
     try{
       var q='[data-ns-source-id="'+String(id).replace(/"/g,'')+'"]';
@@ -403,7 +403,7 @@ function __visibleFast(e){
   var n=0;
   for(var i=0;i<els.length;i++){
     var t=(els[i].innerText||els[i].textContent||'').trim();
-    if(/^\\[\\d{1,4}\\]$/.test(t)){els[i].style.display='none';n++;}
+    if(/^\[\d{1,4}\]$/.test(t)){els[i].style.display='none';n++;}
   }
   return 'hidden:'+n;
 })()
