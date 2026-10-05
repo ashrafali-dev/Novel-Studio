@@ -1533,7 +1533,9 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val full = promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text
+        val glossary = if (Prefs.glossaryOn(this)) Glossary.block(ch.text) else ""
+        // One-shot: the entire chapter is placed into one chatbot request.
+        val full = TranslationEngine.buildPrompt(Prefs.prompt(this), glossary, ch)
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1541,10 +1543,9 @@ class MainActivity : Activity() {
                 val parts = r.substring(3).split(":")
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                // Give the chatbot UI time to create the new assistant turn.
-                handler.postDelayed({
-                    if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
-                }, 1800)
+                // Start response polling immediately. The old 1800ms fixed delay
+                // made the workflow feel slow, especially after fast injection.
+                pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
             } else {
                 failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
             }
