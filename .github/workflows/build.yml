@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [main, master, translator-v2-one-shot]
 
 jobs:
   build:
@@ -40,5 +40,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NovelStudio-v1.6.3-63-apk
+          name: NovelStudio-v2-apk
           path: app/build/outputs/apk/release/app-release.apk
