@@ -913,6 +913,46 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Adds exact DOM segment IDs to the fast extraction result. This is a small
+     * second JS pass and does not serialize the entire page, so normal extraction
+     * stays fast. A site snapshot is captured only the first time the host is seen.
+     */
+    private fun enhanceChapter(ch: Chapter, cb: (Chapter?) -> Unit) {
+        val tokenUrl = ch.url
+        novelWv.evaluateJavascript(Js.captureSegments(ch.contentSel, ch.titleSel)) { raw ->
+            if (novelWv.url != tokenUrl && cleanUrl(novelWv.url ?: "") != cleanUrl(tokenUrl)) {
+                cb(ch)
+                return@evaluateJavascript
+            }
+
+            var enriched = ch
+            try {
+                val payload = decode(raw)
+                val o = JSONObject(payload)
+                if (o.optBoolean("ok", false)) {
+                    enriched = ch.copy(
+                        segmentsJson = o.optJSONArray("segments")?.toString().orEmpty()
+                    )
+                }
+            } catch (_: Exception) {}
+
+            // Site learning is persistent, but do not repeatedly serialize a
+            // large DOM/CSS/JS snapshot on every chapter.
+            if (SiteSnapshotStore.load(this, ch.url).isBlank() && ch.contentSel.isNotBlank()) {
+                novelWv.evaluateJavascript(Js.captureSiteSnapshot(ch.contentSel)) { snap ->
+                    try {
+                        val decoded = decode(snap)
+                        if (decoded.isNotBlank() && JSONObject(decoded).optBoolean("ok", false)) {
+                            SiteSnapshotStore.save(this@MainActivity, ch.url, decoded)
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+            cb(enriched)
+        }
+    }
+
     private fun extractNow(cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
