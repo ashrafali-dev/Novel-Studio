@@ -413,8 +413,8 @@ function __visibleFast(e){
     }
   }
   return 'hidden:'+changed;
-})
-""
+})()
+"""
 
     fun hideReplyMarkers(): String = run(HIDE_REPLY_MARKERS)
 
