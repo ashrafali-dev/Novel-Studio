@@ -1472,13 +1472,15 @@ class MainActivity : Activity() {
         toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
         if (Prefs.bool(this, "autoPaste")) {
             val send = Prefs.bool(this, "autoSend")
+            // No arbitrary sleep: Js.send performs provider-specific immediate injection.
             val token = navToken
-            handler.postDelayed({
-                if (token != navToken) return@postDelayed
-                chatWv.evaluateJavascript(Js.send(full, send)) { r ->
-                    if (decode(r).startsWith("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
+            if (token != navToken) return
+            chatWv.evaluateJavascript(Js.send(full, send)) { r ->
+                if (token != navToken) return@evaluateJavascript
+                if (decode(r).startsWith("nobox")) {
+                    toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
                 }
-            }, 400)
+            }
         }
     }
 
