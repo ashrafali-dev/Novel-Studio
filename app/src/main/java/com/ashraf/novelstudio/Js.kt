@@ -327,7 +327,7 @@ function __visibleFast(e){
   function findId(id){
     try{
       var q='[data-ns-source-id="'+String(id).replace(/"/g,'')+'"]';
-      return root.querySelector(q);
+      return document.querySelector(q);
     }catch(e){return null;}
   }
   function findText(txt){
@@ -352,7 +352,6 @@ function __visibleFast(e){
     var el=findId(id);
     if(!el&&seg.selector){
       try{el=document.querySelector(seg.selector);}catch(e){}
-      if(el&&root.contains(el)===false)el=null;
     }
     if(!el)el=findText(seg.text||'');
     if(!el){missing++;continue;}
@@ -368,6 +367,8 @@ function __visibleFast(e){
     el.appendChild(span);
     el.setAttribute('data-ns','1');
     el.setAttribute('data-ns-source-id',id);
+    if(!window.__nsMapTr)window.__nsMapTr={};
+    window.__nsMapTr[id]=el.innerHTML;
     applied++;
   }
 
@@ -384,6 +385,8 @@ function __visibleFast(e){
   }catch(e){}
 
   window.__nsShown=1;window.__nsMapped=1;
+  window.__nsEl=root;
+  window.__nsOrig=root.innerHTML;
   return applied+':'+missing;
 })(__SEL__,__SEGS__,__MAP__,__FONT__,__SIZE__)
 """
@@ -482,15 +485,26 @@ function __visibleFast(e){
             .replace("__FONT__", org.json.JSONObject.quote(font)).replace("__SIZE__", size.toString())
 
     fun stillApplied(sel: String): String =
-        "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
+        "(function(sel){if(window.__nsMapped&&window.__nsMapRoot){" +
+        "return document.querySelector('[data-ns-source-id]')?'ok':'lost';}" +
+        "var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
         "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
-        "if(!el)el=document.querySelector('[data-ns=\"1\"]');" +
+        "if(!el)el=document.querySelector('[data-ns="1"]');" +
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
         org.json.JSONObject.quote(sel) + ")"
 
-    val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
+    val TOGGLE = "(function(){" +
+        "if(window.__nsMapped&&window.__nsMapOrig){" +
+        "var show=!window.__nsShown;for(var id in window.__nsMapOrig){" +
+        "var e=document.querySelector('[data-ns-source-id="'+id+'"]');" +
+        "if(e){e.innerHTML=show?(window.__nsMapTr&&window.__nsMapTr[id]||e.innerHTML):window.__nsMapOrig[id];}" +
+        "}" +
+        "window.__nsShown=show?1:0;return show?'tr':'orig';" +
+        "}" +
+        "var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
         "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
-        "else{el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}})()"
+        "else{el.innerHTML=window.__nsTr;window.__nsShown=1;el.setAttribute('data-ns','1');return 'tr';}" +
+        "})()"
 
     // ---------------------------------------------------------------- click the site's own Next / Prev button
     private const val CLICK_BODY = """
