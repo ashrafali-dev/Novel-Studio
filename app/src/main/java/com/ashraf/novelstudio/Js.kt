@@ -230,17 +230,17 @@ function __visibleFast(e){
     try{candidates=[].slice.call(root.querySelectorAll('div'));}catch(e){}
   }
 
-  // Prefer leaf-ish text blocks; nested wrappers are skipped when they contain
-  // another candidate with nearly the same text.
+  // Keep only leaf-like blocks. If a site uses nested div wrappers,
+  // the outer container is not treated as a chapter paragraph.
   var filtered=[];
   for(var i=0;i<candidates.length;i++){
     var e=candidates[i],t=norm(e.innerText||e.textContent);
     if(!vis(e)||!t||t.length<1)continue;
-    var child=false;
+    var hasCandidateChild=false;
     for(var j=0;j<candidates.length;j++){
-      if(i!==j&&candidates[j].contains(e)&&norm(candidates[j].innerText||candidates[j].textContent)===t){child=true;break;}
+      if(i!==j&&e.contains(candidates[j])){hasCandidateChild=true;break;}
     }
-    if(child)continue;
+    if(hasCandidateChild)continue;
     filtered.push(e);
   }
 
