@@ -1654,22 +1654,52 @@ class MainActivity : Activity() {
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
-        // A translation callback can arrive long after the user pressed Next.
-        // Never write an old chapter's translation into the current page.
+        val expected = TranslationEngine.segments(ch)
+        val paras = text.split(Regex("\n\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
         if (lastChapter !== ch) return
 
-        novelWv.evaluateJavascript(Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this), Prefs.sizePx(this))) { r ->
+        val canMap = expected.isNotEmpty() && expected.size == paras.size
+        val mapped = JSONObject()
+        if (canMap) {
+            expected.forEachIndexed { i, seg -> mapped.put(seg.id, paras[i]) }
+        }
+
+        val jsCall = if (canMap) {
+            val segs = JSONArray(expected.map {
+                JSONObject().apply {
+                    put("id", it.id)
+                    put("text", it.text)
+                    put("selector", it.selector)
+                }
+            }).toString()
+            Js.applyMapped(
+                sel,
+                segs,
+                mapped.toString(),
+                Prefs.fontFile(this),
+                Prefs.sizePx(this)
+            )
+        } else {
+            Js.apply(
+                sel,
+                JSONArray(paras).toString(),
+                Prefs.fontFile(this),
+                Prefs.sizePx(this)
+            )
+        }
+
+        novelWv.evaluateJavascript(jsCall) { r ->
             if (lastChapter !== ch) return@evaluateJavascript
-            if (r != null && r.contains("ok")) {
+            val ok = r != null && !r.contains("noel") && !r.contains("noel")
+            if (ok) {
                 hasTr = true
                 shownTranslated = true
                 updatePill()
-                if (retry) {   // some sites re-render the content a moment later — put it back once
+                if (retry) {
                     handler.postDelayed({
                         if (shownTranslated && lastChapter === ch) {
-                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
-                                if (lastChapter === ch && s != null && s.contains("lost")) {
+                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { s2 ->
+                                if (lastChapter === ch && s2 != null && s2.contains("lost")) {
                                     applyTranslation(ch, text, false)
                                 }
                             }
