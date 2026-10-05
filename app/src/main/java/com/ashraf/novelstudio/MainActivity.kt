@@ -1117,7 +1117,7 @@ class MainActivity : Activity() {
                 )
 
                 SiteProfiles.remember(this@MainActivity, ch)
-                cb(ch)
+                enhanceChapter(ch, cb)
             } catch (_: Exception) {
                 cb(null)
             }
