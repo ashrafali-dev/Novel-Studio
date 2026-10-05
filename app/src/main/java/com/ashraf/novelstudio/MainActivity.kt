@@ -1658,9 +1658,33 @@ class MainActivity : Activity() {
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
+        if (lastChapter !== ch) return
+
+        // Auto translations keep an exact ID -> translation map on disk. Prefer
+        // that map on re-open so paragraph line wrapping can never break mapping.
+        val savedMeta = Store.find(this, ch)?.let { Store.readMapped(this, it.id) }
+        if (savedMeta != null) {
+            val savedSegments = savedMeta.optString("segments", "")
+            val savedMap = savedMeta.optString("map", "")
+            if (savedSegments.isNotBlank() && savedMap.isNotBlank()) {
+                novelWv.evaluateJavascript(
+                    Js.applyMapped(sel, savedSegments, savedMap, Prefs.fontFile(this), Prefs.sizePx(this))
+                ) { r ->
+                    if (lastChapter !== ch) return@evaluateJavascript
+                    if (r != null && !r.contains("noel")) {
+                        hasTr = true
+                        shownTranslated = true
+                        updatePill()
+                    } else {
+                        toast("⚠️ সংরক্ষিত element mapping বসানো গেল না")
+                    }
+                }
+                return
+            }
+        }
+
         val expected = TranslationEngine.segments(ch)
         val paras = text.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
-        if (lastChapter !== ch) return
 
         val canMap = expected.isNotEmpty() && expected.size == paras.size
         val mapped = JSONObject()
@@ -1694,7 +1718,7 @@ class MainActivity : Activity() {
 
         novelWv.evaluateJavascript(jsCall) { r ->
             if (lastChapter !== ch) return@evaluateJavascript
-            val ok = r != null && !r.contains("noel") && !r.contains("noel")
+            val ok = r != null && !r.contains("noel")
             if (ok) {
                 hasTr = true
                 shownTranslated = true
