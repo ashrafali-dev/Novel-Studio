@@ -82,7 +82,7 @@ TRANSLATION OUTPUT RULES:
         val out = JSONObject()
         val clean = reply
             .replace("\uFEFF", "")
-            .replace(Regex("^\\s*\\`{3}(?:text|markdown)?\\s*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^\\s*`{3}(?:text|markdown)?\\s*", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s*\\`{3}\\s*$"), "")
             .trim()
 
