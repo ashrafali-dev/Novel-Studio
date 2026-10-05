@@ -1603,11 +1603,20 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
             if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
-            val t = cleanReply(decode(raw))
-            if (t.length < 30) {
+            val reply = cleanReply(decode(raw))
+            if (reply.length < 30) {
                 failJob(tok, ch, "উত্তর পড়া গেল না")
                 return@evaluateJavascript
             }
+            val expected = TranslationEngine.segments(ch)
+            val mapped = TranslationEngine.parseMappedReply(reply, expected)
+            if (mapped.length() != expected.size) {
+                failJob(tok, ch, "অনুবাদে element marker মেলেনি — নিরাপদে page-এ বসানো হয়নি")
+                return@evaluateJavascript
+            }
+            val t = expected.joinToString("\n\n") { mapped.optString(it.id).trim() }.trim()
+            chatWv.evaluateJavascript(Js.hideReplyMarkers(), null)
+
             // The chatbot response is complete here, so copy the FINAL
             // response to Android clipboard automatically. This uses the
             // same clipboard path as manual Copy/Save.
