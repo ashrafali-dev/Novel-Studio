@@ -62,6 +62,11 @@ function __boxFast(){
   return e;
 }
 
+function __visibleFast(e){
+  if(!e)return false;
+  var r=e.getBoundingClientRect();
+  return r.width>0&&r.height>0;
+}
     """
 
     private fun run(body: String) = PRELUDE + "\n;" + FAST_PRELUDE + "\n;" + body
