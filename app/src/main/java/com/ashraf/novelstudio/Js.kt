@@ -100,6 +100,12 @@ function __boxFast(){
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
+function __visibleFast(e){
+  if(!e)return false;
+  var r=e.getBoundingClientRect();
+  return r.width>0&&r.height>0;
+}
+
 """
 
     // type the text into the chat box (and press send if asked). Returns "ok:<assistant message count>" or "nobox"
@@ -173,11 +179,6 @@ function __boxFast(){
 })(__TEXT__,__SEND__)
 """;
 
-function __visibleFast(e){
-  if(!e)return false;
-  var r=e.getBoundingClientRect();
-  return r.width>0&&r.height>0;
-}
 
     fun send(text: String, doSend: Boolean): String =
         run(FAST_SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
