@@ -189,7 +189,150 @@ function __visibleFast(e){
     // wipes a long leftover text (previous chapter) from the chat box
     fun clearBox(): String = run("(function(){var b=__box();if(!b)return 'n';var t=(b.value!==undefined?b.value:b.innerText)||'';if(t.length<150)return 's';b.focus();if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){Object.getOwnPropertyDescriptor(b.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(b,'');b.dispatchEvent(new Event('input',{bubbles:true}));}else{document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);}return 'c';})()")
 
-    // ---------------------------------------------------------------- novel page: replace text / toggle
+    fun captureSiteSnapshot(sel: String): String =
+        run("""
+(function(sel){
+  var content=null;
+  try{if(sel)content=document.querySelector(sel);}catch(e){}
+  if(!content){
+    var ss=['#chapter-content','.chapter-content','.reading-content','.entry-content','.article-content','article','main'];
+    for(var i=0;i<ss.length&&!content;i++){try{var x=document.querySelector(ss[i]);if(x&&__visibleFast(x)&&((x.innerText||'').trim().length>500))content=x;}catch(e){}}
+  }
+  if(!content)return JSON.stringify({ok:false});
+  var css='',scripts=[],inline='';
+  try{
+    for(var i=0;i<document.styleSheets.length;i++){
+      try{
+        var rs=document.styleSheets[i].cssRules;
+        if(rs){for(var j=0;j<rs.length;j++){css+=(rs[j].cssText||'')+'\\n';if(css.length>=220000)break;}}
+      }catch(e){}
+      if(css.length>=220000)break;
+    }
+  }catch(e){}
+  try{
+    var sscr=document.scripts||[];
+    for(var k=0;k<sscr.length;k++){
+      var sc=sscr[k];
+      if(sc.src)scripts.push(sc.src);
+      else if((sc.textContent||'').trim())inline+=(sc.textContent||'').slice(0,10000)+'\\n';
+      if(scripts.length>=120&&inline.length>=60000)break;
+    }
+  }catch(e){}
+  return JSON.stringify({
+    ok:true,url:location.href,title:document.title||'',
+    contentSelector:sel||'',
+    contentHtml:(content.outerHTML||'').slice(0,260000),
+    cssText:css.slice(0,220000),
+    scripts:scripts.slice(0,120),
+    scriptsInline:inline.slice(0,60000),
+    capturedAt:Date.now()
+  });
+})(__SEL__)
+""".replace("__SEL__", org.json.JSONObject.quote(sel)))
+
+    fun applyMapped(sel: String, segmentsJson: String, mapJson: String, font: String = "", size: Int = 18): String =
+        APPLY_MAPPED_BODY
+            .replace("__SEL__", org.json.JSONObject.quote(sel))
+            .replace("__SEGS__", segmentsJson)
+            .replace("__MAP__", mapJson)
+            .replace("__FONT__", org.json.JSONObject.quote(font))
+            .replace("__SIZE__", size.toString())
+
+    private const val APPLY_MAPPED_BODY = """
+(function(sel,segments,map,font,size){
+  var root=null;
+  try{if(sel)root=document.querySelector(sel);}catch(e){}
+  if(!root&&window.__nsEl&&document.contains(window.__nsEl))root=window.__nsEl;
+  if(!root)return 'noel';
+
+  if(!window.__nsMapOrig)window.__nsMapOrig={};
+  if(!window.__nsMapRoot||window.__nsMapRoot!==root){
+    window.__nsMapOrig={};
+    window.__nsMapRoot=root;
+  }
+
+  function norm(s){return String(s||'').replace(/\\s+/g,' ').trim();}
+  function findId(id){
+    try{
+      var q='[data-ns-source-id="'+String(id).replace(/"/g,'')+'"]';
+      return root.querySelector(q);
+    }catch(e){return null;}
+  }
+  function findText(txt){
+    var want=norm(txt),nodes=[];
+    try{nodes=[].slice.call(root.querySelectorAll('p,div,li,blockquote,section,span'));}catch(e){}
+    var best=null,bestScore=0;
+    for(var i=0;i<nodes.length;i++){
+      var n=nodes[i],t=norm(n.innerText||n.textContent);
+      if(!t)continue;
+      var score=0;
+      if(t===want)score=100000;
+      else if(t.indexOf(want)===0&&want.length>30)score=want.length;
+      if(score>bestScore){bestScore=score;best=n;}
+    }
+    return best;
+  }
+  var applied=0,missing=0;
+  for(var i=0;i<segments.length;i++){
+    var seg=segments[i],id=String(seg.id||''),tr=map[id];
+    if(typeof tr!=='string'||!tr.trim())continue;
+
+    var el=findId(id);
+    if(!el&&seg.selector){
+      try{el=document.querySelector(seg.selector);}catch(e){}
+      if(el&&root.contains(el)===false)el=null;
+    }
+    if(!el)el=findText(seg.text||'');
+    if(!el){missing++;continue;}
+
+    if(!window.__nsMapOrig[id])window.__nsMapOrig[id]=el.innerHTML;
+
+    el.innerHTML='';
+    var span=document.createElement('span');
+    span.textContent=tr.trim();
+    if(font&&font.length)span.style.fontFamily="'NSBn',sans-serif";
+    span.style.fontSize=(size||18)+'px';
+    span.style.lineHeight='1.75';
+    el.appendChild(span);
+    el.setAttribute('data-ns','1');
+    el.setAttribute('data-ns-source-id',id);
+    applied++;
+  }
+
+  try{
+    if(font&&font.length){
+      var st=document.getElementById('__ns_font');
+      if(!st){
+        st=document.createElement('style');
+        st.id='__ns_font';
+        (document.head||document.documentElement).appendChild(st);
+      }
+      st.textContent="@font-face{font-family:'NSBn';src:url('https://ns.local/fonts/"+font+".ttf') format('truetype');font-display:swap;}";
+    }
+  }catch(e){}
+
+  window.__nsShown=1;window.__nsMapped=1;
+  return applied+':'+missing;
+})(__SEL__,__SEGS__,__MAP__,__FONT__,__SIZE__)
+"""
+
+    val HIDE_REPLY_MARKERS = """
+(function(){
+  var p=__prof(),e=__reply(p);
+  if(!e)return 'none';
+  var els=[];
+  try{els=[].slice.call(e.querySelectorAll('p,div,span'));}catch(x){}
+  var n=0;
+  for(var i=0;i<els.length;i++){
+    var t=(els[i].innerText||els[i].textContent||'').trim();
+    if(/^\\[\\d{1,4}\\]$/.test(t)){els[i].style.display='none';n++;}
+  }
+  return 'hidden:'+n;
+})()
+"""
+
+    fun hideReplyMarkers(): String = run(HIDE_REPLY_MARKERS)
+\n    // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
 (function(sel,paras,font,size){
   var el=null;
