@@ -1659,7 +1659,7 @@ class MainActivity : Activity() {
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val expected = TranslationEngine.segments(ch)
-        val paras = text.split(Regex("\n\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        val paras = text.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
         if (lastChapter !== ch) return
 
         val canMap = expected.isNotEmpty() && expected.size == paras.size
