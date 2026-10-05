@@ -907,7 +907,7 @@ class MainActivity : Activity() {
                 } catch (e: Exception) { null }
                 runOnUiThread {
                     if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
-                    cb(ch)
+                    if (ch != null) enhanceChapter(ch, cb) else cb(null)
                 }
             }.start()
         }
