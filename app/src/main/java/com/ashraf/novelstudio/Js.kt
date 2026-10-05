@@ -62,6 +62,8 @@ function __boxFast(){
   return e;
 }
 
+    """
+
     private fun run(body: String) = PRELUDE + "\n;" + FAST_PRELUDE + "\n;" + body
 
     private const val SEND_BODY = """
