@@ -499,14 +499,14 @@ function __visibleFast(e){
         "return document.querySelector('[data-ns-source-id]')?'ok':'lost';}" +
         "var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
         "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
-        "if(!el)el=document.querySelector('[data-ns="1"]');" +
+        "if(!el)el=document.querySelector('[data-ns=\"1\"]');" +
         "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
         org.json.JSONObject.quote(sel) + ")"
 
     val TOGGLE = "(function(){" +
         "if(window.__nsMapped&&window.__nsMapOrig){" +
         "var show=!window.__nsShown;for(var id in window.__nsMapOrig){" +
-        "var e=document.querySelector('[data-ns-source-id="'+id+'"]');" +
+        "var e=document.querySelector('[data-ns-source-id=\"'+id+'\"]');" +
         "if(e){e.innerHTML=show?(window.__nsMapTr&&window.__nsMapTr[id]||e.innerHTML):window.__nsMapOrig[id];}" +
         "}" +
         "window.__nsShown=show?1:0;return show?'tr':'orig';" +
