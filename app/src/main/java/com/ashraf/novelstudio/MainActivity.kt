@@ -1049,7 +1049,10 @@ class MainActivity : Activity() {
         if (mode == Mode.CHAT) setMode(Mode.SPLIT)
         if (browserTabs.isEmpty()) initBrowserTabs()
         browserTabs[activeTabIndex].url = u
+        browserTabs[activeTabIndex].label = Uri.parse(u).host ?: "New Tab"
         browserTabs[activeTabIndex].state = null
+        persistBrowserTabs()
+        renderTabs()
         novelWv.loadUrl(u)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(urlBar.windowToken, 0)
@@ -1089,8 +1092,11 @@ class MainActivity : Activity() {
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-            if (view === novelWv && url != null) {
+            if (view === novelWv && url != null && !restoringTab) {
                 browserTabs.getOrNull(activeTabIndex)?.url = url
+                browserTabs.getOrNull(activeTabIndex)?.label =
+                    (view.title ?: "").ifBlank { Uri.parse(url).host ?: "Novel" }
+                // Save immediately so the URL survives an app/process restart.
                 persistBrowserTabs()
                 if (!urlBar.hasFocus()) urlBar.setText(url)
             }
@@ -1349,20 +1355,16 @@ class MainActivity : Activity() {
             if (ch.isBlank() || th.isBlank()) return false
             if (ch != th && !th.endsWith(".$ch") && !ch.endsWith(".$th")) return false
 
-            val cp = c.path.orEmpty().trimEnd('/')
             val tp = t.path.orEmpty().trimEnd('/')
-            if (tp.isBlank() || tp == "/" || tp.equals("/home", true) ||
-                tp.equals("/index", true) || tp.endsWith("/home", true) ||
-                tp.endsWith("/index", true)) return false
+            if (tp.isBlank() || tp == "/" ||
+                tp.equals("/home", true) || tp.equals("/index", true) ||
+                tp.endsWith("/home", true) || tp.endsWith("/index", true)) return false
 
-            // A Next/Prev target must not silently jump to a shallower page.
-            // Same-depth chapter URLs are valid, but the exact same URL is not.
+            // Do not compare path depth: valid +1 sites often use a shallower
+            // path for chapters (e.g. /chapter-2 vs /book/foo/chapter-1).
             if (cleanUrl(c.toString()) == cleanUrl(t.toString()) &&
                 c.query == t.query) return false
-
-            val cd = cp.trim('/').split('/').filter { it.isNotBlank() }.size
-            val td = tp.trim('/').split('/').filter { it.isNotBlank() }.size
-            td >= cd
+            true
         } catch (_: Exception) { false }
     }
 
