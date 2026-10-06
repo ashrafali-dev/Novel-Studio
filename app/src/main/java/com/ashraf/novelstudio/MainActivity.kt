@@ -1595,6 +1595,33 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== copy mode (⚡ off)
+    // Internal paragraph markers: used only during AI translation to keep
+    // source paragraph -> translated paragraph alignment stable. They are stripped
+    // before saving/copying the final Bengali text.
+    private fun addInternalMarkers(text: String): String {
+        val blocks = text.split(Regex("\\n\\s*\\n"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        return blocks.mapIndexed { i, block ->
+            "[${(i + 1).toString().padStart(3, '0')}] $block"
+        }.joinToString("\\n\\n")
+    }
+
+    private fun stripInternalMarkers(text: String): String =
+        text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
+
+    private fun splitInternalMarkedTranslation(text: String): List<String> {
+        val marker = Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*")
+        if (!marker.containsMatchIn(text)) {
+            return text.split(Regex("\\n\\s*\\n"))
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+        }
+        return marker.split(text)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+
     private fun copyChapter(ch: Chapter) {
         val p = Prefs.prompt(this)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) promptWithGlossary(p, ch.text) + ch.text else ch.text
@@ -1678,7 +1705,18 @@ class MainActivity : Activity() {
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
-        val full = promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text
+        // Keep paragraph identity inside the AI request. These markers never reach
+        // the novel page and are removed from the final saved/clipboard translation.
+        val marked = addInternalMarkers(ch.text)
+        val markerInstruction = """
+[Internal paragraph markers]
+Each paragraph starts with a marker such as [001], [002], [003].
+Keep every marker exactly once, in the same order. Do not translate, remove,
+merge, split, or reorder the markers. Return only the translation with the
+markers preserved.
+""".trimIndent()
+        val full = promptWithGlossary(Prefs.prompt(this), marked) +
+            markerInstruction + "\n\n" + marked
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -1743,20 +1781,27 @@ class MainActivity : Activity() {
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
             if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
-            val t = cleanReply(decode(raw))
-            if (t.length < 30) {
+            val rawTranslation = cleanReply(decode(raw))
+            if (rawTranslation.length < 30) {
                 failJob(tok, ch, "উত্তর পড়া গেল না")
                 return@evaluateJavascript
             }
-            // The chatbot response is complete here, so copy the FINAL
-            // response to Android clipboard automatically. This uses the
-            // same clipboard path as manual Copy/Save.
+            // Markers are internal alignment data only. Never expose them in the
+            // clipboard or saved chapter, but keep the raw marked response for DOM
+            // insertion so paragraph alignment survives AI formatting changes.
+            val t = stripInternalMarkers(rawTranslation)
+            if (t.length < 30) {
+                failJob(tok, ch, "অনুবাদটি পড়া গেল না")
+                return@evaluateJavascript
+            }
             copy(t)
             Store.save(this, ch, t)
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) applyTranslation(shown, t, true)
+            if (shown != null && keyOf(shown) == keyOf(ch)) {
+                applyTranslation(shown, rawTranslation, true)
+            }
             toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
@@ -1785,7 +1830,7 @@ class MainActivity : Activity() {
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val paras = text.split(Regex("\n\\s*\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        val paras = splitInternalMarkedTranslation(text)
         // A translation callback can arrive long after the user pressed Next.
         // Never write an old chapter's translation into the current page.
         if (lastChapter !== ch) return
