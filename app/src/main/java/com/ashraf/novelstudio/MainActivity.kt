@@ -586,7 +586,7 @@ class MainActivity : Activity() {
         persistBrowserTabs()
     }
 
-    private fun showTabGrid() {
+    private fun showTabGrid(filter: String = "") {
         saveCurrentTabState()
 
         val root = LinearLayout(this).apply {
@@ -715,7 +715,7 @@ class MainActivity : Activity() {
             .setView(root)
             .create()
 
-        fun refreshCards(query: String = "") {
+        fun refreshCards(query: String = filter) {
             grid.removeAllViews()
             val list = browserTabs.withIndex().filter { (_, t) ->
                 query.isBlank() || t.label.contains(query, true) || t.url.contains(query, true)
