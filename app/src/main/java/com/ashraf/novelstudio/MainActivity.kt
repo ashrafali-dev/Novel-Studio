@@ -843,18 +843,6 @@ class MainActivity : Activity() {
             // Novel reader should stay in the same WebView. Popup/new-window
             // navigation is a common ad/redirect path; never open it here.
             return false
-            val t = WebView(this@MainActivity)
-            t.webViewClient = object : WebViewClient() {
-                override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
-                    val u = r?.url?.toString()
-                    if (u != null && u.startsWith("http")) novelWv.loadUrl(u)
-                    handler.post { v?.destroy() }
-                    return true
-                }
-            }
-            (resultMsg.obj as WebView.WebViewTransport).webView = t
-            resultMsg.sendToTarget()
-            return true
         }
     }
 
