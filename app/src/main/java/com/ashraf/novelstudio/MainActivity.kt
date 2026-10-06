@@ -868,6 +868,37 @@ class MainActivity : Activity() {
         if (raw == null || raw == "null") "" else JSONArray("[$raw]").getString(0)
     } catch (e: Exception) { "" }
 
+    /**
+     * Fast chapter extraction: serialize only the chapter node, not the whole page.
+     * This avoids multi-MB outerHTML parsing on ad-heavy sites.
+     */
+    // WebNovel uses a reader DOM that the fast direct-text extractor can miss.
+    // Keep its proven commit-96 extraction path isolated from every other site.
+    private fun extractWebNovelNow(cb: (Chapter?) -> Unit) {
+        novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
+            val url = novelWv.url ?: ""
+            Thread {
+                val ch: Chapter? = try {
+                    val html = decode(raw)
+                    if (html.isEmpty()) null else {
+                        val doc = Jsoup.parse(html, url)
+                        Extractor.extract(
+                            doc, url,
+                            SiteProfiles.selector(this@MainActivity, url, "content"),
+                            SiteProfiles.selector(this@MainActivity, url, "title"),
+                            SiteProfiles.selector(this@MainActivity, url, "next"),
+                            SiteProfiles.selector(this@MainActivity, url, "prev")
+                        )
+                    }
+                } catch (e: Exception) { null }
+                runOnUiThread {
+                    if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
+                    cb(ch)
+                }
+            }.start()
+        }
+    }
+
     private fun extractNow(cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
@@ -890,10 +921,14 @@ class MainActivity : Activity() {
             try {
                 val o = JSONObject(payload)
                 if (!o.optBoolean("ok", false)) {
-                    // Extraction is intentionally single-path: use the same
-                    // rendered-DOM extractor for every site. Never fall back to
-                    // document.documentElement.outerHTML / Jsoup.
-                    cb(null)
+                    // WebNovel/JS-heavy fallback: preserve the older Jsoup path
+                    // only when the fast DOM extractor genuinely cannot find content.
+                    val host0 = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
+                    if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com") || SiteRules.compat(this@MainActivity, url)) {
+                        extractWebNovelNow(cb)
+                    } else {
+                        cb(null)
+                    }
                     return@evaluateJavascript
                 }
 
