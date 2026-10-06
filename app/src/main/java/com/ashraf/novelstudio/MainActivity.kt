@@ -106,6 +106,8 @@ class MainActivity : Activity() {
     private var refreshToken = 0
     private var pendUrl = ""
     private var pendHash = 0
+    private var pendingNavHash: Int? = null
+    private var pendingNavUrl = ""
 
     // lightweight browser layer: one WebView, multiple saved navigation sessions
     private val browserTabs = mutableListOf<BrowserTab>()
@@ -1239,15 +1241,10 @@ class MainActivity : Activity() {
         val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
         val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
 
-        // Novel543 is a BR-separated, multi-page reader. Keep its old reliable
-        // WebView -> full DOM -> Jsoup extraction path; the generic fast walker
-        // can mistake the site's browser-warning wrapper for chapter content.
-        if (isNovel543) {
-            extractWebNovelNow(cb)
-            return
-        }
-
-        // Other sites use the generic fast extractor.
+        // Use the fast rendered-DOM extractor for every site, including Novel543.
+        // Novel543 has a dedicated fast path inside Js.fastExtract(). The old
+        // full-document Jsoup parser remains only as a fallback when the fast
+        // DOM read genuinely fails.
         val contentSel = SiteProfiles.selector(this, url, "content")
         val titleSel = SiteProfiles.selector(this, url, "title").ifBlank {
             if (isNovel543) "h1" else ""
@@ -1345,7 +1342,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
+    private fun keyOf(ch: Chapter): String {
+        val novel = ch.novel.trim().lowercase()
+        val number = ch.number.trim()
+        if (number.isNotEmpty()) return novel + "#" + number
+        val title = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
+        if (title.isNotEmpty()) return novel + "|" + title
+        return cleanUrl(ch.url)
+    }
 
     // Hash only the chapter body, not the heading. Some SPA readers update
     // the chapter title before replacing the actual chapter text.
@@ -1492,41 +1496,24 @@ class MainActivity : Activity() {
 
     // ● : Instant Extract. Never use stale DOM from the previous chapter.
     private fun extractCopy() {
+        // ● is always a real extraction. Never wait for WebView.progress and
+        // never turn it into the original/translation toggle.
         navToken++
         val token = navToken
-
-        fun runFresh() {
-            if (token != navToken) return
-            val liveUrlBefore = cleanUrl(novelWv.url ?: "")
-            extractNow { ch ->
-                if (token != navToken) return@extractNow
-                val liveUrl = cleanUrl(novelWv.url ?: "")
-
-                // Never send a result from a different URL. This prevents the
-                // previous chapter's DOM from reaching translation after Next.
-                if (ch == null || liveUrl.isBlank() || cleanUrl(ch.url) != liveUrl) {
-                    toast("⏳ নতুন chapter পুরোপুরি load হয়নি — একটু পরে ● চাপো")
-                    return@extractNow
-                }
-
-                // If navigation changed while extraction was running, discard it.
-                if (liveUrlBefore != liveUrl) {
-                    toast("⏳ chapter বদলাচ্ছে — আবার ● চাপো")
-                    return@extractNow
-                }
-
-                handleChapter(ch)
+        extractNow { ch ->
+            if (token != navToken) return@extractNow
+            if (ch == null) {
+                toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
+                return@extractNow
             }
-        }
-
-        if (novelWv.progress < 100) {
-            handler.postDelayed({
-                if (token != navToken) return@postDelayed
-                if (novelWv.progress >= 100) runFresh()
-                else handler.postDelayed({ if (token == navToken) runFresh() }, 500)
-            }, 250)
-        } else {
-            runFresh()
+            val pendingHash = pendingNavHash
+            if (pendingHash != null && bodyHash(ch) == pendingHash) {
+                toast("⏳ নতুন chapter এখনো আসেনি — আবার ● চাপো")
+                return@extractNow
+            }
+            pendingNavHash = null
+            pendingNavUrl = ""
+            handleChapter(ch)
         }
     }
 
@@ -1537,6 +1524,8 @@ class MainActivity : Activity() {
         // be committed by a late async callback.
         val cached = lastChapter
         val currentUrl = cleanUrl(novelWv.url ?: "")
+        pendingNavHash = cached?.let { bodyHash(it) }
+        pendingNavUrl = currentUrl
 
         // Do not re-extract the current chapter before clicking Next/Prev.
         // The cached chapter already contains its adjacent URL.
@@ -1705,14 +1694,11 @@ class MainActivity : Activity() {
 
     // let the page finish rendering, read it once more, then use the fuller version
     private fun commit(ch: Chapter, token: Int) {
+        if (token != navToken) return
         hideNavLoading()
-        // The new chapter is already detected from its changed body hash.
-        // Do not add another 900ms delay before extraction.
-        extractNow { c2 ->
-            if (token != navToken) return@extractNow
-            val fin = if (c2 != null && cleanUrl(c2.url) == cleanUrl(ch.url) && c2.text.length >= ch.text.length) c2 else ch
-            handleChapter(fin)
-        }
+        pendingNavHash = null
+        pendingNavUrl = ""
+        handleChapter(ch)
     }
 
     private fun handleChapter(ch: Chapter) {
@@ -1821,9 +1807,12 @@ class MainActivity : Activity() {
             if (tok != runToken) return@evaluateJavascript
             val parts = decode(raw).split("|")
             val streaming = parts.getOrNull(1) == "1"
-            if (streaming && n < 12) {
-                if (n == 6) chatWv.evaluateJavascript(Js.stop(), null)
-                handler.postDelayed({ if (tok == runToken) waitIdle(tok, ch, n + 1) }, 1000)
+            if (streaming) {
+                chatWv.evaluateJavascript(Js.stop()) {
+                    if (tok == runToken) {
+                        handler.postDelayed({ if (tok == runToken) sendJob(tok, ch) }, 120)
+                    }
+                }
             } else {
                 sendJob(tok, ch)
             }
@@ -1850,10 +1839,10 @@ markers preserved.
                 val parts = r.substring(3).split(":")
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                // Give the chatbot UI time to create the new assistant turn.
+                // Give the chatbot UI a short moment to create the new turn.
                 handler.postDelayed({
                     if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
-                }, 1800)
+                }, 300)
             } else {
                 failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
             }
