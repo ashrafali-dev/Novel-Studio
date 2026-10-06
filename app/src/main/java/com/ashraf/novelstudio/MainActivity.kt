@@ -1265,7 +1265,11 @@ class MainActivity : Activity() {
 
                 val title = o.optString("title", "").trim()
                 val body = o.optString("text", "").trim()
-                if (body.length < 120) {
+                val segmentCount = o.optInt("count", 0)
+                // Do not reject short but valid chapters. The old 120-char
+                // gate caused short CJK/mobile-reader chapters to be reported
+                // as "no chapter text".
+                if (body.length < 40 || segmentCount < 1) {
                     // A partially-rendered Novel543 DOM can return only the title
                     // or a short fragment on the first JS pass. Let the proven
                     // parser retry the same page instead of declaring failure.
