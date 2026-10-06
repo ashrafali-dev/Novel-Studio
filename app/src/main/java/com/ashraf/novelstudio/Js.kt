@@ -172,66 +172,45 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var re=new RegExp('^('+'__ALTS__'+')$','i');
   var wre=new RegExp('__WORD__','i');
   var dir='__DIR__';
-  function visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>=3&&r.height>=3;}
-  function depth(u){try{return new URL(u,location.href).pathname.replace(/\\/+$/,'/').split('/').filter(Boolean).length;}catch(e){return -1;}}
-  function safeHref(h){
-    if(!h||/^(javascript:|#|mailto:|tel:)/i.test(h))return false;
-    try{
-      var a=new URL(h,location.href),b=new URL(location.href);
-      if(a.hostname!==b.hostname&&!a.hostname.endsWith('.'+b.hostname)&&!b.hostname.endsWith('.'+a.hostname))return false;
-      var p=a.pathname.replace(/\\/+$/,'');
-      if(!p||p==='/'||/\\/(home|index)\\/?$/i.test(p))return false;
-      return depth(a.href)>=depth(b.href);
-    }catch(e){return false;}
-  }
-  function score(e){
-    var tc=(e.textContent||'').replace(/\\s+/g,' ').trim();
-    var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(typeof e.className==='string'?e.className:'')+' '+(e.id||'')+' '+(e.getAttribute('data-testid')||'')+' '+(e.getAttribute('data-eventname')||'');
-    var href=e.getAttribute('href')||'',s=0;
-    if(re.test(tc))s+=8;else if(tc.length<=30&&wre.test(tc))s+=4;
-    if(wre.test(meta))s+=6;
-    if(/chapter|\\/(book|novel|read)\\//i.test(href)&&wre.test(href))s+=4;
-    if(/home|homepage|index|logo/i.test(meta+' '+tc)&&!/chapter/i.test(meta+' '+tc))s-=8;
-    if(/disabled/i.test(meta)||e.disabled||e.getAttribute('aria-disabled')==='true')return -999;
-    return s;
-  }
-  var direct=dir==='next'
+
+  // WebNovel and other readers may use custom elements or icon-only controls.
+  // Prefer semantic selectors first, then fall back to text/metadata scoring.
+  var direct = dir==='next'
     ? ['#next','[id="next"]','[data-testid="next"]','[aria-label="Next Chapter" i]','[title="Next Chapter" i]','button[title*="Next Chapter" i]','a[title*="Next Chapter" i]','mov-button#next']
     : ['#prev','[id="prev"]','[data-testid="prev"]','[aria-label="Previous Chapter" i]','[title="Previous Chapter" i]','button[title*="Previous Chapter" i]','a[title*="Previous Chapter" i]','mov-button#prev'];
+
   for(var d=0;d<direct.length;d++){
-    var ds=[];try{ds=[].slice.call(document.querySelectorAll(direct[d]));}catch(e){ds=[];}
+    var ds=[];
+    try{ds=[].slice.call(document.querySelectorAll(direct[d]));}catch(e){ds=[];}
     for(var q=0;q<ds.length;q++){
-      var de=ds[q];if(!visible(de))continue;
-      var href=de.getAttribute('href')||'';if(href&&!safeHref(href))continue;
-      try{de.click();return 'clicked';}catch(x){}
+      var de=ds[q],dr=de.getBoundingClientRect();
+      if(dr.width>=3&&dr.height>=3&&!de.disabled&&de.getAttribute('aria-disabled')!=='true'){
+        try{de.click();return 'clicked';}catch(x){}
+      }
     }
   }
-  var nodes=[];try{nodes=[].slice.call(document.querySelectorAll('a[href],button,[role=button],div,span,li,i'));}catch(e){nodes=[];}
+
+  var links=[].slice.call(document.querySelectorAll('a[href],button,[role=button],div,span,li,i'));
   var best=null,bs=0;
-  for(var i=0;i<nodes.length;i++){
-    var e=nodes[i];if(!visible(e))continue;var s=score(e);if(s<=0)continue;
-    var href=e.getAttribute('href')||'';if(href&&!safeHref(href))continue;
-    var target=e;
-    try{
-      var clickable=e.closest('a,button,[role=button]');
-      if(clickable&&visible(clickable)){
-        var ch=clickable.getAttribute('href')||'';
-        if(!ch||safeHref(ch)){target=clickable;s+=2;}else continue;
-      }
-    }catch(x){}
-    var th=target.getAttribute('href')||'';if(th&&!safeHref(th))continue;
-    if(s>bs){bs=s;best=target;}
+  for(var i=0;i<links.length;i++){
+    var e=links[i],tc=(e.textContent||'').trim();
+    if(tc.length>40) continue;
+    var cn=(typeof e.className==='string')?e.className:'';
+    var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+cn+' '+(e.id||'')+' '+(e.getAttribute('data-eventname')||'');
+    var href=(e.getAttribute('href')||'');
+    var s=0;
+    if(re.test(tc)) s+=6; else if(tc.length<=25&&wre.test(tc)) s+=4;
+    if(wre.test(meta)) s+=4;
+    if(/chapter|\/book\//i.test(href)&&wre.test(href)) s+=3;
+    if(s===0) continue;
+    if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true') continue;
+    var r=e.getBoundingClientRect();
+    if(r.width<3||r.height<3) continue;
+    if(/chap/i.test(meta+tc+href)) s+=1;
+    if(s>bs){bs=s;best=e;}
   }
-  if(best){try{best.click();return 'clicked';}catch(x){}}
-  var generic=[];try{generic=[].slice.call(document.querySelectorAll('div,span,li,i'));}catch(e){generic=[];}
-  best=null;bs=0;
-  for(var j=0;j<generic.length;j++){
-    var g=generic[j];if(!visible(g))continue;var gs=score(g);if(gs<8)continue;
-    try{var a=g.closest('a[href]');if(a&&!safeHref(a.getAttribute('href')||''))continue;}catch(x){}
-    if(gs>bs){bs=gs;best=g;}
-  }
-  if(best){try{best.click();return 'clicked';}catch(x){}}
-  return 'none';
+  if(!best) return 'none';
+  try{best.click();return 'clicked';}catch(x){return 'none';}
 })()
 """
 
@@ -458,10 +437,6 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,INPUT:1,TEXTAREA:1,BUTTON:1,SELECT:1,OPTION:1,NAV:1,FOOTER:1,HEADER:1};
   var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1};
   function clean(s){return String(s||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
-  // Never trust innerText from a reader container as-is. Some Novel543 pages
-  // inject ad/analytics JavaScript inside the same wrapper, and Android WebView
-  // can expose that script source through innerText. Extract from a sanitized
-  // clone so script/style/ad code can never become chapter text.
   function text(e){return clean(e?(e.innerText||e.textContent):'');}
   function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
   function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
@@ -495,7 +470,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       try{list=Array.from(document.querySelectorAll(sel));}catch(x){return;}
       list.forEach(function(e){
         if(!e||seen.indexOf(e)>=0||!e.isConnected)return;
-        if(text(e).length<20)return;
+        if(text(e).length<80)return;
         seen.push(e);out.push(e);
       });
     });
@@ -557,6 +532,36 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     return out.slice(0,1500);
   }
 
+  var host=location.hostname.toLowerCase();
+  // Novel543: use its already-rendered chapter container directly. The generic
+  // unit walker is intentionally avoided here because it repeatedly calls
+  // innerText/querySelectorAll over the entire chapter DOM and can turn a
+  // millisecond extraction into a noticeable delay on mobile WebView.
+  if(host==='novel543.com'||host.endsWith('.novel543.com')){
+    var nr=pick('.chapter-content')||pick(__CONTENT__)||document.querySelector('#content,.article-content');
+    if(nr){
+      var nb=text(nr);
+      if(meaningful(nb)&&nb.length>=80){
+        var ntEl=pick(__TITLE__);
+        if(!ntEl){try{ntEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
+        var nt=text(ntEl)||document.title||'';
+        function nlink(kind,sel){
+          var e=pick(sel);
+          if(!e){
+            var q=kind==='next'
+              ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
+              : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
+            try{e=document.querySelector(q);}catch(x){e=null;}
+          }
+          return e&&e.href?{href:e.href,text:text(e),selector:stable(e)}:null;
+        }
+        return JSON.stringify({ok:true,text:nb,segments:[nb],count:1,title:nt,
+          pageTitle:document.title||'',novel:'',contentSel:stable(nr),
+          titleSel:ntEl?stable(ntEl):'',next:nlink('next',__NEXT__),prev:nlink('prev',__PREV__)});
+      }
+    }
+  }
+
   var content=pick(__CONTENT__);
   var rootList=roots();
   if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
@@ -586,35 +591,13 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   function link(kind,sel){
     var e=pick(sel);
-    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
-
-    var word=kind==='next'
-      ? /next|next\\s+chapter|next\\s+page|下一|다음|次の|পরবর্তী|নেক্সট/i
-      : /prev|previous|prev\\s+chapter|上一|이전|前の|আগের|পূর্ববর্তী/i;
-    var exact=kind==='next'
-      ? /^(next|next chapter|next page|next episode|next\\s*[>»→]|[>»→]|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট)$/i
-      : /^(prev|previous|previous chapter|previous page|previous episode|prev\\s*[<«←]|[<«←]|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী)$/i;
-
-    var q=[];
-    try{q=Array.from(document.querySelectorAll('a[href],button,[role="button"]'));}catch(x){q=[];}
-    var best=null,bs=0;
-    for(var i=0;i<q.length;i++){
-      var a=q[i],href=a.href||a.getAttribute('href')||'';
-      if(!href||href.indexOf('javascript:')===0)continue;
-      var tx=(a.textContent||'').replace(/\\s+/g,' ').trim();
-      var meta=((a.getAttribute('aria-label')||'')+' '+(a.getAttribute('title')||'')+' '+
-                (typeof a.className==='string'?a.className:'')+' '+(a.id||'')+' '+href).trim();
-      var score=0;
-      if(exact.test(tx))score+=12;
-      else if(tx.length<=40&&word.test(tx))score+=7;
-      if(word.test(meta))score+=5;
-      if(/chapter|episode|page|novel/i.test(meta))score+=2;
-      var r=a.getBoundingClientRect();
-      if(r.width<3||r.height<3)continue;
-      if(a.disabled||a.getAttribute('aria-disabled')==='true')continue;
-      if(score>bs){bs=score;best=a;}
+    if(!e){
+      var q=kind==='next'
+        ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
+        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
+      try{e=document.querySelector(q);}catch(x){e=null;}
     }
-    if(best&&best.href)return {href:best.href,text:text(best),selector:stable(best)};
+    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
     return null;
   }
 
