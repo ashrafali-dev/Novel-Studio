@@ -172,47 +172,97 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var re=new RegExp('^('+'__ALTS__'+')$','i');
   var wre=new RegExp('__WORD__','i');
   var dir='__DIR__';
+  var here=location.href;
 
-  // WebNovel and other readers may use custom elements or icon-only controls.
-  // Prefer semantic selectors first, then fall back to text/metadata scoring.
+  function pathDepth(u){
+    try{
+      var p=new URL(u,here).pathname.replace(/\\/+$/,'');
+      return p.split('/').filter(Boolean).length;
+    }catch(e){return 0;}
+  }
+  function sameSite(u){
+    try{
+      var a=new URL(u,here), b=new URL(here);
+      return a.hostname===b.hostname || a.hostname.endsWith('.'+b.hostname) || b.hostname.endsWith('.'+a.hostname);
+    }catch(e){return false;}
+  }
+  function safeHref(el){
+    var h=el&&el.href;
+    if(!h)return true; // buttons/custom controls may navigate through JS
+    if(!sameSite(h))return false;
+    // A chapter link should not jump upward to the site root/book landing page.
+    if(pathDepth(h)<pathDepth(here))return false;
+    if(/^(javascript:|#)/i.test(String(h)))return false;
+    return true;
+  }
+  function visible(e){
+    if(!e)return false;
+    var r=e.getBoundingClientRect();
+    return r.width>=3&&r.height>=3;
+  }
+
   var direct = dir==='next'
     ? ['#next','[id="next"]','[data-testid="next"]','[aria-label="Next Chapter" i]','[title="Next Chapter" i]','button[title*="Next Chapter" i]','a[title*="Next Chapter" i]','mov-button#next']
     : ['#prev','[id="prev"]','[data-testid="prev"]','[aria-label="Previous Chapter" i]','[title="Previous Chapter" i]','button[title*="Previous Chapter" i]','a[title*="Previous Chapter" i]','mov-button#prev'];
 
+  // 1) Strong semantic controls.
   for(var d=0;d<direct.length;d++){
     var ds=[];
     try{ds=[].slice.call(document.querySelectorAll(direct[d]));}catch(e){ds=[];}
     for(var q=0;q<ds.length;q++){
-      var de=ds[q],dr=de.getBoundingClientRect();
-      if(dr.width>=3&&dr.height>=3&&!de.disabled&&de.getAttribute('aria-disabled')!=='true'){
+      var de=ds[q];
+      if(visible(de)&&!de.disabled&&de.getAttribute('aria-disabled')!=='true'&&safeHref(de)){
         try{de.click();return 'clicked';}catch(x){}
       }
     }
   }
 
-  var links=[].slice.call(document.querySelectorAll('a[href],button,[role=button],div,span,li,i'));
+  // 2) Prefer real links/buttons. Never click a link that points upward to
+  // the homepage/book landing page just because it contains "next".
+  var pool=[];
+  try{pool=[].slice.call(document.querySelectorAll('a[href],button,[role=button],mov-button'));}catch(e){pool=[];}
   var best=null,bs=0;
-  for(var i=0;i<links.length;i++){
-    var e=links[i],tc=(e.textContent||'').trim();
-    if(tc.length>40) continue;
+  for(var i=0;i<pool.length;i++){
+    var e=pool[i],tc=(e.textContent||'').replace(/\\s+/g,' ').trim();
+    if(tc.length>60||!visible(e)||!safeHref(e))continue;
     var cn=(typeof e.className==='string')?e.className:'';
     var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+cn+' '+(e.id||'')+' '+(e.getAttribute('data-eventname')||'');
     var href=(e.getAttribute('href')||'');
     var s=0;
-    if(re.test(tc)) s+=6; else if(tc.length<=25&&wre.test(tc)) s+=4;
-    if(wre.test(meta)) s+=4;
-    if(/chapter|\/book\//i.test(href)&&wre.test(href)) s+=3;
-    if(s===0) continue;
-    if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true') continue;
-    var r=e.getBoundingClientRect();
-    if(r.width<3||r.height<3) continue;
-    if(/chap/i.test(meta+tc+href)) s+=1;
+    if(re.test(tc))s+=7; else if(tc.length<=30&&wre.test(tc))s+=4;
+    if(wre.test(meta))s+=5;
+    if(/chapter|\\/book\\//i.test(href)&&wre.test(href))s+=3;
+    if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true')continue;
+    if(/home|homepage|index/i.test(meta)&&!/chapter/i.test(meta))s-=5;
     if(s>bs){bs=s;best=e;}
   }
-  if(!best) return 'none';
-  try{best.click();return 'clicked';}catch(x){return 'none';}
+  if(best){
+    try{best.click();return 'clicked';}catch(x){}
+  }
+
+  // 3) Last resort for JS-only div/span controls. These have no href, so the
+  // safety check above cannot reject a URL; only click when the semantic text
+  // or metadata is a strong match.
+  var generic=[];
+  try{generic=[].slice.call(document.querySelectorAll('div,span,li,i'));}catch(e){generic=[];}
+  best=null;bs=0;
+  for(var j=0;j<generic.length;j++){
+    var g=generic[j],gt=(g.textContent||'').replace(/\\s+/g,' ').trim();
+    if(gt.length>30||!visible(g))continue;
+    var gm=(g.getAttribute('aria-label')||'')+' '+(g.getAttribute('title')||'')+' '+(typeof g.className==='string'?g.className:'')+' '+(g.id||'');
+    var gs=0;
+    if(re.test(gt))gs+=5;
+    if(wre.test(gm))gs+=4;
+    if(/chapter/i.test(gm+gt))gs+=2;
+    if(gs>bs){bs=gs;best=g;}
+  }
+  if(best&&bs>=5){
+    try{best.click();return 'clicked';}catch(x){}
+  }
+  return 'none';
 })()
 """
+
 
     fun clickNext(dir: String): String {
         val alts = if (dir == "next")
@@ -434,15 +484,20 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     fun fastExtract(contentSel: String = "", titleSel: String = "", nextSel: String = "", prevSel: String = ""): String {
         return """
 (function(){
-  // Global fast path: selector-first, one chapter-root scan, one text read.
-  // Do NOT walk/serialize the whole document unless no chapter root exists.
-  var BAD='script,style,noscript,iframe,nav,header,footer,aside,form,button,svg,canvas,video,audio,input,textarea,select,option,.ads,.ad,[class*=advert],[id*=advert],[class*=comment],[id*=comment],[class*=sidebar],[class*=popup],[id*=popup]';
+  // Fast extraction: inspect only a small set of reader candidates. The normal
+  // path never serializes the whole document and never mutates the live DOM.
+  var BAD='script,style,noscript,iframe,nav,header,footer,aside,form,button,svg,canvas,video,audio,input,textarea,select,option,.ads,.ad,[class*=advert],[id*=advert],[class*=comment],[id*=comment],[class*=sidebar],[id*=sidebar],[class*=popup],[id*=popup]';
+
   function clean(s){
     return String(s||'').replace(/\u00a0/g,' ')
-      .replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n')
+      .replace(/[ \\t]+\\n/g,'\\n')
+      .replace(/\\n[ \\t]+/g,'\\n')
       .replace(/\\n{3,}/g,'\\n\\n').trim();
   }
-  function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
+  function visible(e){
+    return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);
+  }
+  function meaningful(s){return /[\\p{L}\\p{N}]/u.test(s||'');}
   function pick(sel){
     if(!sel)return null;
     try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
@@ -460,70 +515,123 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     try{c.querySelectorAll(BAD).forEach(function(x){x.remove();});}catch(x){}
     return clean(c.innerText||c.textContent||'');
   }
-  function meaningful(s){return /[\p{L}\p{N}]/u.test(s||'');}
+  function quality(t){
+    if(!meaningful(t)||t.length<80)return -1;
+    var lines=t.split(/\\n+/).filter(function(x){return meaningful(x);});
+    var score=Math.min(t.length,12000)/1200 + Math.min(lines.length,80)*0.08;
+    // Very small fragments are usually navigation/title, while enormous roots
+    // are often the whole page shell. Prefer normal chapter-sized containers.
+    if(t.length<180)score-=3;
+    if(t.length>180000)score-=6;
+    return score;
+  }
 
   var host=location.hostname.toLowerCase();
   var sels=[];
   if(__CONTENT__)sels.push(__CONTENT__);
   if(host==='novel543.com'||host.endsWith('.novel543.com'))sels.push('.chapter-content','#content','.article-content');
-  if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
+  if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content');
   if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
+
+  // Site/reader-specific selectors come before generic wrappers.
   sels.push(
     '.cha-words','.cha-content','.chapter-content','.chapter_content',
-    '.article-content','#content','article[role="main"]','article','main','.content',
-    '#chapter-content','#chr-content','.chr-c','.reading-content','.text-left',
-    '.entry-content','.chapter-body','.novel_content','.j_readContent','.txt',
-    '#chaptercontent','.chapter-c','#article'
+    '.article-content','#content','#chapter-content','#chr-content','.chr-c',
+    '.reading-content','.text-left','.entry-content','.chapter-body',
+    '.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c','#article',
+    'article[role="main"]','article','main','.content'
   );
 
-  var root=null, body='';
-  var seen=[];
+  var seen=[], candidates=[];
   for(var i=0;i<sels.length;i++){
-    var sel=sels[i]; if(!sel||seen.indexOf(sel)>=0)continue; seen.push(sel);
+    var sel=sels[i];
+    if(!sel||seen.indexOf(sel)>=0)continue;
+    seen.push(sel);
     var list=[];
     try{list=Array.from(document.querySelectorAll(sel));}catch(x){continue;}
-    for(var k=0;k<Math.min(list.length,4);k++){
+    // A selector normally has one reader root. Inspect only a few matches.
+    for(var k=0;k<Math.min(list.length,5);k++){
       var el=list[k];
       if(!visible(el))continue;
-      var t=readRoot(el);
-      if(!meaningful(t)||t.length<80)continue;
-      // Prefer the first strong chapter container. This avoids scanning dozens
-      // of generic divs and keeps normal extraction near the extension speed.
-      root=el; body=t; break;
+      var t=readRoot(el), q=quality(t);
+      if(q<0)continue;
+      // Explicit/site-specific selectors get a small preference over generic
+      // wrappers, while still allowing a better candidate to win.
+      var bonus=(i<12?2:0);
+      candidates.push({el:el,text:t,score:q+bonus,sel:sel});
     }
-    if(root)break;
   }
 
-  // Only if no known selector worked: bounded reader-container fallback.
-  if(!root){
+  // If known selectors fail, bounded reader-like fallback. Never scan the whole
+  // page recursively; cap the candidate list.
+  if(!candidates.length){
     var cand=[];
-    try{cand=Array.from(document.querySelectorAll('[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]')).slice(0,30);}catch(x){}
-    var best=null,bestText='';
+    try{
+      cand=Array.from(document.querySelectorAll(
+        '[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]'
+      )).slice(0,30);
+    }catch(x){}
     for(var z=0;z<cand.length;z++){
       if(!visible(cand[z]))continue;
-      var ct=readRoot(cand[z]);
-      if(ct.length>bestText.length&&ct.length>=80){best=cand[z];bestText=ct;}
+      var ct=readRoot(cand[z]), cq=quality(ct);
+      if(cq>=0)candidates.push({el:cand[z],text:ct,score:cq,sel:''});
     }
-    root=best; body=bestText;
   }
 
+  if(!candidates.length)return JSON.stringify({ok:false});
+
+  // Prefer the strongest chapter root. A generic page wrapper can be huge, so
+  // reward explicit chapter selectors and penalize unusually shell-like roots.
+  candidates.sort(function(a,b){return b.score-a.score;});
+  var chosen=candidates[0], root=chosen.el, body=chosen.text;
   if(!root||!body)return JSON.stringify({ok:false});
 
   var titleEl=pick(__TITLE__);
-  if(!titleEl){try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
+  if(!titleEl){
+    try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}
+  }
   var title=clean(titleEl?(titleEl.innerText||titleEl.textContent):'');
   if(!title)title=document.title||'';
 
+  function pathDepth(u){
+    try{return new URL(u,location.href).pathname.replace(/\\/+$/,'').split('/').filter(Boolean).length;}
+    catch(e){return 0;}
+  }
+  function sameSite(u){
+    try{
+      var a=new URL(u,location.href), b=new URL(location.href);
+      return a.hostname===b.hostname || a.hostname.endsWith('.'+b.hostname) || b.hostname.endsWith('.'+a.hostname);
+    }catch(e){return false;}
+  }
+  function plausible(h){
+    if(!h||!sameSite(h))return false;
+    if(/^(javascript:|#)/i.test(h))return false;
+    return pathDepth(h)>=pathDepth(location.href);
+  }
   function link(kind,sel){
     var el=pick(sel);
-    if(!el){
-      var q=kind==='next'
-        ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-      try{el=document.querySelector(q);}catch(x){el=null;}
+    if(el&&el.href&&plausible(el.href)){
+      return {href:el.href,text:clean(el.innerText||el.textContent||''),selector:stable(el)};
     }
-    if(el&&el.href)return {href:el.href,text:clean(el.innerText||el.textContent||''),selector:stable(el)};
-    return null;
+    var q=kind==='next'
+      ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
+      : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
+    var els=[];
+    try{els=Array.from(document.querySelectorAll(q));}catch(x){els=[];}
+    var best=null,bs=0;
+    for(var j=0;j<els.length;j++){
+      var e=els[j];
+      if(!visible(e)||!e.href||!plausible(e.href))continue;
+      var txt=clean(e.innerText||e.textContent||'');
+      var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(typeof e.className==='string'?e.className:'')+' '+(e.id||'');
+      var s=0;
+      if(txt.length<=40&&new RegExp('^('+(kind==='next'?'next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট':'prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|前へ|前の話|আগের|পূর্ববর্তী')+')$','i').test(txt))s+=7;
+      if(new RegExp(kind==='next'?'next':'prev(?!iew)','i').test(meta))s+=5;
+      if(/chapter|\\/book\\//i.test(e.getAttribute('href')||''))s+=2;
+      if(/home|homepage|index/i.test(meta)&&!/chapter/i.test(meta))s-=5;
+      if(s>bs){bs=s;best=e;}
+    }
+    return best?{href:best.href,text:clean(best.innerText||best.textContent||''),selector:stable(best)}:null;
   }
 
   var novel='';
