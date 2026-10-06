@@ -1202,12 +1202,14 @@ class MainActivity : Activity() {
                     val html = decode(raw)
                     if (html.isEmpty()) null else {
                         val doc = Jsoup.parse(html, url)
+                        val host = Uri.parse(url).host?.lowercase().orEmpty()
+                        val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
                         Extractor.extract(
                             doc, url,
-                            SiteProfiles.selector(this@MainActivity, url, "content"),
-                            SiteProfiles.selector(this@MainActivity, url, "title"),
-                            SiteProfiles.selector(this@MainActivity, url, "next"),
-                            SiteProfiles.selector(this@MainActivity, url, "prev")
+                            if (isNovel543) ".chapter-content" else SiteProfiles.selector(this@MainActivity, url, "content"),
+                            if (isNovel543) "h1" else SiteProfiles.selector(this@MainActivity, url, "title"),
+                            if (isNovel543) ".warp:nth-child(2) > a:nth-child(5)" else SiteProfiles.selector(this@MainActivity, url, "next"),
+                            if (isNovel543) ".warp:nth-child(2) > a:nth-child(1)" else SiteProfiles.selector(this@MainActivity, url, "prev")
                         )
                     }
                 } catch (e: Exception) { null }
@@ -1226,12 +1228,16 @@ class MainActivity : Activity() {
         val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
         val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
 
-        // Novel543 has a stable chapter container and BR-separated text. Keep
-        // explicit site defaults so a missing/stale learned profile cannot make
-        // extraction depend on generic DOM heuristics.
-        val contentSel = SiteProfiles.selector(this, url, "content").ifBlank {
-            if (isNovel543) ".chapter-content" else ""
+        // Novel543 is a BR-separated, multi-page reader. Keep its old reliable
+        // WebView -> full DOM -> Jsoup extraction path; the generic fast walker
+        // can mistake the site's browser-warning wrapper for chapter content.
+        if (isNovel543) {
+            extractWebNovelNow(cb)
+            return
         }
+
+        // Other sites use the generic fast extractor.
+        val contentSel = SiteProfiles.selector(this, url, "content")
         val titleSel = SiteProfiles.selector(this, url, "title").ifBlank {
             if (isNovel543) "h1" else ""
         }
