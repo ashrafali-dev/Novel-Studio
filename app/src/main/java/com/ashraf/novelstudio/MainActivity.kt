@@ -445,6 +445,17 @@ class MainActivity : Activity() {
             ?.coerceIn(0, browserTabs.lastIndex) ?: 0
         persistBrowserTabs()
         renderTabs()
+
+        // Restore the active tab into the WebView after an app/process restart.
+        // Tab metadata is persisted separately, so do not leave the fresh WebView
+        // on a blank/new document when a real tab already exists.
+        val active = browserTabs.getOrNull(activeTabIndex)
+        if (active != null && active.url.isNotBlank()) {
+            restoringTab = true
+            try { novelWv.loadUrl(active.url) } catch (_: Exception) {}
+            restoringTab = false
+            urlBar.setText(active.url)
+        }
     }
 
     private fun persistBrowserTabs() {
@@ -1479,18 +1490,43 @@ class MainActivity : Activity() {
         updateProgressUi()
     }
 
-    // ● : instant extract/copy. This button must ALWAYS run a fresh extraction;
-    // auto mode or an existing translation must never turn it into a view-toggle.
+    // ● : Instant Extract. Never use stale DOM from the previous chapter.
     private fun extractCopy() {
         navToken++
         val token = navToken
-        extractNow { ch ->
-            if (token != navToken) return@extractNow
-            if (ch == null) {
-                toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
-            } else {
+
+        fun runFresh() {
+            if (token != navToken) return
+            val liveUrlBefore = cleanUrl(novelWv.url ?: "")
+            extractNow { ch ->
+                if (token != navToken) return@extractNow
+                val liveUrl = cleanUrl(novelWv.url ?: "")
+
+                // Never send a result from a different URL. This prevents the
+                // previous chapter's DOM from reaching translation after Next.
+                if (ch == null || liveUrl.isBlank() || cleanUrl(ch.url) != liveUrl) {
+                    toast("⏳ নতুন chapter পুরোপুরি load হয়নি — একটু পরে ● চাপো")
+                    return@extractNow
+                }
+
+                // If navigation changed while extraction was running, discard it.
+                if (liveUrlBefore != liveUrl) {
+                    toast("⏳ chapter বদলাচ্ছে — আবার ● চাপো")
+                    return@extractNow
+                }
+
                 handleChapter(ch)
             }
+        }
+
+        if (novelWv.progress < 100) {
+            handler.postDelayed({
+                if (token != navToken) return@postDelayed
+                if (novelWv.progress >= 100) runFresh()
+                else handler.postDelayed({ if (token == navToken) runFresh() }, 500)
+            }, 250)
+        } else {
+            runFresh()
         }
     }
 
