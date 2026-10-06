@@ -903,10 +903,24 @@ class MainActivity : Activity() {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
 
-        val contentSel = SiteProfiles.selector(this, url, "content")
-        val titleSel = SiteProfiles.selector(this, url, "title")
-        val nextSel = SiteProfiles.selector(this, url, "next")
-        val prevSel = SiteProfiles.selector(this, url, "prev")
+        val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
+        val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
+
+        // Novel543 has a stable chapter container and BR-separated text. Keep
+        // explicit site defaults so a missing/stale learned profile cannot make
+        // extraction depend on generic DOM heuristics.
+        val contentSel = SiteProfiles.selector(this, url, "content").ifBlank {
+            if (isNovel543) ".chapter-content" else ""
+        }
+        val titleSel = SiteProfiles.selector(this, url, "title").ifBlank {
+            if (isNovel543) "h1" else ""
+        }
+        val nextSel = SiteProfiles.selector(this, url, "next").ifBlank {
+            if (isNovel543) ".warp:nth-child(2) > a:nth-child(5)" else ""
+        }
+        val prevSel = SiteProfiles.selector(this, url, "prev").ifBlank {
+            if (isNovel543) ".warp:nth-child(2) > a:nth-child(1)" else ""
+        }
 
         // Fast path: inspect only the already-rendered chapter DOM.
         // This is the same extraction strategy used by Novel Translator:
@@ -921,10 +935,13 @@ class MainActivity : Activity() {
             try {
                 val o = JSONObject(payload)
                 if (!o.optBoolean("ok", false)) {
-                    // WebNovel/JS-heavy fallback: preserve the older Jsoup path
-                    // only when the fast DOM extractor genuinely cannot find content.
-                    val host0 = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
-                    if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com") || SiteRules.compat(this@MainActivity, url)) {
+                    // Keep the proven Jsoup fallback for JS-heavy/BR-based sites.
+                    // Novel543 is explicitly included because its chapter body is
+                    // stable at .chapter-content but can be missed while its DOM is
+                    // still settling.
+                    if (isNovel543 ||
+                        host == "webnovel.com" || host.endsWith(".webnovel.com") ||
+                        SiteRules.compat(this@MainActivity, url)) {
                         extractWebNovelNow(cb)
                     } else {
                         cb(null)
@@ -935,7 +952,14 @@ class MainActivity : Activity() {
                 val title = o.optString("title", "").trim()
                 val body = o.optString("text", "").trim()
                 if (body.length < 80) {
-                    cb(null)
+                    // A partially-rendered Novel543 DOM can return only the title
+                    // or a short fragment on the first JS pass. Let the proven
+                    // parser retry the same page instead of declaring failure.
+                    if (isNovel543) {
+                        extractWebNovelNow(cb)
+                    } else {
+                        cb(null)
+                    }
                     return@evaluateJavascript
                 }
 
