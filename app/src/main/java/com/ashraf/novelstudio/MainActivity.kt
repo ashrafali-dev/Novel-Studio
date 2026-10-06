@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -33,6 +34,8 @@ import android.widget.CheckBox
 import android.widget.ScrollView
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridLayout
+import android.widget.ImageView
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -50,7 +53,8 @@ import java.net.URLEncoder
 private data class BrowserTab(
     var label: String,
     var url: String,
-    var state: Bundle? = null
+    var state: Bundle? = null,
+    @Transient var thumbnail: Bitmap? = null
 )
 
 class MainActivity : Activity() {
@@ -398,9 +402,31 @@ class MainActivity : Activity() {
     // ================================================================== browser tabs / shortcuts / history
     private fun initBrowserTabs() {
         browserTabs.clear()
-        browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")))
-        activeTabIndex = 0
+        val raw = Prefs.get(this, "browserTabs", "")
+        val saved = try { JSONArray(raw) } catch (_: Exception) { JSONArray() }
+        for (i in 0 until saved.length()) {
+            val o = saved.optJSONObject(i) ?: continue
+            val u = o.optString("url", "")
+            if (u.isNotBlank()) browserTabs.add(BrowserTab(o.optString("label", "New Tab"), u))
+        }
+        if (browserTabs.isEmpty()) {
+            browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")))
+        }
+        activeTabIndex = Prefs.get(this, "browserActiveTab", "0").toIntOrNull()
+            ?.coerceIn(0, browserTabs.lastIndex) ?: 0
         renderTabs()
+    }
+
+    private fun persistBrowserTabs() {
+        val a = JSONArray()
+        browserTabs.forEach { tab ->
+            a.put(JSONObject().apply {
+                put("label", tab.label)
+                put("url", tab.url)
+            })
+        }
+        Prefs.put(this, "browserTabs", a.toString())
+        Prefs.put(this, "browserActiveTab", activeTabIndex.toString())
     }
 
     private fun siteShortcuts(): List<Pair<String, String>> = listOf(
@@ -428,26 +454,39 @@ class MainActivity : Activity() {
     private fun renderTabs() {
         if (!::tabStrip.isInitialized) return
         tabStrip.removeAllViews()
-        browserTabs.forEachIndexed { i, tab ->
-            val label = if (tab.label.length > 20) tab.label.take(20) + "…" else tab.label
-            val b = TextView(this).apply {
-                text = (if (i == activeTabIndex) "● " else "") + label + "  ×"
-                textSize = 13f
-                gravity = Gravity.CENTER
-                setTextColor(if (i == activeTabIndex) 0xFFFFFFFF.toInt() else 0xFFAAAAAF.toInt())
-                setPadding(dp(12), dp(5), dp(10), dp(5))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(15).toFloat()
-                    setColor(if (i == activeTabIndex) 0xFF3A3A44.toInt() else 0xFF24242A.toInt())
-                }
-                layoutParams = LinearLayout.LayoutParams(WC, dp(32)).also {
-                    it.setMargins(dp(3), dp(3), dp(3), dp(3))
-                }
-                setOnClickListener { switchBrowserTab(i) }
-                setOnLongClickListener { closeBrowserTab(i); true }
+
+        val count = TextView(this).apply {
+            text = "▦  ${browserTabs.size}"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(14), 0, dp(14), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(0xFF303038.toInt())
             }
-            tabStrip.addView(b)
+            layoutParams = LinearLayout.LayoutParams(WC, dp(34)).also {
+                it.setMargins(dp(5), dp(2), dp(6), dp(2))
+            }
+            setOnClickListener { showTabGrid() }
         }
+        tabStrip.addView(count)
+
+        val current = browserTabs.getOrNull(activeTabIndex)
+        if (current != null) {
+            val title = TextView(this).apply {
+                text = current.label.ifBlank { Uri.parse(current.url).host ?: "New Tab" }
+                textSize = 13f
+                gravity = Gravity.CENTER_VERTICAL
+                setTextColor(0xFFE8E8EC.toInt())
+                setPadding(dp(10), 0, dp(10), 0)
+                isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f)
+            }
+            tabStrip.addView(title)
+        }
+
         tabStrip.addView(chip("＋", { newBrowserTab("https://duckduckgo.com/") }, null))
     }
 
@@ -459,7 +498,30 @@ class MainActivity : Activity() {
         val state = Bundle()
         tab.state = state
         try { novelWv.saveState(state) } catch (_: Exception) {}
+        captureCurrentTabThumbnail()
         Prefs.put(this, "lastNovelUrl", tab.url)
+        persistBrowserTabs()
+        renderTabs()
+    }
+
+    private fun captureCurrentTabThumbnail() {
+        if (browserTabs.isEmpty() || novelWv.width <= 0 || novelWv.height <= 0) return
+        try {
+            val w = dp(320)
+            val h = dp(210)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            val sx = w.toFloat() / novelWv.width.toFloat()
+            val sy = h.toFloat() / novelWv.height.toFloat()
+            val scale = minOf(sx, sy)
+            val dx = (w - novelWv.width * scale) / 2f
+            val dy = (h - novelWv.height * scale) / 2f
+            canvas.translate(dx, dy)
+            canvas.scale(scale, scale)
+            novelWv.draw(canvas)
+            browserTabs[activeTabIndex].thumbnail?.recycle()
+            browserTabs[activeTabIndex].thumbnail = bmp
+        } catch (_: Exception) {}
     }
 
     private fun switchBrowserTab(index: Int) {
@@ -485,6 +547,7 @@ class MainActivity : Activity() {
         restoringTab = false
         renderTabs()
         urlBar.setText(tab.url)
+        persistBrowserTabs()
     }
 
     private fun newBrowserTab(url: String) {
@@ -499,6 +562,7 @@ class MainActivity : Activity() {
         novelWv.loadUrl(url)
         renderTabs()
         urlBar.setText(url)
+        persistBrowserTabs()
     }
 
     private fun closeBrowserTab(index: Int) {
@@ -519,6 +583,216 @@ class MainActivity : Activity() {
         shownTranslated = false
         updatePill()
         renderTabs()
+        persistBrowserTabs()
+    }
+
+    private fun showTabGrid() {
+        saveCurrentTabState()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF101012.toInt())
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(8), dp(10))
+        }
+
+        val title = TextView(this).apply {
+            text = "Tabs (${browserTabs.size})"
+            textSize = 22f
+            setTextColor(0xFFF2F2F4.toInt())
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, WC, 1f)
+        }
+
+        val search = TextView(this).apply {
+            text = "⌕"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFF2F2F4.toInt())
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+            setOnClickListener {
+                val input = EditText(this@MainActivity).apply {
+                    hint = "Tab title বা URL"
+                    setSingleLine()
+                }
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("🔍 Tabs খুঁজুন")
+                    .setView(input)
+                    .setPositiveButton("খুঁজুন") { _, _ ->
+                        title.tag = input.text.toString().trim()
+                        showTabGrid(title.tag as String)
+                    }
+                    .setNegativeButton("বাতিল", null)
+                    .show()
+            }
+        }
+
+        val more = TextView(this).apply {
+            text = "⋮"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFF2F2F4.toInt())
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setItems(arrayOf("✕ বর্তমান ছাড়া সব বন্ধ", "✕ সব Tab বন্ধ")) { _, which ->
+                        when (which) {
+                            0 -> {
+                                val keep = browserTabs[activeTabIndex]
+                                browserTabs.clear()
+                                browserTabs.add(keep)
+                                activeTabIndex = 0
+                                persistBrowserTabs()
+                                renderTabs()
+                                showTabGrid()
+                            }
+                            1 -> {
+                                browserTabs.clear()
+                                browserTabs.add(BrowserTab("New Tab", "https://duckduckgo.com/"))
+                                activeTabIndex = 0
+                                novelWv.loadUrl(browserTabs[0].url)
+                                persistBrowserTabs()
+                                renderTabs()
+                                showTabGrid()
+                            }
+                        }
+                    }
+                    .setNegativeButton("বাতিল", null)
+                    .show()
+            }
+        }
+
+        val close = TextView(this).apply {
+            text = "×"
+            textSize = 30f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFF2F2F4.toInt())
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        }
+
+        header.addView(title)
+        header.addView(search)
+        header.addView(more)
+        header.addView(close)
+        root.addView(header)
+
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        val grid = GridLayout(this).apply {
+            columnCount = 2
+            setPadding(dp(10), dp(4), dp(10), dp(96))
+            useDefaultMargins = false
+        }
+        scroll.addView(grid, ViewGroup.LayoutParams(MP, WC))
+        root.addView(scroll, LinearLayout.LayoutParams(MP, 0, 1f))
+
+        lateinit var dialog: AlertDialog
+        val newTab = TextView(this).apply {
+            text = "＋"
+            textSize = 30f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFF1265D8.toInt())
+            }
+            elevation = dp(8).toFloat()
+            layoutParams = LinearLayout.LayoutParams(dp(64), dp(64)).also {
+                it.gravity = Gravity.END
+                it.setMargins(0, 0, dp(18), dp(18))
+            }
+            setOnClickListener {
+                dialog.dismiss()
+                newBrowserTab("https://duckduckgo.com/")
+            }
+        }
+        root.addView(newTab)
+
+        dialog = AlertDialog.Builder(this)
+            .setView(root)
+            .create()
+
+        fun refreshCards(query: String = "") {
+            grid.removeAllViews()
+            val list = browserTabs.withIndex().filter { (_, t) ->
+                query.isBlank() || t.label.contains(query, true) || t.url.contains(query, true)
+            }
+            title.text = if (query.isBlank()) "Tabs (${browserTabs.size})"
+                else "Tabs (${list.size}/${browserTabs.size})"
+
+            list.forEach { pair ->
+                val i = pair.index
+                val tab = pair.value
+                val card = FrameLayout(this).apply {
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(14).toFloat()
+                        setColor(if (i == activeTabIndex) 0xFF303038.toInt() else 0xFF202024.toInt())
+                        setStroke(dp(1), if (i == activeTabIndex) 0xFF5B8CFF.toInt() else 0xFF38383F.toInt())
+                    }
+                    layoutParams = GridLayout.LayoutParams().apply {
+                        width = 0
+                        height = dp(285)
+                        columnSpec = GridLayout.spec(i % 2, 1f)
+                        setMargins(dp(6), dp(6), dp(6), dp(6))
+                    }
+                    setOnClickListener {
+                        dialog.dismiss()
+                        switchBrowserTab(i)
+                    }
+                }
+
+                val preview = ImageView(this).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    setBackgroundColor(0xFF18181C.toInt())
+                    tab.thumbnail?.let { if (!it.isRecycled) setImageBitmap(it) }
+                    layoutParams = FrameLayout.LayoutParams(MP, dp(220))
+                }
+                card.addView(preview)
+
+                val label = TextView(this).apply {
+                    text = tab.label.ifBlank { Uri.parse(tab.url).host ?: "New Tab" } +
+                        "\n" + (Uri.parse(tab.url).host ?: tab.url)
+                    textSize = 12f
+                    setTextColor(0xFFF2F2F4.toInt())
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(dp(10), dp(8), dp(40), dp(4))
+                    layoutParams = FrameLayout.LayoutParams(MP, dp(58), Gravity.BOTTOM)
+                }
+                card.addView(label)
+
+                val closeTab = TextView(this).apply {
+                    text = "×"
+                    textSize = 22f
+                    gravity = Gravity.CENTER
+                    setTextColor(0xFFE8E8EC.toInt())
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(0x88303038.toInt())
+                    }
+                    layoutParams = FrameLayout.LayoutParams(dp(40), dp(40), Gravity.TOP or Gravity.END)
+                    setOnClickListener {
+                        closeBrowserTab(i)
+                        refreshCards(query)
+                    }
+                }
+                card.addView(closeTab)
+                grid.addView(card)
+            }
+        }
+
+        close.setOnClickListener { dialog.dismiss() }
+        dialog.setOnShowListener {
+            dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+            dialog.window?.setLayout(MP, MP)
+            refreshCards()
+        }
+        dialog.show()
+        dialog.window?.setLayout(MP, MP)
+        refreshCards()
     }
 
     private fun browserHistoryDialog() {
@@ -2068,6 +2342,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         if (!isFinishing) saveCurrentTabState()
+        persistBrowserTabs()
         CookieManager.getInstance().flush()
         super.onPause()
     }
