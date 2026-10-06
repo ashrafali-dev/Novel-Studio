@@ -427,23 +427,19 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
 
     // ---------------------------------------------------------------- fast chapter extraction
-    // Novel Translator-style extractor:
-    // - reads the rendered DOM only
-    // - never serializes outerHTML
-    // - never changes/mutates the page DOM
-    // - chooses the best chapter container instead of trusting the first selector
-    // - keeps short CJK lines
-    // - extracts adjacent chapter hrefs from the rendered page
+    // Port of Novel Translator's DOM extractor:
+    // read only the already-rendered chapter DOM, never serialize the whole page.
+    // It deliberately keeps short lines (e.g. Chinese dialogue / labels) instead
+    // of dropping them by character count.
     fun fastExtract(contentSel: String = "", titleSel: String = "", nextSel: String = "", prevSel: String = ""): String {
         return """
 (function(){
   var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,INPUT:1,TEXTAREA:1,BUTTON:1,SELECT:1,OPTION:1,NAV:1,FOOTER:1,HEADER:1};
-  var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1,MAIN:1};
-  function clean(s){return String(s||'').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();}
+  var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1};
+  function clean(s){return String(s||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
   function text(e){return clean(e?(e.innerText||e.textContent):'');}
   function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
   function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
-  function meaningful(s){return /[\p{L}\p{N}]/u.test(s||'');}
   function stable(e){
     if(!e)return '';
     var id=(e.id||'').trim();
@@ -451,17 +447,15 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
     return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
   }
-  function hasBlockChild(e){
-    return Array.from(e.children||[]).some(function(c){return !SKIP[c.tagName]&&!!BLOCK[c.tagName];});
-  }
+  function meaningful(s){return /[\\p{L}\\p{N}]/u.test(s||'');}
+  function hasBlockChild(e){return Array.from(e.children||[]).some(function(c){return !SKIP[c.tagName]&&!!BLOCK[c.tagName];});}
 
-  function rootSelectors(){
-    var host=location.hostname.toLowerCase(), a=[];
-    if(host.indexOf('novel543.com')>=0)a.push('.chapter-content','#content','.article-content');
-    if(host.indexOf('webnovel.com')>=0)a.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
-    if(host.indexOf('wtr-lab.com')>=0)a.push('article','.chapter-content','main');
-    if(host.indexOf('webnovel')>=0)a.push('.cha-words','.cha-content','.chapter-content','.chapter_content');
-    a.push(
+  function roots(){
+    var host=location.hostname.toLowerCase(), sels=[];
+    if(host.indexOf('novel543.com')>=0)sels.push('.chapter-content','#content','.article-content');
+    if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
+    if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
+    sels.push(
       __CONTENT__,
       '.cha-words','.cha-content','.chapter-content','.chapter_content',
       '.article-content','#content','article[role="main"]','article','main','.content',
@@ -469,95 +463,92 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       '.entry-content','.chapter-body','.novel_content','.j_readContent','.txt',
       '#chaptercontent','.chapter-c','#article'
     );
-    return a.filter(Boolean);
+    var seen=[],out=[];
+    sels.forEach(function(sel){
+      if(!sel)return;
+      var list=[];
+      try{list=Array.from(document.querySelectorAll(sel));}catch(x){return;}
+      list.forEach(function(e){
+        if(!e||seen.indexOf(e)>=0||!e.isConnected)return;
+        if(text(e).length<80)return;
+        seen.push(e);out.push(e);
+      });
+    });
+    return out.slice(0,8);
   }
 
-  // Return text units without touching the DOM. A block with block children is
-  // only a container; its leaf blocks are the actual chapter lines.
   function units(root){
-    if(!root||!visible(root))return [];
     var out=[],seen=[];
-    function add(t){
-      t=clean(t);
-      if(!meaningful(t)||t.length===0)return;
-      if(seen.indexOf(t)>=0)return;
-      seen.push(t);out.push(t);
+    function add(e){
+      if(!e||SKIP[e.tagName]||seen.indexOf(e)>=0||!e.isConnected)return;
+      var t=text(e);
+      if(!meaningful(t))return;
+      if(hasBlockChild(e))return;
+      if(!t)return;
+      seen.push(e);out.push(e);
     }
-    var els=[root].concat(Array.from(root.querySelectorAll('p,li,blockquote,h1,h2,h3,h4,h5,h6,pre,div,section,article')));
-    for(var i=0;i<els.length&&out.length<2000;i++){
-      var e=els[i];
-      if(!e||SKIP[e.tagName]||!visible(e))continue;
-      if(hasBlockChild(e))continue;
-      add(e.innerText||e.textContent||'');
-    }
-    // Mobile readers often keep a line directly in an inline span/strong/font.
+
+    var all=[root].concat(Array.from(root.querySelectorAll('p,li,blockquote,h1,h2,h3,h4,h5,h6,div,section,article,pre')));
+    for(var i=0;i<all.length&&out.length<1500;i++)add(all[i]);
+
+    // Standalone inline lines are common in mobile readers, especially WebNovel.
     Array.from(root.querySelectorAll('span,strong,b,font')).forEach(function(e){
-      if(out.length>=2000||!visible(e)||e.children.length)return;
-      var p=e.parentElement,inBlock=false;
+      if(out.length>=1500||e.children.length)return;
+      var p=e.parentElement,inText=false;
       while(p&&p!==root){
-        if(BLOCK[p.tagName]){inBlock=true;break;}
+        if(['P','LI','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','PRE'].indexOf(p.tagName)>=0){inText=true;break;}
         p=p.parentElement;
       }
-      if(!inBlock)add(e.innerText||e.textContent||'');
+      if(!inText)add(e);
     });
-    // Direct text nodes are collected as-is. The old implementation wrapped
-    // them in generated <span>s, which changed the live page and could break
-    // SPA readers. This path is intentionally read-only.
-    function direct(parent){
-      Array.from(parent.childNodes||[]).forEach(function(n){
-        if(n.nodeType===Node.TEXT_NODE){
-          var v=clean(n.nodeValue);
-          if(meaningful(v))add(v);
+
+    // If the reader is mostly leaf spans, use them as the actual lines.
+    if(out.length<3){
+      Array.from(root.querySelectorAll('span')).forEach(function(e){
+        if(out.length>=1500||e.children.length)return;
+        var p=e.parentElement,inText=false;
+        while(p&&p!==root){
+          if(['P','LI','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','PRE'].indexOf(p.tagName)>=0){inText=true;break;}
+          p=p.parentElement;
         }
+        if(!inText)add(e);
       });
     }
-    direct(root);
-    Array.from(root.querySelectorAll('div,section,article,p,li,blockquote,pre')).forEach(function(e){
-      if(out.length>=2000)return;
-      direct(e);
+
+    // Direct text nodes between blocks.
+    Array.from(root.querySelectorAll('div,section,article,p,li,blockquote,pre')).concat([root]).forEach(function(parent){
+      if(out.length>=1500||seen.indexOf(parent)>=0)return;
+      Array.from(parent.childNodes||[]).forEach(function(node){
+        if(node.nodeType!==Node.TEXT_NODE)return;
+        var v=clean(node.nodeValue);
+        if(!meaningful(v))return;
+        var span=document.createElement('span');
+        span.setAttribute('data-ns-fast-generated','1');
+        span.textContent=node.nodeValue;
+        node.parentNode.replaceChild(span,node);
+        add(span);
+      });
     });
-    return out.slice(0,2000);
+    return out.slice(0,1500);
   }
 
-  function scoreRoot(e){
-    var t=text(e), p=e.querySelectorAll('p').length;
-    var blocks=e.querySelectorAll('p,li,blockquote').length;
-    var links=e.querySelectorAll('a').length;
-    var bad=/comment|comment-box|footer|header|sidebar|menu|nav|related|recommend|login|register|share/i.test((e.id||'')+' '+(e.className||''));
-    var score=Math.min(t.length,50000)+(p*220)+(blocks*20)-Math.min(links,80)*15;
-    if(bad)score-=10000;
-    if(t.length<200)score-=5000;
-    return score;
-  }
-
-  var roots=[];
-  var seenRoots=[];
-  rootSelectors().forEach(function(sel){
-    var list=[];
-    try{list=Array.from(document.querySelectorAll(sel));}catch(x){return;}
-    list.forEach(function(e){
-      if(!e||seenRoots.indexOf(e)>=0||!e.isConnected)return;
-      if(text(e).length<80)return;
-      seenRoots.push(e);roots.push(e);
-    });
-  });
-
-  // Generic candidates cover sites whose markup changes without needing a site rule.
-  Array.from(document.querySelectorAll('[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]')).forEach(function(e){
-    if(seenRoots.indexOf(e)>=0||!e.isConnected||text(e).length<150)return;
-    seenRoots.push(e);roots.push(e);
-  });
-
-  roots.sort(function(a,b){return scoreRoot(b)-scoreRoot(a);});
-
+  var content=pick(__CONTENT__);
+  var rootList=roots();
+  if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
   var chosen=null,chosenUnits=[];
-  for(var r=0;r<Math.min(roots.length,24);r++){
-    var u=units(roots[r]);
-    if(!u.length)continue;
-    var body=u.join('\n\n');
-    if(body.length<80)continue;
-    if(!chosen||body.length>chosenUnits.join('\n\n').length){
-      chosen=roots[r];chosenUnits=u;
+  for(var r=0;r<rootList.length;r++){
+    var u=units(rootList[r]);
+    if(u.length>0){chosen=rootList[r];chosenUnits=u;break;}
+  }
+
+  // Last resort: reader-like containers, still bounded and never a whole-page scan.
+  if(!chosen){
+    var cand=Array.from(document.querySelectorAll('[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]'));
+    cand.sort(function(a,b){return text(b).length-text(a).length;});
+    for(var c=0;c<Math.min(12,cand.length);c++){
+      if(text(cand[c]).length<200)continue;
+      var cu=units(cand[c]);
+      if(cu.length){chosen=cand[c];chosenUnits=cu;break;}
     }
   }
 
@@ -568,30 +559,20 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var title=text(titleEl);
   if(!title)title=document.title||'';
 
-  function nav(kind,sel){
+  function link(kind,sel){
     var e=pick(sel);
-    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
-    var q=kind==='next'
-      ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i],a[href*="next" i]'
-      : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i],a[href*="prev" i]';
-    var all=[];
-    try{all=Array.from(document.querySelectorAll(q));}catch(x){}
-    var best=null,bs=0;
-    var re=kind==='next'?/next|下一|次へ|다음|পরবর্তী|›|»|→/i:/prev|previous|上一|前へ|이전|আগের|‹|«|←/i;
-    for(var i=0;i<all.length;i++){
-      var a=all[i],href=a.href||'',label=((a.getAttribute('aria-label')||'')+' '+(a.getAttribute('title')||'')+' '+(a.textContent||'')).trim();
-      if(!href||!visible(a)||!re.test(label+' '+href))continue;
-      var s=0;
-      if(a.rel&&((kind==='next'&&a.rel.toLowerCase()==='next')||(kind==='prev'&&a.rel.toLowerCase()==='prev')))s+=20;
-      if(re.test(label))s+=8;
-      if(/chapter|novel|book/i.test(href))s+=3;
-      if(s>bs){bs=s;best=a;}
+    if(!e){
+      var q=kind==='next'
+        ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
+        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
+      try{e=document.querySelector(q);}catch(x){e=null;}
     }
-    return best?{href:best.href,text:text(best),selector:stable(best)}:null;
+    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
+    return null;
   }
 
-  var segs=chosenUnits.filter(meaningful);
-  var body=segs.join('\n\n');
+  var segs=chosenUnits.map(function(e){return text(e);}).filter(meaningful);
+  var body=segs.join('\\n\\n');
   var novel='';
   try{
     var m=document.querySelector('meta[property="og:novel:book_name"],meta[property="og:novel:novel_name"],meta[name="book_name"]');
@@ -605,10 +586,17 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
 
   return JSON.stringify({
-    ok:true,text:body,segments:segs,count:segs.length,
-    title:title,pageTitle:document.title||'',novel:novel,
-    contentSel:stable(chosen),titleSel:titleEl?stable(titleEl):'',
-    next:nav('next',__NEXT__),prev:nav('prev',__PREV__)
+    ok:true,
+    text:body,
+    segments:segs,
+    count:segs.length,
+    title:title,
+    pageTitle:document.title||'',
+    novel:novel,
+    contentSel:stable(chosen),
+    titleSel:titleEl?stable(titleEl):'',
+    next:link('next',__NEXT__),
+    prev:link('prev',__PREV__)
   });
 })()
 """.trimIndent()
@@ -617,6 +605,8 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             .replace("__NEXT__", org.json.JSONObject.quote(nextSel))
             .replace("__PREV__", org.json.JSONObject.quote(prevSel))
     }
+
+
 
 
 }
