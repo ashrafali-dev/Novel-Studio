@@ -458,7 +458,20 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,INPUT:1,TEXTAREA:1,BUTTON:1,SELECT:1,OPTION:1,NAV:1,FOOTER:1,HEADER:1};
   var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1};
   function clean(s){return String(s||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
-  function text(e){return clean(e?(e.innerText||e.textContent):'');}
+  // Never trust innerText from a reader container as-is. Some Novel543 pages
+  // inject ad/analytics JavaScript inside the same wrapper, and Android WebView
+  // can expose that script source through innerText. Extract from a sanitized
+  // clone so script/style/ad code can never become chapter text.
+  function text(e){
+    if(!e)return '';
+    try{
+      var c=e.cloneNode(true);
+      c.querySelectorAll('script,style,noscript,iframe,svg,canvas,video,audio,nav,header,footer,aside,form,button,select,option,input,textarea,[class*="advert" i],[id*="advert" i],[class*="ads" i],[id*="ads" i],[class*="sidebar" i],[id*="sidebar" i]').forEach(function(x){x.remove();});
+      return clean(c.innerText||c.textContent||'');
+    }catch(x){
+      return clean(e.innerText||e.textContent||'');
+    }
+  }
   function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
   function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
   function stable(e){
