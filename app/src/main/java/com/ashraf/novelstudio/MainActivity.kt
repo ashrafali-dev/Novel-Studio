@@ -916,119 +916,39 @@ class MainActivity : Activity() {
     private fun extractNow(cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
-        val host0 = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
-        if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com") || SiteRules.compat(this, url)) {
-            extractWebNovelNow(cb)
-            return
-        }
 
         val contentSel = SiteProfiles.selector(this, url, "content")
         val titleSel = SiteProfiles.selector(this, url, "title")
         val nextSel = SiteProfiles.selector(this, url, "next")
         val prevSel = SiteProfiles.selector(this, url, "prev")
 
-        // Fast path: ask the already-rendered WebView for plain chapter text.
-        // Do not serialize the whole page or feed a large HTML document to Jsoup.
-        val js = """
-            (function(){
-              function visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}
-              function txt(e){return ((e&&(e.innerText||e.textContent))||'').trim();}
-              function pick(sel){
-                if(!sel)return null;
-                try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
-              }
-              function stable(e){
-                if(!e)return '';
-                var id=(e.id||'').trim();
-                if(id && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) return '#'+id;
-                var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
-                return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
-              }
-
-              var content=pick(__CONTENT__);
-              if(!content){
-                var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
-                  '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
-                  '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
-                  '#article','.article-content','.content','article','main'];
-                var best=null,score=0;
-                for(var i=0;i<sels.length;i++){
-                  var e=null;
-                  try{e=document.querySelector(sels[i]);}catch(x){continue;}
-                  if(!e||!visible(e))continue;
-                  var t=txt(e);
-                  if(t.length<300)continue;
-                  var sc=t.length+(e.querySelectorAll('p').length*250);
-                  if(sc>score){score=sc;best=e;}
-                }
-                content=best;
-              }
-              if(!content)return JSON.stringify({ok:false});
-
-              var titleEl=pick(__TITLE__);
-              if(!titleEl){
-                try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}
-              }
-              var title=txt(titleEl);
-              if(!title)title=document.title||'';
-
-              function link(kind,sel){
-                var e=pick(sel);
-                if(!e){
-                  var q=kind==='next'
-                    ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-                    : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-                  try{e=document.querySelector(q);}catch(x){e=null;}
-                }
-                if(e&&e.href)return {href:e.href,text:txt(e),selector:stable(e)};
-                return null;
-              }
-
-              var n=link('next',__NEXT__),p=link('prev',__PREV__);
-              var novel='';
-              try{
-                var m=document.querySelector('meta[property="og:novel:book_name"],meta[property="og:novel:novel_name"],meta[name="book_name"]');
-                novel=m?(m.getAttribute('content')||'').trim():'';
-              }catch(x){}
-              if(!novel){
-                try{
-                  var a=document.querySelector('a[href*="/novel/"],a[href*="/book/"],a[href*="/series/"]');
-                  if(a)novel=txt(a);
-                }catch(x){}
-              }
-
-              return JSON.stringify({
-                ok:true,
-                text:txt(content),
-                title:title,
-                pageTitle:document.title||'',
-                novel:novel,
-                contentSel:stable(content),
-                titleSel:titleEl?stable(titleEl):'',
-                next:n,
-                prev:p
-              });
-            })()
-        """.trimIndent()
-            .replace("__CONTENT__", JSONObject.quote(contentSel))
-            .replace("__TITLE__", JSONObject.quote(titleSel))
-            .replace("__NEXT__", JSONObject.quote(nextSel))
-            .replace("__PREV__", JSONObject.quote(prevSel))
-
-        novelWv.evaluateJavascript(js) { raw ->
+        // Fast path: inspect only the already-rendered chapter DOM.
+        // This is the same extraction strategy used by Novel Translator:
+        // bounded chapter-root search + leaf text units, with no whole-page
+        // outerHTML serialization. It also keeps short CJK lines.
+        novelWv.evaluateJavascript(
+            Js.fastExtract(contentSel, titleSel, nextSel, prevSel)
+        ) { raw ->
             val payload = decode(raw)
             if (payload.isBlank()) { cb(null); return@evaluateJavascript }
 
             try {
                 val o = JSONObject(payload)
                 if (!o.optBoolean("ok", false)) {
-                    cb(null)
+                    // WebNovel/JS-heavy fallback: preserve the older Jsoup path
+                    // only when the fast DOM extractor genuinely cannot find content.
+                    val host0 = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
+                    if (host0 == "webnovel.com" || host0.endsWith(".webnovel.com") || SiteRules.compat(this@MainActivity, url)) {
+                        extractWebNovelNow(cb)
+                    } else {
+                        cb(null)
+                    }
                     return@evaluateJavascript
                 }
 
                 val title = o.optString("title", "").trim()
                 val body = o.optString("text", "").trim()
-                if (body.length < 300) {
+                if (body.length < 80) {
                     cb(null)
                     return@evaluateJavascript
                 }
@@ -1083,6 +1003,7 @@ class MainActivity : Activity() {
             }
         }
     }
+
     private fun keyOf(ch: Chapter): String = if (ch.number.isNotEmpty()) ch.novel + "#" + ch.number else ch.url
 
     // Hash only the chapter body, not the heading. Some SPA readers update
