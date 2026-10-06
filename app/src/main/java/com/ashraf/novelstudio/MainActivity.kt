@@ -39,7 +39,6 @@ import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.browser.customtabs.CustomTabsIntent
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONArray
@@ -388,6 +387,14 @@ class MainActivity : Activity() {
         toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
     }
 
+    private fun loginChatbot() {
+        setMode(Mode.CHAT)
+        val url = Prefs.get(this, "botUrl", bots().optJSONObject(0)?.optString("u", "https://chatgpt.com/") ?: "https://chatgpt.com/")
+        chatWv.loadUrl(url)
+        CookieManager.getInstance().flush()
+        toast("🔐 এই WebView-তেই লগইন করো — session অ্যাপেই থাকবে")
+    }
+
     // ================================================================== browser tabs / shortcuts / history
     private fun initBrowserTabs() {
         browserTabs.clear()
@@ -662,20 +669,6 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun openLoginInChrome(url: String) {
-        val tab = CustomTabsIntent.Builder().setShowTitle(true).build()
-        if (packageManager.getLaunchIntentForPackage("com.android.chrome") != null) {
-            tab.intent.setPackage("com.android.chrome")
-        }
-        try {
-            tab.launchUrl(this, Uri.parse(url))
-            toast("🔐 লগইন Chrome-এ খুলেছি — শেষ হলে Novel Studio-তে ফিরে আসো")
-        } catch (_: Exception) {
-            try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-            catch (_: Exception) { toast("❌ লগইন পেজ খোলা গেল না") }
-        }
-    }
-
     private fun isChatLoginUrl(uri: Uri): Boolean {
         val host = (uri.host ?: "").lowercase()
         val path = (uri.path ?: "").lowercase()
@@ -691,14 +684,11 @@ class MainActivity : Activity() {
 
     private inner class ChatClient : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-            val r = request ?: return false
-            val scheme = r.url.scheme ?: ""
-            if (scheme != "http" && scheme != "https") return true
-            if (isChatLoginUrl(r.url)) {
-                openLoginInChrome(r.url.toString())
-                return true
-            }
-            return false
+            val scheme = request?.url?.scheme ?: ""
+            return scheme != "http" && scheme != "https"
+        }
+        override fun onPageFinished(view: WebView?, url: String?) {
+            CookieManager.getInstance().flush()
         }
     }
 
@@ -707,31 +697,27 @@ class MainActivity : Activity() {
             if (!isUserGesture || resultMsg == null) return false
             val popup = WebView(this@MainActivity)
             setup(popup)
-            popup.webViewClient = object : WebViewClient() {
-                override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
-                    if (url != null && isChatLoginUrl(Uri.parse(url))) {
-                        openLoginInChrome(url)
-                        v?.stopLoading()
-                    }
-                }
-                override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
-                    val u = r?.url ?: return false
-                    if (isChatLoginUrl(u)) {
-                        openLoginInChrome(u.toString())
-                        v?.stopLoading()
-                        return true
-                    }
-                    return false
-                }
+            popup.webViewClient = ChatClient()
+            val box = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(popup, LinearLayout.LayoutParams(MP, 0, 1f))
             }
+            val dialog = AlertDialog.Builder(this@MainActivity)
+                .setTitle("🔐 লগইন")
+                .setView(box)
+                .setNegativeButton("বন্ধ") { _, _ -> popup.stopLoading(); popup.destroy() }
+                .create()
+            dialog.setOnDismissListener { popup.stopLoading(); popup.destroy() }
             val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
             transport.webView = popup
             resultMsg.sendToTarget()
+            dialog.show()
             return true
         }
     }
 
     // ================================================================== navigation / search
+
     private fun go(s0: String) {
         val s = s0.trim()
         if (s.isEmpty()) return
@@ -1652,7 +1638,8 @@ class MainActivity : Activity() {
             menuFontLabel(),
             "🌐 সাইট সেটিং (যে সাইট চলে না)",
             "🔍 এই পেজ পরীক্ষা করো (রিপোর্ট কপি)",
-            menuSizeLabel()
+            menuSizeLabel(),
+            "🔐 চ্যাটবট লগইন"
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
@@ -1749,6 +1736,7 @@ class MainActivity : Activity() {
                         Store.find(this, ch)?.let { applyTranslation(ch, Store.read(this, it.id), false) }
                     }
                 }
+                24 -> { dlg.dismiss(); loginChatbot() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     labels[i] = menuFontLabel()
