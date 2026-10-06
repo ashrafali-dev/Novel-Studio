@@ -780,13 +780,6 @@ class MainActivity : Activity() {
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            if (view === novelWv && refreshPending && refreshToken == navToken && !webNovelCatalogPending) {
-                // Next/Prev landed on the new chapter: refresh it right away.
-                // Extraction (if enabled) starts on the finish of this reload.
-                refreshPending = false
-                view.reload()
-                return
-            }
             if (Prefs.adblock(this@MainActivity) && !AdBlock.exempt(Uri.parse(url ?: "").host)) {
                 view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
             }
@@ -817,8 +810,8 @@ class MainActivity : Activity() {
                         val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
                         autoCopy = autoExtract
                         polling = false
-                        refreshPending = true
-                        refreshToken = navToken
+                        refreshPending = false
+                        refreshToken = 0
                         view.loadUrl(target)
                     } else {
                         hideNavLoading()
@@ -847,7 +840,9 @@ class MainActivity : Activity() {
 
     private inner class NovelChrome : WebChromeClient() {
         override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
-            if (!isUserGesture || resultMsg == null) return false
+            // Novel reader should stay in the same WebView. Popup/new-window
+            // navigation is a common ad/redirect path; never open it here.
+            return false
             val t = WebView(this@MainActivity)
             t.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(v: WebView?, r: WebResourceRequest?): Boolean {
@@ -1265,21 +1260,18 @@ class MainActivity : Activity() {
                 pendUrl = ""
                 autoCopy = autoExtract
                 polling = false
-                // Refresh the new chapter first; extraction waits for it.
-                // If the click caused a real page load, onPageFinished already
-                // consumed refreshPending and reloaded, so nothing more here.
-                refreshPending = true
-                refreshToken = navToken
-                handler.postDelayed({
-                    if (token != navToken || !refreshPending) return@postDelayed
-                    refreshPending = false
-                    novelWv.reload()
-                    if (autoExtract) {
-                        waitChange(pendHash, 0, token, base.url)
-                    } else {
-                        hideNavLoading()
-                    }
-                }, 300)
+                // Never force a second reload. A real navigation will trigger
+                // onPageFinished; an SPA navigation is handled by the same
+                // fast extractor polling path below.
+                refreshPending = false
+                refreshToken = 0
+                if (autoExtract) {
+                    handler.postDelayed({
+                        if (token == navToken) pollExtract(0, token)
+                    }, 120)
+                } else {
+                    hideNavLoading()
+                }
             }
         }
     }
