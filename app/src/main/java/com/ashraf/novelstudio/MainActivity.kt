@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -48,13 +49,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.util.UUID
 import java.net.URLEncoder
 
 private data class BrowserTab(
     var label: String,
     var url: String,
     var state: Bundle? = null,
-    @Transient var thumbnail: Bitmap? = null
+    @Transient var thumbnail: Bitmap? = null,
+    var id: String = UUID.randomUUID().toString()
 )
 
 class MainActivity : Activity() {
@@ -400,6 +405,25 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== browser tabs / shortcuts / history
+    private fun tabThumbFile(tab: BrowserTab): File =
+        File(filesDir, "novelstudio_tab_${tab.id}.png")
+
+    private fun deleteTabThumbnail(tab: BrowserTab) {
+        try {
+            tab.thumbnail?.recycle()
+            tab.thumbnail = null
+            tabThumbFile(tab).delete()
+        } catch (_: Exception) {}
+    }
+
+    private fun loadTabThumbnail(tab: BrowserTab) {
+        if (tab.thumbnail != null && !tab.thumbnail!!.isRecycled) return
+        try {
+            val f = tabThumbFile(tab)
+            if (f.exists()) tab.thumbnail = BitmapFactory.decodeFile(f.absolutePath)
+        } catch (_: Exception) {}
+    }
+
     private fun initBrowserTabs() {
         browserTabs.clear()
         val raw = Prefs.get(this, "browserTabs", "")
@@ -407,13 +431,19 @@ class MainActivity : Activity() {
         for (i in 0 until saved.length()) {
             val o = saved.optJSONObject(i) ?: continue
             val u = o.optString("url", "")
-            if (u.isNotBlank()) browserTabs.add(BrowserTab(o.optString("label", "New Tab"), u))
+            if (u.isNotBlank()) {
+                val id = o.optString("id", "").ifBlank { UUID.randomUUID().toString() }
+                val tab = BrowserTab(o.optString("label", "New Tab"), u, id = id)
+                loadTabThumbnail(tab)
+                browserTabs.add(tab)
+            }
         }
         if (browserTabs.isEmpty()) {
             browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")))
         }
         activeTabIndex = Prefs.get(this, "browserActiveTab", "0").toIntOrNull()
             ?.coerceIn(0, browserTabs.lastIndex) ?: 0
+        persistBrowserTabs()
         renderTabs()
     }
 
@@ -421,6 +451,7 @@ class MainActivity : Activity() {
         val a = JSONArray()
         browserTabs.forEach { tab ->
             a.put(JSONObject().apply {
+                put("id", tab.id)
                 put("label", tab.label)
                 put("url", tab.url)
             })
@@ -507,6 +538,7 @@ class MainActivity : Activity() {
     private fun captureCurrentTabThumbnail() {
         if (browserTabs.isEmpty() || novelWv.width <= 0 || novelWv.height <= 0) return
         try {
+            val tab = browserTabs[activeTabIndex]
             val w = dp(320)
             val h = dp(210)
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -519,8 +551,15 @@ class MainActivity : Activity() {
             canvas.translate(dx, dy)
             canvas.scale(scale, scale)
             novelWv.draw(canvas)
-            browserTabs[activeTabIndex].thumbnail?.recycle()
-            browserTabs[activeTabIndex].thumbnail = bmp
+
+            try {
+                FileOutputStream(tabThumbFile(tab)).use { out ->
+                    bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+            } catch (_: Exception) {}
+
+            tab.thumbnail?.let { if (!it.isRecycled) it.recycle() }
+            tab.thumbnail = bmp
         } catch (_: Exception) {}
     }
 
@@ -566,13 +605,16 @@ class MainActivity : Activity() {
     }
 
     private fun closeBrowserTab(index: Int) {
+        if (index !in browserTabs.indices) return
+        val removed = browserTabs[index]
+        deleteTabThumbnail(removed)
         if (browserTabs.size <= 1) {
             browserTabs[0] = BrowserTab("New Tab", "https://duckduckgo.com/")
             activeTabIndex = 0
             novelWv.loadUrl(browserTabs[0].url)
         } else {
             browserTabs.removeAt(index)
-            activeTabIndex = (activeTabIndex.coerceAtMost(browserTabs.lastIndex))
+            activeTabIndex = activeTabIndex.coerceAtMost(browserTabs.lastIndex)
             val tab = browserTabs[activeTabIndex]
             if (tab.state != null) {
                 try { novelWv.restoreState(tab.state!!) } catch (_: Exception) { novelWv.loadUrl(tab.url) }
@@ -651,6 +693,7 @@ class MainActivity : Activity() {
                                 showTabGrid()
                             }
                             1 -> {
+                                browserTabs.forEach { deleteTabThumbnail(it) }
                                 browserTabs.clear()
                                 browserTabs.add(BrowserTab("New Tab", "https://duckduckgo.com/"))
                                 activeTabIndex = 0
@@ -744,23 +787,26 @@ class MainActivity : Activity() {
                     }
                 }
 
+                loadTabThumbnail(tab)
                 val preview = ImageView(this).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     setBackgroundColor(0xFF18181C.toInt())
                     tab.thumbnail?.let { if (!it.isRecycled) setImageBitmap(it) }
+                    if (tab.thumbnail == null) setImageResource(android.R.drawable.ic_menu_view)
                     layoutParams = FrameLayout.LayoutParams(MP, dp(220))
                 }
                 card.addView(preview)
 
                 val label = TextView(this).apply {
                     text = tab.label.ifBlank { Uri.parse(tab.url).host ?: "New Tab" } +
-                        "\n" + (Uri.parse(tab.url).host ?: tab.url)
-                    textSize = 12f
+                        "\n" + (Uri.parse(tab.url).host ?: "") +
+                        "\n" + tab.url
+                    textSize = 11f
                     setTextColor(0xFFF2F2F4.toInt())
-                    maxLines = 2
+                    maxLines = 3
                     ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(dp(10), dp(8), dp(40), dp(4))
-                    layoutParams = FrameLayout.LayoutParams(MP, dp(58), Gravity.BOTTOM)
+                    setPadding(dp(10), dp(5), dp(40), dp(4))
+                    layoutParams = FrameLayout.LayoutParams(MP, dp(70), Gravity.BOTTOM)
                 }
                 card.addView(label)
 
@@ -1045,6 +1091,7 @@ class MainActivity : Activity() {
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
             if (view === novelWv && url != null) {
                 browserTabs.getOrNull(activeTabIndex)?.url = url
+                persistBrowserTabs()
                 if (!urlBar.hasFocus()) urlBar.setText(url)
             }
         }
@@ -1065,7 +1112,17 @@ class MainActivity : Activity() {
                     browserTabs.getOrNull(activeTabIndex)?.label =
                         (view.title ?: "").ifBlank { Uri.parse(url).host ?: "Novel" }
                     Store.addHistory(this@MainActivity, url, view.title ?: "")
+                    persistBrowserTabs()
                     renderTabs()
+                    val finishedUrl = url
+                    handler.postDelayed({
+                        if (view === novelWv && !restoringTab &&
+                            novelWv.url == finishedUrl &&
+                            activeTabIndex in browserTabs.indices) {
+                            captureCurrentTabThumbnail()
+                            persistBrowserTabs()
+                        }
+                    }, 350L)
                 }
             }
 
