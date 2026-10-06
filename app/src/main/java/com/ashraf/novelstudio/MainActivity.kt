@@ -482,7 +482,7 @@ class MainActivity : Activity() {
                 setPadding(dp(10), 0, dp(10), 0)
                 isSingleLine = true
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f)
+                layoutParams = LinearLayout.LayoutParams(dp(180), dp(34))
             }
             tabStrip.addView(title)
         }
