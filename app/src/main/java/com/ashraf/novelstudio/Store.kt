@@ -53,8 +53,16 @@ object Store {
         val title = ch?.title ?: "অনুবাদ"
         val url = ch?.url ?: ""
         val items = list(c).toMutableList()
+        val normTitle = title.trim().lowercase().replace(Regex("\\s+"), " ")
+        // Same-URL readers (notably WebNovel) use one reader URL for many
+        // chapters. Number/title identity must therefore win over URL identity.
         val existing = items.firstOrNull {
-            (url.isNotEmpty() && it.url == url) || (number.isNotEmpty() && it.novel == novel && it.number == number)
+            (number.isNotEmpty() && it.novel == novel && it.number == number) ||
+            (normTitle.isNotEmpty() && it.novel == novel &&
+                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
+        } ?: items.firstOrNull {
+            url.isNotEmpty() && it.url == url &&
+                (normTitle.isEmpty() || it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
         }
         val id = existing?.id ?: System.currentTimeMillis()
         File(dir(c), "$id.txt").writeText(text)
@@ -68,8 +76,16 @@ object Store {
     fun find(c: Context, ch: Chapter): Tr? {
         val raw = ch.novel.ifBlank { "Unknown" }
         val novel = Prefs.get(c, "alias_$raw", raw)
+        val normTitle = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
+        // Match chapter number/title before URL so a shared reader URL can
+        // never return the translation belonging to the previous chapter.
         return list(c).firstOrNull {
-            (ch.url.isNotEmpty() && it.url == ch.url) || (ch.number.isNotEmpty() && it.novel == novel && it.number == ch.number)
+            (ch.number.isNotEmpty() && it.novel == novel && it.number == ch.number) ||
+            (normTitle.isNotEmpty() && it.novel == novel &&
+                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
+        } ?: list(c).firstOrNull {
+            ch.url.isNotEmpty() && it.url == ch.url &&
+                (normTitle.isEmpty() || it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
         }
     }
 
