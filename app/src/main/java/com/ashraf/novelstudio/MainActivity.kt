@@ -1196,27 +1196,17 @@ class MainActivity : Activity() {
                     // Novel543 is explicitly included because its chapter body is
                     // stable at .chapter-content but can be missed while its DOM is
                     // still settling.
-                    if (isNovel543 ||
-                        host == "webnovel.com" || host.endsWith(".webnovel.com") ||
-                        SiteRules.compat(this@MainActivity, url)) {
-                        extractWebNovelNow(cb)
-                    } else {
-                        cb(null)
-                    }
+                    extractWebNovelNow(cb)
                     return@evaluateJavascript
                 }
 
                 val title = o.optString("title", "").trim()
                 val body = o.optString("text", "").trim()
-                if (body.length < 80) {
+                if (body.length < 120) {
                     // A partially-rendered Novel543 DOM can return only the title
                     // or a short fragment on the first JS pass. Let the proven
                     // parser retry the same page instead of declaring failure.
-                    if (isNovel543) {
-                        extractWebNovelNow(cb)
-                    } else {
-                        cb(null)
-                    }
+                    extractWebNovelNow(cb)
                     return@evaluateJavascript
                 }
 
@@ -1292,6 +1282,21 @@ class MainActivity : Activity() {
     }
 
     private fun cleanUrl(u: String): String = u.substringBefore('#').trimEnd('/')
+
+    private fun adjacentUrlIsSafe(current: String, target: String): Boolean {
+        return try {
+            val c = Uri.parse(current)
+            val t = Uri.parse(target)
+            val ch = c.host?.lowercase().orEmpty()
+            val th = t.host?.lowercase().orEmpty()
+            if (ch.isBlank() || th.isBlank()) return false
+            if (ch != th && !th.endsWith(".$ch") && !ch.endsWith(".$th")) return false
+            val cd = c.path.orEmpty().trim('/').split('/').filter { it.isNotBlank() }.size
+            val td = t.path.orEmpty().trim('/').split('/').filter { it.isNotBlank() }.size
+            td >= cd
+        } catch (_: Exception) { false }
+    }
+
 
     private fun isNewPage(ch: Chapter, oldUrl: String, oldHash: Int): Boolean {
         // WebNovel can reuse the reader URL while replacing the chapter.
@@ -1423,7 +1428,7 @@ class MainActivity : Activity() {
             val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
 
-            if (target != null) {
+            if (target != null && adjacentUrlIsSafe(currentUrl, target)) {
                 // Extension-style fast path: use the adjacent chapter URL
                 // already discovered from the rendered DOM. This also works
                 // for WebNovel and avoids opening /catalog on every Next click.
