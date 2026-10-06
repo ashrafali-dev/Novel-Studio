@@ -434,12 +434,19 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     fun fastExtract(contentSel: String = "", titleSel: String = "", nextSel: String = "", prevSel: String = ""): String {
         return """
 (function(){
-  var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,INPUT:1,TEXTAREA:1,BUTTON:1,SELECT:1,OPTION:1,NAV:1,FOOTER:1,HEADER:1};
-  var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1};
-  function clean(s){return String(s||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
-  function text(e){return clean(e?(e.innerText||e.textContent):'');}
+  // Global fast path: selector-first, one chapter-root scan, one text read.
+  // Do NOT walk/serialize the whole document unless no chapter root exists.
+  var BAD='script,style,noscript,iframe,nav,header,footer,aside,form,button,svg,canvas,video,audio,input,textarea,select,option,.ads,.ad,[class*=advert],[id*=advert],[class*=comment],[id*=comment],[class*=sidebar],[class*=popup],[id*=popup]';
+  function clean(s){
+    return String(s||'').replace(/\u00a0/g,' ')
+      .replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n')
+      .replace(/\\n{3,}/g,'\\n\\n').trim();
+  }
   function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
-  function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
+  function pick(sel){
+    if(!sel)return null;
+    try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
+  }
   function stable(e){
     if(!e)return '';
     var id=(e.id||'').trim();
@@ -447,162 +454,78 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
     return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
   }
-  function meaningful(s){return /[\\p{L}\\p{N}]/u.test(s||'');}
-  function hasBlockChild(e){return Array.from(e.children||[]).some(function(c){return !SKIP[c.tagName]&&!!BLOCK[c.tagName];});}
-
-  function roots(){
-    var host=location.hostname.toLowerCase(), sels=[];
-    if(host.indexOf('novel543.com')>=0)sels.push('.chapter-content','#content','.article-content');
-    if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
-    if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
-    sels.push(
-      __CONTENT__,
-      '.cha-words','.cha-content','.chapter-content','.chapter_content',
-      '.article-content','#content','article[role="main"]','article','main','.content',
-      '#chapter-content','#chr-content','.chr-c','.reading-content','.text-left',
-      '.entry-content','.chapter-body','.novel_content','.j_readContent','.txt',
-      '#chaptercontent','.chapter-c','#article'
-    );
-    var seen=[],out=[];
-    sels.forEach(function(sel){
-      if(!sel)return;
-      var list=[];
-      try{list=Array.from(document.querySelectorAll(sel));}catch(x){return;}
-      list.forEach(function(e){
-        if(!e||seen.indexOf(e)>=0||!e.isConnected)return;
-        if(text(e).length<80)return;
-        seen.push(e);out.push(e);
-      });
-    });
-    return out.slice(0,8);
+  function readRoot(root){
+    if(!root)return '';
+    var c=root.cloneNode(true);
+    try{c.querySelectorAll(BAD).forEach(function(x){x.remove();});}catch(x){}
+    return clean(c.innerText||c.textContent||'');
   }
-
-  function units(root){
-    var out=[],seen=[];
-    function add(e){
-      if(!e||SKIP[e.tagName]||seen.indexOf(e)>=0||!e.isConnected)return;
-      var t=text(e);
-      if(!meaningful(t))return;
-      if(hasBlockChild(e))return;
-      if(!t)return;
-      seen.push(e);out.push(e);
-    }
-
-    var all=[root].concat(Array.from(root.querySelectorAll('p,li,blockquote,h1,h2,h3,h4,h5,h6,div,section,article,pre')));
-    for(var i=0;i<all.length&&out.length<1500;i++)add(all[i]);
-
-    // Standalone inline lines are common in mobile readers, especially WebNovel.
-    Array.from(root.querySelectorAll('span,strong,b,font')).forEach(function(e){
-      if(out.length>=1500||e.children.length)return;
-      var p=e.parentElement,inText=false;
-      while(p&&p!==root){
-        if(['P','LI','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','PRE'].indexOf(p.tagName)>=0){inText=true;break;}
-        p=p.parentElement;
-      }
-      if(!inText)add(e);
-    });
-
-    // If the reader is mostly leaf spans, use them as the actual lines.
-    if(out.length<3){
-      Array.from(root.querySelectorAll('span')).forEach(function(e){
-        if(out.length>=1500||e.children.length)return;
-        var p=e.parentElement,inText=false;
-        while(p&&p!==root){
-          if(['P','LI','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','PRE'].indexOf(p.tagName)>=0){inText=true;break;}
-          p=p.parentElement;
-        }
-        if(!inText)add(e);
-      });
-    }
-
-    // Direct text nodes between blocks.
-    Array.from(root.querySelectorAll('div,section,article,p,li,blockquote,pre')).concat([root]).forEach(function(parent){
-      if(out.length>=1500||seen.indexOf(parent)>=0)return;
-      Array.from(parent.childNodes||[]).forEach(function(node){
-        if(node.nodeType!==Node.TEXT_NODE)return;
-        var v=clean(node.nodeValue);
-        if(!meaningful(v))return;
-        var span=document.createElement('span');
-        span.setAttribute('data-ns-fast-generated','1');
-        span.textContent=node.nodeValue;
-        node.parentNode.replaceChild(span,node);
-        add(span);
-      });
-    });
-    return out.slice(0,1500);
-  }
+  function meaningful(s){return /[\p{L}\p{N}]/u.test(s||'');}
 
   var host=location.hostname.toLowerCase();
-  // Novel543: use its already-rendered chapter container directly. The generic
-  // unit walker is intentionally avoided here because it repeatedly calls
-  // innerText/querySelectorAll over the entire chapter DOM and can turn a
-  // millisecond extraction into a noticeable delay on mobile WebView.
-  if(host==='novel543.com'||host.endsWith('.novel543.com')){
-    var nr=pick('.chapter-content')||pick(__CONTENT__)||document.querySelector('#content,.article-content');
-    if(nr){
-      var nb=text(nr);
-      if(meaningful(nb)&&nb.length>=80){
-        var ntEl=pick(__TITLE__);
-        if(!ntEl){try{ntEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
-        var nt=text(ntEl)||document.title||'';
-        function nlink(kind,sel){
-          var e=pick(sel);
-          if(!e){
-            var q=kind==='next'
-              ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-              : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-            try{e=document.querySelector(q);}catch(x){e=null;}
-          }
-          return e&&e.href?{href:e.href,text:text(e),selector:stable(e)}:null;
-        }
-        return JSON.stringify({ok:true,text:nb,segments:[nb],count:1,title:nt,
-          pageTitle:document.title||'',novel:'',contentSel:stable(nr),
-          titleSel:ntEl?stable(ntEl):'',next:nlink('next',__NEXT__),prev:nlink('prev',__PREV__)});
-      }
+  var sels=[];
+  if(__CONTENT__)sels.push(__CONTENT__);
+  if(host==='novel543.com'||host.endsWith('.novel543.com'))sels.push('.chapter-content','#content','.article-content');
+  if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
+  if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
+  sels.push(
+    '.cha-words','.cha-content','.chapter-content','.chapter_content',
+    '.article-content','#content','article[role="main"]','article','main','.content',
+    '#chapter-content','#chr-content','.chr-c','.reading-content','.text-left',
+    '.entry-content','.chapter-body','.novel_content','.j_readContent','.txt',
+    '#chaptercontent','.chapter-c','#article'
+  );
+
+  var root=null, body='';
+  var seen=[];
+  for(var i=0;i<sels.length;i++){
+    var sel=sels[i]; if(!sel||seen.indexOf(sel)>=0)continue; seen.push(sel);
+    var list=[];
+    try{list=Array.from(document.querySelectorAll(sel));}catch(x){continue;}
+    for(var k=0;k<Math.min(list.length,4);k++){
+      var el=list[k];
+      if(!visible(el))continue;
+      var t=readRoot(el);
+      if(!meaningful(t)||t.length<80)continue;
+      // Prefer the first strong chapter container. This avoids scanning dozens
+      // of generic divs and keeps normal extraction near the extension speed.
+      root=el; body=t; break;
     }
+    if(root)break;
   }
 
-  var content=pick(__CONTENT__);
-  var rootList=roots();
-  if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
-  var chosen=null,chosenUnits=[];
-  for(var r=0;r<rootList.length;r++){
-    var u=units(rootList[r]);
-    if(u.length>0){chosen=rootList[r];chosenUnits=u;break;}
-  }
-
-  // Last resort: reader-like containers, still bounded and never a whole-page scan.
-  if(!chosen){
-    var cand=Array.from(document.querySelectorAll('[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]'));
-    cand.sort(function(a,b){return text(b).length-text(a).length;});
-    for(var c=0;c<Math.min(12,cand.length);c++){
-      if(text(cand[c]).length<200)continue;
-      var cu=units(cand[c]);
-      if(cu.length){chosen=cand[c];chosenUnits=cu;break;}
+  // Only if no known selector worked: bounded reader-container fallback.
+  if(!root){
+    var cand=[];
+    try{cand=Array.from(document.querySelectorAll('[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]')).slice(0,30);}catch(x){}
+    var best=null,bestText='';
+    for(var z=0;z<cand.length;z++){
+      if(!visible(cand[z]))continue;
+      var ct=readRoot(cand[z]);
+      if(ct.length>bestText.length&&ct.length>=80){best=cand[z];bestText=ct;}
     }
+    root=best; body=bestText;
   }
 
-  if(!chosen||!chosenUnits.length)return JSON.stringify({ok:false});
+  if(!root||!body)return JSON.stringify({ok:false});
 
   var titleEl=pick(__TITLE__);
   if(!titleEl){try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
-  var title=text(titleEl);
+  var title=clean(titleEl?(titleEl.innerText||titleEl.textContent):'');
   if(!title)title=document.title||'';
 
   function link(kind,sel){
-    var e=pick(sel);
-    if(!e){
+    var el=pick(sel);
+    if(!el){
       var q=kind==='next'
         ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
         : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-      try{e=document.querySelector(q);}catch(x){e=null;}
+      try{el=document.querySelector(q);}catch(x){el=null;}
     }
-    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
+    if(el&&el.href)return {href:el.href,text:clean(el.innerText||el.textContent||''),selector:stable(el)};
     return null;
   }
 
-  var segs=chosenUnits.map(function(e){return text(e);}).filter(meaningful);
-  var body=segs.join('\\n\\n');
   var novel='';
   try{
     var m=document.querySelector('meta[property="og:novel:book_name"],meta[property="og:novel:novel_name"],meta[name="book_name"]');
@@ -611,22 +534,17 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(!novel){
     try{
       var a=document.querySelector('a[href*="/novel/"],a[href*="/book/"],a[href*="/series/"]');
-      if(a)novel=text(a);
+      if(a)novel=clean(a.innerText||a.textContent||'');
     }catch(x){}
   }
 
+  var segs=body.split(/\\n{2,}/).map(function(x){return x.trim();}).filter(meaningful);
+  if(!segs.length)segs=[body];
+
   return JSON.stringify({
-    ok:true,
-    text:body,
-    segments:segs,
-    count:segs.length,
-    title:title,
-    pageTitle:document.title||'',
-    novel:novel,
-    contentSel:stable(chosen),
-    titleSel:titleEl?stable(titleEl):'',
-    next:link('next',__NEXT__),
-    prev:link('prev',__PREV__)
+    ok:true,text:body,segments:segs,count:segs.length,title:title,
+    pageTitle:document.title||'',novel:novel,contentSel:stable(root),
+    titleSel:titleEl?stable(titleEl):'',next:link('next',__NEXT__),prev:link('prev',__PREV__)
   });
 })()
 """.trimIndent()
@@ -635,8 +553,5 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             .replace("__NEXT__", org.json.JSONObject.quote(nextSel))
             .replace("__PREV__", org.json.JSONObject.quote(prevSel))
     }
-
-
-
 
 }
