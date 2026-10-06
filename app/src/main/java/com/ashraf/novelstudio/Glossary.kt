@@ -93,7 +93,7 @@ object Glossary {
         val add = text.trim()
         if (add.isEmpty()) return
         val old = GlossaryStore.raw(c).trim()
-        write(c, if (old.isEmpty()) add else "\$old\\n\$add")
+        write(c, if (old.isEmpty()) add else "$old\n$add")
     }
 
     fun reload(c: Context) {
