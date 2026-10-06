@@ -1348,8 +1348,20 @@ class MainActivity : Activity() {
             val th = t.host?.lowercase().orEmpty()
             if (ch.isBlank() || th.isBlank()) return false
             if (ch != th && !th.endsWith(".$ch") && !ch.endsWith(".$th")) return false
-            val cd = c.path.orEmpty().trim('/').split('/').filter { it.isNotBlank() }.size
-            val td = t.path.orEmpty().trim('/').split('/').filter { it.isNotBlank() }.size
+
+            val cp = c.path.orEmpty().trimEnd('/')
+            val tp = t.path.orEmpty().trimEnd('/')
+            if (tp.isBlank() || tp == "/" || tp.equals("/home", true) ||
+                tp.equals("/index", true) || tp.endsWith("/home", true) ||
+                tp.endsWith("/index", true)) return false
+
+            // A Next/Prev target must not silently jump to a shallower page.
+            // Same-depth chapter URLs are valid, but the exact same URL is not.
+            if (cleanUrl(c.toString()) == cleanUrl(t.toString()) &&
+                c.query == t.query) return false
+
+            val cd = cp.trim('/').split('/').filter { it.isNotBlank() }.size
+            val td = tp.trim('/').split('/').filter { it.isNotBlank() }.size
             td >= cd
         } catch (_: Exception) { false }
     }
