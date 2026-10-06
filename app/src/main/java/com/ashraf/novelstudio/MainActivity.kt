@@ -1142,14 +1142,16 @@ class MainActivity : Activity() {
             val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
 
-            if (target != null && !webNovel) {
-                // Normal sites: remove the old page immediately, then load target.
+            if (target != null) {
+                // Extension-style fast path: use the adjacent chapter URL
+                // already discovered from the rendered DOM. This also works
+                // for WebNovel and avoids opening /catalog on every Next click.
                 wipeStale(clearNovelDom = true)
                 navToken = token
                 loadAndWait(target, token, base)
             } else {
-                // SPA/same-URL readers (including WebNovel): keep the live DOM
-                // only long enough for its own Next/Prev handler to run.
+                // Only fall back to the site's own navigation when the
+                // extractor could not discover an adjacent URL.
                 clickAndWait(dir, base, token)
             }
         }
@@ -1180,20 +1182,20 @@ class MainActivity : Activity() {
         pendHash = bodyHash(base)
         val autoExtract = Prefs.bool(this, "autoExtractNext", true)
         autoCopy = autoExtract
-        // Let onPageFinished refresh the page first, then start extraction.
+        // Load the target exactly once. The extension-style extractor reads
+        // the rendered DOM as soon as WebView finishes; no second reload.
         polling = false
-        refreshPending = true
-        refreshToken = navToken
+        refreshPending = false
+        refreshToken = 0
         novelWv.loadUrl(url)
         handler.postDelayed({
             if (token == navToken && autoCopy) {
                 autoCopy = false
                 polling = false
-                refreshPending = false
                 hideNavLoading()
-                toast("❌ পেজ লোড হয়নি — ⟳ চেপে আবার চেষ্টা করো")
+                toast("❌ নতুন chapter লোড হয়নি")
             }
-        }, 20000)
+        }, 8000)
     }
 
     // No usable link in the page (JS "Next" button, e.g. webnovel.com): click the site's own button
