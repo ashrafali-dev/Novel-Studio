@@ -172,97 +172,68 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var re=new RegExp('^('+'__ALTS__'+')$','i');
   var wre=new RegExp('__WORD__','i');
   var dir='__DIR__';
-  var here=location.href;
-
-  function pathDepth(u){
+  function visible(e){if(!e)return false;var r=e.getBoundingClientRect();return r.width>=3&&r.height>=3;}
+  function depth(u){try{return new URL(u,location.href).pathname.replace(/\\/+$/,'/').split('/').filter(Boolean).length;}catch(e){return -1;}}
+  function safeHref(h){
+    if(!h||/^(javascript:|#|mailto:|tel:)/i.test(h))return false;
     try{
-      var p=new URL(u,here).pathname.replace(/\\/+$/,'');
-      return p.split('/').filter(Boolean).length;
-    }catch(e){return 0;}
-  }
-  function sameSite(u){
-    try{
-      var a=new URL(u,here), b=new URL(here);
-      return a.hostname===b.hostname || a.hostname.endsWith('.'+b.hostname) || b.hostname.endsWith('.'+a.hostname);
+      var a=new URL(h,location.href),b=new URL(location.href);
+      if(a.hostname!==b.hostname&&!a.hostname.endsWith('.'+b.hostname)&&!b.hostname.endsWith('.'+a.hostname))return false;
+      var p=a.pathname.replace(/\\/+$/,'');
+      if(!p||p==='/'||/\\/(home|index)\\/?$/i.test(p))return false;
+      return depth(a.href)>=depth(b.href);
     }catch(e){return false;}
   }
-  function safeHref(el){
-    var h=el&&el.href;
-    if(!h)return true; // buttons/custom controls may navigate through JS
-    if(!sameSite(h))return false;
-    // A chapter link should not jump upward to the site root/book landing page.
-    if(pathDepth(h)<pathDepth(here))return false;
-    if(/^(javascript:|#)/i.test(String(h)))return false;
-    return true;
+  function score(e){
+    var tc=(e.textContent||'').replace(/\\s+/g,' ').trim();
+    var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(typeof e.className==='string'?e.className:'')+' '+(e.id||'')+' '+(e.getAttribute('data-testid')||'')+' '+(e.getAttribute('data-eventname')||'');
+    var href=e.getAttribute('href')||'',s=0;
+    if(re.test(tc))s+=8;else if(tc.length<=30&&wre.test(tc))s+=4;
+    if(wre.test(meta))s+=6;
+    if(/chapter|\\/(book|novel|read)\\//i.test(href)&&wre.test(href))s+=4;
+    if(/home|homepage|index|logo/i.test(meta+' '+tc)&&!/chapter/i.test(meta+' '+tc))s-=8;
+    if(/disabled/i.test(meta)||e.disabled||e.getAttribute('aria-disabled')==='true')return -999;
+    return s;
   }
-  function visible(e){
-    if(!e)return false;
-    var r=e.getBoundingClientRect();
-    return r.width>=3&&r.height>=3;
-  }
-
-  var direct = dir==='next'
+  var direct=dir==='next'
     ? ['#next','[id="next"]','[data-testid="next"]','[aria-label="Next Chapter" i]','[title="Next Chapter" i]','button[title*="Next Chapter" i]','a[title*="Next Chapter" i]','mov-button#next']
     : ['#prev','[id="prev"]','[data-testid="prev"]','[aria-label="Previous Chapter" i]','[title="Previous Chapter" i]','button[title*="Previous Chapter" i]','a[title*="Previous Chapter" i]','mov-button#prev'];
-
-  // 1) Strong semantic controls.
   for(var d=0;d<direct.length;d++){
-    var ds=[];
-    try{ds=[].slice.call(document.querySelectorAll(direct[d]));}catch(e){ds=[];}
+    var ds=[];try{ds=[].slice.call(document.querySelectorAll(direct[d]));}catch(e){ds=[];}
     for(var q=0;q<ds.length;q++){
-      var de=ds[q];
-      if(visible(de)&&!de.disabled&&de.getAttribute('aria-disabled')!=='true'&&safeHref(de)){
-        try{de.click();return 'clicked';}catch(x){}
-      }
+      var de=ds[q];if(!visible(de))continue;
+      var href=de.getAttribute('href')||'';if(href&&!safeHref(href))continue;
+      try{de.click();return 'clicked';}catch(x){}
     }
   }
-
-  // 2) Prefer real links/buttons. Never click a link that points upward to
-  // the homepage/book landing page just because it contains "next".
-  var pool=[];
-  try{pool=[].slice.call(document.querySelectorAll('a[href],button,[role=button],mov-button'));}catch(e){pool=[];}
+  var nodes=[];try{nodes=[].slice.call(document.querySelectorAll('a[href],button,[role=button],div,span,li,i'));}catch(e){nodes=[];}
   var best=null,bs=0;
-  for(var i=0;i<pool.length;i++){
-    var e=pool[i],tc=(e.textContent||'').replace(/\\s+/g,' ').trim();
-    if(tc.length>60||!visible(e)||!safeHref(e))continue;
-    var cn=(typeof e.className==='string')?e.className:'';
-    var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+cn+' '+(e.id||'')+' '+(e.getAttribute('data-eventname')||'');
-    var href=(e.getAttribute('href')||'');
-    var s=0;
-    if(re.test(tc))s+=7; else if(tc.length<=30&&wre.test(tc))s+=4;
-    if(wre.test(meta))s+=5;
-    if(/chapter|\\/book\\//i.test(href)&&wre.test(href))s+=3;
-    if(/disabled/i.test(cn)||e.disabled||e.getAttribute('aria-disabled')==='true')continue;
-    if(/home|homepage|index/i.test(meta)&&!/chapter/i.test(meta))s-=5;
-    if(s>bs){bs=s;best=e;}
+  for(var i=0;i<nodes.length;i++){
+    var e=nodes[i];if(!visible(e))continue;var s=score(e);if(s<=0)continue;
+    var href=e.getAttribute('href')||'';if(href&&!safeHref(href))continue;
+    var target=e;
+    try{
+      var clickable=e.closest('a,button,[role=button]');
+      if(clickable&&visible(clickable)){
+        var ch=clickable.getAttribute('href')||'';
+        if(!ch||safeHref(ch)){target=clickable;s+=2;}else continue;
+      }
+    }catch(x){}
+    var th=target.getAttribute('href')||'';if(th&&!safeHref(th))continue;
+    if(s>bs){bs=s;best=target;}
   }
-  if(best){
-    try{best.click();return 'clicked';}catch(x){}
-  }
-
-  // 3) Last resort for JS-only div/span controls. These have no href, so the
-  // safety check above cannot reject a URL; only click when the semantic text
-  // or metadata is a strong match.
-  var generic=[];
-  try{generic=[].slice.call(document.querySelectorAll('div,span,li,i'));}catch(e){generic=[];}
+  if(best){try{best.click();return 'clicked';}catch(x){}}
+  var generic=[];try{generic=[].slice.call(document.querySelectorAll('div,span,li,i'));}catch(e){generic=[];}
   best=null;bs=0;
   for(var j=0;j<generic.length;j++){
-    var g=generic[j],gt=(g.textContent||'').replace(/\\s+/g,' ').trim();
-    if(gt.length>30||!visible(g))continue;
-    var gm=(g.getAttribute('aria-label')||'')+' '+(g.getAttribute('title')||'')+' '+(typeof g.className==='string'?g.className:'')+' '+(g.id||'');
-    var gs=0;
-    if(re.test(gt))gs+=5;
-    if(wre.test(gm))gs+=4;
-    if(/chapter/i.test(gm+gt))gs+=2;
+    var g=generic[j];if(!visible(g))continue;var gs=score(g);if(gs<8)continue;
+    try{var a=g.closest('a[href]');if(a&&!safeHref(a.getAttribute('href')||''))continue;}catch(x){}
     if(gs>bs){bs=gs;best=g;}
   }
-  if(best&&bs>=5){
-    try{best.click();return 'clicked';}catch(x){}
-  }
+  if(best){try{best.click();return 'clicked';}catch(x){}}
   return 'none';
 })()
 """
-
 
     fun clickNext(dir: String): String {
         val alts = if (dir == "next")
@@ -484,24 +455,12 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     fun fastExtract(contentSel: String = "", titleSel: String = "", nextSel: String = "", prevSel: String = ""): String {
         return """
 (function(){
-  // Fast extraction: inspect only a small set of reader candidates. The normal
-  // path never serializes the whole document and never mutates the live DOM.
-  var BAD='script,style,noscript,iframe,nav,header,footer,aside,form,button,svg,canvas,video,audio,input,textarea,select,option,.ads,.ad,[class*=advert],[id*=advert],[class*=comment],[id*=comment],[class*=sidebar],[id*=sidebar],[class*=popup],[id*=popup]';
-
-  function clean(s){
-    return String(s||'').replace(/\u00a0/g,' ')
-      .replace(/[ \\t]+\\n/g,'\\n')
-      .replace(/\\n[ \\t]+/g,'\\n')
-      .replace(/\\n{3,}/g,'\\n\\n').trim();
-  }
-  function visible(e){
-    return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);
-  }
-  function meaningful(s){return /[\\p{L}\\p{N}]/u.test(s||'');}
-  function pick(sel){
-    if(!sel)return null;
-    try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}
-  }
+  var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,INPUT:1,TEXTAREA:1,BUTTON:1,SELECT:1,OPTION:1,NAV:1,FOOTER:1,HEADER:1};
+  var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1};
+  function clean(s){return String(s||'').replace(/\\u00a0/g,' ').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n[ \\t]+/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim();}
+  function text(e){return clean(e?(e.innerText||e.textContent):'');}
+  function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
+  function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
   function stable(e){
     if(!e)return '';
     var id=(e.id||'').trim();
@@ -509,131 +468,132 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
     return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
   }
-  function readRoot(root){
-    if(!root)return '';
-    var c=root.cloneNode(true);
-    try{c.querySelectorAll(BAD).forEach(function(x){x.remove();});}catch(x){}
-    return clean(c.innerText||c.textContent||'');
+  function meaningful(s){return /[\\p{L}\\p{N}]/u.test(s||'');}
+  function hasBlockChild(e){return Array.from(e.children||[]).some(function(c){return !SKIP[c.tagName]&&!!BLOCK[c.tagName];});}
+
+  function roots(){
+    var host=location.hostname.toLowerCase(), sels=[];
+    if(host.indexOf('novel543.com')>=0)sels.push('.chapter-content','#content','.article-content');
+    if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
+    if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
+    sels.push(
+      __CONTENT__,
+      '.cha-words','.cha-content','.chapter-content','.chapter_content',
+      '.article-content','#content','article[role="main"]','article','main','.content',
+      '#chapter-content','#chr-content','.chr-c','.reading-content','.text-left',
+      '.entry-content','.chapter-body','.novel_content','.j_readContent','.txt',
+      '#chaptercontent','.chapter-c','#article'
+    );
+    var seen=[],out=[];
+    sels.forEach(function(sel){
+      if(!sel)return;
+      var list=[];
+      try{list=Array.from(document.querySelectorAll(sel));}catch(x){return;}
+      list.forEach(function(e){
+        if(!e||seen.indexOf(e)>=0||!e.isConnected)return;
+        if(text(e).length<80)return;
+        seen.push(e);out.push(e);
+      });
+    });
+    return out.slice(0,8);
   }
-  function quality(t){
-    if(!meaningful(t)||t.length<80)return -1;
-    var lines=t.split(/\\n+/).filter(function(x){return meaningful(x);});
-    var score=Math.min(t.length,12000)/1200 + Math.min(lines.length,80)*0.08;
-    // Very small fragments are usually navigation/title, while enormous roots
-    // are often the whole page shell. Prefer normal chapter-sized containers.
-    if(t.length<180)score-=3;
-    if(t.length>180000)score-=6;
-    return score;
+
+  function units(root){
+    var out=[],seen=[];
+    function add(e){
+      if(!e||SKIP[e.tagName]||seen.indexOf(e)>=0||!e.isConnected)return;
+      var t=text(e);
+      if(!meaningful(t))return;
+      if(hasBlockChild(e))return;
+      if(!t)return;
+      seen.push(e);out.push(e);
+    }
+
+    var all=[root].concat(Array.from(root.querySelectorAll('p,li,blockquote,h1,h2,h3,h4,h5,h6,div,section,article,pre')));
+    for(var i=0;i<all.length&&out.length<1500;i++)add(all[i]);
+
+    // Standalone inline lines are common in mobile readers, especially WebNovel.
+    Array.from(root.querySelectorAll('span,strong,b,font')).forEach(function(e){
+      if(out.length>=1500||e.children.length)return;
+      var p=e.parentElement,inText=false;
+      while(p&&p!==root){
+        if(['P','LI','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','PRE'].indexOf(p.tagName)>=0){inText=true;break;}
+        p=p.parentElement;
+      }
+      if(!inText)add(e);
+    });
+
+    // If the reader is mostly leaf spans, use them as the actual lines.
+    if(out.length<3){
+      Array.from(root.querySelectorAll('span')).forEach(function(e){
+        if(out.length>=1500||e.children.length)return;
+        var p=e.parentElement,inText=false;
+        while(p&&p!==root){
+          if(['P','LI','BLOCKQUOTE','H1','H2','H3','H4','H5','H6','PRE'].indexOf(p.tagName)>=0){inText=true;break;}
+          p=p.parentElement;
+        }
+        if(!inText)add(e);
+      });
+    }
+
+    // Direct text nodes between blocks.
+    Array.from(root.querySelectorAll('div,section,article,p,li,blockquote,pre')).concat([root]).forEach(function(parent){
+      if(out.length>=1500||seen.indexOf(parent)>=0)return;
+      Array.from(parent.childNodes||[]).forEach(function(node){
+        if(node.nodeType!==Node.TEXT_NODE)return;
+        var v=clean(node.nodeValue);
+        if(!meaningful(v))return;
+        var span=document.createElement('span');
+        span.setAttribute('data-ns-fast-generated','1');
+        span.textContent=node.nodeValue;
+        node.parentNode.replaceChild(span,node);
+        add(span);
+      });
+    });
+    return out.slice(0,1500);
   }
 
-  var host=location.hostname.toLowerCase();
-  var sels=[];
-  if(__CONTENT__)sels.push(__CONTENT__);
-  if(host==='novel543.com'||host.endsWith('.novel543.com'))sels.push('.chapter-content','#content','.article-content');
-  if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content');
-  if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
+  var content=pick(__CONTENT__);
+  var rootList=roots();
+  if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
+  var chosen=null,chosenUnits=[];
+  for(var r=0;r<rootList.length;r++){
+    var u=units(rootList[r]);
+    if(u.length>0){chosen=rootList[r];chosenUnits=u;break;}
+  }
 
-  // Site/reader-specific selectors come before generic wrappers.
-  sels.push(
-    '.cha-words','.cha-content','.chapter-content','.chapter_content',
-    '.article-content','#content','#chapter-content','#chr-content','.chr-c',
-    '.reading-content','.text-left','.entry-content','.chapter-body',
-    '.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c','#article',
-    'article[role="main"]','article','main','.content'
-  );
-
-  var seen=[], candidates=[];
-  for(var i=0;i<sels.length;i++){
-    var sel=sels[i];
-    if(!sel||seen.indexOf(sel)>=0)continue;
-    seen.push(sel);
-    var list=[];
-    try{list=Array.from(document.querySelectorAll(sel));}catch(x){continue;}
-    // A selector normally has one reader root. Inspect only a few matches.
-    for(var k=0;k<Math.min(list.length,5);k++){
-      var el=list[k];
-      if(!visible(el))continue;
-      var t=readRoot(el), q=quality(t);
-      if(q<0)continue;
-      // Explicit/site-specific selectors get a small preference over generic
-      // wrappers, while still allowing a better candidate to win.
-      var bonus=(i<12?2:0);
-      candidates.push({el:el,text:t,score:q+bonus,sel:sel});
+  // Last resort: reader-like containers, still bounded and never a whole-page scan.
+  if(!chosen){
+    var cand=Array.from(document.querySelectorAll('[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]'));
+    cand.sort(function(a,b){return text(b).length-text(a).length;});
+    for(var c=0;c<Math.min(12,cand.length);c++){
+      if(text(cand[c]).length<200)continue;
+      var cu=units(cand[c]);
+      if(cu.length){chosen=cand[c];chosenUnits=cu;break;}
     }
   }
 
-  // If known selectors fail, bounded reader-like fallback. Never scan the whole
-  // page recursively; cap the candidate list.
-  if(!candidates.length){
-    var cand=[];
-    try{
-      cand=Array.from(document.querySelectorAll(
-        '[class*="chapter"],[class*="content"],[class*="words"],[id*="chapter"],[id*="content"],[id*="words"]'
-      )).slice(0,30);
-    }catch(x){}
-    for(var z=0;z<cand.length;z++){
-      if(!visible(cand[z]))continue;
-      var ct=readRoot(cand[z]), cq=quality(ct);
-      if(cq>=0)candidates.push({el:cand[z],text:ct,score:cq,sel:''});
-    }
-  }
-
-  if(!candidates.length)return JSON.stringify({ok:false});
-
-  // Prefer the strongest chapter root. A generic page wrapper can be huge, so
-  // reward explicit chapter selectors and penalize unusually shell-like roots.
-  candidates.sort(function(a,b){return b.score-a.score;});
-  var chosen=candidates[0], root=chosen.el, body=chosen.text;
-  if(!root||!body)return JSON.stringify({ok:false});
+  if(!chosen||!chosenUnits.length)return JSON.stringify({ok:false});
 
   var titleEl=pick(__TITLE__);
-  if(!titleEl){
-    try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}
-  }
-  var title=clean(titleEl?(titleEl.innerText||titleEl.textContent):'');
+  if(!titleEl){try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
+  var title=text(titleEl);
   if(!title)title=document.title||'';
 
-  function pathDepth(u){
-    try{return new URL(u,location.href).pathname.replace(/\\/+$/,'').split('/').filter(Boolean).length;}
-    catch(e){return 0;}
-  }
-  function sameSite(u){
-    try{
-      var a=new URL(u,location.href), b=new URL(location.href);
-      return a.hostname===b.hostname || a.hostname.endsWith('.'+b.hostname) || b.hostname.endsWith('.'+a.hostname);
-    }catch(e){return false;}
-  }
-  function plausible(h){
-    if(!h||!sameSite(h))return false;
-    if(/^(javascript:|#)/i.test(h))return false;
-    return pathDepth(h)>=pathDepth(location.href);
-  }
   function link(kind,sel){
-    var el=pick(sel);
-    if(el&&el.href&&plausible(el.href)){
-      return {href:el.href,text:clean(el.innerText||el.textContent||''),selector:stable(el)};
+    var e=pick(sel);
+    if(!e){
+      var q=kind==='next'
+        ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
+        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
+      try{e=document.querySelector(q);}catch(x){e=null;}
     }
-    var q=kind==='next'
-      ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-      : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-    var els=[];
-    try{els=Array.from(document.querySelectorAll(q));}catch(x){els=[];}
-    var best=null,bs=0;
-    for(var j=0;j<els.length;j++){
-      var e=els[j];
-      if(!visible(e)||!e.href||!plausible(e.href))continue;
-      var txt=clean(e.innerText||e.textContent||'');
-      var meta=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(typeof e.className==='string'?e.className:'')+' '+(e.id||'');
-      var s=0;
-      if(txt.length<=40&&new RegExp('^('+(kind==='next'?'next|next chapter|next ›|next »|›|»|→|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট':'prev|previous|prev chapter|previous chapter|‹|«|←|上一章|上一页|上一话|이전|前へ|前の話|আগের|পূর্ববর্তী')+')$','i').test(txt))s+=7;
-      if(new RegExp(kind==='next'?'next':'prev(?!iew)','i').test(meta))s+=5;
-      if(/chapter|\\/book\\//i.test(e.getAttribute('href')||''))s+=2;
-      if(/home|homepage|index/i.test(meta)&&!/chapter/i.test(meta))s-=5;
-      if(s>bs){bs=s;best=e;}
-    }
-    return best?{href:best.href,text:clean(best.innerText||best.textContent||''),selector:stable(best)}:null;
+    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
+    return null;
   }
 
+  var segs=chosenUnits.map(function(e){return text(e);}).filter(meaningful);
+  var body=segs.join('\\n\\n');
   var novel='';
   try{
     var m=document.querySelector('meta[property="og:novel:book_name"],meta[property="og:novel:novel_name"],meta[name="book_name"]');
@@ -642,17 +602,22 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(!novel){
     try{
       var a=document.querySelector('a[href*="/novel/"],a[href*="/book/"],a[href*="/series/"]');
-      if(a)novel=clean(a.innerText||a.textContent||'');
+      if(a)novel=text(a);
     }catch(x){}
   }
 
-  var segs=body.split(/\\n{2,}/).map(function(x){return x.trim();}).filter(meaningful);
-  if(!segs.length)segs=[body];
-
   return JSON.stringify({
-    ok:true,text:body,segments:segs,count:segs.length,title:title,
-    pageTitle:document.title||'',novel:novel,contentSel:stable(root),
-    titleSel:titleEl?stable(titleEl):'',next:link('next',__NEXT__),prev:link('prev',__PREV__)
+    ok:true,
+    text:body,
+    segments:segs,
+    count:segs.length,
+    title:title,
+    pageTitle:document.title||'',
+    novel:novel,
+    contentSel:stable(chosen),
+    titleSel:titleEl?stable(titleEl):'',
+    next:link('next',__NEXT__),
+    prev:link('prev',__PREV__)
   });
 })()
 """.trimIndent()
@@ -661,5 +626,8 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             .replace("__NEXT__", org.json.JSONObject.quote(nextSel))
             .replace("__PREV__", org.json.JSONObject.quote(prevSel))
     }
+
+
+
 
 }
