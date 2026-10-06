@@ -1479,14 +1479,18 @@ class MainActivity : Activity() {
         updateProgressUi()
     }
 
-    // ● : auto mode + translation shown -> switch original/translation; otherwise handle the chapter on the page now
+    // ● : instant extract/copy. This button must ALWAYS run a fresh extraction;
+    // auto mode or an existing translation must never turn it into a view-toggle.
     private fun extractCopy() {
-        if (Prefs.auto(this) && hasTr) { toggleView(); return }
         navToken++
         val token = navToken
         extractNow { ch ->
             if (token != navToken) return@extractNow
-            if (ch == null) toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি") else handleChapter(ch)
+            if (ch == null) {
+                toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
+            } else {
+                handleChapter(ch)
+            }
         }
     }
 
