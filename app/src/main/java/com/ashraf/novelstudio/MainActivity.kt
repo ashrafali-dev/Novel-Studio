@@ -1344,7 +1344,7 @@ class MainActivity : Activity() {
         if (pua > 20 && pua * 20 > chapterText.length) {
             toast("⚠ এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে")
         }
-        val g = if (Prefs.glossaryOn(this)) Glossary.block(chapterText) else ""
+        val g = if (Prefs.glossaryOn(this)) Glossary.block(this, chapterText) else ""
         return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
     }
 
