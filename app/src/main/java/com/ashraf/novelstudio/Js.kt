@@ -491,7 +491,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       try{list=Array.from(document.querySelectorAll(sel));}catch(x){return;}
       list.forEach(function(e){
         if(!e||seen.indexOf(e)>=0||!e.isConnected)return;
-        if(text(e).length<80)return;
+        if(text(e).length<20)return;
         seen.push(e);out.push(e);
       });
     });
@@ -582,13 +582,35 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   function link(kind,sel){
     var e=pick(sel);
-    if(!e){
-      var q=kind==='next'
-        ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-      try{e=document.querySelector(q);}catch(x){e=null;}
-    }
     if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
+
+    var word=kind==='next'
+      ? /next|next\\s+chapter|next\\s+page|下一|다음|次の|পরবর্তী|নেক্সট/i
+      : /prev|previous|prev\\s+chapter|上一|이전|前の|আগের|পূর্ববর্তী/i;
+    var exact=kind==='next'
+      ? /^(next|next chapter|next page|next episode|next\\s*[>»→]|[>»→]|下一章|下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট)$/i
+      : /^(prev|previous|previous chapter|previous page|previous episode|prev\\s*[<«←]|[<«←]|上一章|上一页|上一话|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী)$/i;
+
+    var q=[];
+    try{q=Array.from(document.querySelectorAll('a[href],button,[role="button"]'));}catch(x){q=[];}
+    var best=null,bs=0;
+    for(var i=0;i<q.length;i++){
+      var a=q[i],href=a.href||a.getAttribute('href')||'';
+      if(!href||href.indexOf('javascript:')===0)continue;
+      var tx=(a.textContent||'').replace(/\\s+/g,' ').trim();
+      var meta=((a.getAttribute('aria-label')||'')+' '+(a.getAttribute('title')||'')+' '+
+                (typeof a.className==='string'?a.className:'')+' '+(a.id||'')+' '+href).trim();
+      var score=0;
+      if(exact.test(tx))score+=12;
+      else if(tx.length<=40&&word.test(tx))score+=7;
+      if(word.test(meta))score+=5;
+      if(/chapter|episode|page|novel/i.test(meta))score+=2;
+      var r=a.getBoundingClientRect();
+      if(r.width<3||r.height<3)continue;
+      if(a.disabled||a.getAttribute('aria-disabled')==='true')continue;
+      if(score>bs){bs=score;best=a;}
+    }
+    if(best&&best.href)return {href:best.href,text:text(best),selector:stable(best)};
     return null;
   }
 
