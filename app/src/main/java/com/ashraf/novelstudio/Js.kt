@@ -541,10 +541,47 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var content=pick(__CONTENT__);
   var rootList=roots();
   if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
-  var chosen=null,chosenUnits=[];
-  for(var r=0;r<rootList.length;r++){
-    var u=units(rootList[r]);
-    if(u.length>0){chosen=rootList[r];chosenUnits=u;break;}
+
+  // Novel543 can expose the title in the first matching container while the
+  // actual chapter body is in a later sibling/container. Never stop at the
+  // first non-empty match on this site.
+  var hostNow=location.hostname.toLowerCase();
+  var chosen=null,chosenUnits=[],chosenScore=-1;
+  if(hostNow==='novel543.com'||hostNow.endsWith('.novel543.com')){
+    var nsels=[
+      '.content > div:last-child',
+      '.content > div:nth-last-child(2)',
+      '.chapter-content',
+      '#content',
+      '.article-content',
+      '.content',
+      'article',
+      'main'
+    ];
+    var nc=[];
+    nsels.forEach(function(sel){
+      try{Array.from(document.querySelectorAll(sel)).forEach(function(e){
+        if(e&&e.isConnected&&nc.indexOf(e)<0&&visible(e))nc.push(e);
+      });}catch(x){}
+    });
+    rootList=nc.concat(rootList.filter(function(e){return nc.indexOf(e)<0;}));
+
+    for(var nr=0;nr<rootList.length;nr++){
+      var nu=units(rootList[nr]);
+      var nt=clean(text(rootList[nr]));
+      if(!nu.length||nt.length<80)continue;
+      var score=nt.length*10+Math.min(nu.length,1000);
+      if(score>chosenScore){
+        chosen=rootList[nr];
+        chosenUnits=nu;
+        chosenScore=score;
+      }
+    }
+  } else {
+    for(var r=0;r<rootList.length;r++){
+      var u=units(rootList[r]);
+      if(u.length>0){chosen=rootList[r];chosenUnits=u;break;}
+    }
   }
 
   // Last resort: reader-like containers, still bounded and never a whole-page scan.
