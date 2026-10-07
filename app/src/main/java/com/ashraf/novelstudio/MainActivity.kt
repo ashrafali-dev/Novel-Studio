@@ -1234,7 +1234,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun extractNow(cb: (Chapter?) -> Unit, attempt: Int = 0) {
+    private fun extractNow(attempt: Int = 0, cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
 
@@ -1291,7 +1291,7 @@ class MainActivity : Activity() {
                     // do not jump immediately to the slow full-document parser.
                     if (isNovel543 && attempt < 8) {
                         handler.postDelayed({
-                            extractNow(cb, attempt + 1)
+                            extractNow(attempt + 1, cb)
                         }, 120L)
                     } else if (isNovel543) {
                         extractWebNovelNow(cb)
