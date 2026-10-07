@@ -1234,7 +1234,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun extractNow(cb: (Chapter?) -> Unit) {
+    private fun extractNow(cb: (Chapter?) -> Unit, attempt: Int = 0) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
 
@@ -1283,11 +1283,21 @@ class MainActivity : Activity() {
                 // Do not reject short but valid chapters. The old 120-char
                 // gate caused short CJK/mobile-reader chapters to be reported
                 // as "no chapter text".
-                if (body.length < 40 || segmentCount < 1) {
-                    // A partially-rendered Novel543 DOM can return only the title
-                    // or a short fragment on the first JS pass. Let the proven
-                    // parser retry the same page instead of declaring failure.
-                    extractWebNovelNow(cb)
+                val titleOnly = isNovel543 && title.isNotBlank() &&
+                    body.trim().equals(title.trim(), ignoreCase = false)
+                if (body.length < 40 || segmentCount < 1 || titleOnly) {
+                    // Novel543 can briefly expose the heading before the actual
+                    // chapter body. Retry the FAST rendered DOM a few times first;
+                    // do not jump immediately to the slow full-document parser.
+                    if (isNovel543 && attempt < 8) {
+                        handler.postDelayed({
+                            extractNow(cb, attempt + 1)
+                        }, 120L)
+                    } else if (isNovel543) {
+                        extractWebNovelNow(cb)
+                    } else {
+                        cb(null)
+                    }
                     return@evaluateJavascript
                 }
 
