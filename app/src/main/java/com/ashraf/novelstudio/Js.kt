@@ -437,13 +437,16 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,INPUT:1,TEXTAREA:1,BUTTON:1,SELECT:1,OPTION:1,NAV:1,FOOTER:1,HEADER:1};
   var BLOCK={P:1,LI:1,BLOCKQUOTE:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,PRE:1,DIV:1,SECTION:1,ARTICLE:1};
   function clean(s){return String(s||'').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();}
+  // Cheap read, same as the extension's textOf(): no cloning. innerText of a live
+  // element already leaves out <script>/<style>, so a deep clone per node is waste.
+  var TC=new Map();   // one synchronous run: element text never changes, so read each once
   function text(e){
     if(!e)return '';
-    try{
-      var c=e.cloneNode(true);
-      Array.from(c.querySelectorAll('script,style,noscript,svg,canvas,video,audio,iframe')).forEach(function(x){x.remove();});
-      return clean(c.innerText||c.textContent||'');
-    }catch(x){return clean(e.innerText||'');}
+    var c=TC.get(e);
+    if(c!==undefined)return c;
+    c=clean(e.innerText||e.textContent||'');
+    TC.set(e,c);
+    return c;
   }
   function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
   function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
@@ -485,14 +488,13 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
 
   function units(root){
-    var out=[],seen=[];
+    var out=[],seen=new Set();
     function add(e){
-      if(!e||SKIP[e.tagName]||seen.indexOf(e)>=0||!e.isConnected)return;
+      if(!e||SKIP[e.tagName]||seen.has(e)||!e.isConnected)return;
+      if(hasBlockChild(e))return;
       var t=text(e);
       if(!meaningful(t))return;
-      if(hasBlockChild(e))return;
-      if(!t)return;
-      seen.push(e);out.push(e);
+      seen.add(e);out.push(e);
     }
 
     var all=[root].concat(Array.from(root.querySelectorAll('p,li,blockquote,h1,h2,h3,h4,h5,h6,div,section,article,pre')));
@@ -524,7 +526,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     // Direct text nodes between blocks.
     Array.from(root.querySelectorAll('div,section,article,p,li,blockquote,pre')).concat([root]).forEach(function(parent){
-      if(out.length>=1500||seen.indexOf(parent)>=0)return;
+      if(out.length>=1500||seen.has(parent))return;
       Array.from(parent.childNodes||[]).forEach(function(node){
         if(node.nodeType!==Node.TEXT_NODE)return;
         var v=clean(node.nodeValue);
