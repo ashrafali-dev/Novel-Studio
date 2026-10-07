@@ -95,6 +95,7 @@ class MainActivity : Activity() {
     private var exportNovel: String? = null
     private var hasTr = false                 // a translation is currently shown on the novel page
     private var shownTranslated = false
+    private var shownTrRaw: String? = null     // translation text currently on the page (for font/size re-apply)
     private val handler = Handler(Looper.getMainLooper())
 
     // navigation (▶ ◀ ●) — every action gets a fresh token, old callbacks with an old token are ignored
@@ -1304,8 +1305,8 @@ class MainActivity : Activity() {
                 fun cleanText(s: String): String = s
                     .replace("\u00a0", " ")
                     .replace(Regex("[ \\t]+"), " ")
-                    .replace(Regex(" ?\\n ?"), "\\n")
-                    .replace(Regex("\\n{3,}"), "\\n\\n")
+                    .replace(Regex(" ?\\n ?"), "\n")
+                    .replace(Regex("\\n{3,}"), "\n\n")
                     .trim()
 
                 val cleanBody = cleanText(body)
@@ -1313,7 +1314,7 @@ class MainActivity : Activity() {
                 val fullText = if (cleanTitle.isNotEmpty() && cleanBody.startsWith(cleanTitle)) {
                     cleanBody
                 } else if (cleanTitle.isNotEmpty()) {
-                    cleanTitle + "\\n\\n" + cleanBody
+                    cleanTitle + "\n\n" + cleanBody
                 } else {
                     cleanBody
                 }
@@ -1510,21 +1511,29 @@ class MainActivity : Activity() {
         // never turn it into the original/translation toggle.
         navToken++
         val token = navToken
-        extractNow { ch ->
-            if (token != navToken) return@extractNow
-            if (ch == null) {
-                toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
-                return@extractNow
+        fun attempt(n: Int) {
+            extractNow { ch ->
+                if (token != navToken) return@extractNow
+                if (ch == null) {
+                    // Page may still be rendering: a few quick retries (~1s total).
+                    if (n < 4) {
+                        handler.postDelayed({ if (token == navToken) attempt(n + 1) }, 250L)
+                    } else {
+                        toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
+                    }
+                    return@extractNow
+                }
+                val pendingHash = pendingNavHash
+                if (pendingHash != null && bodyHash(ch) == pendingHash) {
+                    toast("⏳ নতুন chapter এখনো আসেনি — আবার ● চাপো")
+                    return@extractNow
+                }
+                pendingNavHash = null
+                pendingNavUrl = ""
+                handleChapter(ch)
             }
-            val pendingHash = pendingNavHash
-            if (pendingHash != null && bodyHash(ch) == pendingHash) {
-                toast("⏳ নতুন chapter এখনো আসেনি — আবার ● চাপো")
-                return@extractNow
-            }
-            pendingNavHash = null
-            pendingNavUrl = ""
-            handleChapter(ch)
         }
+        attempt(0)
     }
 
     // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
@@ -1726,7 +1735,7 @@ class MainActivity : Activity() {
             .filter { it.isNotEmpty() }
         return blocks.mapIndexed { i, block ->
             "[${(i + 1).toString().padStart(3, '0')}] $block"
-        }.joinToString("\\n\\n")
+        }.joinToString("\n\n")
     }
 
     private fun stripInternalMarkers(text: String): String =
@@ -1780,13 +1789,17 @@ class MainActivity : Activity() {
 
     // ================================================================== auto mode (⚡ on)
     private fun autoFlow(ch: Chapter) {
-        val saved = Store.find(this, ch)
-        if (saved != null) {
-            applyTranslation(ch, Store.read(this, saved.id), true)
-            toast("📖 সেভ করা অনুবাদ বসালাম")
-        } else {
-            enqueue(ch)
+        // Every extraction is translated from scratch. Saved translations are
+        // never reused. If the same chapter is already being translated
+        // (● pressed again), restart it cleanly instead of ignoring the press.
+        val r = running
+        if (r != null && keyOf(r) == keyOf(ch)) {
+            runToken++
+            queue.clear()
+            running = null
+            chatWv.evaluateJavascript(Js.stop(), null)
         }
+        enqueue(ch)
     }
 
     private fun enqueue(ch: Chapter) {
@@ -1956,6 +1969,7 @@ markers preserved.
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val paras = splitInternalMarkedTranslation(text)
+        shownTrRaw = text
         // A translation callback can arrive long after the user pressed Next.
         // Never write an old chapter's translation into the current page.
         if (lastChapter !== ch) return
@@ -2183,7 +2197,7 @@ markers preserved.
                     adapter.notifyDataSetChanged()
                     val ch = lastChapter
                     if (ch != null && hasTr) {
-                        Store.find(this, ch)?.let { applyTranslation(ch, Store.read(this, it.id), false) }
+                        shownTrRaw?.let { applyTranslation(ch, it, false) }
                     }
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
@@ -2193,7 +2207,7 @@ markers preserved.
                     adapter.notifyDataSetChanged()
                     val ch = lastChapter
                     if (ch != null && hasTr) {
-                        Store.find(this, ch)?.let { applyTranslation(ch, Store.read(this, it.id), false) }
+                        shownTrRaw?.let { applyTranslation(ch, it, false) }
                     }
                 }
             }

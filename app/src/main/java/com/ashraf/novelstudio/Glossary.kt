@@ -71,8 +71,8 @@ object Glossary {
     fun block(c: Context, chapter: String): String {
         val m = matches(c, chapter)
         if (m.isEmpty()) return ""
-        return "[Glossary — use these translations consistently]\\n" +
-            m.joinToString("\\n") { "\${it.first} => \${it.second}" }
+        return "[Glossary — use these translations consistently]\n" +
+            m.joinToString("\n") { "${it.first} => ${it.second}" }
     }
 
     fun block(chapter: String): String = ""
