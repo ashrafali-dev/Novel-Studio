@@ -1234,7 +1234,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun extractNow(attempt: Int = 0, cb: (Chapter?) -> Unit) {
+    private fun extractNow(cb: (Chapter?) -> Unit, attempt: Int = 0) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
 
@@ -1245,7 +1245,7 @@ class MainActivity : Activity() {
         // Novel543 has a dedicated fast path inside Js.fastExtract(). The old
         // full-document Jsoup parser remains only as a fallback when the fast
         // DOM read genuinely fails.
-        val contentSel = SiteProfiles.selector(this, url, "content")
+        val contentSel = if (isNovel543) ".chapter-content" else SiteProfiles.selector(this, url, "content")
         val titleSel = SiteProfiles.selector(this, url, "title").ifBlank {
             if (isNovel543) "h1" else ""
         }
@@ -1291,7 +1291,7 @@ class MainActivity : Activity() {
                     // do not jump immediately to the slow full-document parser.
                     if (isNovel543 && attempt < 8) {
                         handler.postDelayed({
-                            extractNow(attempt + 1, cb)
+                            extractNow(cb, attempt + 1)
                         }, 120L)
                     } else if (isNovel543) {
                         extractWebNovelNow(cb)
