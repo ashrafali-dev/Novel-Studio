@@ -95,6 +95,7 @@ class MainActivity : Activity() {
     private var exportNovel: String? = null
     private var hasTr = false                 // a translation is currently shown on the novel page
     private var shownTranslated = false
+    private var lastFastWhy = ""               // why the fast extractor failed (shown in the failure toast)
     private var shownTrRaw: String? = null     // translation text currently on the page (for font/size re-apply)
     private val handler = Handler(Looper.getMainLooper())
 
@@ -1265,11 +1266,18 @@ class MainActivity : Activity() {
             Js.fastExtract(contentSel, titleSel, nextSel, prevSel)
         ) { raw ->
             val payload = decode(raw)
-            if (payload.isBlank()) { cb(null); return@evaluateJavascript }
+            if (payload.isBlank()) {
+                // The script itself failed to run/parse (e.g. very old WebView). Use the
+                // slower full-page parser instead of giving up.
+                lastFastWhy = "js-null"
+                extractWebNovelNow(cb)
+                return@evaluateJavascript
+            }
 
             try {
                 val o = JSONObject(payload)
                 if (!o.optBoolean("ok", false)) {
+                    lastFastWhy = o.optString("why", "no-units") + " roots=" + o.optInt("roots", -1)
                     // Keep the proven Jsoup fallback for JS-heavy/BR-based sites.
                     // Novel543 is explicitly included because its chapter body is
                     // stable at .chapter-content but can be missed while its DOM is
@@ -1278,6 +1286,7 @@ class MainActivity : Activity() {
                     return@evaluateJavascript
                 }
 
+                lastFastWhy = ""
                 val title = o.optString("title", "").trim()
                 val body = o.optString("text", "").trim()
                 val segmentCount = o.optInt("count", 0)
@@ -1506,6 +1515,10 @@ class MainActivity : Activity() {
     }
 
     // ● : Instant Extract. Never use stale DOM from the previous chapter.
+    private fun webViewVer(): String = try {
+        if (Build.VERSION.SDK_INT >= 26) WebView.getCurrentWebViewPackage()?.versionName ?: "?" else "old"
+    } catch (_: Exception) { "?" }
+
     private fun extractCopy() {
         // ● is always a real extraction. Never wait for WebView.progress and
         // never turn it into the original/translation toggle.
@@ -1519,7 +1532,8 @@ class MainActivity : Activity() {
                     if (n < 4) {
                         handler.postDelayed({ if (token == navToken) attempt(n + 1) }, 250L)
                     } else {
-                        toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি")
+                        toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি\n(fast: " +
+                            lastFastWhy.ifBlank { "short/empty" } + " · WebView " + webViewVer() + ")")
                     }
                     return@extractNow
                 }

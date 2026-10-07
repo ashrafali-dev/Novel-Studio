@@ -42,9 +42,13 @@ object Glossary {
         if (chapter.isBlank()) return emptyList()
         data class Hit(val start: Int, val end: Int, val surface: String, val translation: String)
         val hits = ArrayList<Hit>()
+        // Cheap pre-filter: most glossary terms are not in a given chapter, so only
+        // build a Regex for the ones whose text really occurs (plain indexOf is fast).
+        val lc = chapter.lowercase(Locale.ROOT)
         for (entry in entries(c)) {
             for (alias in entry.aliases) {
                 if (alias.isBlank()) continue
+                if (!lc.contains(alias.lowercase(Locale.ROOT))) continue
                 val escaped = Regex.escape(alias)
                 val pattern = if (boundaryRequired(alias)) {
                     "(?<![\\p{L}\\p{N}])($escaped)(?![\\p{L}\\p{N}])"

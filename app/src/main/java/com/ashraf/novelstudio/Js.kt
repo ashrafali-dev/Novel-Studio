@@ -36,30 +36,55 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var box=__box();
   if(!box) return 'nobox';
   box.focus();
+  function boxText(){return String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();}
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
     var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(proto,'value').set.call(box,text);
+    var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
+    setter.call(box,'');
     box.dispatchEvent(new Event('input',{bubbles:true}));
+    setter.call(box,text);
+    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
+    box.dispatchEvent(new Event('change',{bubbles:true}));
   } else {
-    var sel=window.getSelection(); var range=document.createRange();
-    range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
-    document.execCommand('insertText',false,text);
-    if(!(box.innerText||'').trim()) box.textContent=text;
-    box.dispatchEvent(new Event('input',{bubbles:true}));
-    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){}
+    // Same as the Novel Translator extension: one direct textContent write + one input event.
+    // document.execCommand('insertText') on a long chapter takes SECONDS in ProseMirror/Quill
+    // editors; textContent is instant. DeepSeek's editor is the only one that needs execCommand.
+    var done=false;
+    if(/deepseek/i.test(location.hostname)){
+      try{
+        var sel=window.getSelection(),range=document.createRange();
+        range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
+        done=document.execCommand('insertText',false,text)&&boxText().length>=Math.min(text.length,20);
+      }catch(e){done=false;}
+    }
+    if(!done) box.textContent=text;
+    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+    catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
   }
   if(doSend){
+    function enter(){
+      box.focus();
+      box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+      box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+    }
     setTimeout(function(){
       var btn=null;
       try{btn=p.send?document.querySelector(p.send):null;}catch(e){}
       if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
-      if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true') btn.click();
-      else {
-        box.focus();
-        box.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-        box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
-      }
-    }, Math.min(2500,700+text.length/40));
+      if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true'){
+        // real mouse sequence first (ChatGPT's mobile UI can ignore a bare .click())
+        try{
+          btn.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
+          btn.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
+          btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));
+        }catch(e){try{btn.click();}catch(x){}}
+        // if the composer still holds the text, the click did not submit: press Enter
+        setTimeout(function(){
+          var rem=boxText();
+          if(rem&&rem.length>=Math.min(text.trim().length,20)) enter();
+        },450);
+      } else enter();
+    }, 250);
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
@@ -457,7 +482,10 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
     return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
   }
-  function meaningful(s){return /[\p{L}\p{N}]/u.test(s||'');}
+  var MEAN;
+  try{MEAN=new RegExp('[\\p{L}\\p{N}]','u');}
+  catch(x){MEAN=/[0-9A-Za-z\u00C0-\u1FFF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF\uFF10-\uFF5A]/;}
+  function meaningful(s){return MEAN.test(s||'');}
   function hasBlockChild(e){return Array.from(e.children||[]).some(function(c){return !SKIP[c.tagName]&&!!BLOCK[c.tagName];});}
 
   function roots(){
@@ -596,7 +624,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
   }
 
-  if(!chosen||!chosenUnits.length)return JSON.stringify({ok:false});
+  if(!chosen||!chosenUnits.length)return JSON.stringify({ok:false,why:'no-units',roots:rootList.length});
 
   var titleEl=pick(__TITLE__);
   if(!titleEl){try{titleEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
@@ -671,6 +699,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   });
 })()
 """.trimIndent()
+            .let { "(function(){try{return (" + it.trim() + ")}catch(e){return JSON.stringify({ok:false,why:'js-error: '+String(e)});}})()" }
             .replace("__CONTENT__", org.json.JSONObject.quote(contentSel))
             .replace("__TITLE__", org.json.JSONObject.quote(titleSel))
             .replace("__NEXT__", org.json.JSONObject.quote(nextSel))
