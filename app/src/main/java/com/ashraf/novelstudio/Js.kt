@@ -555,33 +555,26 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var hostNow=location.hostname.toLowerCase();
   var chosen=null,chosenUnits=[],chosenScore=-1;
   if(hostNow==='novel543.com'||hostNow.endsWith('.novel543.com')){
-    var nsels=[
-      '.content > div:last-child',
-      '.content > div:nth-last-child(2)',
-      '.chapter-content',
-      '#content',
-      '.article-content',
-      '.content',
-      'article',
-      'main'
-    ];
-    var nc=[];
-    nsels.forEach(function(sel){
-      try{Array.from(document.querySelectorAll(sel)).forEach(function(e){
-        if(e&&e.isConnected&&nc.indexOf(e)<0&&visible(e))nc.push(e);
-      });}catch(x){}
-    });
-    rootList=nc.concat(rootList.filter(function(e){return nc.indexOf(e)<0;}));
-
-    for(var nr=0;nr<rootList.length;nr++){
-      var nu=units(rootList[nr]);
-      var nt=clean(text(rootList[nr]));
-      if(!nu.length||nt.length<80)continue;
-      var score=nt.length*10+Math.min(nu.length,1000);
-      if(score>chosenScore){
-        chosen=rootList[nr];
-        chosenUnits=nu;
-        chosenScore=score;
+    // My Novel Reader's working rule for Novel543 is .chapter-content.
+    // Do not pick .content > div:last-child: that selector is a removal
+    // rule in the extension and can point at an ad/footer container.
+    var primary=pick('.chapter-content');
+    if(primary){
+      chosen=primary;
+      chosenUnits=units(primary);
+      chosenScore=text(primary).length;
+    }
+    // Only use broader readers if the real chapter container is absent.
+    if(!chosen){
+      var nsels=['#content','.article-content','.content','article','main'];
+      for(var ni=0;ni<nsels.length&&!chosen;ni++){
+        try{
+          var ne=document.querySelector(nsels[ni]);
+          if(ne&&visible(ne)&&text(ne).length>=80){
+            var nu=units(ne);
+            if(nu.length){chosen=ne;chosenUnits=nu;chosenScore=text(ne).length;}
+          }
+        }catch(x){}
       }
     }
   } else {
@@ -621,19 +614,33 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     return null;
   }
 
-  var segs=chosenUnits.map(function(e){return text(e);})
-    .map(function(s){return clean(s);})
-    .filter(function(s){
-      if(!meaningful(s))return false;
-      if(/^function\\s*\\(|^\\(function\\s*\\(/.test(s))return false;
-      if(/(?:document\\.|window\\.|TAMadLoadA|TAMedia_AD|adc\\.tamedia\\.com\\.tw|sdk-async-v2)/i.test(s))return false;
-      return true;
+  var isN543=hostNow==='novel543.com'||hostNow.endsWith('.novel543.com');
+  var segs;
+  if(isN543&&chosen){
+    // Use the sanitized rendered .chapter-content as the source of truth.
+    // This preserves all real paragraph text instead of guessing nested DIVs.
+    var rootText=text(chosen);
+    if(title){
+      var lines=rootText.split(/\\n+/).map(function(s){return clean(s);}).filter(Boolean);
+      if(lines.length&&lines[0]===title)lines.shift();
+      rootText=lines.join('\\n\\n');
+    }
+    segs=rootText.split(/\\n\\s*\\n/).map(function(s){return clean(s);}).filter(function(s){
+      return meaningful(s)&&!/(?:TAMadLoadA|TAMedia_AD|adc\\.tamedia\\.com\\.tw|sdk-async-v2)/i.test(s);
     });
-  // Do not feed the chapter heading back as body text when the selected
-  // container also contains the heading.
-  if(title){
-    var filtered=segs.filter(function(s){return s!==title;});
-    if(filtered.length)segs=filtered;
+  }else{
+    segs=chosenUnits.map(function(e){return text(e);})
+      .map(function(s){return clean(s);})
+      .filter(function(s){
+        if(!meaningful(s))return false;
+        if(/^function\\s*\\(|^\\(function\\s*\\(/.test(s))return false;
+        if(/(?:document\\.|window\\.|TAMadLoadA|TAMedia_AD|adc\\.tamedia\\.com\\.tw|sdk-async-v2)/i.test(s))return false;
+        return true;
+      });
+    if(title){
+      var filtered=segs.filter(function(s){return s!==title;});
+      if(filtered.length)segs=filtered;
+    }
   }
   var body=segs.join('\\n\\n');
   var novel='';
