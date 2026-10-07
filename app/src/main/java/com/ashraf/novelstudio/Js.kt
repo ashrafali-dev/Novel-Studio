@@ -532,35 +532,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     return out.slice(0,1500);
   }
 
-  var host=location.hostname.toLowerCase();
-  // Novel543: use its already-rendered chapter container directly. The generic
-  // unit walker is intentionally avoided here because it repeatedly calls
-  // innerText/querySelectorAll over the entire chapter DOM and can turn a
-  // millisecond extraction into a noticeable delay on mobile WebView.
-  if(host==='novel543.com'||host.endsWith('.novel543.com')){
-    var nr=pick('.chapter-content')||pick(__CONTENT__)||document.querySelector('#content,.article-content');
-    if(nr){
-      var nb=text(nr);
-      if(meaningful(nb)&&nb.length>=80){
-        var ntEl=pick(__TITLE__);
-        if(!ntEl){try{ntEl=document.querySelector('.chapter-title,.chr-title,#chapter-heading,h1,h2');}catch(x){}}
-        var nt=text(ntEl)||document.title||'';
-        function nlink(kind,sel){
-          var e=pick(sel);
-          if(!e){
-            var q=kind==='next'
-              ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-              : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
-            try{e=document.querySelector(q);}catch(x){e=null;}
-          }
-          return e&&e.href?{href:e.href,text:text(e),selector:stable(e)}:null;
-        }
-        return JSON.stringify({ok:true,text:nb,segments:[nb],count:1,title:nt,
-          pageTitle:document.title||'',novel:'',contentSel:stable(nr),
-          titleSel:ntEl?stable(ntEl):'',next:nlink('next',__NEXT__),prev:nlink('prev',__PREV__)});
-      }
-    }
-  }
+  // Use the same collector for Novel543 as the working browser extension.
+  // Do NOT collapse the whole .chapter-content into one text blob: on some
+  // Novel543 pages that node contains the reader shell/title while the actual
+  // chapter lines live in child DIV/SPAN nodes. The extension walks those leaf
+  // units and that is the reliable path.
 
   var content=pick(__CONTENT__);
   var rootList=roots();
