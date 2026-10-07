@@ -549,34 +549,30 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var rootList=roots();
   if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
 
-  // Novel543 can expose the title in the first matching container while the
-  // actual chapter body is in a later sibling/container. Never stop at the
-  // first non-empty match on this site.
+  // Novel543 can expose a title-only .chapter-content while the real
+  // rendered chapter text is in a sibling/container. Evaluate all likely
+  // chapter containers after sanitizing scripts/ads, then choose the one
+  // with the most real text.
   var hostNow=location.hostname.toLowerCase();
   var chosen=null,chosenUnits=[],chosenScore=-1;
   if(hostNow==='novel543.com'||hostNow.endsWith('.novel543.com')){
-    // My Novel Reader's working rule for Novel543 is .chapter-content.
-    // Do not pick .content > div:last-child: that selector is a removal
-    // rule in the extension and can point at an ad/footer container.
-    var primary=pick('.chapter-content');
-    if(primary){
-      chosen=primary;
-      chosenUnits=units(primary);
-      chosenScore=text(primary).length;
-    }
-    // Only use broader readers if the real chapter container is absent.
-    if(!chosen){
-      var nsels=['#content','.article-content','.content','article','main'];
-      for(var ni=0;ni<nsels.length&&!chosen;ni++){
-        try{
-          var ne=document.querySelector(nsels[ni]);
-          if(ne&&visible(ne)&&text(ne).length>=80){
-            var nu=units(ne);
-            if(nu.length){chosen=ne;chosenUnits=nu;chosenScore=text(ne).length;}
-          }
-        }catch(x){}
-      }
-    }
+    var nsels=['.chapter-content','#content','.article-content','.content','article','main'];
+    var nc=[];
+    nsels.forEach(function(sel){
+      try{Array.from(document.querySelectorAll(sel)).forEach(function(e){
+        if(!e||!e.isConnected||!visible(e)||nc.indexOf(e)>=0)return;
+        var nt=text(e);
+        if(nt.length>=40)nc.push(e);
+      });}catch(x){}
+    });
+    nc.forEach(function(e){
+      var nt=text(e),nu=units(e);
+      if(!nu.length||nt.length<40)return;
+      var codeHits=(nt.match(/(?:function\s*\(|document\.|window\.|TAMadLoadA|TAMedia_AD|adc\.tamedia\.com\.tw|sdk-async-v2)/gi)||[]).length;
+      var realLen=Math.max(0,nt.length-codeHits*120);
+      var score=realLen*10+Math.min(nu.length,1000);
+      if(score>chosenScore){chosen=e;chosenUnits=nu;chosenScore=score;}
+    });
   } else {
     for(var r=0;r<rootList.length;r++){
       var u=units(rootList[r]);
@@ -617,16 +613,16 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var isN543=hostNow==='novel543.com'||hostNow.endsWith('.novel543.com');
   var segs;
   if(isN543&&chosen){
-    // Use the sanitized rendered .chapter-content as the source of truth.
-    // This preserves all real paragraph text instead of guessing nested DIVs.
+    // Always use sanitized rendered text. Never pass page JavaScript to the translator.
     var rootText=text(chosen);
-    if(title){
-      var lines=rootText.split(/\\n+/).map(function(s){return clean(s);}).filter(Boolean);
-      if(lines.length&&lines[0]===title)lines.shift();
-      rootText=lines.join('\\n\\n');
-    }
+    var lines=rootText.split(/\\n+/).map(function(s){return clean(s);}).filter(Boolean);
+    lines=lines.filter(function(s){
+      return meaningful(s)&&!/(?:^function\\s*\\(|^\\(function\\s*\\(|document\\.|window\\.|TAMadLoadA|TAMedia_AD|adc\\.tamedia\\.com\\.tw|sdk-async-v2|createElement\\(|insertBefore\\()/i.test(s);
+    });
+    if(title)lines=lines.filter(function(s){return s!==title;});
+    rootText=lines.join('\\n\\n');
     segs=rootText.split(/\\n\\s*\\n/).map(function(s){return clean(s);}).filter(function(s){
-      return meaningful(s)&&!/(?:TAMadLoadA|TAMedia_AD|adc\\.tamedia\\.com\\.tw|sdk-async-v2)/i.test(s);
+      return meaningful(s)&&s.length>=2&&!/(?:TAMadLoadA|TAMedia_AD|adc\\.tamedia\\.com\\.tw|sdk-async-v2|document\\.|window\\.|createElement\\(|insertBefore\\()/i.test(s);
     });
   }else{
     segs=chosenUnits.map(function(e){return text(e);})
