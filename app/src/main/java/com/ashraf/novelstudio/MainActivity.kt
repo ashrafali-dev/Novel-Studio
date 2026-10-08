@@ -1909,6 +1909,7 @@ markers preserved.
                 val streaming = parts.getOrNull(1) == "1"
                 val len = parts.getOrNull(2)?.toIntOrNull() ?: 0
                 val found = parts.getOrNull(3)?.toIntOrNull() ?: 0
+                val sendFailed = parts.getOrNull(5) == "failed"   // every send method was tried and none emptied the composer
                 // "This job's reply exists" = an assistant node that is new or whose text changed
                 // since send(). Comparing lengths with the PREVIOUS reply was wrong: a reused
                 // node stayed "not started" (3%) until the new text outgrew the old one.
@@ -1933,6 +1934,7 @@ markers preserved.
                 val doneSlow = got && st >= 20 && effLen > 50
                 when {
                     done || doneSlow -> finishJob(tok, ch)
+                    sendFailed && !got -> failJob(tok, ch, "মেসেজ সেন্ড হয়নি — সব উপায় চেষ্টা করেছি (চ্যাটবটে লগইন/ক্যাপচা আছে কি দেখো)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "সময় শেষ (৬ মিনিট)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "চ্যাটবট উত্তর শুরু করেনি — মেসেজ যায়নি?")
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
@@ -2132,7 +2134,8 @@ markers preserved.
             "🌐 সাইট সেটিং (যে সাইট চলে না)",
             "🔍 এই পেজ পরীক্ষা করো (রিপোর্ট কপি)",
             menuSizeLabel(),
-            "🔐 চ্যাটবট লগইন"
+            "🔐 চ্যাটবট লগইন",
+            "🔍 চ্যাটবট পরীক্ষা করো (রিপোর্ট কপি)"
         )
         val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         val lv = ListView(this)
@@ -2230,6 +2233,7 @@ markers preserved.
                     }
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
+                25 -> { dlg.dismiss(); diagnoseChat() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     labels[i] = menuFontLabel()
@@ -2242,6 +2246,19 @@ markers preserved.
             }
         }
         dlg.show()
+    }
+
+    // ---------------------------------------------------------------- chatbot diagnosis
+    // Copies what each detector (composer, send button, reply scan) sees on the chatbot page,
+    // so a site that does not work can be fixed from the report.
+    private fun diagnoseChat() {
+        chatWv.evaluateJavascript(Js.diagChat()) { r ->
+            val rep = try { JSONArray("[" + (r ?: "null") + "]").optString(0, "") } catch (e: Exception) { "" }
+            val report = "chat url=" + (chatWv.url ?: "") + " | WebView " + webViewVer() + "\n" +
+                rep.ifBlank { "(খালি — চ্যাটবট পেজ লোড হয়নি?)" }
+            copy(report)
+            toast("🔍 চ্যাটবট রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো")
+        }
     }
 
     // ---------------------------------------------------------------- page diagnosis
