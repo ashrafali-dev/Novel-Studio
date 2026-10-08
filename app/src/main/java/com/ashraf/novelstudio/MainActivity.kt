@@ -95,6 +95,7 @@ class MainActivity : Activity() {
     private var exportNovel: String? = null
     private var hasTr = false                 // a translation is currently shown on the novel page
     private var shownTranslated = false
+    private var jobMarkers = 0                 // number of [NNN] paragraph markers sent in the running job
     private var lastFastWhy = ""               // why the fast extractor failed (shown in the failure toast)
     private var shownTrRaw: String? = null     // translation text currently on the page (for font/size re-apply)
     private val handler = Handler(Looper.getMainLooper())
@@ -1860,6 +1861,7 @@ class MainActivity : Activity() {
         // Keep paragraph identity inside the AI request. These markers never reach
         // the novel page and are removed from the final saved/clipboard translation.
         val marked = addInternalMarkers(ch.text)
+        jobMarkers = Regex("(?m)^\\[\\d{3,}\\] ").findAll(marked).count()
         val markerInstruction = """
 [Internal paragraph markers]
 Each paragraph starts with a marker such as [001], [002], [003].
@@ -1906,16 +1908,29 @@ markers preserved.
                 val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val streaming = parts.getOrNull(1) == "1"
                 val len = parts.getOrNull(2)?.toIntOrNull() ?: 0
-                // Some chat UIs reuse the same assistant DOM node instead of
-                // creating a new one. Count alone is therefore not enough.
-                val got = n > n0 || (n == n0 && len > baseLen)
+                val found = parts.getOrNull(3)?.toIntOrNull() ?: 0
+                // "This job's reply exists" = an assistant node that is new or whose text changed
+                // since send(). Comparing lengths with the PREVIOUS reply was wrong: a reused
+                // node stayed "not started" (3%) until the new text outgrew the old one.
+                val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
-                progress = if (!got) 3 else minOf(95, effLen * 100 / expectedLen(ch))
-                val st = if (got && effLen == lastLen) stable + 1 else 0
+                val total = jobMarkers
+                val allMarkers = got && total > 0 && found >= total
+                val pct = when {
+                    !got -> 3
+                    total > 0 && found > 0 -> ((2 * found - 1) * 50 / total).coerceIn(3, 98)
+                    else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
+                }
+                progress = if (!got) 3 else maxOf(progress, pct)   // never goes backwards
+                val st = if (got && kotlin.math.abs(effLen - lastLen) <= 2) stable + 1 else 0
                 updateProgressUi()
                 val elapsed = System.currentTimeMillis() - started
-                val done = got && !streaming && st >= 3 && effLen >= ch.text.length * 0.3
-                val doneSlow = got && st >= 15 && effLen > 50
+                // Finished = every [NNN] marker came back and the text stopped changing
+                // (like the extension). The stop-button flag is only a hint: it can be
+                // missing (DeepSeek) or stuck on, so it never blocks completion.
+                val need = if (allMarkers) (if (streaming) 6 else 2) else (if (streaming) 15 else 5)
+                val done = got && effLen > 50 && st >= need && (allMarkers || effLen >= ch.text.length * 0.3)
+                val doneSlow = got && st >= 20 && effLen > 50
                 when {
                     done || doneSlow -> finishJob(tok, ch)
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "সময় শেষ (৬ মিনিট)")
@@ -2325,230 +2340,4 @@ markers preserved.
                 val h = SiteRules.hostOf(host.text.toString())
                 if (h.isEmpty() || !h.contains('.')) { toast("❌ ঠিক ডোমেইন লেখো"); return@setPositiveButton }
                 if (old != null && old.host != h) SiteRules.remove(this, old.host)
-                SiteRules.upsert(this, SiteRules.Rule(
-                    h, compat.isChecked, noAds.isChecked,
-                    content.text.toString().trim(), next.text.toString().trim(), prev.text.toString().trim()
-                ))
-                toast("✅ $h সেভ হয়েছে — পেজ রিলোড করে ● চাপো")
-            }
-            .setNegativeButton("বাতিল", null)
-        if (old != null) b.setNeutralButton("🗑 মুছো") { _, _ ->
-            SiteRules.remove(this, old.host)
-            toast("🗑 মুছে ফেলা হয়েছে")
-        }
-        b.show()
-    }
-
-    private fun menuGlossaryLabel(): String =
-        (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " 📖 গ্লোসারি (" + Glossary.count + " টা) — এডিট/যোগ"
-
-    private fun menuSizeLabel(): String =
-        "🔠 অনুবাদের অক্ষরের সাইজ: " + Prefs.sizePx(this) + "px  (ট্যাপ করলে বদলায়)"
-
-    private fun menuFontLabel(): String =
-        "🔤 অনুবাদের ফন্ট: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)] + "  (ট্যাপ করলে বদলায়)"
-
-    private fun glossaryDialog() {
-        val opts = arrayOf(
-            "➕ একটা শব্দ যোগ (english = বাংলা)",
-            "📥 অনেক শব্দ পেস্ট করো",
-            (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " প্রম্পটে গ্লোসারি জোড়া চালু",
-            "📋 পুরো গ্লোসারি কপি করো",
-            "🗑 সব মুছে ফেলো"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("📖 গ্লোসারি — ${Glossary.count} টা এন্ট্রি")
-            .setItems(opts) { _, i ->
-                when (i) {
-                    0 -> glossaryInput(false)
-                    1 -> glossaryInput(true)
-                    2 -> {
-                        Prefs.putBool(this, "noGlossary", Prefs.glossaryOn(this))
-                        toast(if (Prefs.glossaryOn(this)) "✅ গ্লোসারি চালু" else "⬜ গ্লোসারি বন্ধ")
-                    }
-                    3 -> { copy(Glossary.read(this)); toast("📋 গ্লোসারি কপি হয়েছে") }
-                    4 -> AlertDialog.Builder(this)
-                        .setMessage("পুরো গ্লোসারি মুছে যাবে। নিশ্চিত?")
-                        .setPositiveButton("মুছো") { _, _ -> Glossary.write(this, ""); toast("🗑 মুছে ফেলা হয়েছে") }
-                        .setNegativeButton("বাতিল", null)
-                        .show()
-                }
-            }
-            .setNegativeButton("বন্ধ", null)
-            .show()
-    }
-
-    private fun glossaryInput(bulk: Boolean) {
-        val et = EditText(this).apply {
-            hint = if (bulk) "dantian | dan tian | 丹田 => ডান্টিয়ান\n(প্রতি লাইনে একটা)" else "young master = ইয়াং মাস্টার"
-            if (bulk) { minLines = 8; gravity = Gravity.TOP } else setSingleLine(false)
-        }
-        val b = AlertDialog.Builder(this)
-            .setTitle(if (bulk) "📥 পেস্ট করো" else "➕ নতুন শব্দ")
-            .setView(et)
-            .setPositiveButton("যোগ করো") { _, _ ->
-                Glossary.append(this, et.text.toString())
-                toast("✅ যোগ হয়েছে")
-            }
-            .setNegativeButton("বাতিল", null)
-        if (bulk) b.setNeutralButton("সব বদলে দাও") { _, _ ->
-            Glossary.write(this, et.text.toString())
-            toast("✅ গ্লোসারি বদলানো হয়েছে")
-        }
-        b.show()
-    }
-
-    private fun menuAutoLabel(): String =
-        (if (Prefs.auto(this)) "✅" else "⬜") + " ⚡ অটো অনুবাদ (ব্যাকগ্রাউন্ডে, সাইটে বসবে)"
-
-    private fun menuDarkLabel(): String =
-        "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[darkMode()] + "  (ট্যাপ করলে বদলায়)"
-
-    private fun menuAutoPasteLabel(): String =
-        (if (Prefs.bool(this, "autoPaste")) "✅" else "⬜") + " কপি মোড: অটো পেস্ট"
-
-    private fun menuAutoSendLabel(): String =
-        (if (Prefs.bool(this, "autoSend")) "✅" else "⬜") + " কপি মোড: অটো সেন্ড"
-
-    private fun menuPromptLabel(): String =
-        (if (Prefs.bool(this, "withPrompt")) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট"
-
-    private fun menuNextExtractLabel(): String =
-        (if (Prefs.bool(this, "autoExtractNext", true)) "✅" else "⬜") + " ▶ Next/Prev এর পর অটো Extract"
-
-    private fun menuSaveNextLabel(): String =
-        (if (!Prefs.bool(this, "noSaveNext")) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার"
-
-    private fun menuAdBlockLabel(): String =
-        (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
-
-    private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
-        val lv = ListView(this)
-        lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
-        val dlg = AlertDialog.Builder(this).setTitle(title).setView(lv).setNegativeButton("বন্ধ", null).create()
-        lv.setOnItemClickListener { _, _, i, _ -> dlg.dismiss(); onClick(i) }
-        if (onLong != null) lv.setOnItemLongClickListener { _, _, i, _ -> dlg.dismiss(); onLong(i); true }
-        dlg.show()
-    }
-
-    // ---------- offline library ----------
-    private fun libraryNovels() {
-        val names = Store.novelNames(this)
-        if (names.isEmpty()) return toast("লাইব্রেরি খালি — অনুবাদ হলে এখানে জমবে")
-        val labels = names.map { it + "   (" + Store.chapters(this, it).size + " চ্যাপ্টার)" }
-        listDialog("📚 লাইব্রেরি", labels, { i -> novelActions(names[i]) }, null)
-    }
-
-    private fun novelActions(name: String) {
-        AlertDialog.Builder(this).setTitle(name)
-            .setItems(arrayOf("📖 চ্যাপ্টার লিস্ট", "⬇️ এই নোভেল txt এক্সপোর্ট", "✏️ নাম বদলাও", "🗑 পুরো নোভেল মুছো")) { _, k ->
-                when (k) {
-                    0 -> chapterList(name)
-                    1 -> exportAll(name)
-                    2 -> renameNovel(name)
-                    3 -> AlertDialog.Builder(this).setMessage("\"$name\" এর সব অনুবাদ মুছবে?")
-                        .setPositiveButton("মুছো") { _, _ -> Store.deleteNovel(this, name) }
-                        .setNegativeButton("না", null).show()
-                    else -> {}
-                }
-            }.show()
-    }
-
-    private fun chapterList(name: String) {
-        val l = Store.chapters(this, name)
-        if (l.isEmpty()) return
-        listDialog(name + " (লং প্রেসে মোছো)", l.map { it.label() },
-            { i -> startActivity(Intent(this, ReaderActivity::class.java).putExtra("novel", name).putExtra("id", l[i].id)) },
-            { i ->
-                AlertDialog.Builder(this).setMessage("${l[i].label()} মুছবে?")
-                    .setPositiveButton("মুছো") { _, _ -> Store.delete(this, l[i].id) }
-                    .setNegativeButton("না", null).show()
-            })
-    }
-
-    private fun renameNovel(old: String) {
-        val et = EditText(this).apply { setText(old) }
-        AlertDialog.Builder(this).setTitle("নোভেলের নাম")
-            .setView(et)
-            .setPositiveButton("সেভ") { _, _ -> Store.rename(this, old, et.text.toString().trim()) }
-            .setNegativeButton("বাতিল", null).show()
-    }
-
-    private fun exportAll(novel: String?) {
-        if (Store.list(this).isEmpty()) return toast("এক্সপোর্ট করার মতো অনুবাদ নেই")
-        exportNovel = novel
-        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TITLE, (novel ?: "translations") + ".txt")
-        }
-        startActivityForResult(i, 42)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 42 && resultCode == RESULT_OK) {
-            val u = data?.data ?: return
-            try {
-                contentResolver.openOutputStream(u)?.use { it.write(Store.export(this, exportNovel).toByteArray()) }
-                toast("✅ এক্সপোর্ট হয়েছে")
-            } catch (e: Exception) {
-                toast("❌ " + (e.message ?: "ব্যর্থ"))
-            }
-        }
-    }
-
-    // ---------- bookmarks ----------
-    private fun saveBookmark() {
-        val u = novelWv.url ?: return
-        val name = (novelWv.title ?: "").ifBlank { Uri.parse(u).host ?: u }
-        Store.addBookmark(this, Bookmark(name, u, u, ""))
-        toast("🔖 সেভ হয়েছে: $name")
-    }
-
-    private fun bookmarkList() {
-        val l = Store.bookmarks(this)
-        if (l.isEmpty()) return toast("বুকমার্ক খালি")
-        val labels = l.map { it.name + (if (it.lastTitle.isNotEmpty()) "\n↳ " + it.lastTitle else "") }
-        listDialog("🔖 বুকমার্ক (লং প্রেসে মোছো)", labels,
-            { i ->
-                if (mode == Mode.CHAT) setMode(Mode.SPLIT)
-                novelWv.loadUrl(l[i].lastUrl.ifEmpty { l[i].url })
-            },
-            { i -> Store.removeBookmark(this, i) })
-    }
-
-    private fun editPrompt() {
-        val et = EditText(this).apply {
-            setText(Prefs.prompt(this@MainActivity))
-            minLines = 6
-            gravity = Gravity.TOP
-        }
-        AlertDialog.Builder(this)
-            .setTitle("প্রম্পট")
-            .setView(et)
-            .setPositiveButton("সেভ") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
-            .setNegativeButton("বাতিল", null)
-            .show()
-    }
-
-    // ================================================================== lifecycle
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (activeWv.canGoBack()) activeWv.goBack() else super.onBackPressed()
-    }
-
-    override fun onPause() {
-        if (!isFinishing) saveCurrentTabState()
-        persistBrowserTabs()
-        CookieManager.getInstance().flush()
-        super.onPause()
-    }
-
-    override fun onDestroy() {
-        pulse?.cancel()
-        novelWv.destroy()
-        chatWv.destroy()
-        super.onDestroy()
-    }
-}
+ 
