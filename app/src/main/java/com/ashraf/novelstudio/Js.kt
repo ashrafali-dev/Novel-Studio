@@ -22,6 +22,15 @@ function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
 function __reply(p){var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
 function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
+function __ntext(p,e){var i=(p.b&&e.querySelector(p.b))||e.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]')||e;return (i.innerText||i.textContent||'').trim();}
+function __new(p,l){var base=window.__nsBase||[],bm=new Map(),bt=new Set();base.forEach(function(x){bm.set(x.el,x.t);bt.add(x.t);});var now=l||__asst(p),hit=null;for(var i=0;i<now.length;i++){var e=now[i],t=(e.innerText||e.textContent||'').trim(),o=bm.get(e);if(o===undefined){if(bt.has(t))continue;hit=e;}else if(t!==o){hit=e;}}return hit;}
+function __mk(t){var m=t.match(/\[\d{3}\]/g)||[],s={},c=0;for(var i=0;i<m.length;i++){if(!s[m[i]]){s[m[i]]=1;c++;}}return c;}
+function __vis(b){if(!b||!b.isConnected)return false;var s=getComputedStyle(b),r=b.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}
+function __ok(b){return __vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true';}
+function __findSend(p,box){var sels=[];if(p.send)sels.push(p.send);sels.push('button[data-testid*="send" i]','button[aria-label*="send" i]','[role="button"][aria-label*="send" i]','button[type="submit"]');for(var i=0;i<sels.length;i++){var l=[];try{l=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}for(var j=0;j<l.length;j++){if(__ok(l[j]))return l[j];}}
+ if(/deepseek/i.test(location.hostname)){var c=box.parentElement;for(var up=0;c&&up<7;up++,c=c.parentElement){var b=[].slice.call(c.querySelectorAll('button,[role="button"]')).filter(function(x){return __ok(x)&&!(x.innerText||'').trim()&&!x.querySelector('input[type="file"]')&&(box.compareDocumentPosition(x)&Node.DOCUMENT_POSITION_FOLLOWING);});if(b.length)return b[b.length-1];}}
+ return null;}
+function __press(b){var ev=['pointerdown','mousedown','pointerup','mouseup','click'];try{for(var i=0;i<ev.length;i++){var C=ev[i].indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;b.dispatchEvent(new C(ev[i],{bubbles:true,cancelable:true,view:window}));}}catch(e){try{b.click();}catch(x){}}}
 function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
 
@@ -30,6 +39,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     private const val SEND_BODY = """
 (function(text,doSend){
   var p=__prof(); var before=__asst(p); var n0=before.length; var len0=0;
+  window.__nsBase=before.map(function(e){return {el:e,t:(e.innerText||e.textContent||'').trim()};});
   var old=__reply(p);
   if(old){var ob=p.b?(old.querySelector(p.b)||old):old;len0=((ob.innerText||ob.textContent||'').trim().length);}
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
@@ -68,16 +78,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       box.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
     }
     setTimeout(function(){
-      var btn=null;
-      try{btn=p.send?document.querySelector(p.send):null;}catch(e){}
-      if(!btn) btn=document.querySelector('button[data-testid*="send" i],button[aria-label*="send" i],button[type="submit"]');
-      if(btn&&!btn.disabled&&btn.getAttribute('aria-disabled')!=='true'){
-        // real mouse sequence first (ChatGPT's mobile UI can ignore a bare .click())
-        try{
-          btn.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
-          btn.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
-          btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));
-        }catch(e){try{btn.click();}catch(x){}}
+      var btn=__findSend(p,box);
+      if(btn){
+        __press(btn);
         // if the composer still holds the text, the click did not submit: press Enter
         setTimeout(function(){
           var rem=boxText();
@@ -95,9 +98,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
 
     // "<assistant msg count>|<streaming 0/1>|<length of last reply>"
-    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var n=l.length;var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);var len=b?((b.innerText||b.textContent||'').trim().length):0;return n+'|'+__stream(p)+'|'+len;})()")
+    // "<assistant msg count>|<streaming 0/1>|<length of THIS job's reply>|<distinct [NNN] markers seen>|<new reply seen 0/1>"
+    // "This job's reply" = an assistant node that is new, or whose text changed, since send().
+    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var h=__new(p,l);var t='';if(h){t=__ntext(p,h);}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);t=b?((b.innerText||b.textContent||'').trim()):'';}return l.length+'|'+__stream(p)+'|'+t.length+'|'+(h?__mk(t):0)+'|'+(h?1:0);})()")
 
-    fun readText(): String = run("(function(){var p=__prof();var e=__reply(p);if(!e)return '';var b=p.b?(e.querySelector(p.b)||e):e;return (b.innerText||b.textContent||'').trim();})()")
+    fun readText(): String = run("(function(){var p=__prof();var h=__new(p);if(h)return __ntext(p,h);var e=__reply(p);if(!e)return '';var b=p.b?(e.querySelector(p.b)||e):e;return (b.innerText||b.textContent||'').trim();})()")
 
     fun stop(): String = run("(function(){var p=__prof();var b=p.stop?document.querySelector(p.stop):null;if(b&&b.tagName==='BUTTON')b.click();return 'k';})()")
 
