@@ -2375,7 +2375,7 @@ markers preserved.
         (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " 📖 Glossary (" + Glossary.count + ") — Edit / Add"
 
     private fun menuSizeLabel(): String =
-        "🔠 Translation Text Size: " + Prefs.sizePx(this) + "px
+        "🔠 Translation Text Size: " + Prefs.sizePx(this) + "px"
 
     private fun menuFontLabel(): String =
         "🔤 Translation Font: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)]
