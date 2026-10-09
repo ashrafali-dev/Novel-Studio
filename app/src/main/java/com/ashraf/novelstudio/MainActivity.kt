@@ -2086,7 +2086,7 @@ markers preserved.
         return (t.length * ratio).toInt().coerceAtLeast(200)
     }
 
-    private fun pollJob(tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long, lastLen: Int, stable: Int) {
+    private fun pollJob(tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long, lastLen: Int, stable: Int, sawStream: Boolean = false) {
         handler.postDelayed({
             if (tok != runToken) return@postDelayed
             chatWv.evaluateJavascript(Js.readLen()) { raw ->
@@ -2102,32 +2102,45 @@ markers preserved.
                 // node stayed "not started" (3%) until the new text outgrew the old one.
                 val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
+                val quiet = parts.getOrNull(6)?.toLongOrNull() ?: -1L   // ms since the page last changed (outside the composer)
                 val total = jobMarkers
-                val allMarkers = got && total > 0 && found >= total
+                // "found" is the HIGHEST marker number seen, not a count: ChatGPT/Gemini merge short
+                // paragraphs and drop some markers, so a count never reaches the total.
+                val foundC = if (total > 0) minOf(found, total) else found
+                val allMarkers = got && total > 0 && foundC >= total
                 val pct = when {
                     !got -> 3
-                    total > 0 && found > 0 -> ((2 * found - 1) * 50 / total).coerceIn(3, 98)
+                    total > 0 && foundC > 0 -> ((2 * foundC - 1) * 50 / total).coerceIn(3, 98)
                     else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
                 progress = if (!got) 3 else maxOf(progress, pct)   // never goes backwards
                 val st = if (got && kotlin.math.abs(effLen - lastLen) <= 2) stable + 1 else 0
                 updateProgressUi()
                 val elapsed = System.currentTimeMillis() - started
-                // Finished = every [NNN] marker came back and the text stopped changing
-                // (like the extension). The stop-button flag is only a hint: it can be
-                // missing (DeepSeek) or stuck on, so it never blocks completion.
-                val need = if (allMarkers) (if (streaming) 6 else 2) else (if (streaming) 15 else 5)
-                val done = got && effLen > 50 && st >= need && (allMarkers || effLen >= ch.text.length * 0.3)
+                // Finished when ANY of these holds (first one wins, so the text lands right away):
+                //  - the last marker is there and the text stopped changing,
+                //  - the chatbot's Stop button was seen and has now gone,
+                //  - the page itself has been quiet for a while after real reply text appeared.
+                val enough = effLen >= ch.text.length * 0.3
+                val streamEnded = sawStream && !streaming
+                val need = when {
+                    allMarkers -> if (streaming) 6 else 2
+                    streamEnded -> 2
+                    else -> if (streaming) 15 else 5
+                }
+                val done = got && effLen > 50 && st >= need && (allMarkers || enough)
+                val doneQuiet = got && effLen > 50 && foundC >= 1 && (allMarkers || enough) &&
+                    quiet >= (if (allMarkers) 1000L else 2200L)
                 val doneSlow = got && st >= 20 && effLen > 50
                 when {
-                    done || doneSlow -> finishJob(tok, ch)
+                    done || doneQuiet || doneSlow -> finishJob(tok, ch)
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
-                    else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
+                    else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming)
                 }
             }
-        }, 1000)
+        }, 600)
     }
 
     private fun cleanReply(t: String): String =
