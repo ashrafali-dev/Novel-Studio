@@ -498,9 +498,6 @@ class MainActivity : Activity() {
         s.databaseEnabled = true
         s.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
         s.loadsImagesAutomatically = true
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOWNLOAD_FAVICONS_ENABLED)) {
-            WebSettingsCompat.setDownloadFaviconsEnabled(s, false)
-        }
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportZoom(true)
@@ -2110,7 +2107,7 @@ markers preserved.
             if (shown != null && keyOf(shown) == keyOf(ch)) {
                 applyTranslation(shown, rawTranslation, true)
             }
-            toast("✅ অনুবাদ সেভ হয়েছে" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
+            toast("✅ Translation saved" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
             startNext()
         }
