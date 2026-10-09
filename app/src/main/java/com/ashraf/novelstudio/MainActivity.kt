@@ -2267,6 +2267,7 @@ markers preserved.
             setPadding(dp(8), dp(4), dp(8), dp(4))
             clipToPadding = false
             isVerticalScrollBarEnabled = false
+            layoutParams = ViewGroup.LayoutParams(MP, dp(420))
             setBackgroundColor(0x00111118)
         }
         val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, visibleLabels) {
