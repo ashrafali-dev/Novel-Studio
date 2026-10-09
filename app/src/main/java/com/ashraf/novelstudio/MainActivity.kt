@@ -157,7 +157,7 @@ class MainActivity : Activity() {
             "নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো" to "Next chapter text was not found. Tap ● to retry.",
             "এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে" to "This chapter uses an encoded font; translation may be inaccurate",
             "গ্লোসারি: ${Glossary.lastMatchCount} টা টার্ম প্রম্পটে গেল" to "Glossary: ${Glossary.lastMatchCount} terms added to the prompt",
-            "কপি হয়েছে: $label" to "Copied: $label",
+            "কপি হয়েছে: " to "Copied: ",
             "চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো" to "Chat input not found. Text is copied; paste it manually.",
             "অনুবাদ সেভ হয়েছে" to "Translation saved",
             "অটো অনুবাদ বন্ধ করলাম" to "Background translation stopped",
