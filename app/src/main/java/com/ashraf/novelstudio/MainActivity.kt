@@ -67,6 +67,7 @@ private data class BrowserTab(
 class MainActivity : Activity() {
     private enum class Mode { NOVEL, CHAT, SPLIT }
 
+    private val MAX_RETAINED_TAB_STATES = 2
     private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     private val MP = ViewGroup.LayoutParams.MATCH_PARENT
     private val WC = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -497,9 +498,7 @@ class MainActivity : Activity() {
         s.domStorageEnabled = true
         s.databaseEnabled = true
         s.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-        val dataSaver = Prefs.bool(this, "dataSaver", false)
-        s.loadsImagesAutomatically = !dataSaver
-        s.blockNetworkImage = dataSaver
+        s.loadsImagesAutomatically = true
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportZoom(true)
@@ -667,6 +666,11 @@ class MainActivity : Activity() {
         val state = Bundle()
         tab.state = state
         try { novelWv.saveState(state) } catch (_: Exception) {}
+        // saveState() can retain a surprisingly large WebView history bundle. Keep only a couple of inactive tab snapshots.
+        val inactive = browserTabs.indices.filter { it != activeTabIndex && browserTabs[it].state != null }
+        if (inactive.size > MAX_RETAINED_TAB_STATES) {
+            inactive.dropLast(MAX_RETAINED_TAB_STATES).forEach { browserTabs[it].state = null }
+        }
         captureCurrentTabThumbnail()
         Prefs.put(this, "lastNovelUrl", tab.url)
         persistBrowserTabs()
@@ -2256,7 +2260,7 @@ markers preserved.
             "🔄 Update Ad Block Lists", "🔄 Reload Novel Page", "🔄 Reload Chatbot",
             menuGlossaryLabel(), menuFontLabel(), "🌐 Site Settings",
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
-            "🔍 Inspect Chatbot (Copy Report)", menuDataSaverLabel()
+            "🔍 Inspect Chatbot (Copy Report)"
         )
         // Hide selected rows only. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -2356,18 +2360,6 @@ markers preserved.
                     if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
-                26 -> {
-                    val enabled = !Prefs.bool(this, "dataSaver", false)
-                    Prefs.putBool(this, "dataSaver", enabled)
-                    listOf(novelWv, chatWv).forEach { wv ->
-                        wv.settings.loadsImagesAutomatically = !enabled
-                        wv.settings.blockNetworkImage = enabled
-                    }
-                    labels[i] = menuDataSaverLabel()
-                    visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
-                    toast(if (enabled) "Data Saver enabled. Images are blocked on future page loads." else "Data Saver disabled. Images can load again on future page loads.")
-                }
             }
         }
         dlg.setOnShowListener {
@@ -2614,9 +2606,6 @@ markers preserved.
 
     private fun menuAdBlockLabel(): String =
         (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
-
-    private fun menuDataSaverLabel(): String =
-        (if (Prefs.bool(this, "dataSaver", false)) "✅" else "⬜") + " 📉 Data Saver (block images)"
 
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
         val lv = ListView(this)
