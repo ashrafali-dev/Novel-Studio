@@ -45,8 +45,6 @@ import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewFeature
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
