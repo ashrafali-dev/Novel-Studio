@@ -303,9 +303,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     fun clickNext(dir: String): String {
         val alts = if (dir == "next")
-            "next|next chapter|next ›|next »|›|»|→|下一章 |下一页|下一话|下一節|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
+            "next|next chapter|next page|next ›|next »|›|»|→|下一頁|下一页|下一章|下一节|下一節|下一话|下一話|下一回|다음|다음화|次へ|次の話|পরবর্তী|নেক্সট"
         else
-            "prev|previous|prev chapter|previous chapter|‹|«|←|上一章 |上一页|上一话|이전|이전í™”|前へ|前の話|আগের|পূর্ববর্তী"
+            "prev|previous|prev chapter|previous chapter|prev page|‹|«|←|上一頁|上一页|上一章|上一节|上一節|上一话|上一話|上一回|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
         return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
     }    // WebNovel navigation based on the open-source WebnovelReader crawler.
@@ -693,19 +693,51 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var title=text(titleEl);
   if(!title)title=document.title||'';
 
+  var isN543=hostNow==='novel543.com'||hostNow.endsWith('.novel543.com');
+  // Novel543 splits one chapter into pages: 8095_46.html -> 8095_46_2.html -> 8095_47.html.
+  // Only the site's own next/prev link knows the real neighbour, so read it by its TEXT
+  // (not by nth-child position, which changes between page 1 / middle / last page).
+  function n543ok(h){
+    try{
+      var u=new URL(h,location.href),m=u.pathname.match(/^\/(\d+)\/\d+_\d+(?:_\d+)?\.html$/);
+      return !!m&&u.pathname.split('/')[1]===location.pathname.split('/')[1];
+    }catch(x){return false;}
+  }
+  function byText(kind){
+    var nx=kind==='next';
+    var P1=nx?/下一[頁页]|^下[頁页]$|next page/i:/上一[頁页]|^上[頁页]$|prev(?:ious)? page/i;
+    var P2=nx?/下一[章节節话話回篇]|^下[章节節]$|next chapter|^next\b|次の話|次へ|다음/i:/上一[章节節话話回篇]|^上[章节節]$|prev(?:ious)? chapter|^prev|前の話|前へ|이전/i;
+    var cur=location.href.split('#')[0],best=null,bs=0;
+    var as=document.querySelectorAll('a[href]');
+    for(var i=0;i<as.length;i++){
+      var a=as[i],h=a.href||'';
+      if(!/^https?:/i.test(h)||h.split('#')[0]===cur)continue;
+      var t=(a.innerText||a.textContent||'').replace(/\s+/g,'');
+      if(t.length>14)continue;
+      var u=(a.getAttribute('title')||'')+' '+(a.getAttribute('aria-label')||'');
+      var sc=0;
+      if(P1.test(t)||P1.test(u))sc=3;else if(P2.test(t)||P2.test(u))sc=2;
+      if(!sc)continue;
+      if(isN543&&!n543ok(h))continue;
+      if(sc>bs){best=a;bs=sc;}
+    }
+    return best;
+  }
   function link(kind,sel){
-    var e=pick(sel);
+    var e=null;
+    if(isN543)e=byText(kind);          // never trust a fixed nth-child here
+    if(!e)e=pick(sel);
+    if(!e&&!isN543)e=byText(kind);
     if(!e){
       var q=kind==='next'
         ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
         : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
       try{e=document.querySelector(q);}catch(x){e=null;}
     }
-    if(e&&e.href)return {href:e.href,text:text(e),selector:stable(e)};
+    if(e&&e.href&&(!isN543||n543ok(e.href)))return {href:e.href,text:text(e),selector:stable(e)};
     return null;
   }
 
-  var isN543=hostNow==='novel543.com'||hostNow.endsWith('.novel543.com');
   var segs;
   if(isN543&&chosen){
     // Always use sanitized rendered text. Never pass page JavaScript to the translator.

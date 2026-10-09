@@ -1335,11 +1335,16 @@ class MainActivity : Activity() {
                     url.substringAfter("://", "").substringBefore('/').removePrefix("www.")
                 }
 
-                val number = Regex(
+                val number0 = Regex(
                     "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
                     RegexOption.IGNORE_CASE
                 ).find(cleanTitle)?.groupValues?.getOrNull(1)
                     ?: Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
+                // Novel543: /<book>/<vol>_<ch>_<part>.html is page <part> of the same chapter.
+                val partNo = if (isNovel543)
+                    Regex("/\\d+_\\d+_(\\d+)\\.html").find(url)?.groupValues?.get(1)?.toIntOrNull() else null
+                val number = if (partNo != null && partNo >= 2 && number0.isNotEmpty() && !number0.contains('.'))
+                    number0 + "." + partNo.toString().padStart(2, '0') else number0
 
                 val ch = Chapter(
                     cleanTitle.ifBlank { o.optString("pageTitle", "").trim() },
@@ -1402,6 +1407,13 @@ class MainActivity : Activity() {
             if (ch != th && !th.endsWith(".$ch") && !ch.endsWith(".$th")) return false
 
             val tp = t.path.orEmpty().trimEnd('/')
+            if (th == "novel543.com" || th.endsWith(".novel543.com")) {
+                // /<book>/<vol>_<ch>.html or /<book>/<vol>_<ch>_<part>.html, same book only
+                val rx = Regex("^/(\\d+)/\\d+_\\d+(?:_\\d+)?\\.html$")
+                val tm = rx.find(tp) ?: return false
+                val cm = rx.find(c.path.orEmpty().trimEnd('/'))
+                if (cm != null && cm.groupValues[1] != tm.groupValues[1]) return false
+            }
             if (tp.isBlank() || tp == "/" ||
                 tp.equals("/home", true) || tp.equals("/index", true) ||
                 tp.endsWith("/home", true) || tp.endsWith("/index", true)) return false
@@ -1421,7 +1433,7 @@ class MainActivity : Activity() {
         val oldTitle = lastChapter?.title?.trim()?.lowercase().orEmpty()
         val newTitle = ch.title.trim().lowercase()
         val titleChanged = oldTitle.isNotEmpty() && newTitle.isNotEmpty() && oldTitle != newTitle
-        return ch.text.length > 300 && (bodyHash(ch) != oldHash || titleChanged)
+        return ch.text.length > 80 && (bodyHash(ch) != oldHash || titleChanged)
     }
 
     private fun onChapter(ch: Chapter) {
@@ -1657,7 +1669,9 @@ class MainActivity : Activity() {
         novelWv.evaluateJavascript(script) { res ->
             if (token != navToken) return@evaluateJavascript
             if (res != null && (res.contains("none") || res.contains("failed"))) {
-                val g = Extractor.bump(base.url, if (dir == "next") 1 else -1)
+                val h543 = Uri.parse(base.url).host.orEmpty().lowercase()
+                val g = if (h543 == "novel543.com" || h543.endsWith(".novel543.com")) null
+                        else Extractor.bump(base.url, if (dir == "next") 1 else -1)
                 if (g != null) {
                     toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
                     loadAndWait(g, token, base)
@@ -1709,7 +1723,7 @@ class MainActivity : Activity() {
         if (token != navToken) return
         extractNow { ch ->
             if (token != navToken) return@extractNow
-            if (ch != null && ch.text.length > 300 &&
+            if (ch != null && ch.text.length > 80 &&
                 bodyHash(ch) != pendHash &&
                 (pendUrl.isEmpty() || cleanUrl(ch.url) == pendUrl || cleanUrl(ch.url) == cleanUrl(novelWv.url ?: ""))) {
                 autoCopy = false
@@ -1784,6 +1798,8 @@ class MainActivity : Activity() {
             toast("⚠ এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে")
         }
         val g = if (Prefs.glossaryOn(this)) Glossary.block(this, chapterText) else ""
+        if (Prefs.glossaryOn(this) && Glossary.count > 0)
+            toast("📖 গ্লোসারি: ${Glossary.lastMatchCount} টা টার্ম প্রম্পটে গেল")
         return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
     }
 
