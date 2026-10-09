@@ -497,7 +497,9 @@ class MainActivity : Activity() {
         s.domStorageEnabled = true
         s.databaseEnabled = true
         s.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
-        s.loadsImagesAutomatically = true
+        val dataSaver = Prefs.bool(this, "dataSaver", false)
+        s.loadsImagesAutomatically = !dataSaver
+        s.blockNetworkImage = dataSaver
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportZoom(true)
@@ -2254,7 +2256,7 @@ markers preserved.
             "🔄 Update Ad Block Lists", "🔄 Reload Novel Page", "🔄 Reload Chatbot",
             menuGlossaryLabel(), menuFontLabel(), "🌐 Site Settings",
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
-            "🔍 Inspect Chatbot (Copy Report)"
+            "🔍 Inspect Chatbot (Copy Report)", menuDataSaverLabel()
         )
         // Hide selected rows only. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -2354,6 +2356,18 @@ markers preserved.
                     if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
+                26 -> {
+                    val enabled = !Prefs.bool(this, "dataSaver", false)
+                    Prefs.putBool(this, "dataSaver", enabled)
+                    listOf(novelWv, chatWv).forEach { wv ->
+                        wv.settings.loadsImagesAutomatically = !enabled
+                        wv.settings.blockNetworkImage = enabled
+                    }
+                    labels[i] = menuDataSaverLabel()
+                    visibleLabels[position] = labels[i]
+                    adapter.notifyDataSetChanged()
+                    toast(if (enabled) "Data Saver enabled. Images are blocked on future page loads." else "Data Saver disabled. Images can load again on future page loads.")
+                }
             }
         }
         dlg.setOnShowListener {
@@ -2600,6 +2614,9 @@ markers preserved.
 
     private fun menuAdBlockLabel(): String =
         (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
+
+    private fun menuDataSaverLabel(): String =
+        (if (Prefs.bool(this, "dataSaver", false)) "✅" else "⬜") + " 📉 Data Saver (block images)"
 
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
         val lv = ListView(this)
