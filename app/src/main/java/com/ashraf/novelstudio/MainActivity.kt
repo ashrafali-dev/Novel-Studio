@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.Message
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
@@ -135,7 +136,66 @@ class MainActivity : Activity() {
     private var progress = 0
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+    private fun toast(m: String) {
+        var text = m
+        val translations = listOf(
+            "🔄 দুটোই রিলোড হচ্ছে" to "🔄 Reloading both pages",
+            "🔄 চ্যাটবট রিলোড হচ্ছে…" to "🔄 Reloading chatbot…",
+            "🔄 নোভেল পেজ রিলোড হচ্ছে…" to "🔄 Reloading novel page…",
+            "🔐 এই WebView-তেই লগইন করো — session অ্যাপেই থাকবে" to "🔐 Log in here; your session stays in the app",
+            "🕘 হিস্ট্রি খালি" to "🕘 History is empty",
+            "আর কোনো chapter নেই" to "No more chapters",
+            "WebNovel chapter link পাওয়া যায়নি" to "WebNovel chapter link not found",
+            "এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি" to "Chapter text was not found on this page",
+            "নতুন chapter এখনো আসেনি — আবার ● চাপো" to "The next chapter has not loaded yet. Tap ● again.",
+            "আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো" to "Open a novel chapter page first",
+            "নতুন chapter লোড হয়নি" to "The next chapter did not load",
+            "WebNovel book URL বোঝা যায়নি" to "Could not identify the WebNovel book URL",
+            "বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি" to "Navigation button not found; guessing from the URL",
+            "নতুন chapter link পাওয়া যায়নি" to "Next chapter link not found",
+            "নতুন চ্যাপ্টারের লেখা আসেনি — ● চেপে আবার চেষ্টা করো" to "Next chapter text has not appeared. Tap ● to retry.",
+            "নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো" to "Next chapter text was not found. Tap ● to retry.",
+            "এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে" to "This chapter uses an encoded font; translation may be inaccurate",
+            "গ্লোসারি: ${Glossary.lastMatchCount} টা টার্ম প্রম্পটে গেল" to "Glossary: ${Glossary.lastMatchCount} terms added to the prompt",
+            "কপি হয়েছে: $label" to "Copied: $label",
+            "চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো" to "Chat input not found. Text is copied; paste it manually.",
+            "অনুবাদ সেভ হয়েছে" to "Translation saved",
+            "অটো অনুবাদ বন্ধ করলাম" to "Background translation stopped",
+            "অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে" to "Could not insert the translation; it is saved in the library",
+            "অটো অনুবাদ চালু — ▶ চাপলেই ব্যাকগ্রাউন্ডে অনুবাদ হয়ে সাইটে বসবে" to "Background translation enabled — tap ▶ to translate and insert into the site",
+            "কপি মোড — ▶ চাপলে চ্যাপ্টার কপি হবে" to "Copy mode — tap ▶ to copy the chapter",
+            "ক্লিপবোর্ডে অনুবাদ নেই — আগে চ্যাটবটের উত্তরের Copy বাটন চাপো" to "No translation in clipboard. Copy the chatbot's answer first.",
+            "এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো" to "This is source text. Copy the chatbot's answer instead.",
+            "লাইব্রেরিতে সেভ:" to "Saved to library:",
+            "আগে একটা চ্যাপ্টার খোলো" to "Open a chapter first",
+            "আবার অনুবাদে দেওয়া হলো" to "Chapter added to the translation queue",
+            "লিস্ট নামাচ্ছি…" to "Updating the block list…",
+            "টা হোস্ট যোগ হয়েছে" to " hosts added",
+            "আপডেট হয়নি" to "Update failed",
+            "চ্যাটবট রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো" to "Chatbot report copied — paste it here",
+            "রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো" to "Report copied — paste it here",
+            "ঠিক ডোমেইন লেখো" to "Enter a valid domain",
+            "সেভ হয়েছে — পেজ রিলোড করে ● চাপো" to "Saved — reload the page and tap ●",
+            "মুছে ফেলা হয়েছে" to "Deleted",
+            "গ্লোসারি চালু" to "Glossary enabled",
+            "গ্লোসারি বন্ধ" to "Glossary disabled",
+            "গ্লোসারি কপি হয়েছে" to "Glossary copied",
+            "মুছো" to "Delete",
+            "যোগ হয়েছে" to "Added",
+            "গ্লোসারি বদলানো হয়েছে" to "Glossary updated",
+            "লাইব্রেরি খালি — অনুবাদ হলে এখানে জমবে" to "Library is empty. Translations will appear here when saved.",
+            "এক্সপোর্ট করার মতো অনুবাদ নেই" to "There are no translations to export",
+            "এক্সপোর্ট হয়েছে" to "Export completed",
+            "ব্যর্থ" to "Failed",
+            "সেভ হয়েছে:" to "Saved:",
+            "বুকমার্ক খালি" to "Bookmarks are empty"
+        )
+        translations.forEach { (from, to) -> text = text.replace(from, to) }
+        if (Regex("[\\u0980-\\u09FF]").containsMatchIn(text)) {
+            text = "Action completed or failed. Please check the page and try again."
+        }
+        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+    }
 
     // ================================================================== UI
     private fun chip(label: String, onClick: () -> Unit, onLong: (() -> Unit)?): TextView = TextView(this).apply {
@@ -181,7 +241,30 @@ class MainActivity : Activity() {
         chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
         chatWv.webChromeClient = ChatChrome()
         activeWv = novelWv
-        novelWv.setOnTouchListener { _, _ -> activeWv = novelWv; false }
+        var pullDownStartY = 0f
+        var pullDownStartX = 0f
+        novelWv.setOnTouchListener { view, event ->
+            activeWv = novelWv
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    pullDownStartY = event.y
+                    pullDownStartX = event.x
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dy = event.y - pullDownStartY
+                    val dx = kotlin.math.abs(event.x - pullDownStartX)
+                    if (dy > dp(110) && dx < dp(80) && novelWv.scrollY <= 0) {
+                        novelWv.reload()
+                        toast("Refreshing novel page…")
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    pullDownStartY = 0f
+                    pullDownStartX = 0f
+                }
+            }
+            false
+        }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
 
         // ---- browser chrome: tabs + address/search bar + focused site shortcuts
@@ -202,6 +285,10 @@ class MainActivity : Activity() {
             onFocusChangeListener = View.OnFocusChangeListener { _, has ->
                 searchShortcutsVisible = has
                 shortcutStrip.visibility = if (has) View.VISIBLE else View.GONE
+            }
+            setOnLongClickListener {
+                showTabGrid()
+                true
             }
         }
 
@@ -252,11 +339,11 @@ class MainActivity : Activity() {
             setBackgroundColor(0xFF202024.toInt())
         }
 
+        // Keep browser chrome compact: the address bar is the only permanent top row.
+        // Long-press the address bar to open tab management; site shortcuts appear while searching.
         val browserChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(tabScroll, LinearLayout.LayoutParams(MP, dp(38)))
             addView(topBar, LinearLayout.LayoutParams(MP, dp(50)))
-            addView(shortcutScroll, LinearLayout.LayoutParams(MP, dp(44)))
         }
 
         // ---- panes (both always full-size and alive; the one on top is the one you see)
