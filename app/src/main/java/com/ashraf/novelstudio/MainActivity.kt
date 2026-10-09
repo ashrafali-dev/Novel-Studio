@@ -139,11 +139,11 @@ class MainActivity : Activity() {
     private fun toast(m: String) {
         var text = m
         val translations = listOf(
-            "🔄 দুটোই রিলোড হচ্ছে" to "🔄 Reloading both pages",
-            "🔄 চ্যাটবট রিলোড হচ্ছে…" to "🔄 Reloading chatbot…",
-            "🔄 নোভেল পেজ রিলোড হচ্ছে…" to "🔄 Reloading novel page…",
-            "🔐 এই WebView-তেই লগইন করো — session অ্যাপেই থাকবে" to "🔐 Log in here; your session stays in the app",
-            "🕘 হিস্ট্রি খালি" to "🕘 History is empty",
+            "🔄 Reloading both pages" to "🔄 Reloading both pages",
+            "🔄 Reloading chatbot…" to "🔄 Reloading chatbot…",
+            "🔄 Reloading novel page…" to "🔄 Reloading novel page…",
+            "🔐 Log in here; your session stays in the app" to "🔐 Log in here; your session stays in the app",
+            "🕘 History is empty" to "🕘 History is empty",
             "আর কোনো chapter নেই" to "No more chapters",
             "WebNovel chapter link পাওয়া যায়নি" to "WebNovel chapter link not found",
             "এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি" to "Chapter text was not found on this page",
@@ -305,7 +305,7 @@ class MainActivity : Activity() {
                 it.marginStart = dp(6)
             }
             setOnClickListener { reloadPage() }
-            setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
+            setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 Reloading both pages"); true }
         }
         val goBtn = TextView(this).apply {
             text = "➜"
@@ -521,7 +521,7 @@ class MainActivity : Activity() {
     private fun reloadPage() {
         val wv = if (mode == Mode.CHAT) chatWv else activeWv
         wv.reload()
-        toast(if (wv === chatWv) "🔄 চ্যাটবট রিলোড হচ্ছে…" else "🔄 নোভেল পেজ রিলোড হচ্ছে…")
+        toast(if (wv === chatWv) "🔄 Reloading chatbot…" else "🔄 Reloading novel page…")
     }
 
     private fun loginChatbot() {
@@ -529,7 +529,7 @@ class MainActivity : Activity() {
         val url = Prefs.get(this, "botUrl", bots().optJSONObject(0)?.optString("u", "https://chatgpt.com/") ?: "https://chatgpt.com/")
         chatWv.loadUrl(url)
         CookieManager.getInstance().flush()
-        toast("🔐 এই WebView-তেই লগইন করো — session অ্যাপেই থাকবে")
+        toast("🔐 Log in here; your session stays in the app")
     }
 
     // ================================================================== browser tabs / shortcuts / history
@@ -982,7 +982,7 @@ class MainActivity : Activity() {
 
     private fun browserHistoryDialog() {
         val h = Store.history(this)
-        if (h.isEmpty()) return toast("🕘 হিস্ট্রি খালি")
+        if (h.isEmpty()) return toast("🕘 History is empty")
         val labels = h.map {
             val host = Uri.parse(it.url).host ?: it.url
             "${it.title.ifBlank { host }}\n$host"
@@ -1668,14 +1668,14 @@ class MainActivity : Activity() {
                     if (n < 4) {
                         handler.postDelayed({ if (token == navToken) attempt(n + 1) }, 250L)
                     } else {
-                        toast("❌ এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি\n(fast: " +
+                        toast("❌ Chapter text was not found on this page\n(fast: " +
                             lastFastWhy.ifBlank { "short/empty" } + " · WebView " + webViewVer() + ")")
                     }
                     return@extractNow
                 }
                 val pendingHash = pendingNavHash
                 if (pendingHash != null && bodyHash(ch) == pendingHash) {
-                    toast("⏳ নতুন chapter এখনো আসেনি — আবার ● চাপো")
+                    toast("⏳ The next chapter has not loaded yet. Tap ● again.")
                     return@extractNow
                 }
                 pendingNavHash = null
@@ -1733,7 +1733,7 @@ class MainActivity : Activity() {
             val base = cur ?: lastChapter
             if (base == null) {
                 hideNavLoading()
-                toast("❌ আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো")
+                toast("❌ Open a novel chapter page first")
                 return@extractNow
             }
             navigate(base)
@@ -1758,7 +1758,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 hideNavLoading()
-                toast("❌ নতুন chapter লোড হয়নি")
+                toast("❌ The next chapter did not load")
             }
         }, 8000)
     }
@@ -1775,7 +1775,7 @@ class MainActivity : Activity() {
             val match = Regex("^(/book/[^/]+)", RegexOption.IGNORE_CASE).find(path)
             if (match == null || parsed.scheme.isNullOrEmpty() || parsed.authority.isNullOrEmpty()) {
                 hideNavLoading()
-                toast("❌ WebNovel book URL বোঝা যায়নি")
+                toast("❌ Could not identify the WebNovel book URL")
                 return
             }
             val catalogUrl = parsed.scheme + "://" + parsed.authority + match.value + "/catalog"
@@ -1796,11 +1796,11 @@ class MainActivity : Activity() {
                 val g = if (h543 == "novel543.com" || h543.endsWith(".novel543.com")) null
                         else Extractor.bump(base.url, if (dir == "next") 1 else -1)
                 if (g != null) {
-                    toast("⚠️ বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি")
+                    toast("⚠️ Navigation button not found; guessing from the URL")
                     loadAndWait(g, token, base)
                 } else {
                     hideNavLoading()
-                    toast("❌ নতুন chapter link পাওয়া যায়নি")
+                    toast("❌ Next chapter link not found")
                 }
             } else {
                 val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
@@ -1835,7 +1835,7 @@ class MainActivity : Activity() {
                     waitChange(oldHash, n + 1, token, oldUrl)
                 } else {
                     hideNavLoading()
-                    toast("❌ নতুন চ্যাপ্টারের লেখা আসেনি — ● চেপে আবার চেষ্টা করো")
+                    toast("❌ Next chapter text has not appeared. Tap ● to retry.")
                 }
             }
         }, if (n < 4) 150L else 220L)
@@ -1858,7 +1858,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 hideNavLoading()
-                toast("❌ নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো")
+                toast("❌ Next chapter text was not found. Tap ● to retry.")
             }
         }
     }
@@ -1918,24 +1918,24 @@ class MainActivity : Activity() {
         // full of private-use characters and cannot be translated.
         val pua = chapterText.count { it in '\uE000'..'\uF8FF' }
         if (pua > 20 && pua * 20 > chapterText.length) {
-            toast("⚠ এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে")
+            toast("⚠ This chapter uses an encoded font; translation may be inaccurate")
         }
         val g = if (Prefs.glossaryOn(this)) Glossary.block(this, chapterText) else ""
         if (Prefs.glossaryOn(this) && Glossary.count > 0)
-            toast("📖 গ্লোসারি: ${Glossary.lastMatchCount} টা টার্ম প্রম্পটে গেল")
+            toast("📖 Glossary: ${Glossary.lastMatchCount} terms added to the prompt")
         return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
     }
 
     private fun deliver(full: String, label: String) {
         copy(full)
-        toast("📋 কপি হয়েছে: $label (${full.length} অক্ষর)")
+        toast("📋 Copied: $label (${full.length} characters)")
         if (Prefs.bool(this, "autoPaste")) {
             val send = Prefs.bool(this, "autoSend")
             val token = navToken
             handler.postDelayed({
                 if (token != navToken) return@postDelayed
                 chatWv.evaluateJavascript(Js.send(full, send)) { r ->
-                    if (decode(r).startsWith("nobox")) toast("⚠️ চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো")
+                    if (decode(r).startsWith("nobox")) toast("⚠️ Chat input not found. Text is copied; paste it manually.")
                 }
             }, 400)
         }
@@ -2022,7 +2022,7 @@ markers preserved.
                     if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
                 }, 300)
             } else {
-                failJob(tok, ch, "চ্যাট বক্স পাওয়া যায়নি — চ্যাটবটে লগইন আছে কি দেখো")
+                failJob(tok, ch, "Chat input not found — check that you are logged in to the chatbot")
             }
         }
     }
@@ -2073,9 +2073,9 @@ markers preserved.
                 val doneSlow = got && st >= 20 && effLen > 50
                 when {
                     done || doneSlow -> finishJob(tok, ch)
-                    sendFailed && !got -> failJob(tok, ch, "মেসেজ সেন্ড হয়নি — সব উপায় চেষ্টা করেছি (চ্যাটবটে লগইন/ক্যাপচা আছে কি দেখো)")
-                    elapsed > 6 * 60_000 -> failJob(tok, ch, "সময় শেষ (৬ মিনিট)")
-                    !got && elapsed > 60_000 -> failJob(tok, ch, "চ্যাটবট উত্তর শুরু করেনি — মেসেজ যায়নি?")
+                    sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
+                    elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
+                    !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st)
                 }
             }
@@ -2091,7 +2091,7 @@ markers preserved.
             if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
             val rawTranslation = cleanReply(decode(raw))
             if (rawTranslation.length < 30) {
-                failJob(tok, ch, "উত্তর পড়া গেল না")
+                failJob(tok, ch, "Could not read the answer")
                 return@evaluateJavascript
             }
             // Markers are internal alignment data only. Never expose them in the
@@ -2099,7 +2099,7 @@ markers preserved.
             // insertion so paragraph alignment survives AI formatting changes.
             val t = stripInternalMarkers(rawTranslation)
             if (t.length < 30) {
-                failJob(tok, ch, "অনুবাদটি পড়া গেল না")
+                failJob(tok, ch, "Could not read the translation")
                 return@evaluateJavascript
             }
             copy(t)
@@ -2122,7 +2122,7 @@ markers preserved.
         queue.clear()
         running = null
         copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
-        toast("❌ $msg\n📋 চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো")
+        toast("❌ $msg\n📋 Chapter copied. Paste it into the chatbot and tap Copy → 💾.")
         updateProgressUi()
     }
 
@@ -2132,7 +2132,7 @@ markers preserved.
         running = null
         chatWv.evaluateJavascript(Js.stop(), null)
         updateProgressUi()
-        toast("⏹ অটো অনুবাদ বন্ধ করলাম")
+        toast("⏹ Background translation stopped")
     }
 
     // ---- put the translation into the novel page itself
@@ -2162,7 +2162,7 @@ markers preserved.
                     }, 2500)
                 }
             } else {
-                toast("⚠️ অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে")
+                toast("⚠️ Could not insert the translation; it is saved in the library")
             }
         }
     }
@@ -2177,7 +2177,7 @@ markers preserved.
 
     private fun updatePill() {
         togglePill.visibility = if (hasTr && mode != Mode.CHAT) View.VISIBLE else View.GONE
-        togglePill.text = if (shownTranslated) "🌐 মূল দেখো" else "🌐 অনুবাদ দেখো"
+        togglePill.text = if (shownTranslated) "🌐 View Original" else "🌐 View Translation"
     }
 
     // ---- progress overlay
@@ -2191,16 +2191,16 @@ markers preserved.
         val label: String
         var pct = 0
         if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
-            label = "🌐 অনুবাদ চলছে…  $progress%"
+            label = "🌐 Translating…  $progress%"
             pct = progress
         } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
             val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
-            label = "⏳ লাইনে আছে — আগে $ahead টা বাকি"
+            label = "⏳ Queued — $ahead ahead"
         } else {
-            label = "🌐 পেছনে অন্য চ্যাপ্টারের অনুবাদ চলছে  $progress%"
+            label = "🌐 Another chapter is translating in the background  $progress%"
             pct = progress
         }
-        progressTv.text = label + "   (থামাতে ট্যাপ)"
+        progressTv.text = label + "   (Tap to stop)"
         progressBar.progress = pct
         setProgressVisible(true)
     }
@@ -2227,7 +2227,7 @@ markers preserved.
         val on = !Prefs.auto(this)
         Prefs.putBool(this, "noAuto", !on)
         refreshAutoBtn()
-        toast(if (on) "⚡ অটো অনুবাদ চালু — ▶ চাপলেই ব্যাকগ্রাউন্ডে অনুবাদ হয়ে সাইটে বসবে" else "⚡ কপি মোড — ▶ চাপলে চ্যাপ্টার কপি হবে")
+        toast(if (on) "⚡ Background translation enabled — tap ▶ to translate and insert into the site" else "⚡ Copy mode — tap ▶ to copy the chapter")
     }
 
     private fun refreshAutoBtn() {
@@ -2238,10 +2238,10 @@ markers preserved.
     private fun saveAnswer() {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim() ?: ""
-        if (t.length < 30) return toast("❌ ক্লিপবোর্ডে অনুবাদ নেই — আগে চ্যাটবটের উত্তরের Copy বাটন চাপো")
-        if (t == lastCopied.trim()) return toast("❌ এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো")
+        if (t.length < 30) return toast("❌ No translation in clipboard. Copy the chatbot answer first.")
+        if (t == lastCopied.trim()) return toast("❌ This is source text. Copy the chatbot answer instead.")
         val tr = Store.save(this, lastChapter, t)
-        toast("💾 লাইব্রেরিতে সেভ: ${tr.novel} — ${tr.label()}")
+        toast("💾 Saved to library: ${tr.novel} — ${tr.label()}")
         if (!Prefs.bool(this, "noSaveNext")) step("next")
     }
 
@@ -2307,8 +2307,8 @@ markers preserved.
                 5 -> { dlg.dismiss(); editPrompt() }
                 7 -> {
                     val ch = lastChapter
-                    if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
-                    else { enqueue(ch); toast("⏳ আবার অনুবাদে দেওয়া হলো") }
+                    if (ch == null) toast("❌ Open a chapter first")
+                    else { enqueue(ch); toast("⏳ Chapter added to the translation queue") }
                     dlg.dismiss()
                 }
                 9 -> {
@@ -2335,9 +2335,9 @@ markers preserved.
                     adapter.notifyDataSetChanged()
                 }
                 16 -> {
-                    toast("⏳ লিস্ট নামাচ্ছি…")
+                    toast("⏳ Updating the block list…")
                     AdBlock.update(this) { n ->
-                        toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
+                        toast(if (n > 0) "✅ Added $n hosts" else "❌ Update failed")
                     }
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
@@ -2407,7 +2407,7 @@ markers preserved.
             val report = "chat url=" + (chatWv.url ?: "") + " | WebView " + webViewVer() + "\n" +
                 rep.ifBlank { "(Empty — did the chatbot page finish loading?)" }
             copy(report)
-            toast("🔍 চ্যাটবট রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো")
+            toast("🔍 Chatbot report copied — paste it here")
         }
     }
 
@@ -2457,7 +2457,7 @@ markers preserved.
                 "siteRule=" + (SiteRules.find(this, novelWv.url ?: "")?.let { it.host + " compat=" + it.compat } ?: "none")
             val report = state + "\n" + page
             copy(report)
-            toast("🔍 রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো")
+            toast("🔍 Report copied — paste it here")
         }
     }
 
@@ -2516,7 +2516,7 @@ markers preserved.
             .setNegativeButton("Cancel", null)
         if (old != null) b.setNeutralButton("🗑 Delete") { _, _ ->
             SiteRules.remove(this, old.host)
-            toast("🗑 মুছে ফেলা হয়েছে")
+            toast("🗑 Deleted")
         }
         b.show()
     }
@@ -2551,7 +2551,7 @@ markers preserved.
                     3 -> { copy(Glossary.read(this)); toast("📋 Glossary copied") }
                     4 -> AlertDialog.Builder(this)
                         .setMessage("The entire glossary will be deleted. Continue?")
-                        .setPositiveButton("Delete") { _, _ -> Glossary.write(this, ""); toast("🗑 মুছে ফেলা হয়েছে") }
+                        .setPositiveButton("Delete") { _, _ -> Glossary.write(this, ""); toast("🗑 Deleted") }
                         .setNegativeButton("Cancel", null)
                         .show()
                 }
@@ -2570,12 +2570,12 @@ markers preserved.
             .setView(et)
             .setPositiveButton("Add") { _, _ ->
                 Glossary.append(this, et.text.toString())
-                toast("✅ যোগ হয়েছে")
+                toast("✅ Added")
             }
             .setNegativeButton("Cancel", null)
         if (bulk) b.setNeutralButton("Replace all") { _, _ ->
             Glossary.write(this, et.text.toString())
-            toast("✅ গ্লোসারি বদলানো হয়েছে")
+            toast("✅ Glossary updated")
         }
         b.show()
     }
@@ -2673,9 +2673,9 @@ markers preserved.
             val u = data?.data ?: return
             try {
                 contentResolver.openOutputStream(u)?.use { it.write(Store.export(this, exportNovel).toByteArray()) }
-                toast("✅ এক্সপোর্ট হয়েছে")
+                toast("✅ Export completed")
             } catch (e: Exception) {
-                toast("❌ " + (e.message ?: "ব্যর্থ"))
+                toast("❌ " + (e.message ?: "Failed"))
             }
         }
     }
