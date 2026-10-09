@@ -364,10 +364,9 @@ class MainActivity : Activity() {
         }
 
         val shareBtn = TextView(this).apply {
-            text = "•\n↗"
+            text = "↗"
             gravity = Gravity.CENTER
-            textSize = 18f
-            setLineSpacing(-dp(9).toFloat(), 1f)
+            textSize = 23f
             setTextColor(0xFFF2F2F5.toInt())
             layoutParams = LinearLayout.LayoutParams(dp(42), dp(48)).also {
                 it.marginStart = dp(7)
