@@ -77,6 +77,7 @@ class MainActivity : Activity() {
     private lateinit var chatWv: WebView
     private lateinit var activeWv: WebView
     private lateinit var urlBar: EditText
+    private lateinit var tabCountBtn: TextView
     private lateinit var content: FrameLayout
     private lateinit var novelBox: FrameLayout
     private lateinit var chatBox: LinearLayout
@@ -270,7 +271,7 @@ class MainActivity : Activity() {
         }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
 
-        // ---- browser chrome: tabs + address/search bar + focused site shortcuts
+        // ---- Chrome-inspired browser bar: Home | rounded address | Share | Tab count
         urlBar = EditText(this).apply {
             hint = "Search or enter address"
             setSingleLine()
@@ -279,7 +280,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setPadding(0, 0, 0, 0)
             setTextColor(0xFFF5F6FA.toInt())
-            setHintTextColor(0xFF9296A5.toInt())
+            setHintTextColor(0xFFB8BAC3.toInt())
             background = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
             setSelectAllOnFocus(false)
             setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
@@ -296,31 +297,11 @@ class MainActivity : Activity() {
         val reloadBtn = TextView(this).apply {
             text = "↻"
             gravity = Gravity.CENTER
-            textSize = 22f
+            textSize = 21f
             setTextColor(0xFFE8EAF2.toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(0xFF343743.toInt())
-            }
-            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).also {
-                it.marginStart = dp(6)
-            }
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(36))
             setOnClickListener { reloadPage() }
             setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 Reloading both pages"); true }
-        }
-        val goBtn = TextView(this).apply {
-            text = "➜"
-            gravity = Gravity.CENTER
-            textSize = 19f
-            setTextColor(0xFFFFFFFF.toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(0xFF5278F6.toInt())
-            }
-            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).also {
-                it.marginStart = dp(6)
-            }
-            setOnClickListener { go(urlBar.text.toString()) }
         }
 
         tabStrip = LinearLayout(this).apply {
@@ -344,37 +325,101 @@ class MainActivity : Activity() {
             addView(shortcutStrip, ViewGroup.LayoutParams(WC, dp(44)))
         }
 
+        val homeBtn = TextView(this).apply {
+            text = "⌂"
+            gravity = Gravity.CENTER
+            textSize = 32f
+            setTextColor(0xFFF2F2F5.toInt())
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(48)).also {
+                it.marginEnd = dp(8)
+            }
+            contentDescription = "Home"
+            setOnClickListener {
+                go("https://www.google.com/")
+                urlBar.setText("https://www.google.com/")
+            }
+        }
+
         val addressIcon = TextView(this).apply {
-            text = "⌕"
+            text = "☷"
             gravity = Gravity.CENTER
             textSize = 25f
-            setTextColor(0xFF9EA7C0.toInt())
+            setTextColor(0xFFE0E2E8.toInt())
             layoutParams = LinearLayout.LayoutParams(dp(32), MP)
+            contentDescription = "Address and site controls"
         }
+
         val addressBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(4), dp(5), dp(4))
+            setPadding(dp(10), dp(4), dp(4), dp(4))
             background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                setColor(0xFF242731.toInt())
-                setStroke(dp(1), 0x334F7CFF)
+                cornerRadius = dp(32).toFloat()
+                setColor(0xFF303136.toInt())
             }
             addView(addressIcon)
             addView(urlBar, LinearLayout.LayoutParams(0, MP, 1f))
             addView(reloadBtn)
-            addView(goBtn)
+            layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f)
+        }
+
+        val shareBtn = TextView(this).apply {
+            text = "•\n↗"
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setLineSpacing(-dp(9).toFloat(), 1f)
+            setTextColor(0xFFF2F2F5.toInt())
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(48)).also {
+                it.marginStart = dp(7)
+            }
+            contentDescription = "Share current page"
+            setOnClickListener {
+                val currentUrl = novelWv.url ?: browserTabs.getOrNull(activeTabIndex)?.url.orEmpty()
+                if (currentUrl.isNotBlank()) {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, currentUrl)
+                    }
+                    startActivity(Intent.createChooser(send, "Share page"))
+                } else {
+                    toast("No page to share")
+                }
+            }
+        }
+
+        tabCountBtn = TextView(this).apply {
+            text = browserTabs.size.toString()
+            gravity = Gravity.CENTER
+            textSize = 17f
+            setTextColor(0xFFF2F2F5.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = dp(13).toFloat()
+                setColor(0xFF17181C.toInt())
+                setStroke(dp(2), 0xFFE3E5EA.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42)).also {
+                it.marginStart = dp(8)
+                it.marginEnd = dp(2)
+            }
+            contentDescription = "Open tabs"
+            setOnClickListener { showTabGrid() }
+            setOnLongClickListener {
+                newBrowserTab("https://www.google.com/")
+                true
+            }
         }
 
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(7), dp(10), dp(7))
-            addView(addressBox, LinearLayout.LayoutParams(MP, dp(48)))
-            setBackgroundColor(0xFF111318.toInt())
+            setPadding(dp(14), dp(5), dp(12), dp(5))
+            addView(homeBtn)
+            addView(addressBox)
+            addView(shareBtn)
+            addView(tabCountBtn)
+            setBackgroundColor(0xFF111214.toInt())
         }
 
-        // Compact modern address capsule; tabs stay accessible by long-pressing the address bar.
         val browserChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(topBar, LinearLayout.LayoutParams(MP, dp(62)))
@@ -470,7 +515,7 @@ class MainActivity : Activity() {
         refreshAutoBtn()
         applyDark()
         if (browserTabs.firstOrNull()?.url.isNullOrBlank()) {
-            novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/"))
+            novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://www.google.com/"))
         }
         val firstBot = bots().getJSONObject(0).getString("u")
         chatWv.loadUrl(Prefs.get(this, "botUrl", firstBot))
@@ -565,7 +610,7 @@ class MainActivity : Activity() {
             }
         }
         if (browserTabs.isEmpty()) {
-            browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://duckduckgo.com/")))
+            browserTabs.add(BrowserTab("New Tab", Prefs.get(this, "lastNovelUrl", "https://www.google.com/")))
         }
         activeTabIndex = Prefs.get(this, "browserActiveTab", "0").toIntOrNull()
             ?.coerceIn(0, browserTabs.lastIndex) ?: 0
@@ -622,6 +667,7 @@ class MainActivity : Activity() {
     private fun renderTabs() {
         if (!::tabStrip.isInitialized) return
         tabStrip.removeAllViews()
+        if (::tabCountBtn.isInitialized) tabCountBtn.text = browserTabs.size.toString()
 
         val count = TextView(this).apply {
             text = "▦  ${browserTabs.size}"
@@ -655,7 +701,7 @@ class MainActivity : Activity() {
             tabStrip.addView(title)
         }
 
-        tabStrip.addView(chip("＋", { newBrowserTab("https://duckduckgo.com/") }, null))
+        tabStrip.addView(chip("＋", { newBrowserTab("https://www.google.com/") }, null))
     }
 
     private fun saveCurrentTabState() {
@@ -751,7 +797,7 @@ class MainActivity : Activity() {
         val removed = browserTabs[index]
         deleteTabThumbnail(removed)
         if (browserTabs.size <= 1) {
-            browserTabs[0] = BrowserTab("New Tab", "https://duckduckgo.com/")
+            browserTabs[0] = BrowserTab("New Tab", "https://www.google.com/")
             activeTabIndex = 0
             novelWv.loadUrl(browserTabs[0].url)
         } else {
@@ -837,7 +883,7 @@ class MainActivity : Activity() {
                             1 -> {
                                 browserTabs.forEach { deleteTabThumbnail(it) }
                                 browserTabs.clear()
-                                browserTabs.add(BrowserTab("New Tab", "https://duckduckgo.com/"))
+                                browserTabs.add(BrowserTab("New Tab", "https://www.google.com/"))
                                 activeTabIndex = 0
                                 novelWv.loadUrl(browserTabs[0].url)
                                 persistBrowserTabs()
@@ -891,7 +937,7 @@ class MainActivity : Activity() {
             }
             setOnClickListener {
                 dialog.dismiss()
-                newBrowserTab("https://duckduckgo.com/")
+                newBrowserTab("https://www.google.com/")
             }
         }
         root.addView(newTab)
@@ -1186,7 +1232,7 @@ class MainActivity : Activity() {
         val u = when {
             s.startsWith("http://") || s.startsWith("https://") -> s
             !s.contains(' ') && s.contains('.') -> "https://$s"
-            else -> "https://duckduckgo.com/?q=" + URLEncoder.encode(s, "UTF-8")
+            else -> "https://www.google.com/?q=" + URLEncoder.encode(s, "UTF-8")
         }
         if (mode == Mode.CHAT) setMode(Mode.SPLIT)
         if (browserTabs.isEmpty()) initBrowserTabs()
