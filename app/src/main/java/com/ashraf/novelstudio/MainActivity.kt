@@ -31,6 +31,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import android.widget.AbsListView
 import android.widget.ArrayAdapter
 import android.widget.CheckBox
