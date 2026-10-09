@@ -30,6 +30,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.AbsListView
 import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.ScrollView
@@ -2126,106 +2127,84 @@ markers preserved.
 
     private fun menu() {
         val labels = arrayListOf(
-            "📚 লাইব্রেরি (অফলাইনে পড়ো)",
-            "🕘 ব্রাউজ হিস্ট্রি",
-            "⬇️ সব অনুবাদ txt এক্সপোর্ট",
-            "🔖 এই পেজ বুকমার্ক করো",
-            "🔖 বুকমার্ক লিস্ট",
-            "📝 প্রম্পট এডিট",
-            menuAutoLabel(),
-            "🔁 এই চ্যাপ্টার আবার অনুবাদ করাও",
-            "⏹ চলমান অটো অনুবাদ বন্ধ",
-            menuDarkLabel(),
-            menuAutoPasteLabel(),
-            menuAutoSendLabel(),
-            menuPromptLabel(),
-            menuSaveNextLabel(),
-            menuNextExtractLabel(),
-            menuAdBlockLabel(),
-            "🔄 Ad Block লিস্ট আপডেট",
-            "🔄 নোভেল পেজ রিলোড",
-            "🔄 চ্যাটবট রিলোড",
-            menuGlossaryLabel(),
-            menuFontLabel(),
-            "🌐 সাইট সেটিং (যে সাইট চলে না)",
-            "🔍 এই পেজ পরীক্ষা করো (রিপোর্ট কপি)",
-            menuSizeLabel(),
-            "🔐 চ্যাটবট লগইন",
-            "🔍 চ্যাটবট পরীক্ষা করো (রিপোর্ট কপি)"
+            "📚 Library", "🕘 Browser History", "⬇️ Export All Translations (.txt)",
+            "🔖 Bookmark This Page", "🔖 Bookmarks", "📝 Edit Prompt",
+            menuAutoLabel(), "🔁 Re-translate Current Chapter", "⏹ Stop Background Translation",
+            menuDarkLabel(), menuAutoPasteLabel(), menuAutoSendLabel(), menuPromptLabel(),
+            menuSaveNextLabel(), menuNextExtractLabel(), menuAdBlockLabel(),
+            "🔄 Update Ad Block Lists", "🔄 Reload Novel Page", "🔄 Reload Chatbot",
+            menuGlossaryLabel(), menuFontLabel(), "🌐 Site Settings",
+            "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
+            "🔍 Inspect Chatbot (Copy Report)"
         )
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
-        val lv = ListView(this)
+        // Hide selected rows only. Their underlying features and code remain unchanged.
+        val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
+        val visibleIndices = labels.indices.filterNot { it in hidden }
+        val visibleLabels = visibleIndices.map { labels[it] }.toMutableList()
+        val lv = ListView(this).apply {
+            divider = android.graphics.drawable.ColorDrawable(0x22FFFFFF)
+            dividerHeight = dp(1)
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            clipToPadding = false
+            setBackgroundColor(0x00111118)
+        }
+        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, visibleLabels) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val row = (convertView as? TextView) ?: TextView(this@MainActivity).apply {
+                    textSize = 15f
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(13), dp(14), dp(13))
+                    setTextColor(0xFFF4F6FF.toInt())
+                }
+                row.text = getItem(position) ?: ""
+                row.setTextColor(0xFFF4F6FF.toInt())
+                row.background = GradientDrawable().apply {
+                    cornerRadius = dp(14).toFloat()
+                    setColor(0x18FFFFFF)
+                    setStroke(dp(1), 0x20FFFFFF)
+                }
+                row.layoutParams = AbsListView.LayoutParams(MP, WC)
+                return row
+            }
+        }
         lv.adapter = adapter
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("☰ মেনু")
-            .setView(lv)
-            .setNegativeButton("বন্ধ", null)
-            .create()
-
-        lv.setOnItemClickListener { _, _, i, _ ->
+        val dlg = AlertDialog.Builder(this).setTitle("☰  NOVEL STUDIO")
+            .setView(lv).setNegativeButton("CLOSE", null).create()
+        lv.setOnItemClickListener { _, _, position, _ ->
+            val i = visibleIndices[position]
             when (i) {
                 0 -> { dlg.dismiss(); libraryNovels() }
                 1 -> { dlg.dismiss(); browserHistoryDialog() }
-                2 -> { dlg.dismiss(); exportAll(null) }
                 3 -> { dlg.dismiss(); saveBookmark() }
                 4 -> { dlg.dismiss(); bookmarkList() }
                 5 -> { dlg.dismiss(); editPrompt() }
-                6 -> {
-                    toggleAuto()
-                    labels[i] = menuAutoLabel()
-                    adapter.notifyDataSetChanged()
-                }
                 7 -> {
                     val ch = lastChapter
                     if (ch == null) toast("❌ আগে একটা চ্যাপ্টার খোলো")
-                    else {
-                        enqueue(ch)
-                        toast("⏳ আবার অনুবাদে দেওয়া হলো")
-                    }
+                    else { enqueue(ch); toast("⏳ আবার অনুবাদে দেওয়া হলো") }
                     dlg.dismiss()
                 }
-                8 -> { cancelAll(); dlg.dismiss() }
                 9 -> {
                     val d = darkMode()
                     Prefs.put(this, "dark", ((d + 1) % 3).toString())
                     applyDark()
-                    labels[i] = menuDarkLabel()
-                    adapter.notifyDataSetChanged()
-                }
-                10 -> {
-                    val v = !Prefs.bool(this, "autoPaste")
-                    Prefs.putBool(this, "autoPaste", v)
-                    labels[i] = menuAutoPasteLabel()
-                    adapter.notifyDataSetChanged()
-                }
-                11 -> {
-                    val v = !Prefs.bool(this, "autoSend")
-                    Prefs.putBool(this, "autoSend", v)
-                    labels[i] = menuAutoSendLabel()
+                    labels[i] = menuDarkLabel(); visibleLabels[position] = labels[i]
                     adapter.notifyDataSetChanged()
                 }
                 12 -> {
-                    val v = !Prefs.bool(this, "withPrompt")
-                    Prefs.putBool(this, "withPrompt", v)
-                    labels[i] = menuPromptLabel()
-                    adapter.notifyDataSetChanged()
-                }
-                13 -> {
-                    val next = !Prefs.bool(this, "noSaveNext")
-                    Prefs.putBool(this, "noSaveNext", !next)
-                    labels[i] = menuSaveNextLabel()
+                    Prefs.putBool(this, "withPrompt", !Prefs.bool(this, "withPrompt"))
+                    labels[i] = menuPromptLabel(); visibleLabels[position] = labels[i]
                     adapter.notifyDataSetChanged()
                 }
                 14 -> {
-                    val v = !Prefs.bool(this, "autoExtractNext", true)
-                    Prefs.putBool(this, "autoExtractNext", v)
-                    labels[i] = menuNextExtractLabel()
+                    Prefs.putBool(this, "autoExtractNext", !Prefs.bool(this, "autoExtractNext", true))
+                    labels[i] = menuNextExtractLabel(); visibleLabels[position] = labels[i]
                     adapter.notifyDataSetChanged()
                 }
                 15 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
-                    labels[i] = menuAdBlockLabel()
+                    labels[i] = menuAdBlockLabel(); visibleLabels[position] = labels[i]
                     adapter.notifyDataSetChanged()
                 }
                 16 -> {
@@ -2234,32 +2213,37 @@ markers preserved.
                         toast(if (n > 0) "✅ $n টা হোস্ট যোগ হয়েছে" else "❌ আপডেট হয়নি")
                     }
                 }
-                17 -> { dlg.dismiss(); novelWv.reload() }
-                18 -> { dlg.dismiss(); chatWv.reload() }
                 19 -> { dlg.dismiss(); glossaryDialog() }
-                21 -> { dlg.dismiss(); siteRulesDialog() }
-                22 -> { dlg.dismiss(); diagnosePage() }
-                23 -> {
-                    Prefs.put(this, "trSize", ((Prefs.sizeIdx(this) + 1) % Prefs.SIZES.size).toString())
-                    labels[i] = menuSizeLabel()
-                    adapter.notifyDataSetChanged()
-                    val ch = lastChapter
-                    if (ch != null && hasTr) {
-                        shownTrRaw?.let { applyTranslation(ch, it, false) }
-                    }
-                }
-                24 -> { dlg.dismiss(); loginChatbot() }
-                25 -> { dlg.dismiss(); diagnoseChat() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
-                    labels[i] = menuFontLabel()
+                    labels[i] = menuFontLabel(); visibleLabels[position] = labels[i]
                     adapter.notifyDataSetChanged()
                     val ch = lastChapter
-                    if (ch != null && hasTr) {
-                        shownTrRaw?.let { applyTranslation(ch, it, false) }
-                    }
+                    if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
                 }
+                21 -> { dlg.dismiss(); siteRulesDialog() }
+                23 -> {
+                    Prefs.put(this, "trSize", ((Prefs.sizeIdx(this) + 1) % Prefs.SIZES.size).toString())
+                    labels[i] = menuSizeLabel(); visibleLabels[position] = labels[i]
+                    adapter.notifyDataSetChanged()
+                    val ch = lastChapter
+                    if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
+                }
+                24 -> { dlg.dismiss(); loginChatbot() }
             }
+        }
+        dlg.setOnShowListener {
+            dlg.window?.setBackgroundDrawable(GradientDrawable().apply {
+                cornerRadius = dp(24).toFloat()
+                setColor(0xEE171923.toInt())
+                setStroke(dp(1), 0x55FFFFFF)
+            })
+            dlg.window?.setDimAmount(0.48f)
+            val titleId = resources.getIdentifier("alertTitle", "id", "android")
+            dlg.findViewById<TextView>(titleId)?.apply {
+                setTextColor(0xFFF4F6FF.toInt()); textSize = 17f
+            }
+            dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(0xFF9DB8FF.toInt())
         }
         dlg.show()
     }
@@ -2388,13 +2372,13 @@ markers preserved.
     }
 
     private fun menuGlossaryLabel(): String =
-        (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " 📖 গ্লোসারি (" + Glossary.count + " টা) — এডিট/যোগ"
+        (if (Prefs.glossaryOn(this)) "✅" else "⬜") + " 📖 Glossary (" + Glossary.count + ") — Edit / Add"
 
     private fun menuSizeLabel(): String =
-        "🔠 অনুবাদের অক্ষরের সাইজ: " + Prefs.sizePx(this) + "px  (ট্যাপ করলে বদলায়)"
+        "🔠 Translation Text Size: " + Prefs.sizePx(this) + "px
 
     private fun menuFontLabel(): String =
-        "🔤 অনুবাদের ফন্ট: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)] + "  (ট্যাপ করলে বদলায়)"
+        "🔤 Translation Font: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)]
 
     private fun glossaryDialog() {
         val opts = arrayOf(
@@ -2450,7 +2434,7 @@ markers preserved.
         (if (Prefs.auto(this)) "✅" else "⬜") + " ⚡ অটো অনুবাদ (ব্যাকগ্রাউন্ডে, সাইটে বসবে)"
 
     private fun menuDarkLabel(): String =
-        "🌙 ডার্ক মোড: " + arrayOf("বন্ধ", "অটো", "ফোর্স")[darkMode()] + "  (ট্যাপ করলে বদলায়)"
+        "🌙 Dark Mode: " + arrayOf("Off", "Auto", "Force")[darkMode()]
 
     private fun menuAutoPasteLabel(): String =
         (if (Prefs.bool(this, "autoPaste")) "✅" else "⬜") + " কপি মোড: অটো পেস্ট"
@@ -2459,10 +2443,10 @@ markers preserved.
         (if (Prefs.bool(this, "autoSend")) "✅" else "⬜") + " কপি মোড: অটো সেন্ড"
 
     private fun menuPromptLabel(): String =
-        (if (Prefs.bool(this, "withPrompt")) "✅" else "⬜") + " কপি মোড: কপির সাথে প্রম্পট"
+        (if (Prefs.bool(this, "withPrompt")) "✅" else "⬜") + " Copy Mode: Include Prompt"
 
     private fun menuNextExtractLabel(): String =
-        (if (Prefs.bool(this, "autoExtractNext", true)) "✅" else "⬜") + " ▶ Next/Prev এর পর অটো Extract"
+        (if (Prefs.bool(this, "autoExtractNext", true)) "✅" else "⬜") + " ▶ Auto-Extract After Next / Previous"
 
     private fun menuSaveNextLabel(): String =
         (if (!Prefs.bool(this, "noSaveNext")) "✅" else "⬜") + " কপি মোড: 💾 এর পর পরের চ্যাপ্টার"
