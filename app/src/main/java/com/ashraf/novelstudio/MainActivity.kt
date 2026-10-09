@@ -1232,7 +1232,7 @@ class MainActivity : Activity() {
         val u = when {
             s.startsWith("http://") || s.startsWith("https://") -> s
             !s.contains(' ') && s.contains('.') -> "https://$s"
-            else -> "https://www.google.com/?q=" + URLEncoder.encode(s, "UTF-8")
+            else -> "https://www.google.com/search?q=" + URLEncoder.encode(s, "UTF-8")
         }
         if (mode == Mode.CHAT) setMode(Mode.SPLIT)
         if (browserTabs.isEmpty()) initBrowserTabs()
