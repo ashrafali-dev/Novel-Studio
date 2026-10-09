@@ -273,16 +273,14 @@ class MainActivity : Activity() {
         urlBar = EditText(this).apply {
             hint = "Search or enter address"
             setSingleLine()
-            textSize = 14f
+            textSize = 14.5f
             imeOptions = EditorInfo.IME_ACTION_GO
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setPadding(dp(14), 0, dp(10), 0)
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF8E8E98.toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = dp(22).toFloat()
-                setColor(0xFF303038.toInt())
-            }
+            setPadding(0, 0, 0, 0)
+            setTextColor(0xFFF5F6FA.toInt())
+            setHintTextColor(0xFF9296A5.toInt())
+            background = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
+            setSelectAllOnFocus(false)
             setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
             onFocusChangeListener = View.OnFocusChangeListener { _, has ->
                 searchShortcutsVisible = has
@@ -295,18 +293,32 @@ class MainActivity : Activity() {
         }
 
         val reloadBtn = TextView(this).apply {
-            text = "⟳"
+            text = "↻"
             gravity = Gravity.CENTER
             textSize = 22f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(0xFFE8EAF2.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(0xFF343743.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).also {
+                it.marginStart = dp(6)
+            }
             setOnClickListener { reloadPage() }
             setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 দুটোই রিলোড হচ্ছে"); true }
         }
         val goBtn = TextView(this).apply {
-            text = "→"
+            text = "➜"
             gravity = Gravity.CENTER
-            textSize = 22f
-            setTextColor(0xFF4F7CFF.toInt())
+            textSize = 19f
+            setTextColor(0xFFFFFFFF.toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(0xFF5278F6.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).also {
+                it.marginStart = dp(6)
+            }
             setOnClickListener { go(urlBar.text.toString()) }
         }
 
@@ -331,21 +343,40 @@ class MainActivity : Activity() {
             addView(shortcutStrip, ViewGroup.LayoutParams(WC, dp(44)))
         }
 
+        val addressIcon = TextView(this).apply {
+            text = "⌕"
+            gravity = Gravity.CENTER
+            textSize = 25f
+            setTextColor(0xFF9EA7C0.toInt())
+            layoutParams = LinearLayout.LayoutParams(dp(32), MP)
+        }
+        val addressBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(4), dp(5), dp(4))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setColor(0xFF242731.toInt())
+                setStroke(dp(1), 0x334F7CFF)
+            }
+            addView(addressIcon)
+            addView(urlBar, LinearLayout.LayoutParams(0, MP, 1f))
+            addView(reloadBtn)
+            addView(goBtn)
+        }
+
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-            addView(urlBar, LinearLayout.LayoutParams(0, dp(42), 1f))
-            addView(reloadBtn, LinearLayout.LayoutParams(dp(44), dp(42)))
-            addView(goBtn, LinearLayout.LayoutParams(dp(42), dp(42)))
-            setBackgroundColor(0xFF202024.toInt())
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            addView(addressBox, LinearLayout.LayoutParams(MP, dp(48)))
+            setBackgroundColor(0xFF111318.toInt())
         }
 
-        // Keep browser chrome compact: the address bar is the only permanent top row.
-        // Long-press the address bar to open tab management; site shortcuts appear while searching.
+        // Compact modern address capsule; tabs stay accessible by long-pressing the address bar.
         val browserChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(topBar, LinearLayout.LayoutParams(MP, dp(50)))
+            addView(topBar, LinearLayout.LayoutParams(MP, dp(62)))
         }
 
         // ---- panes (both always full-size and alive; the one on top is the one you see)
@@ -2233,32 +2264,36 @@ markers preserved.
         val lv = ListView(this).apply {
             divider = android.graphics.drawable.ColorDrawable(0x22FFFFFF)
             dividerHeight = dp(1)
-            setPadding(dp(8), dp(6), dp(8), dp(6))
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             clipToPadding = false
+            isVerticalScrollBarEnabled = false
             setBackgroundColor(0x00111118)
         }
         val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, visibleLabels) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val row = (convertView as? TextView) ?: TextView(this@MainActivity).apply {
-                    textSize = 15f
+                    textSize = 14.5f
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(14), dp(13), dp(14), dp(13))
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
                     setTextColor(0xFFF4F6FF.toInt())
                 }
                 row.text = getItem(position) ?: ""
                 row.setTextColor(0xFFF4F6FF.toInt())
                 row.background = GradientDrawable().apply {
-                    cornerRadius = dp(14).toFloat()
+                    cornerRadius = dp(12).toFloat()
                     setColor(0x18FFFFFF)
-                    setStroke(dp(1), 0x20FFFFFF)
+                    setStroke(dp(1), 0x18FFFFFF)
                 }
                 row.layoutParams = AbsListView.LayoutParams(MP, WC)
                 return row
             }
         }
         lv.adapter = adapter
-        val dlg = AlertDialog.Builder(this).setTitle("☰  NOVEL STUDIO")
-            .setView(lv).setNegativeButton("CLOSE", null).create()
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("☰  NOVEL STUDIO")
+            .setView(lv)
+            .setNegativeButton("CLOSE", null)
+            .create()
         lv.setOnItemClickListener { _, _, position, _ ->
             val i = visibleIndices[position]
             when (i) {
@@ -2324,17 +2359,40 @@ markers preserved.
         dlg.setOnShowListener {
             dlg.window?.setBackgroundDrawable(GradientDrawable().apply {
                 cornerRadius = dp(24).toFloat()
-                setColor(0xEE171923.toInt())
-                setStroke(dp(1), 0x55FFFFFF)
+                setColor(0xF21A1D27.toInt())
+                setStroke(dp(1), 0x445F78B8)
             })
-            dlg.window?.setDimAmount(0.48f)
+            dlg.window?.setDimAmount(0.10f)
+            dlg.window?.setLayout(
+                (resources.displayMetrics.widthPixels - dp(28)).coerceAtMost(dp(360)),
+                WC
+            )
+            dlg.window?.attributes = dlg.window?.attributes?.apply {
+                gravity = Gravity.TOP or Gravity.END
+                x = dp(10)
+                y = dp(66)
+            }
             val titleId = resources.getIdentifier("alertTitle", "id", "android")
             dlg.findViewById<TextView>(titleId)?.apply {
-                setTextColor(0xFFF4F6FF.toInt()); textSize = 17f
+                setTextColor(0xFFF4F6FF.toInt())
+                textSize = 16f
             }
-            dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(0xFF9DB8FF.toInt())
+            dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {
+                setTextColor(0xFF9DB8FF.toInt())
+                textSize = 12f
+            }
+            dlg.setCanceledOnTouchOutside(true)
         }
         dlg.show()
+        dlg.window?.setLayout(
+            (resources.displayMetrics.widthPixels - dp(28)).coerceAtMost(dp(360)),
+            WC
+        )
+        dlg.window?.attributes = dlg.window?.attributes?.apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = dp(10)
+            y = dp(66)
+        }
     }
 
     // ---------------------------------------------------------------- chatbot diagnosis
