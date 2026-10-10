@@ -167,6 +167,14 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // wipes a long leftover text (previous chapter) from the chat box
     fun clearBox(): String = run("(function(){var b=__box();if(!b)return 'n';var t=(b.value!==undefined?b.value:b.innerText)||'';if(t.length<150)return 's';b.focus();if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){Object.getOwnPropertyDescriptor(b.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(b,'');b.dispatchEvent(new Event('input',{bubbles:true}));}else{document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);}return 'c';})()")
 
+    // Verify that the live novel container still contains the exact translation we inserted.
+    // Instant Extract uses this to reuse the cached source instead of scraping Bengali output.
+    fun isAppliedTranslation(expected: String): String =
+        run("(function(expected){var el=window.__nsEl;if(!window.__nsShown||!el||!document.contains(el)||el.getAttribute('data-ns')!=='1')return '0';" +
+            "function n(t){return String(t||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();}" +
+            "var actual=n(el.innerText||el.textContent),wanted=n(expected);return actual&&wanted&&actual===wanted?'1':'0';})(" +
+            org.json.JSONObject.quote(expected) + ")")
+
     // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
 (function(sel,paras,font,size){
