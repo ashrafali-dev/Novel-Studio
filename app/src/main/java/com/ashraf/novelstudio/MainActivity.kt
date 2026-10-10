@@ -2132,29 +2132,31 @@ markers preserved.
                     total > 0 && found > 0 -> ((2 * found - 1) * 50 / total).coerceIn(3, 98)
                     else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
-                progress = if (!got) 3 else maxOf(progress, pct)
                 val st = if (got && kotlin.math.abs(effLen - lastLen) <= 2) stable + 1 else 0
-                updateProgressUi()
                 val elapsed = System.currentTimeMillis() - started
 
-                // Do not finish just because text paused or the last [NNN] marker appeared.
-                // Wait for a detected Stop control to disappear and the answer to stay stable.
-                // If no Stop control was ever detected, require a much longer stable period
-                // and a plausible response length before accepting the fallback.
+                // Decide completion before painting progress, so a finished reply
+                // never sits visibly at 98% while finishJob() is waiting.
                 val streamEnded = sawStream && !streaming
                 val expectedFloor = maxOf(
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val completedAfterStop = got && effLen > 50 && streamEnded && st >= 5
-                // ChatGPT/Gemini expose the Send control again when generation has ended.
-                // This is stronger than comparing the reply length with the chapter length:
-                // a perfectly valid translation can be much shorter than its source.
-                val completedByUi = got && effLen > 50 && !streaming && uiDone && (sawStream || allMarkers || st >= 2)
+                // Send becoming available is the reliable visible completion signal.
+                // Do not wait for the streaming heuristic, which can remain stale on
+                // some ChatGPT/Gemini versions after the visible answer is finished.
+                val completedByUi = got && effLen > 50 && uiDone &&
+                    (sawStream || allMarkers || st >= 2)
+                val completedAfterStop = got && effLen > 50 && streamEnded && st >= 2
                 val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
                     st >= 20 && (allMarkers || effLen >= expectedFloor)
+                val completed = completedByUi || completedAfterStop || completedWithoutStopSignal
+
+                progress = if (completed) 100 else if (!got) 3 else maxOf(progress, pct)
+                updateProgressUi()
+
                 when {
-                    completedByUi || completedAfterStop || completedWithoutStopSignal -> finishJob(tok, ch)
+                    completed -> finishJob(tok, ch)
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
