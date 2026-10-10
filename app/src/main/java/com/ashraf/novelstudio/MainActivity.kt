@@ -1168,25 +1168,36 @@ class MainActivity : Activity() {
         updatePill()
     }
 
-    // The hidden pane stays full-size right underneath the visible one, so its page keeps running normally
+    // Keep both WebView containers full-size and reveal only the needed region.
+    // Resizing a live WebView during split -> full-screen can cause a one-frame
+    // black surface flash on Android. Clipping keeps the WebView surface stable.
     private fun applyLayout() {
+        val w = content.width
         val h = content.height
-        if (h <= 0) return
-        val nl = FrameLayout.LayoutParams(MP, MP)
-        val cl = FrameLayout.LayoutParams(MP, MP)
+        if (w <= 0 || h <= 0) return
+
+        novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
+        chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
+
         when (mode) {
-            Mode.NOVEL -> novelBox.bringToFront()
-            Mode.CHAT -> chatBox.bringToFront()
+            Mode.NOVEL -> {
+                novelBox.clipBounds = null
+                chatBox.clipBounds = android.graphics.Rect(0, 0, w, 0)
+                novelBox.bringToFront()
+            }
+            Mode.CHAT -> {
+                novelBox.clipBounds = android.graphics.Rect(0, 0, w, 0)
+                chatBox.clipBounds = null
+                chatBox.bringToFront()
+            }
             Mode.SPLIT -> {
                 val half = h / 2
-                nl.height = half - dp(1)
-                nl.gravity = Gravity.TOP
-                cl.height = h - half - dp(1)
-                cl.gravity = Gravity.BOTTOM
+                novelBox.clipBounds = android.graphics.Rect(0, 0, w, half)
+                chatBox.clipBounds = android.graphics.Rect(0, half, w, h)
+                novelBox.bringToFront()
             }
         }
-        novelBox.layoutParams = nl
-        chatBox.layoutParams = cl
+
         progressBox.bringToFront()
         togglePill.bringToFront()
     }
