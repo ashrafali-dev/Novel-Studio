@@ -1708,6 +1708,14 @@ class MainActivity : Activity() {
         // never turn it into the original/translation toggle.
         navToken++
         val token = navToken
+        val cached = lastChapter
+        val cachedTranslation = if (
+            hasTr && shownTranslated && pendingNavHash == null && pendingNavUrl.isBlank() &&
+            cached != null && !shownTrRaw.isNullOrBlank()
+        ) {
+            splitInternalMarkedTranslation(shownTrRaw!!).joinToString("\n")
+        } else ""
+
         fun attempt(n: Int) {
             extractNow { ch ->
                 if (token != navToken) return@extractNow
@@ -1731,7 +1739,22 @@ class MainActivity : Activity() {
                 handleChapter(ch)
             }
         }
-        attempt(0)
+
+        // Js.apply replaces the reader's live HTML with Bengali. If that exact
+        // translation is still on screen, reuse lastChapter's original source.
+        // Only scrape the DOM if the page no longer shows the inserted translation.
+        if (cached != null && cachedTranslation.isNotBlank()) {
+            novelWv.evaluateJavascript(Js.isAppliedTranslation(cachedTranslation)) { raw ->
+                if (token != navToken) return@evaluateJavascript
+                if (decode(raw).trim() == "1" && lastChapter === cached) {
+                    handleChapter(cached)
+                } else {
+                    attempt(0)
+                }
+            }
+        } else {
+            attempt(0)
+        }
     }
 
     // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
@@ -2117,23 +2140,24 @@ markers preserved.
                 val st = if (got && kotlin.math.abs(effLen - lastLen) <= 2) stable + 1 else 0
                 updateProgressUi()
                 val elapsed = System.currentTimeMillis() - started
-                // Finished when ANY of these holds (first one wins, so the text lands right away):
-                //  - the last marker is there and the text stopped changing,
-                //  - the chatbot's Stop button was seen and has now gone,
-                //  - the page itself has been quiet for a while after real reply text appeared.
-                val enough = effLen >= ch.text.length * 0.3
+                // A quiet page or a final paragraph marker alone does NOT mean the
+                // model has finished. ChatGPT/Gemini can pause mid-answer, so wait
+                // until a previously visible Stop control disappears and the reply
+                // remains stable. If the site's Stop control is undetectable, use a
+                // much more conservative stable-text fallback.
                 val streamEnded = sawStream && !streaming
-                val need = when {
-                    allMarkers -> if (streaming) 6 else 2
-                    streamEnded -> 2
-                    else -> if (streaming) 15 else 5
-                }
-                val done = got && effLen > 50 && st >= need && (allMarkers || enough)
-                val doneQuiet = got && effLen > 50 && foundC >= 1 && (allMarkers || enough) &&
-                    quiet >= (if (allMarkers) 1000L else 2200L)
-                val doneSlow = got && st >= 20 && effLen > 50
+                val quietAfterChange = quiet < 0L || quiet >= 1_800L
+                val expectedFloor = maxOf(
+                    120,
+                    minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
+                )
+                val completedAfterStop = got && effLen > 50 && streamEnded &&
+                    !streaming && st >= 4 && quietAfterChange
+                val completedWithoutStopSignal = got && effLen > 50 && !sawStream &&
+                    !streaming && st >= 20 && (quiet < 0L || quiet >= 8_000L) &&
+                    (allMarkers || effLen >= expectedFloor)
                 when {
-                    done || doneQuiet || doneSlow -> finishJob(tok, ch)
+                    completedAfterStop || completedWithoutStopSignal -> finishJob(tok, ch)
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
