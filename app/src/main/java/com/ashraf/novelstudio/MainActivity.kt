@@ -2150,7 +2150,7 @@ markers preserved.
                 // ChatGPT/Gemini expose the Send control again when generation has ended.
                 // This is stronger than comparing the reply length with the chapter length:
                 // a perfectly valid translation can be much shorter than its source.
-                val completedByUi = got && effLen > 50 && !streaming && uiDone && st >= 3
+                val completedByUi = got && effLen > 50 && !streaming && uiDone && (sawStream || allMarkers || st >= 2)
                 val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
                     st >= 20 && (allMarkers || effLen >= expectedFloor)
                 when {
@@ -2161,7 +2161,7 @@ markers preserved.
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming)
                 }
             }
-        }, 1000)
+        }, 300)
     }
 
     private fun cleanReply(t: String): String =
