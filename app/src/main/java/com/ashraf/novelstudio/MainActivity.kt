@@ -1740,9 +1740,8 @@ class MainActivity : Activity() {
             }
         }
 
-        // Js.apply replaces the reader's live HTML with Bengali. If that exact
-        // translation is still on screen, reuse lastChapter's original source.
-        // Only scrape the DOM if the page no longer shows the inserted translation.
+        // If the live reader still contains our inserted Bengali translation,
+        // reuse the cached original chapter instead of extracting the translation.
         if (cached != null && cachedTranslation.isNotBlank()) {
             novelWv.evaluateJavascript(Js.isAppliedTranslation(cachedTranslation)) { raw ->
                 if (token != navToken) return@evaluateJavascript
@@ -2109,7 +2108,10 @@ markers preserved.
         return (t.length * ratio).toInt().coerceAtLeast(200)
     }
 
-    private fun pollJob(tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long, lastLen: Int, stable: Int, sawStream: Boolean = false) {
+    private fun pollJob(
+        tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long,
+        lastLen: Int, stable: Int, sawStream: Boolean = false
+    ) {
         handler.postDelayed({
             if (tok != runToken) return@postDelayed
             chatWv.evaluateJavascript(Js.readLen()) { raw ->
@@ -2119,43 +2121,33 @@ markers preserved.
                 val streaming = parts.getOrNull(1) == "1"
                 val len = parts.getOrNull(2)?.toIntOrNull() ?: 0
                 val found = parts.getOrNull(3)?.toIntOrNull() ?: 0
-                val sendFailed = parts.getOrNull(5) == "failed"   // every send method was tried and none emptied the composer
-                // "This job's reply exists" = an assistant node that is new or whose text changed
-                // since send(). Comparing lengths with the PREVIOUS reply was wrong: a reused
-                // node stayed "not started" (3%) until the new text outgrew the old one.
+                val sendFailed = parts.getOrNull(5) == "failed"
                 val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
-                val quiet = parts.getOrNull(6)?.toLongOrNull() ?: -1L   // ms since the page last changed (outside the composer)
                 val total = jobMarkers
-                // "found" is the HIGHEST marker number seen, not a count: ChatGPT/Gemini merge short
-                // paragraphs and drop some markers, so a count never reaches the total.
-                val foundC = if (total > 0) minOf(found, total) else found
-                val allMarkers = got && total > 0 && foundC >= total
+                val allMarkers = got && total > 0 && found >= total
                 val pct = when {
                     !got -> 3
-                    total > 0 && foundC > 0 -> ((2 * foundC - 1) * 50 / total).coerceIn(3, 98)
+                    total > 0 && found > 0 -> ((2 * found - 1) * 50 / total).coerceIn(3, 98)
                     else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
-                progress = if (!got) 3 else maxOf(progress, pct)   // never goes backwards
+                progress = if (!got) 3 else maxOf(progress, pct)
                 val st = if (got && kotlin.math.abs(effLen - lastLen) <= 2) stable + 1 else 0
                 updateProgressUi()
                 val elapsed = System.currentTimeMillis() - started
-                // A quiet page or a final paragraph marker alone does NOT mean the
-                // model has finished. ChatGPT/Gemini can pause mid-answer, so wait
-                // until a previously visible Stop control disappears and the reply
-                // remains stable. If the site's Stop control is undetectable, use a
-                // much more conservative stable-text fallback.
+
+                // Do not finish just because text paused or the last [NNN] marker appeared.
+                // Wait for a detected Stop control to disappear and the answer to stay stable.
+                // If no Stop control was ever detected, require a much longer stable period
+                // and a plausible response length before accepting the fallback.
                 val streamEnded = sawStream && !streaming
-                val quietAfterChange = quiet < 0L || quiet >= 1_800L
                 val expectedFloor = maxOf(
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val completedAfterStop = got && effLen > 50 && streamEnded &&
-                    !streaming && st >= 4 && quietAfterChange
-                val completedWithoutStopSignal = got && effLen > 50 && !sawStream &&
-                    !streaming && st >= 20 && (quiet < 0L || quiet >= 8_000L) &&
-                    (allMarkers || effLen >= expectedFloor)
+                val completedAfterStop = got && effLen > 50 && streamEnded && st >= 5
+                val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
+                    st >= 20 && (allMarkers || effLen >= expectedFloor)
                 when {
                     completedAfterStop || completedWithoutStopSignal -> finishJob(tok, ch)
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
@@ -2164,7 +2156,7 @@ markers preserved.
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming)
                 }
             }
-        }, 600)
+        }, 1000)
     }
 
     private fun cleanReply(t: String): String =

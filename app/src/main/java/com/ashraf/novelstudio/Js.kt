@@ -12,7 +12,7 @@ object Js {
 var __P={
  'chatgpt.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'[data-testid="send-button"],button[aria-label*="Send" i]'},
  'chat.openai.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'[data-testid="send-button"],button[aria-label*="Send" i]'},
- 'gemini.google.com':{a:'model-response,.model-response-text,message-content',b:'.markdown',stop:'button[aria-label*="Stop" i]',send:'button[aria-label*="Send" i],button.send-button'},
+ 'gemini.google.com':{a:'model-response,.model-response-text,message-content',b:'.markdown',stop:'button[aria-label*="Stop response" i],button[aria-label*="Stop generating" i],button[aria-label*="Stop" i],[data-testid*="stop" i],[data-test-id*="stop" i]',send:'button[aria-label*="Send" i],button.send-button'},
  'claude.ai':{a:'.font-claude-message,[data-testid="assistant-message"]',b:'',stop:'button[aria-label*="Stop" i],[data-is-streaming="true"]',send:'button[aria-label*="Send" i]'},
  'deepseek.com':{a:'.ds-markdown',b:'',stop:'',send:''},
  'grok.com':{a:'[class*="message-bubble"],[class*="response-content-markdown"]',b:'',stop:'button[aria-label*="Stop" i]',send:'button[type="submit"],button[aria-label*="Submit" i]'}
@@ -21,7 +21,7 @@ var __D={a:'[data-message-author-role="assistant"],.markdown,.prose',b:'',stop:'
 function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith('.'+k))return __P[k];}return __D;}
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
 function __reply(p){var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
-function __stream(p){if(!p.stop)return 0;var l=[];try{l=[].slice.call(document.querySelectorAll(p.stop));}catch(e){}for(var i=0;i<l.length;i++){if(__vis(l[i]))return 1;}return 0;}
+function __stream(p){return (p.stop&&document.querySelector(p.stop))?1:0;}
 function __nrm(t){return String(t||'').replace(/\s+/g,' ').trim();}
 function __markEls(){var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),n,out=[];while(n=w.nextNode()){if(n.nodeValue.indexOf('[001]')>=0&&n.parentElement)out.push(n.parentElement);}return out;}
 function __gen(){var sent=window.__nsSentN||'',baseM=window.__nsBaseM||new Set(),baseT=window.__nsBaseT||new Set(),echo=[],cand=[];
@@ -50,7 +50,7 @@ function __trim(t){var ls=String(t||'').split('\n'),tok=/(?:copy|share|regenerat
 function __fixm(t){return String(t||'').replace(/\*{1,2}(\[\d{3}\])\*{1,2}/g,function(m,a){return a;}).replace(/([^\n\s])[ \t]*(\[\d{3}\])/g,function(m,a,b){return a+'\n\n'+b;});}
 function __ntext(p,e){var i=(p.b&&e.querySelector(p.b))||e.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]')||e;return (i.innerText||i.textContent||'').trim();}
 function __new(p,l){var base=window.__nsBase||[],bm=new Map(),bt=new Set();base.forEach(function(x){bm.set(x.el,x.t);bt.add(x.t);});var now=l||__asst(p),hit=null;for(var i=0;i<now.length;i++){var e=now[i],t=(e.innerText||e.textContent||'').trim(),o=bm.get(e);if(o===undefined){if(bt.has(t))continue;hit=e;}else if(t!==o){hit=e;}}return hit||__gen();}
-function __mk(t){var m=t.match(/\[\d{3}\]/g)||[],mx=0;for(var i=0;i<m.length;i++){var n=parseInt(m[i].slice(1,4),10);if(n>mx)mx=n;}return mx;}
+function __mk(t){var m=t.match(/\[\d{3}\]/g)||[],s={},c=0;for(var i=0;i<m.length;i++){if(!s[m[i]]){s[m[i]]=1;c++;}}return c;}
 function __vis(b){if(!b||!b.isConnected)return false;var s=getComputedStyle(b),r=b.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}
 function __ok(b){return __vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true';}
 function __ctls(box){var out=[],seen=new Set(),c=box.parentElement,prev=[];for(var up=0;c&&up<7;up++,c=c.parentElement){var l=[].slice.call(c.querySelectorAll('button,[role="button"]'));if(l.length>14)break;prev=l;}prev.forEach(function(x){if(!seen.has(x)){seen.add(x);out.push(x);}});return out;}
@@ -79,7 +79,6 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   box.focus();
   var snap=__snap(box);
   window.__nsSentN=__nrm(text);
-  try{if(window.__nsMO)window.__nsMO.disconnect();window.__nsMut=Date.now();var comp=box.closest('form')||box.parentElement;window.__nsMO=new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var t=ms[i].target,n=t&&t.nodeType===1?t:(t&&t.parentElement);if(comp&&n&&comp.contains(n))continue;window.__nsMut=Date.now();return;}});window.__nsMO.observe(document.body,{childList:true,subtree:true,characterData:true});}catch(e){window.__nsMO=null;}
   try{var me=__markEls();window.__nsBaseM=new Set(me);window.__nsBaseT=new Set(me.map(function(e){return __nrm(e.innerText||e.textContent);}));}catch(e){window.__nsBaseM=new Set();window.__nsBaseT=new Set();}
   function boxText(){return String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();}
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
@@ -153,7 +152,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // "This job's reply" = an assistant node that is new, or whose text changed, since send().
     // "<assistant msg count>|<streaming 0/1>|<length of THIS job's reply>|<distinct [NNN] markers seen>|<new reply seen 0/1>"
     // 1) page-text scan (no selectors: works on any chatbot), 2) element detection as a fallback.
-    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var S=__scan();var h=__new(p,l);var best=null;if(S&&S.got)best={len:S.len,found:S.found};if(h){var t=__ntext(p,h);var c={len:t.length,found:__mk(t)};if(!best||c.found>=best.found)best=c;}var len=0,found=0,got=0;if(best){got=1;len=best.len;found=best.found;}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);len=b?((b.innerText||b.textContent||'').trim().length):0;}return l.length+'|'+__stream(p)+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+(window.__nsMO?(Date.now()-(window.__nsMut||0)):-1);})()")
+    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var sc=__scan();var len=0,found=0,got=0;if(sc&&sc.got){got=1;len=sc.len;found=sc.found;}else{var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);len=b?((b.innerText||b.textContent||'').trim().length):0;}}return l.length+'|'+__stream(p)+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'');})()")
 
     // Final reply text. Markers are forced to the start of a line so the paragraph split works
     // even when the chatbot put several paragraphs on one line.
@@ -167,8 +166,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // wipes a long leftover text (previous chapter) from the chat box
     fun clearBox(): String = run("(function(){var b=__box();if(!b)return 'n';var t=(b.value!==undefined?b.value:b.innerText)||'';if(t.length<150)return 's';b.focus();if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){Object.getOwnPropertyDescriptor(b.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(b,'');b.dispatchEvent(new Event('input',{bubbles:true}));}else{document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);}return 'c';})()")
 
-    // Verify that the live novel container still contains the exact translation we inserted.
-    // Instant Extract uses this to reuse the cached source instead of scraping Bengali output.
+    // Verify that the live novel container still contains our inserted translation.
     fun isAppliedTranslation(expected: String): String =
         run("(function(expected){var el=window.__nsEl;if(!window.__nsShown||!el||!document.contains(el)||el.getAttribute('data-ns')!=='1')return '0';" +
             "function n(t){return String(t||'').replace(/\\u00a0/g,' ').replace(/\\s+/g,' ').trim();}" +
