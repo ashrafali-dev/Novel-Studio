@@ -2122,6 +2122,7 @@ markers preserved.
                 val len = parts.getOrNull(2)?.toIntOrNull() ?: 0
                 val found = parts.getOrNull(3)?.toIntOrNull() ?: 0
                 val sendFailed = parts.getOrNull(5) == "failed"
+                val uiDone = parts.getOrNull(6) == "1"
                 val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
                 val total = jobMarkers
@@ -2146,10 +2147,14 @@ markers preserved.
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
                 val completedAfterStop = got && effLen > 50 && streamEnded && st >= 5
+                // ChatGPT/Gemini expose the Send control again when generation has ended.
+                // This is stronger than comparing the reply length with the chapter length:
+                // a perfectly valid translation can be much shorter than its source.
+                val completedByUi = got && effLen > 50 && !streaming && uiDone && st >= 3
                 val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
                     st >= 20 && (allMarkers || effLen >= expectedFloor)
                 when {
-                    completedAfterStop || completedWithoutStopSignal -> finishJob(tok, ch)
+                    completedByUi || completedAfterStop || completedWithoutStopSignal -> finishJob(tok, ch)
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
