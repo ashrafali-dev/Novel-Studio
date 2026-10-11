@@ -570,9 +570,12 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // WTR-LAB renders the reader and chapter navigation inside shared page
     // containers. Prefer the actual chapter body before broad article/main shells.
     if(host.indexOf('wtr-lab.com')>=0)sels.push(
+      // Current WTR-LAB reader uses .chapter-body / .chapter-tracker and
+      // leaf .wtr-line elements. Do not start from broad main/article shells.
+      '.chapter-body','.chapter-container .chapter-body','.chapter-wrap .chapter-body',
+      '.chapter-tracker .chapter-body','.wtr-line','[data-line]',
       '.chapter-content','#chapter-content','.reader-content','.reading-content',
-      '[class*="chapter-content"]','[id*="chapter-content"]',
-      'article','main'
+      '[class*="chapter-content"]','[id*="chapter-content"]'
     );
     sels.push(
       __CONTENT__,
@@ -745,6 +748,28 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
   function byText(kind){
     var nx=kind==='next';
+    if(hostNow.indexOf('wtr-lab.com')>=0){
+      try{
+        var current=new URL(location.href);
+        var cm=current.pathname.match(/^(.*\/chapter-)(\d+)\/?$/i);
+        if(cm){
+          var wanted=Number(cm[2])+(nx?1:-1);
+          if(wanted>0){
+            var prefix=cm[1], candidatePath=prefix+wanted;
+            var links=Array.from(document.querySelectorAll('a[href]'));
+            var direct=links.find(function(a){
+              try{
+                var u=new URL(a.href,location.href);
+                return u.origin===current.origin &&
+                  u.pathname.replace(/\/$/,'')===candidatePath &&
+                  u.pathname.split('/').slice(0,-1).join('/')===current.pathname.replace(/\/$/,'').split('/').slice(0,-1).join('/');
+              }catch(x){return false;}
+            });
+            if(direct)return direct;
+          }
+        }
+      }catch(x){}
+    }
     var P1=nx?/下一[頁页]|^下[頁页]$|next page/i:/上一[頁页]|^上[頁页]$|prev(?:ious)? page/i;
     var P2=nx?/下一[章节節话話回篇]|^下[章节節]$|next chapter|^next\b|次の話|次へ|다음/i:/上一[章节節话話回篇]|^上[章节節]$|prev(?:ious)? chapter|^prev|前の話|前へ|이전/i;
     var cur=location.href.split('#')[0],best=null,bs=0;
