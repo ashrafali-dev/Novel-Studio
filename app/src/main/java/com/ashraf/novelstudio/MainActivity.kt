@@ -11,6 +11,7 @@ import android.graphics.drawable.LayerDrawable
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.ViewOutlineProvider
+import android.view.GestureDetector
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
@@ -668,8 +669,24 @@ class MainActivity : Activity() {
         // ================= floating dock: [view mode] [prev] [EXTRACT] [next] [save]
         modeBtn = dockBtn(Ic.SPLIT, "View mode") { cycleMode() }
         extractBtn = ExtractButton(this).apply {
-            setOnClickListener { extractCopy() }
-            setOnLongClickListener { toggleAuto(); true }
+            val tapDetector = GestureDetector(this@MainActivity,
+                object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDown(e: MotionEvent): Boolean = true
+                    override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                        extractCopy()
+                        return true
+                    }
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        insertSavedTranslation()
+                        return true
+                    }
+                    override fun onLongPress(e: MotionEvent) {
+                        toggleAuto()
+                    }
+                })
+            setOnTouchListener { _, event -> tapDetector.onTouchEvent(event) }
+            isClickable = true
+            isLongClickable = true
         }
         val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1876,6 +1893,10 @@ class MainActivity : Activity() {
                 hideNavLoading()
             }
 
+            if (view === novelWv && !url.isNullOrBlank() && !webNovelCatalogPending) {
+                scheduleSavedTranslationCheck(url)
+            }
+
             if (autoCopy && !polling) {
                 polling = true
                 val tk = navToken
@@ -2280,7 +2301,7 @@ class MainActivity : Activity() {
             novelWv.evaluateJavascript(Js.isAppliedTranslation(cachedTranslation)) { raw ->
                 if (token != navToken) return@evaluateJavascript
                 if (decode(raw).trim() == "1" && lastChapter === cached) {
-                    handleChapter(cached)
+                    handleChapter(cached, useSavedTranslation = false)
                 } else {
                     attempt(0)
                 }
@@ -2493,6 +2514,55 @@ class MainActivity : Activity() {
         schedulePrefetch(ch)
     }
 
+    // On page load, check for a saved translation even when Next auto-extraction is off.
+    private fun scheduleSavedTranslationCheck(pageUrl: String) {
+        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        val token = navToken
+        handler.postDelayed({
+            if (token != navToken || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return@postDelayed
+            if (hasTr && lastChapter?.let { cleanUrl(it.url) == cleanUrl(pageUrl) } == true) return@postDelayed
+            extractNow { ch ->
+                if (token != navToken || ch == null || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return@extractNow
+                val saved = Store.find(this, ch) ?: return@extractNow
+                val translated = Store.readRaw(this, saved.id)
+                if (translated.length < 30) return@extractNow
+                autoCopy = false
+                polling = false
+                onChapter(ch)
+                hideNavLoading()
+                applyTranslation(ch, translated, true)
+                schedulePrefetch(ch)
+            }
+        }, 500L)
+    }
+
+    // Backup: double-tap ⚡ to insert a saved translation without translating again.
+    private fun insertSavedTranslation() {
+        val token = navToken
+        val cached = lastChapter
+        fun useChapter(ch: Chapter) {
+            if (token != navToken) return
+            onChapter(ch)
+            val saved = Store.find(this, ch)
+            val translated = saved?.let { Store.readRaw(this, it.id) }.orEmpty()
+            if (translated.length < 30) {
+                toast("ℹ️ No saved translation found for this chapter")
+                return
+            }
+            autoCopy = false
+            polling = false
+            applyTranslation(ch, translated, true)
+            schedulePrefetch(ch)
+        }
+        if (cached != null && cleanUrl(cached.url) == cleanUrl(novelWv.url ?: "")) {
+            useChapter(cached)
+        } else {
+            extractNow { ch ->
+                if (token != navToken) return@extractNow
+                if (ch == null) toast("❌ Chapter text was not found on this page") else useChapter(ch)
+            }
+        }
+    }
     private fun schedulePrefetch(ch: Chapter) {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
         val directTarget = ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
