@@ -183,9 +183,14 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // Resolve the matching chapter body instead of the first preloaded body.
     try{
       var tr=document.querySelector('.chapter-tracker.active[data-chapter-no]')||document.querySelector('.chapter-tracker.active');
-      var no=tr&&(tr.getAttribute('data-chapter-no')||'');
+      var activeNo=tr&&(tr.getAttribute('data-chapter-no')||'');
+      var urlChapter=location.pathname.match(/\/chapter-(\d+)\/?$/i);
+      // The URL identifies the requested chapter more reliably than a scroll-active
+      // tracker when WTR-LAB has neighbouring chapters preloaded.
+      var no=urlChapter?urlChapter[1]:activeNo;
       var candidates=[];
-      if(no)candidates.push('#chapter-'+no+' .chapter-body','#tracker-'+no+' .chapter-body','[data-chapter-no="'+no+'"] .chapter-body');
+      if(no)candidates.push('#chapter-'+no+' .chapter-body','#tracker-'+no+' .chapter-body',
+        '.chapter-tracker[data-chapter-no="'+no+'"] .chapter-body','[data-chapter-no="'+no+'"] .chapter-body');
       for(var ti=0;tr&&ti<6;ti++,tr=tr.parentElement){
         var bodies=tr.querySelectorAll?Array.from(tr.querySelectorAll('.chapter-body')).filter(function(b){return (b.innerText||'').trim().length>200;}):[];
         if(bodies.length===1)candidates.push(bodies[0]);
@@ -793,8 +798,15 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var activeWtr=null;
     try{
       var tr=document.querySelector('.chapter-tracker.active[data-chapter-no]')||document.querySelector('.chapter-tracker.active');
-      var no=tr&&(tr.getAttribute('data-chapter-no')||'');
-      if(no)activeWtr=pick('#chapter-'+no+' .chapter-body')||pick('#tracker-'+no+' .chapter-body')||pick('[data-chapter-no="'+no+'"] .chapter-body');
+      var activeNo=tr&&(tr.getAttribute('data-chapter-no')||'');
+      var urlChapter=location.pathname.match(/\/chapter-(\d+)\/?$/i);
+      // Prefer the exact chapter from the address bar; the active tracker can lag
+      // while the infinite reader scrolls between preloaded chapter bodies.
+      var no=urlChapter?urlChapter[1]:activeNo;
+      if(no)activeWtr=pick('#chapter-'+no+' .chapter-body')||
+        pick('#tracker-'+no+' .chapter-body')||
+        pick('.chapter-tracker[data-chapter-no="'+no+'"] .chapter-body')||
+        pick('[data-chapter-no="'+no+'"] .chapter-body');
       for(var ti=0;!activeWtr&&tr&&ti<6;ti++,tr=tr.parentElement){
         var bodies=tr.querySelectorAll?Array.from(tr.querySelectorAll('.chapter-body')).filter(function(b){return text(b).length>200;}):[];
         if(bodies.length===1)activeWtr=bodies[0];
