@@ -2064,9 +2064,20 @@ class MainActivity : Activity() {
     private fun keyOf(ch: Chapter): String {
         val novel = ch.novel.trim().lowercase()
         val number = ch.number.trim()
-        if (number.isNotEmpty()) return novel + "#" + number
+        // WebNovel may keep the same reader URL and may vary the detected book
+        // title between DOM renders. Use the stable book slug + chapter number.
+        val bookKey = try {
+            val u = Uri.parse(ch.url)
+            val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
+            val parts = u.pathSegments
+            val i = parts.indexOfFirst { it.equals("book", true) }
+            if (host.endsWith("webnovel.com") && i >= 0 && parts.size > i + 1)
+                host + "/book/" + parts[i + 1].lowercase()
+            else ""
+        } catch (_: Exception) { "" }
+        if (number.isNotEmpty()) return (bookKey.ifBlank { novel }) + "#" + number
         val title = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
-        if (title.isNotEmpty()) return novel + "|" + title
+        if (title.isNotEmpty()) return (bookKey.ifBlank { novel }) + "|" + title
         return cleanUrl(ch.url)
     }
 
@@ -2469,7 +2480,7 @@ class MainActivity : Activity() {
         if (Prefs.bool(this, "prefetchNextChapter")) {
             val saved = Store.find(this, ch)
             if (saved != null) {
-                val translated = Store.read(this, saved.id)
+                val translated = Store.readRaw(this, saved.id)
                 if (translated.length >= 30) {
                     applyTranslation(ch, translated, true)
                     schedulePrefetch(ch)
@@ -2797,7 +2808,7 @@ markers preserved.
                 return@evaluateJavascript
             }
             copy(t)
-            Store.save(this, ch, t)
+            Store.save(this, ch, rawTranslation)
             progress = 100
             updateProgressUi()
             val shown = lastChapter
