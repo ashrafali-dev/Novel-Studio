@@ -632,7 +632,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         var leafLines=wtrLines.filter(function(e){return !e.querySelector('.wtr-line, [data-line]');});
         var cleanLines=leafLines.filter(function(e){
           var t=text(e);
-          return meaningful(t)&&!/^\\d+(?:\\.\\d+)?%$/.test(t);
+          return meaningful(t)&&!/^\d+(?:\.\d+)?%$/.test(t);
         });
         if(cleanLines.length>=3)return cleanLines;
       }
