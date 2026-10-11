@@ -2464,6 +2464,8 @@ class MainActivity : Activity() {
             val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
 
+            val host = Uri.parse(base.url).host.orEmpty().lowercase()
+            val isQidian = host == "qidian.com" || host.endsWith(".qidian.com")
             if (webNovel) {
                 // WebNovel's reader URL/DOM can expose opaque or stale adjacent IDs.
                 // Resolve the actual neighbouring chapter from its catalogue instead.
@@ -2472,6 +2474,11 @@ class MainActivity : Activity() {
                 wipeStale(clearNovelDom = true)
                 navToken = token
                 loadAndWait(target, token, base)
+            } else if (isQidian) {
+                // Qidian chapter IDs are opaque. Clicking an ambiguous site control can
+                // skip chapters, so fail safely rather than silently jumping 1 -> 3.
+                hideNavLoading()
+                toast("❌ Qidian-এর পরের অধ্যায়ের নির্ভরযোগ্য লিংক পাওয়া যায়নি")
             } else {
                 // Use the site's own navigation when no reliable adjacent URL exists.
                 clickAndWait(dir, base, token)
