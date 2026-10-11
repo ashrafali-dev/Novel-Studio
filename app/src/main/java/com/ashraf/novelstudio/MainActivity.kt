@@ -2455,16 +2455,16 @@ class MainActivity : Activity() {
             val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
 
-            if (target != null && adjacentUrlIsSafe(currentUrl, target)) {
-                // Extension-style fast path: use the adjacent chapter URL
-                // already discovered from the rendered DOM. This also works
-                // for WebNovel and avoids opening /catalog on every Next click.
+            if (webNovel) {
+                // WebNovel's reader URL/DOM can expose opaque or stale adjacent IDs.
+                // Resolve the actual neighbouring chapter from its catalogue instead.
+                clickAndWait(dir, base, token)
+            } else if (target != null && adjacentUrlIsSafe(currentUrl, target)) {
                 wipeStale(clearNovelDom = true)
                 navToken = token
                 loadAndWait(target, token, base)
             } else {
-                // Only fall back to the site's own navigation when the
-                // extractor could not discover an adjacent URL.
+                // Use the site's own navigation when no reliable adjacent URL exists.
                 clickAndWait(dir, base, token)
             }
         }
