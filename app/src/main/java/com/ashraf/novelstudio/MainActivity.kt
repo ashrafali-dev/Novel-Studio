@@ -96,6 +96,9 @@ class MainActivity : Activity() {
     private var prefetchCatalogTitle = ""
     private var prefetchSourceUrl = ""
     private val prefetchKeys = mutableSetOf<String>()
+    private val prefetchGeneratedKeys = mutableSetOf<String>()
+    private val prefetchedTranslationIds = mutableMapOf<String, Long>()
+    private var activePrefetchedTranslationKey: String? = null
     private val botWebViews = mutableMapOf<String, WebView>()
     private var currentBotKey = ""
     private lateinit var urlBar: EditText
@@ -410,7 +413,9 @@ class MainActivity : Activity() {
                             val current = lastChapter
                             if (current != null && keyOf(next) == keyOf(current)) return@prefetchExtractNow
                             if (Store.find(this@MainActivity, next) != null) return@prefetchExtractNow
-                            if (prefetchKeys.add(keyOf(next))) {
+                            val nextKey = keyOf(next)
+                            if (prefetchKeys.add(nextKey)) {
+                                prefetchGeneratedKeys.add(nextKey)
                                 enqueue(next)
                             }
                         }
@@ -1529,6 +1534,7 @@ class MainActivity : Activity() {
         }
         activeWv = if (m == Mode.CHAT) chatWv else novelWv
         applyLayout()
+        if (m != Mode.NOVEL) refreshChatViewport()
         updatePill()
         if (keepFrame) {
             modeTransitionCover.bringToFront()
@@ -1606,6 +1612,29 @@ class MainActivity : Activity() {
         // Keep overlays above both panes, without covering the chatbot's touch area.
         progressBox.bringToFront()
         togglePill.bringToFront()
+    }
+
+    // Repaint a chatbot WebView after it was collapsed to zero height. Keep the
+    // same WebView/session; do not reload and lose the logged-in chatbot state.
+    private fun refreshChatViewport() {
+        if (!::chatWv.isInitialized || !::chatBox.isInitialized) return
+        chatBox.post {
+            if (mode == Mode.NOVEL) return@post
+            chatBox.requestLayout()
+            chatWv.requestLayout()
+            chatWv.onResume()
+            chatWv.invalidate()
+            chatWv.evaluateJavascript(
+                "(function(){try{window.dispatchEvent(new Event('resize'));if(window.visualViewport)window.visualViewport.dispatchEvent(new Event('resize'));}catch(e){}})();",
+                null
+            )
+            chatWv.postDelayed({
+                if (mode != Mode.NOVEL) {
+                    chatWv.requestLayout()
+                    chatWv.invalidate()
+                }
+            }, 120L)
+        }
     }
 
     private fun cycleMode() {
@@ -2083,24 +2112,37 @@ class MainActivity : Activity() {
     }
 
     private fun keyOf(ch: Chapter): String {
-        val novel = ch.novel.trim().lowercase()
         val number = ch.number.trim()
-        // WebNovel may keep the same reader URL and may vary the detected book
-        // title between DOM renders. Use the stable book slug + chapter number.
-        val bookKey = try {
-            val u = Uri.parse(ch.url)
-            val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
-            val parts = u.pathSegments
-            val i = parts.indexOfFirst { it.equals("book", true) }
-            if (host.endsWith("webnovel.com") && i >= 0 && parts.size > i + 1)
-                host + "/book/" + parts[i + 1].lowercase()
-            else ""
-        } catch (_: Exception) { "" }
-        if (number.isNotEmpty()) return (bookKey.ifBlank { novel }) + "#" + number
+        val source = sourceKey(ch.url).ifBlank { cleanUrl(ch.url) }
+        if (number.isNotEmpty()) return source + "#" + number
         val title = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
-        if (title.isNotEmpty()) return (bookKey.ifBlank { novel }) + "|" + title
+        if (title.isNotEmpty()) return source + "|" + title
         return cleanUrl(ch.url)
     }
+
+    // Stable identity of the BOOK, not the chapter number or detected title.
+    // If a site has no recognizable book ID, use the exact URL as a safe fallback.
+    private fun sourceKey(url: String): String = try {
+        val u = Uri.parse(url)
+        val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
+        val parts = u.pathSegments
+        when {
+            host.endsWith("webnovel.com") -> {
+                val i = parts.indexOfFirst { it.equals("book", true) }
+                if (i >= 0 && parts.size > i + 1) host + "/book/" + parts[i + 1].lowercase() else ""
+            }
+            host == "novel543.com" || host.endsWith(".novel543.com") -> {
+                val id = parts.firstOrNull().orEmpty()
+                if (id.matches(Regex("\\d{7,}"))) host + "/" + id else ""
+            }
+            else -> {
+                val markers = setOf("novel", "book", "series", "story", "fiction")
+                val i = parts.indexOfFirst { it.lowercase() in markers }
+                if (i >= 0 && parts.size > i + 1 && parts[i + 1].isNotBlank())
+                    host + "/" + parts[i].lowercase() + "/" + parts[i + 1].lowercase() else ""
+            }
+        }
+    } catch (_: Exception) { "" }
 
     // Hash only the chapter body, not the heading. Some SPA readers update
     // the chapter title before replacing the actual chapter text.
@@ -2162,9 +2204,24 @@ class MainActivity : Activity() {
     }
 
     private fun onChapter(ch: Chapter) {
+        val nextKey = keyOf(ch)
+        val activePrefetchKey = activePrefetchedTranslationKey
+        if (activePrefetchKey != null && activePrefetchKey != nextKey) {
+            // A prefetched chapter has now been read and the reader moved on.
+            // Remove only the transient prefetch copy, never a user-saved translation.
+            prefetchedTranslationIds.remove(activePrefetchKey)?.let { Store.delete(this, it) }
+            prefetchGeneratedKeys.remove(activePrefetchKey)
+            prefetchKeys.remove(activePrefetchKey)
+            activePrefetchedTranslationKey = null
+        }
         lastChapter = ch
         Store.touchBookmark(this, ch)
         updateProgressUi()
+    }
+
+    private fun markPrefetchedTranslationActive(ch: Chapter, saved: Tr) {
+        val key = keyOf(ch)
+        if (prefetchedTranslationIds[key] == saved.id) activePrefetchedTranslationKey = key
     }
 
     private fun copy(text: String) {
@@ -2263,12 +2320,7 @@ class MainActivity : Activity() {
         navToken++
         val token = navToken
         val cached = lastChapter
-        val cachedTranslation = if (
-            hasTr && shownTranslated && pendingNavHash == null && pendingNavUrl.isBlank() &&
-            cached != null && !shownTrRaw.isNullOrBlank()
-        ) {
-            splitInternalMarkedTranslation(shownTrRaw!!).joinToString("\n")
-        } else ""
+        // A displayed translation is not the source; keep using cached chapter text.
 
         fun attempt(n: Int) {
             extractNow { ch ->
@@ -2295,17 +2347,12 @@ class MainActivity : Activity() {
             }
         }
 
-        // If the live reader still contains our inserted Bengali translation,
-        // reuse the cached original chapter instead of extracting the translation.
-        if (cached != null && cachedTranslation.isNotBlank()) {
-            novelWv.evaluateJavascript(Js.isAppliedTranslation(cachedTranslation)) { raw ->
-                if (token != navToken) return@evaluateJavascript
-                if (decode(raw).trim() == "1" && lastChapter === cached) {
-                    handleChapter(cached, useSavedTranslation = false)
-                } else {
-                    attempt(0)
-                }
-            }
+        // If this exact page already has our Bengali insertion, reuse the cached
+        // ORIGINAL chapter object. Never scrape the translated DOM for retranslation.
+        if (cached != null &&
+            cleanUrl(cached.url) == cleanUrl(novelWv.url ?: "") &&
+            hasTr && shownTranslated && cached.text.isNotBlank()) {
+            handleChapter(cached, useSavedTranslation = false)
         } else {
             attempt(0)
         }
@@ -2504,6 +2551,7 @@ class MainActivity : Activity() {
             if (saved != null) {
                 val translated = Store.readRaw(this, saved.id)
                 if (translated.length >= 30) {
+                    markPrefetchedTranslationActive(ch, saved)
                     applyTranslation(ch, translated, true)
                     schedulePrefetch(ch)
                     return
@@ -2529,6 +2577,7 @@ class MainActivity : Activity() {
                 autoCopy = false
                 polling = false
                 onChapter(ch)
+                markPrefetchedTranslationActive(ch, saved)
                 hideNavLoading()
                 applyTranslation(ch, translated, true)
                 schedulePrefetch(ch)
@@ -2549,6 +2598,7 @@ class MainActivity : Activity() {
                 toast("ℹ️ No saved translation found for this chapter")
                 return
             }
+            markPrefetchedTranslationActive(ch, saved)
             autoCopy = false
             polling = false
             applyTranslation(ch, translated, true)
@@ -2879,7 +2929,11 @@ markers preserved.
                 return@evaluateJavascript
             }
             copy(t)
-            Store.save(this, ch, rawTranslation)
+            val savedTranslation = Store.save(this, ch, rawTranslation)
+            val savedKey = keyOf(ch)
+            if (prefetchGeneratedKeys.contains(savedKey)) {
+                prefetchedTranslationIds[savedKey] = savedTranslation.id
+            }
             progress = 100
             updateProgressUi()
             val shown = lastChapter
