@@ -2674,7 +2674,7 @@ class MainActivity : Activity() {
         }
     }
     private fun schedulePrefetch(ch: Chapter) {
-        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        if (!Prefs.bool(this, "prefetchNextChapter") && !Prefs.auto(this)) return
         val parsedCurrent = Uri.parse(ch.url)
         val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
         val inferredWtrNext = if (hostCurrent == "wtr-lab.com" || hostCurrent.endsWith(".wtr-lab.com")) {
@@ -2815,7 +2815,7 @@ class MainActivity : Activity() {
         // line wraps, not source paragraphs. Preserve paragraph boundaries.
         return blocks.mapIndexed { i, block ->
             "[${(i + 1).toString().padStart(3, '0')}] $block"
-        }.joinToString("\\n\\n")
+        }.joinToString("\n\n")
     }
 
     private fun stripInternalMarkers(text: String): String =
@@ -2994,7 +2994,7 @@ markers preserved.
                 // If the model doesn't preserve markers, fall back to output length.
                 val pct = when {
                     !got -> 3
-                    total > 0 -> if (found > 0) (found * 100 / total).coerceIn(3, 98)
+                    total > 0 -> if (found > 0) (found * 100 / total).coerceIn(3, 94)
                         else minOf(90, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                     else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
