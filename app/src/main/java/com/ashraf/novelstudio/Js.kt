@@ -235,10 +235,22 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var padL=Math.max(0,16-Math.max(rc.left,0)-(parseFloat(cst.paddingLeft)||0));
   var padR=Math.max(0,16-Math.max(window.innerWidth-rc.right,0)-(parseFloat(cst.paddingRight)||0));
   var wrap=document.createElement('div');
+  wrap.className='ns-translated-content';
   wrap.style.cssText='box-sizing:border-box;max-width:100%;text-align:left;overflow-wrap:anywhere;'
     +'padding:0 '+padR+'px 0 '+padL+'px;font-size:'+(size||18)+'px;';
   var frag=document.createDocumentFragment();
-  for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} wrap.appendChild(p); }
+  for(var i=0;i<paras.length;i++){
+    var p=document.createElement('p'); p.textContent=paras[i];
+    // Reader-site !important rules can otherwise override custom fonts and paragraph spacing.
+    p.style.setProperty('margin-top','0','important');
+    p.style.setProperty('margin-right','0','important');
+    p.style.setProperty('margin-bottom','1em','important');
+    p.style.setProperty('margin-left','0','important');
+    p.style.setProperty('line-height','1.75','important');
+    p.style.setProperty('font-size',(size||18)+'px','important');
+    if(fam)p.style.setProperty('font-family',fam,'important');
+    wrap.appendChild(p);
+  }
   frag.appendChild(wrap);
   el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1');
   el.setAttribute('data-ns-page-id',pageId||'');
@@ -581,13 +593,13 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // WTR-LAB renders the reader and chapter navigation inside shared page
     // containers. Prefer the actual chapter body before broad article/main shells.
     if(host.indexOf('wtr-lab.com')>=0)sels.push(
-      // Current WTR-LAB reader uses .chapter-body / .chapter-tracker and
-      // leaf .wtr-line elements. Do not start from broad main/article shells.
-      '.chapter-body','.chapter-container .chapter-body','.chapter-wrap .chapter-body',
-      '.chapter-tracker .chapter-body',
-      '.chapter-content','#chapter-content','.reader-content','.reading-content',
-      '[class*="chapter-content"]','[id*="chapter-content"]'
-    );
+       // Prefer the active chapter in WTR-LAB's infinite reader; adjacent chapters
+       // may already be preloaded in the DOM.
+       '.chapter-tracker.active .chapter-body',
+       '.chapter-body','.chapter-container .chapter-body','.chapter-wrap .chapter-body',
+       '.chapter-content','#chapter-content','.reader-content','.reading-content',
+       '[class*="chapter-content"]','[id*="chapter-content"]'
+     );
     sels.push(
       __CONTENT__,
       '.cha-words','.cha-content','.chapter-content','.chapter_content',
@@ -612,6 +624,19 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   function units(root){
     var out=[],seen=new Set();
+    // WTR-LAB uses .wtr-line / [data-line] as paragraph units rather than <p>.
+    // Extract these units directly to retain paragraph boundaries.
+    if(location.hostname.toLowerCase().indexOf('wtr-lab.com')>=0){
+      var wtrLines=Array.from(root.querySelectorAll('.wtr-line, [data-line]'));
+      if(wtrLines.length){
+        var leafLines=wtrLines.filter(function(e){return !e.querySelector('.wtr-line, [data-line]');});
+        var cleanLines=leafLines.filter(function(e){
+          var t=text(e);
+          return meaningful(t)&&!/^\\d+(?:\\.\\d+)?%$/.test(t);
+        });
+        if(cleanLines.length>=3)return cleanLines;
+      }
+    }
     // Reject site chrome even when the website uses generic DIVs instead of
     // semantic NAV/FOOTER tags. WTR-LAB puts the TOC, chapter progress and
     // previous/next controls near the reader, and broad roots used to collect them.
