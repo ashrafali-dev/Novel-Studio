@@ -2690,8 +2690,12 @@ class MainActivity : Activity() {
                 } else null
             } catch (_: Exception) { null }
         } else null
-        val directTarget = (ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
-            ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) })
+        // WebNovel's reader can expose a non-adjacent/opaque chapter URL as "Next".
+        // Always resolve its next chapter from the catalog, just like the visible Next button.
+        val isWebNovel = ch.url.contains("webnovel.com/", ignoreCase = true)
+        val directTarget = if (isWebNovel) null else
+            (ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
+                ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) })
         val target: String
         val useCatalog: Boolean
         if (directTarget != null) {
