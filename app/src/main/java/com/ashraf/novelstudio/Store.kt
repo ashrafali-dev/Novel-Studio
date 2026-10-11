@@ -110,7 +110,8 @@ object Store {
             items.firstOrNull { pageKey(it.url) == exactPage }
         } else null
         val bk = bookKey(url)
-        val sameBookMatch = if (exactPageMatch == null && bk.isNotEmpty()) {
+        val isNovel543 = Uri.parse(url).host?.lowercase()?.let { it == "novel543.com" || it.endsWith(".novel543.com") } == true
+        val sameBookMatch = if (exactPageMatch == null && bk.isNotEmpty() && !isNovel543) {
             items.firstOrNull {
                 number.isNotEmpty() && it.number == number && bookKey(it.url) == bk
             } ?: items.firstOrNull {
@@ -146,7 +147,8 @@ object Store {
         if (exactPageMatch != null) return exactPageMatch
 
         val bk = bookKey(ch.url)
-        val sameBookMatch = if (bk.isNotEmpty()) {
+        val isNovel543 = Uri.parse(ch.url).host?.lowercase()?.let { it == "novel543.com" || it.endsWith(".novel543.com") } == true
+        val sameBookMatch = if (bk.isNotEmpty() && !isNovel543) {
             items.firstOrNull {
                 ch.number.isNotEmpty() && it.number == ch.number && bookKey(it.url) == bk
             } ?: items.firstOrNull {
