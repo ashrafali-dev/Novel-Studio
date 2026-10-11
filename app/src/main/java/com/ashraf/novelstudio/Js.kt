@@ -329,13 +329,16 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     // Called after the WebView has loaded /book/<slug>/catalog.
     // Returns the adjacent chapter URL without navigating the catalog page.
-    fun webNovelPickCatalog(dir: String, currentTitle: String): String {
+    fun webNovelPickCatalog(dir: String, currentTitle: String, currentUrl: String = ""): String {
         val safe = currentTitle
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+        val safeUrl = currentUrl
             .replace("\\", "\\\\")
             .replace("'", "\\'")
         return """
 (function(){
-  var dir='__DIR__', title='__TITLE__';
+  var dir='__DIR__', title='__TITLE__', sourceUrl='__SOURCE_URL__';
   var norm=function(s){return (s||'').replace(/\s+/g,' ').trim().toLowerCase();};
   var stripIndex=function(s){return norm(s).replace(/^\s*\d+\s*[-.:)]?\s*/,'');};
   var clean=function(u){
@@ -349,7 +352,8 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(!bookPath)return 'none';
 
   var curTitle=stripIndex(title);
-  var as=[].slice.call(document.querySelectorAll('.j_catalog_list .volume-item li a[href], .j_catalog_list a[href], a[href]'));
+  var sourcePath=sourceUrl?clean(sourceUrl):'';
+  var as=[].slice.call(document.querySelectorAll('.j_catalog_list .volume-item li a[href], .j_catalog_list a[href]'));
   var links=[];
 
   for(var i=0;i<as.length;i++){
@@ -372,7 +376,13 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(!links.length)return 'none';
 
   var idx=-1;
-  for(var x=0;x<links.length;x++){
+  // URL identity is more reliable than the heading, which may be localized or truncated.
+  if(sourcePath){
+    for(var u=0;u<links.length;u++){
+      if(links[u].p===sourcePath){idx=u;break;}
+    }
+  }
+  for(var x=0;idx<0&&x<links.length;x++){
     if(links[x].t===curTitle){idx=x;break;}
   }
 
@@ -415,6 +425,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 """.trimIndent()
             .replace("__TITLE__", safe)
             .replace("__DIR__", dir)
+            .replace("__SOURCE_URL__", safeUrl)
     }
 
     fun webNovelNext(dir: String, currentTitle: String): String {
