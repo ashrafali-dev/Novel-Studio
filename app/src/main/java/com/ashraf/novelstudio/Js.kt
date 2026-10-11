@@ -573,7 +573,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       // Current WTR-LAB reader uses .chapter-body / .chapter-tracker and
       // leaf .wtr-line elements. Do not start from broad main/article shells.
       '.chapter-body','.chapter-container .chapter-body','.chapter-wrap .chapter-body',
-      '.chapter-tracker .chapter-body','.wtr-line','[data-line]',
+      '.chapter-tracker .chapter-body',
       '.chapter-content','#chapter-content','.reader-content','.reading-content',
       '[class*="chapter-content"]','[id*="chapter-content"]'
     );
