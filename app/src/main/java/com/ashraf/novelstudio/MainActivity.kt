@@ -2890,7 +2890,7 @@ class MainActivity : Activity() {
         val one = parts.firstOrNull() ?: return parts
         val lines = one.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.size >= 3) return lines
-        if (one.length > if (preserveParagraphs) 280 else 500) {
+        if (one.length > (if (preserveParagraphs) 280 else 500)) {
             val out = mutableListOf<String>()
             val sb = StringBuilder()
             val threshold = if (preserveParagraphs) 180 else 220
