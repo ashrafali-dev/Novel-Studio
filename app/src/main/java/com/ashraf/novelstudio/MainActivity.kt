@@ -2474,7 +2474,7 @@ markers preserved.
     private fun finishJob(tok: Int, ch: Chapter) {
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
-            if (tok != runToken || lastChapter?.let { keyOf(it) } != keyOf(ch)) return@evaluateJavascript
+            if (tok != runToken) return@evaluateJavascript
             val rawTranslation = cleanReply(decode(raw))
             if (rawTranslation.length < 30) {
                 failJob(tok, ch, "Could not read the answer")
