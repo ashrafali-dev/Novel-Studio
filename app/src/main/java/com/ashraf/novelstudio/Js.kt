@@ -281,6 +281,10 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var frag=document.createDocumentFragment();
   for(var i=0;i<paras.length;i++){
     var p=document.createElement('p'); p.textContent=paras[i];
+    // Force true paragraph blocks: some reader stylesheets turn <p> into inline content.
+    p.style.setProperty('display','block','important');
+    p.style.setProperty('white-space','normal','important');
+    p.style.setProperty('overflow-wrap','anywhere','important');
     // Reader-site !important rules can otherwise override custom fonts and paragraph spacing.
     p.style.setProperty('margin-top','0','important');
     p.style.setProperty('margin-right','0','important');
@@ -306,8 +310,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             .replace("__PAGE_ID__", org.json.JSONObject.quote(pageId))
 
     fun stillApplied(sel: String, pageId: String = ""): String =
-        "(function(sel,pid){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
-        "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
+        "(function(sel,pid){var el=null;" +
+        "if(window.__nsEl&&document.contains(window.__nsEl)&&window.__nsShown&&window.__nsEl.getAttribute('data-ns')==='1'&&(!pid||window.__nsEl.getAttribute('data-ns-page-id')===pid))el=window.__nsEl;" +
+        "if(!el){try{if(sel)el=document.querySelector(sel);}catch(e){}}" +
         "if(!el)el=document.querySelector('[data-ns=\"1\"]');" +
         "if(!el||el.getAttribute('data-ns')!=='1')return 'lost';" +
         "if(pid&&el.getAttribute('data-ns-page-id')!==pid)return 'lost-page';" +
@@ -613,12 +618,34 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
   function visible(e){return !!e&&e.isConnected&&(e.offsetWidth>0||e.offsetHeight>0||e.getClientRects().length>0);}
   function pick(sel){if(!sel)return null;try{var e=document.querySelector(sel);return e&&visible(e)?e:null;}catch(x){return null;}}
+  // Return a selector that identifies this exact DOM node, not merely the
+  // first element sharing its class. Infinite readers (especially WTR-LAB)
+  // keep several chapter bodies in the DOM at once.
   function stable(e){
     if(!e)return '';
+    var validId=function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x||'');};
     var id=(e.id||'').trim();
-    if(id&&/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id))return '#'+id;
-    var cls=Array.from(e.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,3);
-    return e.tagName.toLowerCase()+(cls.length?'.'+cls.join('.'): '');
+    if(validId(id)){try{if(document.querySelectorAll('#'+id).length===1)return '#'+id;}catch(x){}}
+    var parts=[],cur=e,guard=0;
+    while(cur&&cur.nodeType===1&&guard++<24){
+      var tag=cur.tagName.toLowerCase();
+      var cls=Array.from(cur.classList||[]).filter(function(x){return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(x);}).slice(0,2);
+      var seg=tag+(cls.length?'.'+cls.join('.'): '');
+      var parent=cur.parentElement;
+      if(parent){
+        var peers=Array.from(parent.children||[]).filter(function(x){return x.tagName===cur.tagName;});
+        if(peers.length>1)seg+=':nth-of-type('+(peers.indexOf(cur)+1)+')';
+      }
+      parts.unshift(seg);
+      var candidate=parts.join(' > ');
+      try{if(document.querySelectorAll(candidate).length===1)return candidate;}catch(x){}
+      if(validId((cur.id||'').trim())){
+        var anchored='#'+cur.id+(parts.length>1?' > '+parts.slice(1).join(' > '):'');
+        try{if(document.querySelectorAll(anchored).length===1)return anchored;}catch(x){}
+      }
+      cur=parent;
+    }
+    return parts.join(' > ');
   }
   var MEAN;
   try{MEAN=new RegExp('[\\p{L}\\p{N}]','u');}
