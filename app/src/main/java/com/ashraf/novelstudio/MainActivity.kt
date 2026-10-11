@@ -1576,7 +1576,10 @@ class MainActivity : Activity() {
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
                 novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-                chatBox.layoutParams = FrameLayout.LayoutParams(MP, 0)
+                // Keep the chatbot WebView attached at a real size while hidden.
+                // A zero-height WebView can stall response polling when translation
+                // runs in the background, so place it just below the clipped viewport.
+                chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP).apply { topMargin = h }
                 chatBox.bringToFront()
                 novelBox.bringToFront()
             }
@@ -2872,7 +2875,7 @@ class MainActivity : Activity() {
     private fun stripInternalMarkers(text: String): String =
         text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
 
-    private fun splitInternalMarkedTranslation(text: String): List<String> {
+    private fun splitInternalMarkedTranslation(text: String, preserveParagraphs: Boolean = false): List<String> {
         // Models sometimes keep [001][002] markers on the same physical line.
         // Split on the marker itself, not only on a line-start marker.
         val marker = Regex("\\[\\d{3,}\\]\\s*")
@@ -2887,12 +2890,16 @@ class MainActivity : Activity() {
         val one = parts.firstOrNull() ?: return parts
         val lines = one.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.size >= 3) return lines
-        if (one.length > 500) {
+        if (one.length > if (preserveParagraphs) 280 else 500) {
             val out = mutableListOf<String>()
             val sb = StringBuilder()
+            val threshold = if (preserveParagraphs) 180 else 220
             for (c in one) {
                 sb.append(c)
-                if (sb.length >= 220 && "।!?”\u2026".indexOf(c) >= 0) { out.add(sb.toString().trim()); sb.setLength(0) }
+                if (sb.length >= threshold && "।.!?！？”\u2026」』".indexOf(c) >= 0) {
+                    out.add(sb.toString().trim())
+                    sb.setLength(0)
+                }
             }
             if (sb.isNotBlank()) out.add(sb.toString().trim())
             if (out.size > 1) return out
@@ -2986,7 +2993,9 @@ class MainActivity : Activity() {
                     if (progressTicker === this) progressTicker = null
                     return
                 }
-                if (progress < 88) {
+                // This ticker only shows that the request is alive while the chatbot
+                // WebView is hidden. Actual percentage comes from measured reply text.
+                if (progress < 12) {
                     progress += 1
                     updateProgressUi()
                 }
@@ -3090,12 +3099,12 @@ markers preserved.
                 val allMarkers = got && total > 0 && found >= total
                 // Marker progress is linear: each translated paragraph advances the bar.
                 // If the model doesn't preserve markers, fall back to output length.
-                val pct = when {
-                    !got -> 3
-                    total > 0 -> if (found > 0) (found * 100 / total).coerceIn(3, 94)
-                        else minOf(90, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
-                    else -> minOf(95, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
-                }
+                // Never derive progress directly from marker count: some chatbots
+                // expose all markers at once (or briefly echo the prompt), which made
+                // the bar jump from a few percent to ~98%. Use reply growth instead;
+                // the UI below rate-limits each poll to at most +1%.
+                val pct = if (!got) 3 else
+                    minOf(90, (effLen * 100 / expectedLen(ch)).coerceAtLeast(3))
                 // A stream that grows by 1–2 characters is still changing, not stable.
                 // Require an exactly unchanged reply length before calling it complete.
                 val st = if (got && effLen == lastLen) stable + 1 else 0
@@ -3198,7 +3207,10 @@ markers preserved.
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val paras = splitInternalMarkedTranslation(text)
+        val isWtrLab = Uri.parse(ch.url).host.orEmpty().lowercase().let {
+            it == "wtr-lab.com" || it.endsWith(".wtr-lab.com")
+        }
+        val paras = splitInternalMarkedTranslation(text, preserveParagraphs = isWtrLab)
         shownTrRaw = text
         // A translation callback can arrive long after the user pressed Next.
         // Never write an old chapter's translation into the current page.
@@ -3277,7 +3289,8 @@ markers preserved.
         val title: String
         var pct = 0
         if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
-            title = "Translating" + (if (run.number.isNotBlank()) " · Chapter ${run.number}" else "")
+            val safeNumber = run.number.takeIf { !(it.length >= 4 && it.startsWith("0")) }.orEmpty()
+            title = "Translating" + (if (safeNumber.isNotBlank()) " · Chapter $safeNumber" else "")
             pct = progress
         } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
             val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
