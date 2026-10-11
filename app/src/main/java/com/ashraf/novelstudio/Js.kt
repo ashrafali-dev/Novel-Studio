@@ -177,7 +177,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     private const val APPLY_BODY = """
 (function(sel,paras,font,size,pageId){
   var el=null;
-  try{ if(sel) el=document.querySelector(sel); }catch(e){}
+  // The WTR-LAB reader preloads adjacent chapters; always replace the active body.
+  if(location.hostname.toLowerCase().indexOf('wtr-lab.com')>=0){
+    try{el=document.querySelector('.chapter-tracker.active .chapter-body');}catch(e){}
+  }
+  try{ if(!el&&sel) el=document.querySelector(sel); }catch(e){}
   // Jsoup's generated cssSelector can become stale after a SPA/navigation
   // rerender. Fall back to the same content selectors used by Extractor.
   if(!el){
