@@ -126,6 +126,8 @@ class MainActivity : Activity() {
     // Freeze the current panes briefly while live WebViews resize during mode changes.
     private var modeTransitionBitmap: Bitmap? = null
     private var modeTransitionHide: Runnable? = null
+    private var modeTransitionPreDraw: android.view.ViewTreeObserver.OnPreDrawListener? = null
+    private var modeTransitionFrames = 0
 
     // navigation (▶ ◀ ●) — every action gets a fresh token, old callbacks with an old token are ignored
     private var navToken = 0
@@ -1360,22 +1362,76 @@ class MainActivity : Activity() {
 
     private fun scheduleModeTransitionRelease() {
         modeTransitionHide?.let { handler.removeCallbacks(it) }
+        modeTransitionPreDraw?.let { listener ->
+            try {
+                if (content.viewTreeObserver.isAlive) {
+                    content.viewTreeObserver.removeOnPreDrawListener(listener)
+                }
+            } catch (_: Exception) {}
+        }
+        modeTransitionPreDraw = null
+        modeTransitionFrames = 0
+
         val release = Runnable {
+            modeTransitionCover.animate().cancel()
             modeTransitionCover.setImageDrawable(null)
             modeTransitionCover.visibility = View.GONE
+            modeTransitionCover.alpha = 1f
             modeTransitionBitmap?.let { if (!it.isRecycled) it.recycle() }
             modeTransitionBitmap = null
             modeTransitionHide = null
+            modeTransitionPreDraw = null
         }
+
+        val startFade = Runnable {
+            if (modeTransitionHide !== release || modeTransitionCover.visibility != View.VISIBLE) return@Runnable
+            modeTransitionPreDraw?.let { listener ->
+                try {
+                    if (content.viewTreeObserver.isAlive) {
+                        content.viewTreeObserver.removeOnPreDrawListener(listener)
+                    }
+                } catch (_: Exception) {}
+            }
+            modeTransitionPreDraw = null
+            modeTransitionCover.animate().cancel()
+            modeTransitionCover.alpha = 1f
+            modeTransitionCover.animate()
+                .alpha(0f)
+                .setDuration(150L)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .withEndAction { release.run() }
+                .start()
+        }
+
         modeTransitionHide = release
         modeTransitionCover.animate().cancel()
         modeTransitionCover.alpha = 1f
-        modeTransitionCover.animate()
-            .alpha(0f)
-            .setDuration(180L)
-            .setInterpolator(android.view.animation.DecelerateInterpolator())
-            .withEndAction { release.run() }
-            .start()
+
+        // Do not fade immediately. The old snapshot stays on top while the
+        // new layout gets at least two real draw frames. This makes the
+        // transition visible even when the WebViews switch in a few ms.
+        val preDraw = object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (modeTransitionHide !== release || modeTransitionCover.visibility != View.VISIBLE) {
+                    return true
+                }
+                modeTransitionFrames++
+                if (modeTransitionFrames >= 2) {
+                    handler.post(startFade)
+                }
+                return true
+            }
+        }
+        modeTransitionPreDraw = preDraw
+        content.viewTreeObserver.addOnPreDrawListener(preDraw)
+
+        // Safety fallback in case a WebView does not trigger the expected
+        // pre-draw cycle promptly.
+        handler.postDelayed({
+            if (modeTransitionHide === release && modeTransitionCover.visibility == View.VISIBLE) {
+                startFade.run()
+            }
+        }, 300L)
     }
 
     private fun setMode(m: Mode) {
@@ -3387,6 +3443,16 @@ markers preserved.
         navToken++
         handler.removeCallbacksAndMessages(null)
         pulse?.cancel()
+        modeTransitionHide?.let { handler.removeCallbacks(it) }
+        modeTransitionPreDraw?.let { listener ->
+            try {
+                if (::content.isInitialized && content.viewTreeObserver.isAlive) {
+                    content.viewTreeObserver.removeOnPreDrawListener(listener)
+                }
+            } catch (_: Exception) {}
+        }
+        modeTransitionPreDraw = null
+        modeTransitionFrames = 0
         if (::modeTransitionCover.isInitialized) modeTransitionCover.setImageDrawable(null)
         modeTransitionBitmap?.let { if (!it.isRecycled) it.recycle() }
         modeTransitionBitmap = null
