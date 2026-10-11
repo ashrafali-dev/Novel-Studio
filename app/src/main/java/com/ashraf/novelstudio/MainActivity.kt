@@ -1313,41 +1313,55 @@ class MainActivity : Activity() {
         val h = content.height
         if (w <= 0 || h <= 0) return
 
-        // Keep both WebViews full-size so switching modes does not resize a live
-        // WebView surface (which can cause a one-frame black flash). In split
-        // mode, clip each container to one half of the content.
-        novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-        chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-
         when (mode) {
             Mode.NOVEL -> {
+                // Full novel WebView.
                 novelBox.translationY = 0f
                 chatBox.translationY = 0f
                 novelBox.clipBounds = null
-                chatBox.clipBounds = android.graphics.Rect(0, 0, w, 0)
+                chatBox.clipBounds = null
+                novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
+                chatBox.layoutParams = FrameLayout.LayoutParams(MP, 0)
+                chatBox.bringToFront()
                 novelBox.bringToFront()
             }
+
             Mode.CHAT -> {
+                // Full chatbot WebView.
                 novelBox.translationY = 0f
                 chatBox.translationY = 0f
-                novelBox.clipBounds = android.graphics.Rect(0, 0, w, 0)
+                novelBox.clipBounds = null
                 chatBox.clipBounds = null
+                novelBox.layoutParams = FrameLayout.LayoutParams(MP, 0)
+                chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
+                novelBox.bringToFront()
                 chatBox.bringToFront()
             }
+
             Mode.SPLIT -> {
                 val half = h / 2
 
-                // Novel occupies the upper half.
+                // Each pane gets its own real half-height viewport. This is
+                // important: clipping a full-height WebView only shows a slice
+                // of its page. Giving chatBox a real half-height layout lets
+                // chatWv fill the entire lower pane normally.
                 novelBox.translationY = 0f
-                novelBox.clipBounds = android.graphics.Rect(0, 0, w, half)
+                chatBox.translationY = 0f
+                novelBox.clipBounds = null
+                chatBox.clipBounds = null
 
-                // ChatBox is translated to the lower half, then its TOP half
-                // is clipped into that viewport. The old code clipped the
-                // bottom half of chatBox while it stayed at y=0, so the
-                // chatbot's internal header/WebView layout was cut incorrectly.
-                chatBox.translationY = half.toFloat()
-                chatBox.clipBounds = android.graphics.Rect(0, 0, w, half)
+                novelBox.layoutParams = FrameLayout.LayoutParams(
+                    MP, half
+                )
+
+                chatBox.layoutParams = FrameLayout.LayoutParams(
+                    MP, half
+                ).apply {
+                    topMargin = half
+                }
+
                 novelBox.bringToFront()
+                chatBox.bringToFront()
             }
         }
 
