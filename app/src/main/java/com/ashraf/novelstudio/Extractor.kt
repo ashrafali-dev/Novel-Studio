@@ -131,15 +131,23 @@ object Extractor {
             Regex("제\\s*(\\d+)\\s*화"),
             Regex("(\\d+)\\s*[화話话]")
         )
+        val isWebNovel = hostOf(url).contains("webnovel.com", ignoreCase = true)
         for (p in pats) {
             val m = p.find(title)
-            if (m != null) return m.groupValues[1]
+            if (m != null) {
+                val value = m.groupValues[1]
+                // WebNovel sometimes labels an opaque internal ID as a zero-padded
+                // chapter number (e.g. "Chapter 06730"). Do not show that as the
+                // human-facing chapter index.
+                if (isWebNovel && value.length >= 4 && value.startsWith("0")) return ""
+                return value
+            }
         }
+        // Never infer WebNovel's chapter number from a random number in the title
+        // or its opaque URL ID. Keep the progress card title-only when unknown.
+        if (isWebNovel) return ""
         val m2 = Regex("(\\d{1,5})").find(title)
         if (m2 != null) return m2.groupValues[1]
-        // WebNovel URLs end in an internal chapter ID, not the human-facing chapter number.
-        // Never display a fragment of that ID as "Chapter 06730".
-        if (hostOf(url).contains("webnovel.com", ignoreCase = true)) return ""
         val m3 = Regex("(\\d{1,5})(?!.*\\d)").find(pathOf(url))
         return if (m3 != null && m3.value.length <= 5) m3.value else ""
     }
