@@ -947,17 +947,28 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // point at the following-next link (skipping a chapter). Use its actual
     // chapter navigation group first, then label-based detection as fallback.
     if(isQidian){
+      // Do not use first/last-child here: Qidian's mobile nav can contain
+      // chapter +2 / volume links beside the true adjacent chapter link.
       try{
-        var qSel=kind==='next'?'.nav-btn-group a:last-child':'.nav-btn-group a:first-child';
-        var qa=pick(qSel);
-        if(qa&&qa.href){
-          var qu=new URL(qa.href,location.href),cu=new URL(location.href);
-          if(qu.origin===cu.origin&&qu.pathname.indexOf('/chapter/'+cu.pathname.split('/')[2]+'/')===0&&qu.pathname!==cu.pathname)e=qa;
-        }
+        var qLinks=Array.from(document.querySelectorAll('.nav-btn-group a[href],a[href]'));
+        var qRe=kind==='next'?/(下一章|下一节|下一話|下一话|下一回|next\\s*chapter)/i:
+          /(上一章|上一节|上一話|上一话|上一回|previous\\s*chapter|prev\\s*chapter)/i;
+        var cu=new URL(location.href),bestQ=null,bestScore=-1;
+        qLinks.forEach(function(a){
+          var label=((a.innerText||a.textContent||'')+' '+(a.getAttribute('aria-label')||'')+' '+(a.title||'')).replace(/\\s+/g,' ').trim();
+          if(!qRe.test(label))return;
+          var qu=new URL(a.href,location.href);
+          if(qu.origin!==cu.origin||qu.pathname===cu.pathname)return;
+          if(!/^\\/chapter\\/[^/]+\\/[^/]+\\/?$/i.test(qu.pathname))return;
+          var score=label.length<18?5:3;
+          if(a.closest('.nav-btn-group'))score+=4;
+          if(score>bestScore){bestScore=score;bestQ=a;}
+        });
+        if(bestQ)e=bestQ;
       }catch(x){}
       if(!e)e=byText(kind);
     }
-    if(!e)e=pick(sel);
+    if(!e&&!isQidian)e=pick(sel);
     if(!e&&!isN543&&!isQidian)e=byText(kind);
     if(!e){
       var q=kind==='next'
