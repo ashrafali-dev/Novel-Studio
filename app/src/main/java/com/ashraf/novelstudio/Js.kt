@@ -270,7 +270,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     try{
       var st=document.getElementById('__ns_font');
       if(!st){ st=document.createElement('style'); st.id='__ns_font'; (document.head||document.documentElement).appendChild(st); }
-      st.textContent="@font-face{font-family:'NSBn';src:url('https://ns.local/fonts/"+font+".ttf') format('truetype');font-display:swap;} .ns-translated-content,.ns-translated-content *{font-family:'NSBn',sans-serif!important;}";
+      st.textContent="@font-face{font-family:'NSBn';src:url('"+location.origin+"/__ns_font/"+font+".ttf') format('truetype');font-display:swap;} .ns-translated-content,.ns-translated-content *{font-family:'NSBn',sans-serif!important;}";
       fam="'NSBn',sans-serif";
     }catch(e){}
   }
