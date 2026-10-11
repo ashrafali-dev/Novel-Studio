@@ -86,6 +86,8 @@ class MainActivity : Activity() {
     private lateinit var novelWv: WebView
     private lateinit var chatWv: WebView
     private lateinit var activeWv: WebView
+    private val botWebViews = mutableMapOf<String, WebView>()
+    private var currentBotKey = ""
     private lateinit var urlBar: EditText
     private lateinit var tabCountBtn: TextView
     private lateinit var content: FrameLayout
@@ -662,7 +664,10 @@ class MainActivity : Activity() {
             novelWv.loadUrl(Prefs.get(this, "lastNovelUrl", "https://www.google.com/"))
         }
         val firstBot = bots().getJSONObject(0).getString("u")
-        chatWv.loadUrl(Prefs.get(this, "botUrl", firstBot))
+        val savedBot = Prefs.get(this, "botUrl", firstBot)
+        currentBotKey = botKey(savedBot)
+        botWebViews[currentBotKey] = chatWv
+        chatWv.loadUrl(savedBot)
         handleIntent(intent)
     }
 
@@ -714,7 +719,7 @@ class MainActivity : Activity() {
     private fun loginChatbot() {
         setMode(Mode.CHAT)
         val url = Prefs.get(this, "botUrl", bots().optJSONObject(0)?.optString("u", "https://chatgpt.com/") ?: "https://chatgpt.com/")
-        chatWv.loadUrl(url)
+        openBot(url)
         CookieManager.getInstance().flush()
         toast("🔐 Log in here; your session stays in the app")
     }
@@ -1504,8 +1509,31 @@ class MainActivity : Activity() {
         strip.addView(botChip("+", false, { addBotDialog() }, null))
     }
 
+    private fun botKey(u: String): String = Uri.parse(u).host?.lowercase() ?: u.trim().lowercase()
+
+    private fun configureBotWebView(wv: WebView) {
+        setup(wv)
+        wv.webViewClient = ChatClient()
+        wv.settings.setSupportMultipleWindows(true)
+        wv.settings.javaScriptCanOpenWindowsAutomatically = true
+        wv.webChromeClient = ChatChrome()
+        wv.setOnTouchListener { _, _ -> activeWv = wv; false }
+    }
+
+    private fun newBotWebView(): WebView = WebView(this).also { configureBotWebView(it) }
+
     private fun openBot(u: String) {
-        chatWv.loadUrl(u)
+        val key = botKey(u)
+        if (key == currentBotKey) return
+        val target = botWebViews[key] ?: newBotWebView().also { wv ->
+            botWebViews[key] = wv
+            wv.loadUrl(u)
+        }
+        if (chatWv.parent === chatBox) chatBox.removeView(chatWv)
+        chatBox.addView(target, 2, LinearLayout.LayoutParams(MP, 0, 1f))
+        chatWv = target
+        currentBotKey = key
+        if (mode == Mode.CHAT) activeWv = chatWv
         Prefs.put(this, "botUrl", u)
         buildStrip()
     }
@@ -3364,7 +3392,8 @@ markers preserved.
         modeTransitionBitmap = null
         modeTransitionHide = null
         novelWv.destroy()
-        chatWv.destroy()
+        botWebViews.values.toSet().forEach { wv -> try { wv.destroy() } catch (_: Exception) {} }
+        botWebViews.clear()
         super.onDestroy()
     }
 }
