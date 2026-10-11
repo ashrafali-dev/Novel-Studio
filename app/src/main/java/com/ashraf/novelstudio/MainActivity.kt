@@ -166,6 +166,7 @@ class MainActivity : Activity() {
     private var webNovelCatalogPending = false
     private var webNovelCatalogDir = ""
     private var webNovelCatalogTitle = ""
+    private var webNovelCatalogSourceUrl = ""
     private var webNovelCatalogOldHash = 0
     private var webNovelCatalogToken = 0
 
@@ -382,7 +383,8 @@ class MainActivity : Activity() {
                     if (prefetchCatalogPending) {
                         prefetchCatalogPending = false
                         val title = prefetchCatalogTitle
-                        prefetchWv.evaluateJavascript(Js.webNovelPickCatalog("next", title)) { raw ->
+                        val sourceUrl = prefetchSourceUrl
+                        prefetchWv.evaluateJavascript(Js.webNovelPickCatalog("next", title, sourceUrl)) { raw ->
                             if (!prefetchLoading || token != prefetchToken) return@evaluateJavascript
                             val target = decode(raw)
                             if (target.startsWith("http") && adjacentUrlIsSafe(prefetchSourceUrl, target)) {
@@ -1891,9 +1893,10 @@ class MainActivity : Activity() {
                 val tk = webNovelCatalogToken
                 val dir = webNovelCatalogDir
                 val title = webNovelCatalogTitle
+                val sourceUrl = webNovelCatalogSourceUrl
                 val oldHash = webNovelCatalogOldHash
                 webNovelCatalogPending = false
-                view.evaluateJavascript(Js.webNovelPickCatalog(dir, title)) { raw ->
+                view.evaluateJavascript(Js.webNovelPickCatalog(dir, title, sourceUrl)) { raw ->
                     if (tk != navToken) return@evaluateJavascript
                     val target = decode(raw)
                     if (target.startsWith("http")) {
@@ -2510,6 +2513,7 @@ class MainActivity : Activity() {
             webNovelCatalogPending = true
             webNovelCatalogDir = dir
             webNovelCatalogTitle = base.title
+            webNovelCatalogSourceUrl = base.url
             webNovelCatalogOldHash = bodyHash(base)
             webNovelCatalogToken = token
             novelWv.loadUrl(catalogUrl)
@@ -2802,13 +2806,22 @@ class MainActivity : Activity() {
     // Internal paragraph markers: used only during AI translation to keep
     // source paragraph -> translated paragraph alignment stable. They are stripped
     // before saving/copying the final Bengali text.
-    private fun addInternalMarkers(text: String): String {
-        val blocks = text.split(Regex("\\n\\s*\\n"))
+    private fun addInternalMarkers(text: String, splitSingleLines: Boolean = false): String {
+        var blocks = text.split(Regex("\\n\\s*\\n"))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
+        // Some WTR-LAB/fallback DOM paths flatten rendered .wtr-line elements
+        // to single newlines. If paragraph separators were lost, recover those
+        // line boundaries instead of assigning one marker to the whole chapter.
+        if (splitSingleLines && blocks.size <= 1) {
+            val lines = text.split(Regex("\\n+"))
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (lines.size > 1) blocks = lines
+        }
         return blocks.mapIndexed { i, block ->
             "[${(i + 1).toString().padStart(3, '0')}] $block"
-        }.joinToString("\n\n")
+        }.joinToString("\\n\\n")
     }
 
     private fun stripInternalMarkers(text: String): String =
@@ -2920,7 +2933,9 @@ class MainActivity : Activity() {
     private fun sendJob(tok: Int, ch: Chapter) {
         // Keep paragraph identity inside the AI request. These markers never reach
         // the novel page and are removed from the final saved/clipboard translation.
-        val marked = addInternalMarkers(ch.text)
+        val host = Uri.parse(ch.url).host?.lowercase().orEmpty()
+        val isWtrLab = host == "wtr-lab.com" || host.endsWith(".wtr-lab.com")
+        val marked = addInternalMarkers(ch.text, splitSingleLines = isWtrLab)
         jobMarkers = Regex("(?m)^\\[\\d{3,}\\] ").findAll(marked).count()
         val markerInstruction = """
 [Internal paragraph markers]
