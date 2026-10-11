@@ -442,8 +442,6 @@ class MainActivity : Activity() {
             setOnLongClickListener { newBrowserTab("https://www.google.com/"); true }
         }
 
-        val menuTopBtn = iconButton(Ic.GRID, "Menu", 22, 40, UiTheme.iconIdle) { menu() }
-
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -452,7 +450,6 @@ class MainActivity : Activity() {
             elevation = dp(8).toFloat()
             addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
             addView(addressBox)
-            addView(menuTopBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
         }
         val topWrap = FrameLayout(this).apply {
             setPadding(dp(10), dp(8), dp(10), dp(4))
@@ -606,7 +603,7 @@ class MainActivity : Activity() {
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
             addView(extractBtn, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
             addView(dockBtn(Ic.FORWARD, "Next chapter") { step("next") })
-            addView(dockBtn(Ic.SAVE, "Save answer") { saveAnswer() })
+            addView(dockBtn(Ic.GRID, "Menu") { menu() })
         }
         val dockWrap = FrameLayout(this).apply {
             setPadding(dp(14), dp(6), dp(14), dp(12))
