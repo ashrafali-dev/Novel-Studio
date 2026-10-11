@@ -3038,7 +3038,7 @@ markers preserved.
                 if (retry) {   // some sites re-render the content a moment later — put it back once
                     handler.postDelayed({
                         if (shownTranslated && lastChapter === ch) {
-                            novelWv.evaluateJavascript(Js.stillApplied(sel)) { s ->
+                            novelWv.evaluateJavascript(Js.stillApplied(sel, pageKey(ch.url))) { s ->
                                 if (lastChapter === ch && s != null && s.contains("lost")) {
                                     applyTranslation(ch, text, false)
                                 }
