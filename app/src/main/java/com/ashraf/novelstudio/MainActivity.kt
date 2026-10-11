@@ -384,17 +384,24 @@ class MainActivity : Activity() {
                         prefetchCatalogPending = false
                         val title = prefetchCatalogTitle
                         val sourceUrl = prefetchSourceUrl
-                        prefetchWv.evaluateJavascript(Js.webNovelPickCatalog("next", title, sourceUrl)) { raw ->
-                            if (!prefetchLoading || token != prefetchToken) return@evaluateJavascript
-                            val target = decode(raw)
-                            if (target.startsWith("http") && adjacentUrlIsSafe(prefetchSourceUrl, target)) {
-                                prefetchTarget = target
-                                prefetchWv.loadUrl(target)
-                            } else {
-                                prefetchLoading = false
-                                prefetchTarget = ""
+                        // The catalogue list is drawn by JS AFTER onPageFinished, so retry for a while.
+                        fun pickAttempt(attempt: Int) {
+                            if (!prefetchLoading || token != prefetchToken) return
+                            prefetchWv.evaluateJavascript(Js.webNovelPickCatalog("next", title, sourceUrl)) { raw ->
+                                if (!prefetchLoading || token != prefetchToken) return@evaluateJavascript
+                                val target = decode(raw)
+                                if (target.startsWith("http") && adjacentUrlIsSafe(prefetchSourceUrl, target)) {
+                                    prefetchTarget = target
+                                    prefetchWv.loadUrl(target)
+                                } else if (attempt < 10) {
+                                    handler.postDelayed({ pickAttempt(attempt + 1) }, 800L)
+                                } else {
+                                    prefetchLoading = false
+                                    prefetchTarget = ""
+                                }
                             }
                         }
+                        handler.postDelayed({ pickAttempt(0) }, 600L)
                         return
                     }
                     fun readAttempt(attempt: Int) {
@@ -402,8 +409,11 @@ class MainActivity : Activity() {
                         prefetchExtractNow { next ->
                             if (!prefetchLoading || token != prefetchToken) return@prefetchExtractNow
                             if (next == null || next.text.length < 80) {
-                                if (attempt < 4) {
-                                    handler.postDelayed({ readAttempt(attempt + 1) }, 350L)
+                                if (attempt < 14) {
+                                    // SPA readers fetch the chapter text after load; scroll a little to wake lazy loaders.
+                                    prefetchWv.evaluateJavascript(
+                                        "try{window.scrollTo(0,Math.min(document.body.scrollHeight,900))}catch(e){}", null)
+                                    handler.postDelayed({ readAttempt(attempt + 1) }, 900L)
                                 } else {
                                     prefetchLoading = false
                                     prefetchTarget = ""
@@ -660,10 +670,13 @@ class MainActivity : Activity() {
                     outline.setRoundRect(0, 0, view.width, view.height, dp(20).toFloat())
                 }
             }
+            // Off-screen reader for prefetch: a real-size view UNDER the visible pages. A 1x1
+            // WebView never triggers the lazy/IntersectionObserver rendering that WTR-LAB
+            // and WebNovel use, so their chapter text never appeared.
+            addView(prefetchWv, 0, FrameLayout.LayoutParams(MP, MP))
             addView(novelBox, FrameLayout.LayoutParams(MP, MP))
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
-            addView(prefetchWv, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
@@ -2817,12 +2830,36 @@ class MainActivity : Activity() {
         var blocks = text.split(Regex("\\n\\s*\\n"))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-        // fastExtract joins WTR-LAB's real text blocks with blank lines. Do not
-        // split a flattened string at every single newline: those can be visual
-        // line wraps, not source paragraphs. Preserve paragraph boundaries.
+        // Normal case: the extractor joined the real text blocks with blank lines.
+        // Some readers (WTR-LAB in particular) can hand over the whole chapter as ONE
+        // block whose paragraphs are separated by single newlines only. Then every
+        // line is a paragraph; otherwise the model gets a single [001] marker and the
+        // whole translation lands as one wall of text.
+        if (blocks.size <= 2) {
+            val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.size >= 6) blocks = lines
+        }
+        // Last resort: one huge line with no newlines at all. Cut it at sentence ends
+        // so the translation still comes back as readable paragraphs.
+        if (blocks.size == 1 && blocks[0].length > 800) blocks = chunkBySentences(blocks[0])
         return blocks.mapIndexed { i, block ->
             "[${(i + 1).toString().padStart(3, '0')}] $block"
         }.joinToString("\n\n")
+    }
+
+    private fun chunkBySentences(t: String, target: Int = 280): List<String> {
+        val ends = "。！？!?…」』”"
+        val out = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (c in t) {
+            sb.append(c)
+            if (sb.length >= target && ends.indexOf(c) >= 0) {
+                out.add(sb.toString().trim())
+                sb.setLength(0)
+            }
+        }
+        if (sb.isNotBlank()) out.add(sb.toString().trim())
+        return out.filter { it.isNotEmpty() }
     }
 
     private fun stripInternalMarkers(text: String): String =
@@ -2830,17 +2867,30 @@ class MainActivity : Activity() {
 
     private fun splitInternalMarkedTranslation(text: String): List<String> {
         // Models sometimes keep [001][002] markers on the same physical line.
-        // Split on the marker itself, not only on a line-start marker. This keeps
-        // WTR-LAB's original paragraph alignment even when the model flattens newlines.
+        // Split on the marker itself, not only on a line-start marker.
         val marker = Regex("\\[\\d{3,}\\]\\s*")
-        if (!marker.containsMatchIn(text)) {
-            return text.split(Regex("\\n\\s*\\n"))
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
+        val parts = if (marker.containsMatchIn(text)) {
+            marker.split(text).map { it.trim() }.filter { it.isNotEmpty() }
+        } else {
+            text.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
         }
-        return marker.split(text)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
+        if (parts.size > 1) return parts
+        // Only ONE block came back (markers lost / flattened by the chatbot): rebuild paragraphs
+        // from its single newlines, or from sentence ends, instead of one wall of text.
+        val one = parts.firstOrNull() ?: return parts
+        val lines = one.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.size >= 3) return lines
+        if (one.length > 500) {
+            val out = mutableListOf<String>()
+            val sb = StringBuilder()
+            for (c in one) {
+                sb.append(c)
+                if (sb.length >= 220 && "।!?”\u2026".indexOf(c) >= 0) { out.add(sb.toString().trim()); sb.setLength(0) }
+            }
+            if (sb.isNotBlank()) out.add(sb.toString().trim())
+            if (out.size > 1) return out
+        }
+        return parts
     }
 
     private fun copyChapter(ch: Chapter) {
@@ -2980,7 +3030,7 @@ markers preserved.
 
     private fun pollJob(
         tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long,
-        lastLen: Int, stable: Int, sawStream: Boolean = false
+        lastLen: Int, stable: Int, sawStream: Boolean = false, firstLen: Int = -1
     ) {
         handler.postDelayed({
             if (tok != runToken) return@postDelayed
@@ -2995,6 +3045,11 @@ markers preserved.
                 val uiDone = parts.getOrNull(6) == "1"
                 val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
+                // Some chat pages (Claude) already report the echoed prompt as "reply text"
+                // the moment the message is sent. Judge progress by how much the reply has
+                // GROWN since the first reading, never by its absolute length.
+                val baseLen0 = if (firstLen >= 0) firstLen else if (got) effLen else -1
+                val grown = if (baseLen0 >= 0) (effLen - baseLen0).coerceAtLeast(0) else 0
                 val total = jobMarkers
                 val allMarkers = got && total > 0 && found >= total
                 // Marker progress is linear: each translated paragraph advances the bar.
@@ -3002,8 +3057,8 @@ markers preserved.
                 val pct = when {
                     !got -> 3
                     total > 0 -> if (found > 0) (found * 100 / total).coerceIn(3, 94)
-                        else minOf(90, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
-                    else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
+                        else minOf(90, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
+                    else -> minOf(95, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
                 // A stream that grows by 1–2 characters is still changing, not stable.
                 // Require an exactly unchanged reply length before calling it complete.
@@ -3034,7 +3089,7 @@ markers preserved.
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
-                    else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming)
+                    else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming, baseLen0)
                 }
             }
         }, 500)
@@ -3106,6 +3161,7 @@ markers preserved.
         // Never write an old chapter's translation into the current page.
         if (lastChapter !== ch) return
 
+        injectBengaliFont()
         novelWv.evaluateJavascript(
             Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
         ) { r ->
@@ -3128,6 +3184,28 @@ markers preserved.
             } else {
                 toast("⚠️ Could not insert the translation; it is saved in the library")
             }
+        }
+    }
+
+    // WebNovel's CSP / service worker can block the @font-face url (same reason the font
+    // "does not apply" there). A FontFace built from raw bytes is not fetched, so neither applies.
+    private val fontB64 = mutableMapOf<String, String>()
+    private fun injectBengaliFont() {
+        val name = Prefs.fontFile(this)
+        if (name.isEmpty()) return
+        val b64 = fontB64.getOrPut(name) {
+            try {
+                android.util.Base64.encodeToString(
+                    assets.open("fonts/$name.ttf").use { it.readBytes() }, android.util.Base64.NO_WRAP)
+            } catch (_: Exception) { "" }
+        }
+        if (b64.isEmpty()) return
+        val js = "(function(n,b){try{if(window.__nsFontName===n)return 'have';var s=atob(b),l=s.length,u=new Uint8Array(l);" +
+            "for(var i=0;i<l;i++)u[i]=s.charCodeAt(i);var f=new FontFace('NSBn',u.buffer);" +
+            "f.load().then(function(){document.fonts.add(f);window.__nsFontName=n;}).catch(function(){});return 'ok';}" +
+            "catch(e){return 'err';}})('" + name + "','" + b64 + "')"
+        novelWv.evaluateJavascript("(window.__nsFontName||'')") { cur ->
+            if (cur == null || !cur.contains(name)) novelWv.evaluateJavascript(js, null)
         }
     }
 
