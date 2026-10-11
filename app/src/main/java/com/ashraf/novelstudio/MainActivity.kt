@@ -2339,6 +2339,9 @@ class MainActivity : Activity() {
         if (!keepRunning) {
             chatWv.evaluateJavascript(Js.stop(), null)
             chatWv.evaluateJavascript(Js.clearBox(), null)
+            // If Prefetch had already prepared another page, resume it after
+            // cancelling the visible chapter's work.
+            if (running == null && queue.isNotEmpty()) startNext()
         }
 
         if (clearNovelDom) {
