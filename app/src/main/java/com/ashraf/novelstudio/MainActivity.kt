@@ -86,6 +86,12 @@ class MainActivity : Activity() {
     private lateinit var novelWv: WebView
     private lateinit var chatWv: WebView
     private lateinit var activeWv: WebView
+    // Isolated, off-screen reader used only for optional next-chapter prefetch.
+    private lateinit var prefetchWv: WebView
+    private var prefetchTarget = ""
+    private var prefetchToken = 0
+    private var prefetchLoading = false
+    private val prefetchKeys = mutableSetOf<String>()
     private val botWebViews = mutableMapOf<String, WebView>()
     private var currentBotKey = ""
     private lateinit var urlBar: EditText
@@ -356,6 +362,43 @@ class MainActivity : Activity() {
         chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
         chatWv.webChromeClient = ChatChrome()
         activeWv = novelWv
+        prefetchWv = WebView(this).apply {
+            setup(this)
+            alpha = 0.01f
+            isClickable = false
+            isFocusable = false
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (!prefetchLoading || url.isNullOrBlank()) return
+                    val token = prefetchToken
+                    fun readAttempt(attempt: Int) {
+                        if (!prefetchLoading || token != prefetchToken) return
+                        prefetchExtractNow { next ->
+                            if (!prefetchLoading || token != prefetchToken) return@prefetchExtractNow
+                            if (next == null || next.text.length < 80) {
+                                if (attempt < 4) {
+                                    handler.postDelayed({ readAttempt(attempt + 1) }, 350L)
+                                } else {
+                                    prefetchLoading = false
+                                    prefetchTarget = ""
+                                }
+                                return@prefetchExtractNow
+                            }
+                            prefetchLoading = false
+                            prefetchTarget = ""
+                            val current = lastChapter
+                            if (current != null && keyOf(next) == keyOf(current)) return@prefetchExtractNow
+                            if (Store.find(this@MainActivity, next) != null) return@prefetchExtractNow
+                            if (prefetchKeys.add(keyOf(next))) {
+                                enqueue(next)
+                            }
+                        }
+                    }
+                    handler.postDelayed({ readAttempt(0) }, 650L)
+                }
+            }
+        }
         var pullDownStartY = 0f
         var pullDownStartX = 0f
         novelWv.setOnTouchListener { view, event ->
@@ -593,6 +636,7 @@ class MainActivity : Activity() {
             addView(novelBox, FrameLayout.LayoutParams(MP, MP))
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
+            addView(prefetchWv, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
@@ -2403,7 +2447,75 @@ class MainActivity : Activity() {
 
     private fun handleChapter(ch: Chapter) {
         onChapter(ch)
+        if (Prefs.bool(this, "prefetchNextChapter")) {
+            val saved = Store.find(this, ch)
+            if (saved != null) {
+                val translated = Store.read(this, saved.id)
+                if (translated.length >= 30) {
+                    applyTranslation(ch, translated, true)
+                    schedulePrefetch(ch)
+                    return
+                }
+            }
+        }
         if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
+        schedulePrefetch(ch)
+    }
+
+    private fun schedulePrefetch(ch: Chapter) {
+        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        val target = ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) } ?: return
+        if (prefetchLoading && cleanUrl(prefetchTarget) == cleanUrl(target)) return
+        prefetchToken++
+        val token = prefetchToken
+        prefetchTarget = target
+        prefetchLoading = true
+        prefetchWv.stopLoading()
+        prefetchWv.loadUrl(target)
+        handler.postDelayed({
+            if (prefetchLoading && token == prefetchToken) {
+                prefetchLoading = false
+                prefetchTarget = ""
+                try { prefetchWv.stopLoading() } catch (_: Exception) {}
+            }
+        }, 30000L)
+    }
+
+    private fun menuPrefetchLabel(): String =
+        (if (Prefs.bool(this, "prefetchNextChapter")) "✅" else "⬜") +
+            " ⚡ Prefetch next chapter in background"
+
+    /**
+     * Dedicated prefetch extractor. Intentionally reads ONLY prefetchWv.
+     * Do not route this through extractNow(), whose source is the visible novelWv.
+     */
+    private fun prefetchExtractNow(cb: (Chapter?) -> Unit) {
+        val url = prefetchWv.url ?: prefetchTarget
+        if (url.isBlank()) { cb(null); return }
+        val host = Uri.parse(url).host?.lowercase().orEmpty()
+        val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
+        val contentSel = if (isNovel543) ".chapter-content" else SiteProfiles.selector(this, url, "content")
+        val titleSel = SiteProfiles.selector(this, url, "title").ifBlank { if (isNovel543) "h1" else "" }
+        val nextSel = SiteProfiles.selector(this, url, "next").ifBlank {
+            if (isNovel543) ".warp:nth-child(2) > a:nth-child(5)" else ""
+        }
+        val prevSel = SiteProfiles.selector(this, url, "prev").ifBlank {
+            if (isNovel543) ".warp:nth-child(2) > a:nth-child(1)" else ""
+        }
+        prefetchWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
+            val html = decode(raw)
+            if (html.isBlank()) { cb(null); return@evaluateJavascript }
+            Thread {
+                val chapter = try {
+                    val doc = Jsoup.parse(html, url)
+                    Extractor.extract(doc, url, contentSel, titleSel, nextSel, prevSel)
+                } catch (_: Exception) { null }
+                runOnUiThread {
+                    if (chapter != null) SiteProfiles.remember(this@MainActivity, chapter)
+                    cb(chapter)
+                }
+            }.start()
+        }
     }
 
     // ================================================================== copy mode (⚡ off)
@@ -2924,7 +3036,7 @@ markers preserved.
             "🔄 Update Ad Block Lists", "🔄 Reload Novel Page", "🔄 Reload Chatbot",
             menuGlossaryLabel(), menuFontLabel(), "🌐 Site Settings",
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
-            "🔍 Inspect Chatbot (Copy Report)"
+            "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -2935,7 +3047,7 @@ markers preserved.
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24)
         )
@@ -2996,6 +3108,20 @@ markers preserved.
                     if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
+                26 -> {
+                    val enabled = !Prefs.bool(this, "prefetchNextChapter")
+                    Prefs.putBool(this, "prefetchNextChapter", enabled)
+                    if (enabled) {
+                        lastChapter?.let { schedulePrefetch(it) }
+                    } else {
+                        prefetchToken++
+                        prefetchLoading = false
+                        prefetchTarget = ""
+                        prefetchKeys.clear()
+                        try { prefetchWv.stopLoading() } catch (_: Exception) {}
+                    }
+                    refresh(i, menuPrefetchLabel())
+                }
             }
         }
 
@@ -3458,6 +3584,7 @@ markers preserved.
         modeTransitionBitmap = null
         modeTransitionHide = null
         novelWv.destroy()
+        try { prefetchWv.destroy() } catch (_: Exception) {}
         botWebViews.values.toSet().forEach { wv -> try { wv.destroy() } catch (_: Exception) {} }
         botWebViews.clear()
         super.onDestroy()
