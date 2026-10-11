@@ -1972,7 +1972,7 @@ class MainActivity : Activity() {
                             extractNow(view, attempt + 1, cb)
                         }, 120L)
                     } else if (isNovel543) {
-                        extractWebNovelNow(cb)
+                        extractWebNovelNow(view, cb)
                     } else {
                         cb(null)
                     }
