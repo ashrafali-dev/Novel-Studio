@@ -1313,24 +1313,40 @@ class MainActivity : Activity() {
         val h = content.height
         if (w <= 0 || h <= 0) return
 
+        // Keep both WebViews full-size so switching modes does not resize a live
+        // WebView surface (which can cause a one-frame black flash). In split
+        // mode, clip each container to one half of the content.
         novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
         chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
 
         when (mode) {
             Mode.NOVEL -> {
+                novelBox.translationY = 0f
+                chatBox.translationY = 0f
                 novelBox.clipBounds = null
                 chatBox.clipBounds = android.graphics.Rect(0, 0, w, 0)
                 novelBox.bringToFront()
             }
             Mode.CHAT -> {
+                novelBox.translationY = 0f
+                chatBox.translationY = 0f
                 novelBox.clipBounds = android.graphics.Rect(0, 0, w, 0)
                 chatBox.clipBounds = null
                 chatBox.bringToFront()
             }
             Mode.SPLIT -> {
                 val half = h / 2
+
+                // Novel occupies the upper half.
+                novelBox.translationY = 0f
                 novelBox.clipBounds = android.graphics.Rect(0, 0, w, half)
-                chatBox.clipBounds = android.graphics.Rect(0, half, w, h)
+
+                // ChatBox is translated to the lower half, then its TOP half
+                // is clipped into that viewport. The old code clipped the
+                // bottom half of chatBox while it stayed at y=0, so the
+                // chatbot's internal header/WebView layout was cut incorrectly.
+                chatBox.translationY = half.toFloat()
+                chatBox.clipBounds = android.graphics.Rect(0, 0, w, half)
                 novelBox.bringToFront()
             }
         }
