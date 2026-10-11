@@ -137,6 +137,9 @@ object Extractor {
         }
         val m2 = Regex("(\\d{1,5})").find(title)
         if (m2 != null) return m2.groupValues[1]
+        // WebNovel URLs end in an internal chapter ID, not the human-facing chapter number.
+        // Never display a fragment of that ID as "Chapter 06730".
+        if (hostOf(url).contains("webnovel.com", ignoreCase = true)) return ""
         val m3 = Regex("(\\d{1,5})(?!.*\\d)").find(pathOf(url))
         return if (m3 != null && m3.value.length <= 5) m3.value else ""
     }
