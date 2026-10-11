@@ -17,6 +17,27 @@ data class HistoryEntry(val url: String, val title: String, val time: Long)
 
 object Store {
     // ---------- offline library (saved translations) ----------
+    // Exact source-page identity. Novel543 can split one logical chapter
+    // across /..._<chapter>.html, /..._<chapter>_2.html, etc.
+    // Translation lookup must never confuse those pages.
+    private fun pageKey(url: String): String {
+        return try {
+            val u = Uri.parse(url)
+            val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
+            if (host == "novel543.com" || host.endsWith(".novel543.com")) {
+                val book = u.pathSegments.firstOrNull().orEmpty()
+                val file = u.pathSegments.getOrNull(1).orEmpty()
+                val m = Regex("^(\\d+)_(\\d+)(?:_(\\d+))?\\.html?$").find(file)
+                if (book.matches(Regex("\\d{7,}")) && m != null) {
+                    val part = m.groupValues.getOrNull(3).orEmpty().ifBlank { "1" }
+                    return host + "/" + book + "/" + m.groupValues[1] + "_" + m.groupValues[2] + ":part" + part
+                }
+            }
+            url.substringBefore("#").trimEnd('/')
+        } catch (_: Exception) { url.substringBefore("#").trimEnd('/') }
+    }
+
+
     private fun idx(c: Context) = File(c.filesDir, "translations.json")
     private fun dir(c: Context): File { val d = File(c.filesDir, "tr"); d.mkdirs(); return d }
 
@@ -81,8 +102,15 @@ object Store {
         val normTitle = title.trim().lowercase().replace(Regex("\\s+"), " ")
         // Same-URL readers (notably WebNovel) use one reader URL for many
         // chapters. Number/title identity must therefore win over URL identity.
+        // Exact page identity wins. A split chapter must have one saved
+        // translation per source page, even when the detected chapter number/title
+        // is identical across all parts.
+        val exactPage = if (url.isNotEmpty()) pageKey(url) else ""
+        val exactPageMatch = if (exactPage.isNotEmpty()) {
+            items.firstOrNull { pageKey(it.url) == exactPage }
+        } else null
         val bk = bookKey(url)
-        val sameBookMatch = if (bk.isNotEmpty()) {
+        val sameBookMatch = if (exactPageMatch == null && bk.isNotEmpty()) {
             items.firstOrNull {
                 number.isNotEmpty() && it.number == number && bookKey(it.url) == bk
             } ?: items.firstOrNull {
@@ -90,7 +118,7 @@ object Store {
                     it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
             }
         } else null
-        val existing = sameBookMatch ?: items.firstOrNull {
+        val existing = exactPageMatch ?: sameBookMatch ?: items.firstOrNull {
             // Without a stable book ID, only exact URL + title is safe.
             url.isNotEmpty() && it.url == url &&
                 (normTitle.isEmpty() || it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
@@ -109,8 +137,15 @@ object Store {
         val raw = ch.novel.ifBlank { "Unknown" }
         val novel = Prefs.get(c, "alias_$raw", raw)
         val normTitle = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
-        val bk = bookKey(ch.url)
         val items = list(c)
+        // Exact source page identity is the first and safest lookup.
+        val exactPage = if (ch.url.isNotEmpty()) pageKey(ch.url) else ""
+        val exactPageMatch = if (exactPage.isNotEmpty()) {
+            items.firstOrNull { pageKey(it.url) == exactPage }
+        } else null
+        if (exactPageMatch != null) return exactPageMatch
+
+        val bk = bookKey(ch.url)
         val sameBookMatch = if (bk.isNotEmpty()) {
             items.firstOrNull {
                 ch.number.isNotEmpty() && it.number == ch.number && bookKey(it.url) == bk
