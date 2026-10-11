@@ -2604,7 +2604,7 @@ class MainActivity : Activity() {
                 toast("ℹ️ No saved translation found for this chapter")
                 return
             }
-            markPrefetchedTranslationActive(ch, saved)
+            saved?.let { markPrefetchedTranslationActive(ch, it) }
             autoCopy = false
             polling = false
             applyTranslation(ch, translated, true)
