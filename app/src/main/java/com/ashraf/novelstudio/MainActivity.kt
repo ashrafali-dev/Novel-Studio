@@ -2671,7 +2671,20 @@ class MainActivity : Activity() {
     }
     private fun schedulePrefetch(ch: Chapter) {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
-        val directTarget = ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
+        val parsedCurrent = Uri.parse(ch.url)
+        val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
+        val inferredWtrNext = if (hostCurrent == "wtr-lab.com" || hostCurrent.endsWith(".wtr-lab.com")) {
+            try {
+                val path = parsedCurrent.path.orEmpty()
+                val m = Regex("^(.*?/chapter-)(\\d+)/?$", RegexOption.IGNORE_CASE).find(path)
+                if (m != null) {
+                    val nextPath = m.groupValues[1] + (m.groupValues[2].toLong() + 1L)
+                    parsedCurrent.buildUpon().path(nextPath).build().toString()
+                } else null
+            } catch (_: Exception) { null }
+        } else null
+        val directTarget = (ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
+            ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) })
         val target: String
         val useCatalog: Boolean
         if (directTarget != null) {
@@ -2729,19 +2742,59 @@ class MainActivity : Activity() {
         val prevSel = SiteProfiles.selector(this, url, "prev").ifBlank {
             if (isNovel543) ".warp:nth-child(2) > a:nth-child(1)" else ""
         }
-        prefetchWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
-            val html = decode(raw)
-            if (html.isBlank()) { cb(null); return@evaluateJavascript }
-            Thread {
-                val chapter = try {
-                    val doc = Jsoup.parse(html, url)
-                    Extractor.extract(doc, url, contentSel, titleSel, nextSel, prevSel)
-                } catch (_: Exception) { null }
-                runOnUiThread {
-                    if (chapter != null) SiteProfiles.remember(this@MainActivity, chapter)
+
+        // IMPORTANT: background prefetch must use the same rendered-DOM extractor
+        // as the visible reader. The old Jsoup-only path picked WTR-LAB's shared
+        // reader shell and accidentally included TOC/progress/navigation text.
+        prefetchWv.evaluateJavascript(Js.fastExtract(contentSel, titleSel, nextSel, prevSel)) { raw ->
+            val payload = decode(raw)
+            try {
+                val o = JSONObject(payload)
+                val title = o.optString("title", "").trim()
+                val body = o.optString("text", "").trim()
+                val count = o.optInt("count", 0)
+                if (o.optBoolean("ok", false) && body.length >= 80 && count > 0 &&
+                    !(title.isNotBlank() && body == title)) {
+                    val full = if (title.isNotBlank() && !body.startsWith(title)) "$title\n\n$body" else body
+                    val number = Regex(
+                        "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
+                        RegexOption.IGNORE_CASE
+                    ).find(title)?.groupValues?.getOrNull(1)
+                        ?: Regex("(\\d{1,5})").find(title)?.value.orEmpty()
+                    val chapter = Chapter(
+                        title.ifBlank { o.optString("pageTitle", "").trim() },
+                        full,
+                        o.optJSONObject("next")?.optString("href", "")?.takeIf { it.isNotBlank() },
+                        o.optJSONObject("prev")?.optString("href", "")?.takeIf { it.isNotBlank() },
+                        url,
+                        o.optString("novel", "").trim().ifBlank { host.removePrefix("www.") },
+                        number,
+                        o.optString("contentSel", ""),
+                        o.optString("titleSel", ""),
+                        o.optJSONObject("next")?.optString("selector", "").orEmpty(),
+                        o.optJSONObject("prev")?.optString("selector", "").orEmpty()
+                    )
+                    SiteProfiles.remember(this@MainActivity, chapter)
                     cb(chapter)
+                    return@evaluateJavascript
                 }
-            }.start()
+            } catch (_: Exception) { /* use bounded HTML fallback below */ }
+
+            // Fallback only when rendered-DOM extraction genuinely fails.
+            prefetchWv.evaluateJavascript("document.documentElement.outerHTML") { htmlRaw ->
+                val html = decode(htmlRaw)
+                if (html.isBlank()) { cb(null); return@evaluateJavascript }
+                Thread {
+                    val chapter = try {
+                        val doc = Jsoup.parse(html, url)
+                        Extractor.extract(doc, url, contentSel, titleSel, nextSel, prevSel)
+                    } catch (_: Exception) { null }
+                    runOnUiThread {
+                        if (chapter != null) SiteProfiles.remember(this@MainActivity, chapter)
+                        cb(chapter)
+                    }
+                }.start()
+            }
         }
     }
 
