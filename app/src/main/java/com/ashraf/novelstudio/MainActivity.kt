@@ -78,6 +78,8 @@ class MainActivity : Activity() {
     private enum class Mode { NOVEL, CHAT, SPLIT }
 
     private val MAX_RETAINED_TAB_STATES = 2
+    // Thumbnails are only UI previews. Never keep every tab preview decoded in RAM.
+    private val MAX_RETAINED_TAB_THUMBNAILS = 4
     private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     private val MP = ViewGroup.LayoutParams.MATCH_PARENT
     private val WC = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -723,10 +725,26 @@ class MainActivity : Activity() {
         if (tab.thumbnail != null && !tab.thumbnail!!.isRecycled) return
         try {
             val f = tabThumbFile(tab)
-            if (f.exists()) tab.thumbnail = BitmapFactory.decodeFile(f.absolutePath)
+            if (!f.exists()) return
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.absolutePath, opts)
+            var sample = 1
+            while (opts.outWidth / sample > dp(640) || opts.outHeight / sample > dp(420)) sample *= 2
+            val decode = BitmapFactory.Options().apply {
+                inSampleSize = sample.coerceAtLeast(1)
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            tab.thumbnail = BitmapFactory.decodeFile(f.absolutePath, decode)
         } catch (_: Exception) {}
     }
 
+    private fun releaseTabThumbnailsExcept(keepIndex: Int = -1) {
+        browserTabs.forEachIndexed { i, tab ->
+            if (i == keepIndex) return@forEachIndexed
+            try { tab.thumbnail?.let { if (!it.isRecycled) it.recycle() } } catch (_: Exception) {}
+            tab.thumbnail = null
+        }
+    }
     private fun initBrowserTabs() {
         browserTabs.clear()
         val raw = Prefs.get(this, "browserTabs", "")
@@ -737,7 +755,7 @@ class MainActivity : Activity() {
             if (u.isNotBlank()) {
                 val id = o.optString("id", "").ifBlank { UUID.randomUUID().toString() }
                 val tab = BrowserTab(o.optString("label", "New Tab"), u, id = id)
-                loadTabThumbnail(tab)
+                // Thumbnail PNGs are loaded lazily only when the tab grid is opened.
                 browserTabs.add(tab)
             }
         }
@@ -1208,6 +1226,7 @@ class MainActivity : Activity() {
         })
 
         dialog = Sheets.create(this, root, fullScreen = true, bottom = false, dim = 0f)
+        dialog.setOnDismissListener { releaseTabThumbnailsExcept(activeTabIndex) }
         dialog.setOnShowListener {
             root.alpha = 0f
             root.animate().alpha(1f).setDuration(180).start()
