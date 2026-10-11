@@ -46,15 +46,28 @@ object Store {
     fun chapters(c: Context, novel: String): List<Tr> =
         list(c).filter { it.novel == novel }.sortedWith(compareBy<Tr>({ it.sortKey }, { it.id }))
 
+    // Stable source-book identity. Chapter number alone must never match across stories.
     private fun bookKey(url: String): String {
         return try {
             val u = Uri.parse(url)
             val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
             val parts = u.pathSegments
-            val i = parts.indexOfFirst { it.equals("book", true) }
-            if (host.endsWith("webnovel.com") && i >= 0 && parts.size > i + 1)
-                host + "/book/" + parts[i + 1].lowercase()
-            else ""
+            when {
+                host.endsWith("webnovel.com") -> {
+                    val i = parts.indexOfFirst { it.equals("book", true) }
+                    if (i >= 0 && parts.size > i + 1) host + "/book/" + parts[i + 1].lowercase() else ""
+                }
+                host == "novel543.com" || host.endsWith(".novel543.com") -> {
+                    val id = parts.firstOrNull().orEmpty()
+                    if (id.matches(Regex("\\d{7,}"))) host + "/" + id else ""
+                }
+                else -> {
+                    val markers = setOf("novel", "book", "series", "story", "fiction")
+                    val i = parts.indexOfFirst { it.lowercase() in markers }
+                    if (i >= 0 && parts.size > i + 1 && parts[i + 1].isNotBlank())
+                        host + "/" + parts[i].lowercase() + "/" + parts[i + 1].lowercase() else ""
+                }
+            }
         } catch (_: Exception) { "" }
     }
 
@@ -69,12 +82,16 @@ object Store {
         // Same-URL readers (notably WebNovel) use one reader URL for many
         // chapters. Number/title identity must therefore win over URL identity.
         val bk = bookKey(url)
-        val existing = items.firstOrNull {
-            (number.isNotEmpty() && it.novel == novel && it.number == number) ||
-            (number.isNotEmpty() && bk.isNotEmpty() && it.number == number && bookKey(it.url) == bk) ||
-            (normTitle.isNotEmpty() && it.novel == novel &&
-                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
-        } ?: items.firstOrNull {
+        val sameBookMatch = if (bk.isNotEmpty()) {
+            items.firstOrNull {
+                number.isNotEmpty() && it.number == number && bookKey(it.url) == bk
+            } ?: items.firstOrNull {
+                normTitle.isNotEmpty() && bookKey(it.url) == bk &&
+                    it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
+            }
+        } else null
+        val existing = sameBookMatch ?: items.firstOrNull {
+            // Without a stable book ID, only exact URL + title is safe.
             url.isNotEmpty() && it.url == url &&
                 (normTitle.isEmpty() || it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
         }
@@ -94,17 +111,16 @@ object Store {
         val normTitle = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
         val bk = bookKey(ch.url)
         val items = list(c)
-        return items.firstOrNull {
-            ch.number.isNotEmpty() && it.novel == novel && it.number == ch.number
-        } ?: items.firstOrNull {
-            ch.number.isNotEmpty() && bk.isNotEmpty() && it.number == ch.number && bookKey(it.url) == bk
-        } ?: items.firstOrNull {
-            normTitle.isNotEmpty() && it.novel == novel &&
-                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
-        } ?: items.firstOrNull {
-            bk.isNotEmpty() && bookKey(it.url) == bk && normTitle.isNotEmpty() &&
-                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
-        } ?: items.firstOrNull {
+        val sameBookMatch = if (bk.isNotEmpty()) {
+            items.firstOrNull {
+                ch.number.isNotEmpty() && it.number == ch.number && bookKey(it.url) == bk
+            } ?: items.firstOrNull {
+                normTitle.isNotEmpty() && bookKey(it.url) == bk &&
+                    it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
+            }
+        } else null
+        return sameBookMatch ?: items.firstOrNull {
+            // No reliable book identity: never match by chapter number or title alone.
             ch.url.isNotEmpty() && it.url == ch.url &&
                 (normTitle.isEmpty() || it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
         }
