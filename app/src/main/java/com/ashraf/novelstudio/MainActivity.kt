@@ -1,6 +1,16 @@
 package com.ashraf.novelstudio
 
 import android.animation.ValueAnimator
+import android.app.Dialog
+import android.graphics.Color
+import android.graphics.Outline
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.LayerDrawable
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.ViewOutlineProvider
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
@@ -84,12 +94,19 @@ class MainActivity : Activity() {
     private lateinit var strip: LinearLayout
     private lateinit var tabStrip: LinearLayout
     private lateinit var shortcutStrip: LinearLayout
-    private lateinit var modeBtn: TextView
-    private lateinit var autoBtn: TextView
+    private lateinit var modeBtn: ImageView
+    private lateinit var extractBtn: ExtractButton
     private lateinit var progressBox: LinearLayout
-    private lateinit var progressBar: ProgressBar
+    private lateinit var progressBar: GlowBar
     private lateinit var progressTv: TextView
     private lateinit var togglePill: TextView
+    private lateinit var tabRail: HorizontalScrollView
+    private lateinit var shortcutScroll: HorizontalScrollView
+    private lateinit var addressBox: LinearLayout
+    private lateinit var progressPct: TextView
+    private lateinit var snackView: TextView
+    private var snackHide: Runnable? = null
+    private var progressShown = false
     private var pulse: ValueAnimator? = null
 
     // state
@@ -139,20 +156,20 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    // ================================================================== theme (UI v2)
-    private val cBg = 0xFF0B0D14.toInt()
-    private val cSurface = 0xFF14181F.toInt()
-    private val cPill = 0xFF1E232E.toInt()
-    private val cChip = 0xFF242A38.toInt()
-    private val cField = 0xFF1B2029.toInt()
-    private val cFieldStroke = 0xFF2B3342.toInt()
-    private val cStroke = 0xFF2A3242.toInt()
-    private val cCard = 0xFF1B2029.toInt()
-    private val cCardActive = 0xFF232D42.toInt()
-    private val cTxt = 0xFFEDF1F7.toInt()
-    private val cDim = 0xFF8B93A7.toInt()
-    private val cAccent = 0xFF6C8CFF.toInt()
-    private val cSheet = 0xFF161B24.toInt()
+    // ================================================================== theme ("Aurora Glass", see Ui.kt)
+    private val cBg = UiTheme.bg
+    private val cSurface = 0xFF0C0E15.toInt()
+    private val cPill = 0xFF171A24.toInt()
+    private val cChip = 0xFF1D2130.toInt()
+    private val cField = 0xFF141722.toInt()
+    private val cFieldStroke = 0xFF2A2F42.toInt()
+    private val cStroke = 0xFF262B3C.toInt()
+    private val cCard = 0xFF141722.toInt()
+    private val cCardActive = 0xFF1C2238.toInt()
+    private val cTxt = UiTheme.text
+    private val cDim = UiTheme.dim
+    private val cAccent = UiTheme.accent
+    private val cSheet = UiTheme.sheet
 
     private fun pillBg(color: Int, radiusDp: Int, stroke: Int = 0, strokeColor: Int = 0): GradientDrawable =
         GradientDrawable().apply {
@@ -229,31 +246,86 @@ class MainActivity : Activity() {
         if (Regex("[\\u0980-\\u09FF]").containsMatchIn(text)) {
             text = "Action completed or failed. Please check the page and try again."
         }
-        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+        showSnack(text)
     }
 
-    // ================================================================== UI
+    // ================================================================== UI building blocks
+    private val medium: Typeface get() = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private val boldMedium: Typeface get() = Typeface.create("sans-serif-medium", Typeface.BOLD)
+
+    /** Small glass pill (quick-site shortcuts). */
     private fun chip(label: String, onClick: () -> Unit, onLong: (() -> Unit)?): TextView = TextView(this).apply {
         text = label
-        textSize = 13.5f
-        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-        setTextColor(0xFFC7D0E2.toInt())
-        setPadding(dp(14), dp(7), dp(14), dp(7))
-        background = pillBg(cChip, 19, 1, cFieldStroke)
-        layoutParams = LinearLayout.LayoutParams(WC, WC).also { it.setMargins(dp(4), dp(4), dp(4), dp(4)) }
+        textSize = 12.5f
+        typeface = medium
+        setTextColor(UiTheme.iconIdle)
+        gravity = Gravity.CENTER
+        setPadding(dp(14), 0, dp(14), 0)
+        background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x14FFFFFF, 17, UiTheme.strokeSoft), 17)
+        layoutParams = LinearLayout.LayoutParams(WC, dp(34)).also { it.setMargins(dp(3), dp(4), dp(3), dp(4)) }
         setOnClickListener { onClick() }
         if (onLong != null) setOnLongClickListener { onLong(); true }
     }
 
-    private fun barBtn(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
+    /** Segment of the chatbot selector; the active one is filled with the accent gradient. */
+    private fun botChip(label: String, active: Boolean, onClick: () -> Unit, onLong: (() -> Unit)?): TextView = TextView(this).apply {
         text = label
-        textSize = 19f
+        textSize = 12.5f
+        typeface = if (active) boldMedium else medium
+        setTextColor(if (active) Color.WHITE else UiTheme.dim)
         gravity = Gravity.CENTER
-        setTextColor(0xFF9AA4B8.toInt())
-        layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
-        rippleWrap(this, cPill, 20)
-        elevation = dp(2).toFloat()
+        setPadding(dp(15), 0, dp(15), 0)
+        background = if (active) Glass.accent(this@MainActivity, 17) else Glass.ripple(this@MainActivity, null, 17)
+        layoutParams = LinearLayout.LayoutParams(WC, dp(34)).also { it.setMargins(dp(3), 0, dp(3), 0) }
         setOnClickListener { onClick() }
+        if (onLong != null) setOnLongClickListener { onLong(); true }
+    }
+
+    /** Icon slot of the bottom dock. */
+    private fun dockBtn(ic: Ic, desc: String, onClick: () -> Unit): ImageView =
+        iconButton(ic, desc, 22, 46, UiTheme.iconIdle, onClick).also {
+            it.layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
+        }
+
+    private fun appBackground(): Drawable {
+        fun glow(cx: Float, cy: Float, color: Int, radiusDp: Int) = GradientDrawable().apply {
+            gradientType = GradientDrawable.RADIAL_GRADIENT
+            gradientRadius = dp(radiusDp).toFloat()
+            setGradientCenter(cx, cy)
+            colors = intArrayOf(color, color and 0x00FFFFFF)
+        }
+        return LayerDrawable(arrayOf(
+            ColorDrawable(UiTheme.bg),
+            glow(0.05f, 0.0f, 0x387B8CFF, 340),
+            glow(1.0f, 1.0f, 0x2EB27CFF, 380)
+        ))
+    }
+
+    // ---- floating message (replaces the system Toast, which cannot be styled)
+    private fun showSnack(msg: String) {
+        runOnUiThread {
+            if (!::snackView.isInitialized || !hasWindowFocus()) {
+                // a dialog/sheet is on top of the app window: the system toast is still visible there
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                return@runOnUiThread
+            }
+            snackHide?.let { handler.removeCallbacks(it) }
+            snackView.animate().cancel()
+            snackView.text = msg
+            snackView.visibility = View.VISIBLE
+            snackView.alpha = 0f
+            snackView.translationY = dp(16).toFloat()
+            snackView.animate().alpha(1f).translationY(0f).setDuration(190).start()
+            val r = Runnable { hideSnack() }
+            snackHide = r
+            handler.postDelayed(r, (2200L + msg.length * 28L).coerceAtMost(6500L))
+        }
+    }
+
+    private fun hideSnack() {
+        if (!::snackView.isInitialized) return
+        snackView.animate().alpha(0f).translationY(dp(10).toFloat()).setDuration(170)
+            .withEndAction { snackView.visibility = View.GONE }.start()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -302,166 +374,136 @@ class MainActivity : Activity() {
         }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
 
-        // ---- Chrome-inspired browser bar: Home | rounded address | Share | Tab count
+        window.statusBarColor = UiTheme.bg
+        window.navigationBarColor = UiTheme.bg
+
+        // ================= address bar (glass capsule): [tabs] [ address ......... ] [menu]
+        val addrIcon = ImageView(this).apply {
+            setImageDrawable(IconDrawable(Ic.GLOBE, UiTheme.dim))
+            layoutParams = LinearLayout.LayoutParams(dp(15), dp(15)).also { it.marginEnd = dp(8) }
+        }
+
         urlBar = EditText(this).apply {
             hint = "Search or enter address"
             setSingleLine()
-            textSize = 14.5f
+            textSize = 14f
             imeOptions = EditorInfo.IME_ACTION_GO
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setPadding(0, 0, 0, 0)
-            setTextColor(cTxt)
-            setHintTextColor(cDim)
-            background = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
-            setSelectAllOnFocus(false)
+            setTextColor(UiTheme.text)
+            setHintTextColor(UiTheme.faint)
+            background = ColorDrawable(Color.TRANSPARENT)
+            setSelectAllOnFocus(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
             setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
             onFocusChangeListener = View.OnFocusChangeListener { _, has ->
                 searchShortcutsVisible = has
-                shortcutStrip.visibility = if (has) View.VISIBLE else View.GONE
+                shortcutScroll.visibility = if (has) View.VISIBLE else View.GONE
+                addressBox.background = Glass.field(this@MainActivity, 19, has)
             }
-            setOnLongClickListener {
-                showTabGrid()
-                true
-            }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+                override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    val secure = s?.startsWith("https://") == true
+                    addrIcon.setImageDrawable(IconDrawable(if (secure) Ic.LOCK else Ic.GLOBE, if (secure) UiTheme.ok else UiTheme.dim))
+                }
+            })
+            setOnLongClickListener { showTabGrid(); true }
         }
 
-        val reloadBtn = TextView(this).apply {
-            text = "↻"
-            gravity = Gravity.CENTER
-            textSize = 21f
-            setTextColor(cAccent)
-            layoutParams = LinearLayout.LayoutParams(dp(32), dp(36))
-            setOnClickListener { reloadPage() }
+        val reloadBtn = iconButton(Ic.RELOAD, "Reload", 19, 36, UiTheme.iconIdle) { reloadPage() }.apply {
             setOnLongClickListener { novelWv.reload(); chatWv.reload(); toast("🔄 Reloading both pages"); true }
         }
 
-        tabStrip = LinearLayout(this).apply {
+        addressBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-        }
-        val tabScroll = HorizontalScrollView(this).apply {
-            setBackgroundColor(cBg)
-            isHorizontalScrollBarEnabled = false
-            addView(tabStrip, ViewGroup.LayoutParams(WC, dp(40)))
-        }
-
-        shortcutStrip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(4), 0, dp(4), 0)
-            visibility = View.GONE
-        }
-        val shortcutScroll = HorizontalScrollView(this).apply {
-            setBackgroundColor(cBg)
-            isHorizontalScrollBarEnabled = false
-            addView(shortcutStrip, ViewGroup.LayoutParams(WC, dp(44)))
-        }
-
-        val homeBtn = TextView(this).apply {
-            text = "⌂"
-            gravity = Gravity.CENTER
-            textSize = 28f
-            setTextColor(cTxt)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).also {
-                it.marginEnd = dp(8)
-            }
-            rippleWrap(this, cPill, 20)
-            contentDescription = "Home"
-            setOnClickListener {
-                go("https://www.google.com/")
-                urlBar.setText("https://www.google.com/")
-            }
-        }
-
-        val addressIcon = TextView(this).apply {
-            text = "🔍"
-            gravity = Gravity.CENTER
-            textSize = 14f
-            setTextColor(cDim)
-            layoutParams = LinearLayout.LayoutParams(dp(28), MP)
-            contentDescription = "Address and site controls"
-        }
-
-        val addressBox = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(2), dp(6), dp(2))
-            background = pillBg(cField, 21, 1, cFieldStroke)
-            addView(addressIcon)
+            setPadding(dp(13), 0, dp(2), 0)
+            background = Glass.field(this@MainActivity, 19, false)
+            addView(addrIcon)
             addView(urlBar, LinearLayout.LayoutParams(0, MP, 1f))
-            addView(reloadBtn)
-            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f)
-        }
-
-        val shareBtn = TextView(this).apply {
-            text = "↗"
-            gravity = Gravity.CENTER
-            textSize = 20f
-            setTextColor(cTxt)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).also {
+            addView(reloadBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
+            layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).also {
                 it.marginStart = dp(8)
-            }
-            rippleWrap(this, cPill, 20)
-            contentDescription = "Share current page"
-            setOnClickListener {
-                val currentUrl = novelWv.url ?: browserTabs.getOrNull(activeTabIndex)?.url.orEmpty()
-                if (currentUrl.isNotBlank()) {
-                    val send = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_TEXT, currentUrl)
-                    }
-                    startActivity(Intent.createChooser(send, "Share page"))
-                } else {
-                    toast("No page to share")
-                }
+                it.marginEnd = dp(4)
             }
         }
 
         tabCountBtn = TextView(this).apply {
             text = browserTabs.size.toString()
             gravity = Gravity.CENTER
-            textSize = 15f
-            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            setTextColor(cAccent)
-            background = pillBg(cPill, 12, 1, cAccent)
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).also {
-                it.marginStart = dp(8)
-                it.marginEnd = dp(2)
-            }
+            textSize = 13.5f
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+            background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x00000000, 11, UiTheme.accent, 2), 11)
             contentDescription = "Open tabs"
             setOnClickListener { showTabGrid() }
-            setOnLongClickListener {
-                newBrowserTab("https://www.google.com/")
-                true
-            }
+            setOnLongClickListener { newBrowserTab("https://www.google.com/"); true }
         }
+
+        val menuTopBtn = iconButton(Ic.GRID, "Menu", 22, 40, UiTheme.iconIdle) { menu() }
 
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(7), dp(10), dp(3))
-            addView(homeBtn)
+            setPadding(dp(9), 0, dp(6), 0)
+            background = Glass.panel(this@MainActivity, 26)
+            elevation = dp(8).toFloat()
+            addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
             addView(addressBox)
-            addView(shareBtn)
-            addView(tabCountBtn)
-            setBackgroundColor(cBg)
+            addView(menuTopBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
+        }
+        val topWrap = FrameLayout(this).apply {
+            setPadding(dp(10), dp(8), dp(10), dp(4))
+            addView(topBar, FrameLayout.LayoutParams(MP, dp(52)))
+        }
+
+        // tab rail (only visible with 2+ tabs) and quick-site shortcuts (only while typing an address)
+        tabStrip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, dp(10), 0)
+        }
+        tabRail = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            visibility = View.GONE
+            addView(tabStrip, ViewGroup.LayoutParams(WC, dp(40)))
+        }
+        shortcutStrip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, dp(10), 0)
+        }
+        shortcutScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            visibility = View.GONE
+            addView(shortcutStrip, ViewGroup.LayoutParams(WC, dp(42)))
         }
 
         val browserChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(topBar, LinearLayout.LayoutParams(MP, WC))
+            addView(topWrap, LinearLayout.LayoutParams(MP, WC))
+            addView(tabRail, LinearLayout.LayoutParams(MP, WC))
+            addView(shortcutScroll, LinearLayout.LayoutParams(MP, WC))
         }
 
-        // ---- panes (both always full-size and alive; the one on top is the one you see)
+        // ================= panes (both always full-size and alive; the one on top is the one you see)
         novelBox = FrameLayout(this).apply { addView(novelWv, FrameLayout.LayoutParams(MP, MP)) }
-        strip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), 0, dp(6), 0)
+        }
         val stripScroll = HorizontalScrollView(this).apply {
             setBackgroundColor(cSurface)
             isHorizontalScrollBarEnabled = false
-            addView(strip)
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(strip, ViewGroup.LayoutParams(WC, dp(46)))
         }
-        val stripDivider = View(this).apply {
-            setBackgroundColor(cStroke)
-        }
+        val stripDivider = View(this).apply { setBackgroundColor(UiTheme.strokeSoft) }
         chatBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(stripScroll, LinearLayout.LayoutParams(MP, WC))
@@ -469,94 +511,136 @@ class MainActivity : Activity() {
             addView(chatWv, LinearLayout.LayoutParams(MP, 0, 1f))
         }
 
-        // ---- translation progress (thin bar + label, pulses while working)
-        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            isIndeterminate = false
-            progressTintList = ColorStateList.valueOf(cAccent)
-            progressBackgroundTintList = ColorStateList.valueOf(0xFF2B3342.toInt())
-        }
+        // ================= translation status card (floats over the page)
+        progressBar = GlowBar(this)
         progressTv = TextView(this).apply {
-            textSize = 11.5f
-            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            setTextColor(cTxt)
-            setPadding(dp(14), dp(6), dp(14), dp(6))
-            background = pillBg(0xF2242A38.toInt(), 16, 1, cFieldStroke)
-            setOnClickListener { cancelAll() }
+            textSize = 13.5f
+            typeface = medium
+            setTextColor(UiTheme.text)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        progressPct = TextView(this).apply {
+            textSize = 13.5f
+            typeface = boldMedium
+            setTextColor(0xFFCFD5FF.toInt())
+        }
+        val progStop = iconButton(Ic.CLOSE, "Stop translation", 13, 28, UiTheme.iconIdle) { cancelAll() }.apply {
+            background = Glass.ripple(this@MainActivity, Glass.oval(0x1FFFFFFF))
+        }
+        val progIcon = ImageView(this).apply { setImageDrawable(IconDrawable(Ic.GLOBE, UiTheme.accent)) }
+        val progRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(progIcon, LinearLayout.LayoutParams(dp(18), dp(18)))
+            addView(progressTv, LinearLayout.LayoutParams(0, WC, 1f).also { it.marginStart = dp(9) })
+            addView(progressPct, LinearLayout.LayoutParams(WC, WC).also { it.marginStart = dp(8) })
+            addView(progStop, LinearLayout.LayoutParams(dp(28), dp(28)).also { it.marginStart = dp(8) })
         }
         progressBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
             visibility = View.GONE
-            setPadding(dp(16), dp(10), dp(16), 0)
-            background = GradientDrawable().apply {
-                colors = intArrayOf(0xE60B0D14.toInt(), 0x000B0D14.toInt())
-                orientation = GradientDrawable.Orientation.TOP_BOTTOM
+            setPadding(dp(14), dp(10), dp(10), dp(12))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xF2282C3E.toInt(), 0xF2181B28.toInt())
+            ).apply {
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), 0x668C9CFF)
             }
-            addView(progressBar, LinearLayout.LayoutParams(MP, dp(5)))
-            addView(progressTv, LinearLayout.LayoutParams(WC, WC).also { it.topMargin = dp(6) })
+            elevation = dp(10).toFloat()
+            addView(progRow, LinearLayout.LayoutParams(MP, WC))
+            addView(progressBar, LinearLayout.LayoutParams(MP, dp(5)).also { it.topMargin = dp(9) })
         }
+
         togglePill = TextView(this).apply {
             textSize = 12.5f
-            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(dp(16), dp(9), dp(16), dp(9))
+            typeface = boldMedium
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(14), 0, dp(17), 0)
+            compoundDrawablePadding = dp(8)
+            val gi = IconDrawable(Ic.GLOBE, Color.WHITE)
+            gi.setBounds(0, 0, dp(16), dp(16))
+            setCompoundDrawablesRelative(gi, null, null, null)
             visibility = View.GONE
-            background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                colors = intArrayOf(0xE65C6CFF.toInt(), 0xE69A5CFF.toInt())
-                orientation = GradientDrawable.Orientation.LEFT_RIGHT
-            }
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xEB7B8CFF.toInt(), 0xEBB27CFF.toInt())
+            ).apply { cornerRadius = dp(19).toFloat() }
             elevation = dp(8).toFloat()
             setOnClickListener { toggleView() }
         }
 
         content = FrameLayout(this).apply {
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(20).toFloat())
+                }
+            }
             addView(novelBox, FrameLayout.LayoutParams(MP, MP))
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
-            addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP))
-            addView(togglePill, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(14), dp(12)) })
+            addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
+            addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
         }
-
-        // ---- bottom bar
-        modeBtn = barBtn("◫") { cycleMode() }
-        autoBtn = barBtn("⚡") { toggleAuto() }
-        val extractBtn = barBtn("●") { extractCopy() }
-        extractBtn.background = GradientDrawable().apply {
-            cornerRadius = dp(20).toFloat()
-            colors = intArrayOf(0xFF5C6CFF.toInt(), 0xFF9A5CFF.toInt())
-            orientation = GradientDrawable.Orientation.LEFT_RIGHT
+        val contentHolder = FrameLayout(this).apply {
+            setPadding(dp(8), dp(4), dp(8), dp(2))
+            addView(content, FrameLayout.LayoutParams(MP, MP))
         }
-        extractBtn.setTextColor(0xFFFFFFFF.toInt())
-        val menuBtn = barBtn("☰") { menu() }
-        val navCapsule = LinearLayout(this).apply {
+
+        // ================= floating dock: [view mode] [prev] [EXTRACT] [next] [save]
+        modeBtn = dockBtn(Ic.SPLIT, "View mode") { cycleMode() }
+        extractBtn = ExtractButton(this).apply {
+            setOnClickListener { extractCopy() }
+            setOnLongClickListener { toggleAuto(); true }
+        }
+        val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = pillBg(cPill, 26, 1, cFieldStroke)
-            elevation = dp(10).toFloat()
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(8), 0)
+            background = Glass.panel(this@MainActivity, 34, strong = true)
+            elevation = dp(12).toFloat()
             addView(modeBtn)
-            addView(barBtn("📝") { deliver(Prefs.prompt(this@MainActivity), "Prompt") })
-            addView(barBtn("◀") { step("prev") })
-            addView(extractBtn)
-            addView(barBtn("▶") { step("next") })
-            addView(barBtn("💾") { saveAnswer() })
-            addView(autoBtn)
-            addView(menuBtn)
+            addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
+            addView(extractBtn, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
+            addView(dockBtn(Ic.FORWARD, "Next chapter") { step("next") })
+            addView(dockBtn(Ic.SAVE, "Save answer") { saveAnswer() })
         }
-        val bar = FrameLayout(this).apply {
-            setBackgroundColor(cBg)
-            addView(navCapsule, FrameLayout.LayoutParams(WC, WC, Gravity.CENTER).also {
-                it.setMargins(dp(12), dp(6), dp(12), dp(12))
-            })
+        val dockWrap = FrameLayout(this).apply {
+            setPadding(dp(14), dp(6), dp(14), dp(12))
+            addView(dock, FrameLayout.LayoutParams(MP, dp(68)))
         }
 
-        val root = LinearLayout(this).apply {
+        snackView = TextView(this).apply {
+            textSize = 13f
+            typeface = medium
+            setTextColor(UiTheme.text)
+            maxWidth = dp(330)
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xF2292D3F.toInt(), 0xF2181B28.toInt())
+            ).apply {
+                cornerRadius = dp(22).toFloat()
+                setStroke(dp(1), 0x38FFFFFF)
+            }
+            elevation = dp(16).toFloat()
+            visibility = View.GONE
+            setOnClickListener { hideSnack() }
+        }
+
+        val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(cBg)
             addView(browserChrome, LinearLayout.LayoutParams(MP, WC))
-            addView(content, LinearLayout.LayoutParams(MP, 0, 1f))
-            addView(bar, LinearLayout.LayoutParams(MP, WC))
+            addView(contentHolder, LinearLayout.LayoutParams(MP, 0, 1f))
+            addView(dockWrap, LinearLayout.LayoutParams(MP, WC))
+        }
+        val root = FrameLayout(this).apply {
+            background = appBackground()
+            addView(main, FrameLayout.LayoutParams(MP, MP))
+            addView(snackView, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(106) })
         }
         setContentView(root)
 
@@ -716,74 +800,81 @@ class MainActivity : Activity() {
         }
     }
 
-    // tab strip: one pill per tab with favicon dot, title and close ×. Active pill is
-    // highlighted; inactive pills tap to switch instantly (state is saved/restored).
+    // ---- tab rail: a slim row of chips (visible with 2+ tabs). The active chip is filled with the
+    // accent tint and shows a close button; the others switch instantly (state is saved/restored).
+    private val tabHues = listOf(
+        0xFF27324F.toInt(), 0xFF3A2A52.toInt(), 0xFF1F3D3A.toInt(),
+        0xFF3D2F27.toInt(), 0xFF283A52.toInt(), 0xFF42283A.toInt()
+    )
+
+    private fun tabHost(tab: BrowserTab): String = Uri.parse(tab.url).host?.removePrefix("www.") ?: ""
+
+    private fun tabTitle(tab: BrowserTab): String = tab.label.ifBlank { tabHost(tab).ifBlank { "New Tab" } }
+
+    private fun tabHue(tab: BrowserTab): Int = tabHues[(tabHost(tab).hashCode() and 0x7FFFFFFF) % tabHues.size]
+
+    private fun tabInitial(tab: BrowserTab): String =
+        tabHost(tab).firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "•"
+
     private fun renderTabs() {
         if (!::tabStrip.isInitialized) return
         tabStrip.removeAllViews()
         if (::tabCountBtn.isInitialized) tabCountBtn.text = browserTabs.size.toString()
+        if (::tabRail.isInitialized) tabRail.visibility = if (browserTabs.size > 1) View.VISIBLE else View.GONE
 
+        var activeChip: View? = null
         browserTabs.forEachIndexed { i, tab ->
             val active = i == activeTabIndex
-            val pill = LinearLayout(this).apply {
+            val chipView = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), 0, dp(2), 0)
-                background = pillBg(if (active) cCardActive else cPill, 17, 1, if (active) cAccent else cFieldStroke)
-                layoutParams = LinearLayout.LayoutParams(WC, dp(34)).also {
-                    it.setMargins(dp(3), dp(3), dp(3), dp(3))
-                }
+                setPadding(dp(6), 0, dp(if (active) 4 else 12), 0)
+                background = Glass.ripple(
+                    this@MainActivity,
+                    if (active) Glass.solid(this@MainActivity, 0x2E7B8CFF, 16, UiTheme.accent, 1.5f)
+                    else Glass.solid(this@MainActivity, 0x12FFFFFF, 16, UiTheme.strokeSoft),
+                    16
+                )
+                layoutParams = LinearLayout.LayoutParams(WC, dp(32)).also { it.setMargins(dp(3), dp(4), dp(3), dp(4)) }
                 isClickable = true
                 setOnClickListener { switchBrowserTab(i) }
                 setOnLongClickListener { showTabGrid(); true }
             }
-            val dot = View(this).apply {
-                background = pillBg(if (active) cAccent else cDim, 4)
-                layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).also {
-                    it.marginEnd = dp(6)
-                }
+            val badge = TextView(this).apply {
+                text = tabInitial(tab)
+                textSize = 10f
+                typeface = boldMedium
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                background = Glass.oval(tabHue(tab))
+                layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).also { it.marginEnd = dp(7) }
             }
-            pill.addView(dot)
-            val title = TextView(this).apply {
-                text = tab.label.ifBlank { Uri.parse(tab.url).host ?: "New Tab" }
+            chipView.addView(badge)
+            chipView.addView(TextView(this).apply {
+                text = tabTitle(tab)
                 textSize = 12.5f
-                gravity = Gravity.CENTER_VERTICAL
-                setTextColor(if (active) cTxt else cDim)
+                typeface = if (active) boldMedium else medium
+                setTextColor(if (active) UiTheme.text else UiTheme.dim)
                 isSingleLine = true
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                maxWidth = dp(130)
-                layoutParams = LinearLayout.LayoutParams(WC, MP)
+                maxWidth = dp(if (active) 150 else 110)
+                layoutParams = LinearLayout.LayoutParams(WC, WC)
+            })
+            if (active && browserTabs.size > 1) {
+                chipView.addView(iconButton(Ic.CLOSE, "Close tab", 11, 24, UiTheme.iconIdle) { closeBrowserTab(i) }.also {
+                    it.layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).also { lp -> lp.marginStart = dp(4) }
+                })
+                activeChip = chipView
             }
-            pill.addView(title)
-            val close = TextView(this).apply {
-                text = "×"
-                textSize = 16f
-                gravity = Gravity.CENTER
-                setTextColor(cDim)
-                layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).also {
-                    it.marginStart = dp(2)
-                }
-                setOnClickListener {
-                    if (browserTabs.size > 1) closeBrowserTab(i)
-                }
-            }
-            pill.addView(close)
-            tabStrip.addView(pill)
+            tabStrip.addView(chipView)
         }
 
-        val add = TextView(this).apply {
-            text = "＋"
-            textSize = 17f
-            gravity = Gravity.CENTER
-            setTextColor(cAccent)
-            background = pillBg(cPill, 17, 1, cFieldStroke)
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).also {
-                it.setMargins(dp(3), dp(3), dp(6), dp(3))
-            }
-            setOnClickListener { newBrowserTab("https://www.google.com/") }
-            setOnLongClickListener { showTabGrid(); true }
-        }
-        tabStrip.addView(add)
+        tabStrip.addView(iconButton(Ic.PLUS, "New tab", 17, 32, UiTheme.accent) { newBrowserTab("https://www.google.com/") }.also {
+            it.background = Glass.ripple(this, Glass.solid(this, 0x12FFFFFF, 16, UiTheme.strokeSoft), 16)
+            it.layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).also { lp -> lp.setMargins(dp(3), dp(4), dp(6), dp(4)) }
+        })
+        val target = activeChip
+        if (target != null && ::tabRail.isInitialized) tabRail.post { tabRail.smoothScrollTo(maxOf(0, target.left - dp(60)), 0) }
     }
 
     private fun saveCurrentTabState() {
@@ -900,158 +991,137 @@ class MainActivity : Activity() {
 
     private fun showTabGrid(filter: String = "") {
         saveCurrentTabState()
+        val pad = dp(14)
+        val gap = dp(10)
+        val colW = (resources.displayMetrics.widthPixels - pad * 2 - gap) / 2
+        val cardH = (colW * 1.34f).toInt()
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(cBg)
+        lateinit var dialog: Dialog
+        val root = FrameLayout(this).apply { setBackgroundColor(0xEB07080D.toInt()) }
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        // ---- header: "Tabs" + count, options, close
+        val title = TextView(this).apply {
+            text = "Tabs"
+            textSize = 25f
+            setTextColor(UiTheme.text)
+            typeface = boldMedium
         }
-
+        val countChip = TextView(this).apply {
+            textSize = 12.5f
+            typeface = boldMedium
+            gravity = Gravity.CENTER
+            setTextColor(0xFFCFD5FF.toInt())
+            setPadding(dp(10), 0, dp(10), 0)
+            background = Glass.solid(this@MainActivity, 0x387B8CFF, 11)
+            layoutParams = LinearLayout.LayoutParams(WC, dp(22)).also { it.marginStart = dp(10) }
+        }
+        val optionsBtn = iconButton(Ic.DOTS, "Tab options", 22, 44) { showTabOptions(dialog) }
+        val closeBtn = iconButton(Ic.CLOSE, "Close", 22, 44) { dialog.dismiss() }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(10), dp(8), dp(10))
+            setPadding(pad, dp(12), dp(6), dp(4))
+            addView(title)
+            addView(countChip)
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f))
+            addView(optionsBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
+            addView(closeBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
         }
+        column.addView(header, LinearLayout.LayoutParams(MP, WC))
 
-        val title = TextView(this).apply {
-            text = "Tabs (${browserTabs.size})"
-            textSize = 20f
-            setTextColor(cTxt)
-            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-            layoutParams = LinearLayout.LayoutParams(0, WC, 1f)
+        // ---- search
+        val searchIcon = ImageView(this).apply { setImageDrawable(IconDrawable(Ic.SEARCH, UiTheme.dim)) }
+        val searchInput = EditText(this).apply {
+            hint = "Search tabs"
+            setSingleLine()
+            textSize = 14.5f
+            setTextColor(UiTheme.text)
+            setHintTextColor(UiTheme.faint)
+            background = ColorDrawable(Color.TRANSPARENT)
+            setPadding(0, 0, 0, 0)
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            setText(filter)
         }
+        val searchBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, dp(14), 0)
+            background = Glass.field(this@MainActivity, 21, false)
+            addView(searchIcon, LinearLayout.LayoutParams(dp(18), dp(18)).also { it.marginEnd = dp(10) })
+            addView(searchInput, LinearLayout.LayoutParams(0, MP, 1f))
+        }
+        column.addView(searchBox, LinearLayout.LayoutParams(MP, dp(42)).also { it.setMargins(pad, dp(6), pad, dp(8)) })
 
-        val search = TextView(this).apply {
-            text = "⌕"
-            textSize = 24f
+        // ---- grid
+        val emptyView = TextView(this).apply {
+            text = "No tabs match your search"
+            textSize = 14f
+            setTextColor(UiTheme.faint)
             gravity = Gravity.CENTER
-            setTextColor(cTxt)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            rippleWrap(this, cPill, 22)
-            setOnClickListener {
-                val input = EditText(this@MainActivity).apply {
-                    hint = "Tab title or URL"
-                    setSingleLine()
-                }
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle("🔍 Search tabs")
-                    .setView(input)
-                    .setPositiveButton("Search") { _, _ ->
-                        title.tag = input.text.toString().trim()
-                        showTabGrid(title.tag as String)
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
+            visibility = View.GONE
+            setPadding(0, dp(48), 0, 0)
         }
-
-        val more = TextView(this).apply {
-            text = "⋮"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            setTextColor(cTxt)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            rippleWrap(this, cPill, 22)
-            setOnClickListener {
-                AlertDialog.Builder(this@MainActivity)
-                    .setItems(arrayOf("✕ Close all except current", "✕ Close all tabs")) { _, which ->
-                        when (which) {
-                            0 -> {
-                                val keep = browserTabs[activeTabIndex]
-                                browserTabs.clear()
-                                browserTabs.add(keep)
-                                activeTabIndex = 0
-                                persistBrowserTabs()
-                                renderTabs()
-                                showTabGrid()
-                            }
-                            1 -> {
-                                browserTabs.forEach { deleteTabThumbnail(it) }
-                                browserTabs.clear()
-                                browserTabs.add(BrowserTab("New Tab", "https://www.google.com/"))
-                                activeTabIndex = 0
-                                novelWv.loadUrl(browserTabs[0].url)
-                                persistBrowserTabs()
-                                renderTabs()
-                                showTabGrid()
-                            }
-                        }
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
-        }
-
-        val close = TextView(this).apply {
-            text = "×"
-            textSize = 26f
-            gravity = Gravity.CENTER
-            setTextColor(cTxt)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            rippleWrap(this, cPill, 22)
-        }
-
-        header.addView(title)
-        header.addView(search)
-        header.addView(more)
-        header.addView(close)
-        root.addView(header)
-
-        val scroll = ScrollView(this).apply { isFillViewport = true }
         val grid = GridLayout(this).apply {
             columnCount = 2
-            setPadding(dp(10), dp(4), dp(10), dp(96))
-            useDefaultMargins = false
+            setPadding(pad - gap / 2, dp(2), pad - gap / 2, dp(110))
         }
-        scroll.addView(grid, ViewGroup.LayoutParams(MP, WC))
-        root.addView(scroll, LinearLayout.LayoutParams(MP, 0, 1f))
+        val gridHolder = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(grid, LinearLayout.LayoutParams(MP, WC))
+            addView(emptyView, LinearLayout.LayoutParams(MP, WC))
+        }
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(gridHolder, ViewGroup.LayoutParams(MP, WC))
+        }
+        column.addView(scroll, LinearLayout.LayoutParams(MP, 0, 1f))
+        root.addView(column, FrameLayout.LayoutParams(MP, MP))
 
-        lateinit var dialog: AlertDialog
+        // ---- "New tab" pill
         val newTab = TextView(this).apply {
-            text = "＋"
-            textSize = 28f
+            text = "New tab"
+            textSize = 15f
+            typeface = boldMedium
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            setTextColor(0xFFFFFFFF.toInt())
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                colors = intArrayOf(0xFF5C6CFF.toInt(), 0xFF9A5CFF.toInt())
-                orientation = GradientDrawable.Orientation.TL_BR
-            }
-            elevation = dp(10).toFloat()
-            layoutParams = LinearLayout.LayoutParams(dp(64), dp(64)).also {
-                it.gravity = Gravity.END
-                it.setMargins(0, 0, dp(18), dp(18))
-            }
+            setPadding(dp(20), 0, dp(26), 0)
+            compoundDrawablePadding = dp(8)
+            val pi = IconDrawable(Ic.PLUS, Color.WHITE, 2.2f)
+            pi.setBounds(0, 0, dp(20), dp(20))
+            setCompoundDrawablesRelative(pi, null, null, null)
+            background = Glass.accent(this@MainActivity, 27)
+            elevation = dp(12).toFloat()
             setOnClickListener {
                 dialog.dismiss()
                 newBrowserTab("https://www.google.com/")
             }
         }
-        root.addView(newTab)
+        root.addView(newTab, FrameLayout.LayoutParams(WC, dp(54), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(26) })
 
-        dialog = AlertDialog.Builder(this)
-            .setView(root)
-            .create()
-
-        fun refreshCards(query: String = filter) {
+        fun refreshCards(query: String) {
             grid.removeAllViews()
             val list = browserTabs.withIndex().filter { (_, t) ->
                 query.isBlank() || t.label.contains(query, true) || t.url.contains(query, true)
             }
-            title.text = if (query.isBlank()) "Tabs (${browserTabs.size})"
-                else "Tabs (${list.size}/${browserTabs.size})"
+            countChip.text = if (query.isBlank()) "${browserTabs.size}" else "${list.size}/${browserTabs.size}"
+            emptyView.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
 
-            list.forEach { pair ->
+            list.forEachIndexed { pos, pair ->
                 val i = pair.index
                 val tab = pair.value
+                val active = i == activeTabIndex
+                loadTabThumbnail(tab)
+
                 val card = FrameLayout(this).apply {
-                    background = pillBg(if (i == activeTabIndex) cCardActive else cCard, 18, if (i == activeTabIndex) 2 else 1, if (i == activeTabIndex) cAccent else cStroke)
-                    elevation = if (i == activeTabIndex) dp(6).toFloat() else dp(1).toFloat()
+                    background = Glass.solid(this@MainActivity, 0xFF12141D.toInt(), 22)
                     clipToOutline = true
+                    elevation = dp(if (active) 10 else 3).toFloat()
                     layoutParams = GridLayout.LayoutParams().apply {
-                        width = 0
-                        height = dp(285)
-                        columnSpec = GridLayout.spec(i % 2, 1f)
-                        setMargins(dp(6), dp(6), dp(6), dp(6))
+                        width = colW
+                        height = cardH
+                        setMargins(gap / 2, gap / 2, gap / 2, gap / 2)
                     }
                     setOnClickListener {
                         dialog.dismiss()
@@ -1059,68 +1129,134 @@ class MainActivity : Activity() {
                     }
                 }
 
-                loadTabThumbnail(tab)
-                val preview = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    setBackgroundColor(0xFF10131A.toInt())
-                    tab.thumbnail?.let { if (!it.isRecycled) setImageBitmap(it) }
-                    if (tab.thumbnail == null) setImageResource(android.R.drawable.ic_menu_view)
-                    layoutParams = FrameLayout.LayoutParams(MP, dp(220))
+                // preview: the live thumbnail, or a tinted tile with the site's initial
+                val thumb = tab.thumbnail
+                if (thumb != null && !thumb.isRecycled) {
+                    card.addView(ImageView(this).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        setImageBitmap(thumb)
+                    }, FrameLayout.LayoutParams(MP, MP))
+                } else {
+                    card.addView(FrameLayout(this).apply {
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.TL_BR,
+                            intArrayOf(tabHue(tab), 0xFF0E1018.toInt())
+                        )
+                        addView(TextView(this@MainActivity).apply {
+                            text = tabInitial(tab)
+                            textSize = 26f
+                            typeface = boldMedium
+                            gravity = Gravity.CENTER
+                            setTextColor(Color.WHITE)
+                            background = Glass.oval(0x2EFFFFFF)
+                        }, FrameLayout.LayoutParams(dp(58), dp(58), Gravity.CENTER).also { it.bottomMargin = dp(26) })
+                    }, FrameLayout.LayoutParams(MP, MP))
                 }
-                card.addView(preview)
-                val labelScrim = View(this).apply {
-                    background = GradientDrawable().apply {
-                        colors = intArrayOf(0x00000000, 0xEB0B0D14.toInt())
-                        orientation = GradientDrawable.Orientation.TOP_BOTTOM
-                    }
-                    layoutParams = FrameLayout.LayoutParams(MP, dp(70), Gravity.BOTTOM)
-                }
-                card.addView(labelScrim)
 
-                val label = TextView(this).apply {
-                    text = tab.label.ifBlank { Uri.parse(tab.url).host ?: "New Tab" } +
-                        "\n" + (Uri.parse(tab.url).host ?: "")
-                    textSize = 11.5f
-                    setTextColor(cTxt)
-                    maxLines = 2
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(dp(12), dp(4), dp(44), dp(6))
-                    layoutParams = FrameLayout.LayoutParams(MP, dp(70), Gravity.BOTTOM)
-                }
-                card.addView(label)
+                card.addView(View(this).apply {
+                    background = GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM,
+                        intArrayOf(0x0007080D, 0xF207080D.toInt())
+                    )
+                }, FrameLayout.LayoutParams(MP, dp(84), Gravity.BOTTOM))
 
-                val closeTab = TextView(this).apply {
-                    text = "×"
-                    textSize = 20f
-                    gravity = Gravity.CENTER
-                    setTextColor(0xFFF0F2F8.toInt())
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(0x99202634.toInt())
-                        setStroke(dp(1), cStroke)
-                    }
-                    layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.END).also {
-                        it.setMargins(0, dp(8), dp(8), 0)
-                    }
-                    setOnClickListener {
-                        closeBrowserTab(i)
-                        refreshCards(query)
-                    }
-                }
-                card.addView(closeTab)
+                val host = tabHost(tab)
+                card.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), 0, dp(12), dp(10))
+                    addView(TextView(this@MainActivity).apply {
+                        text = tabTitle(tab)
+                        textSize = 12.5f
+                        typeface = medium
+                        setTextColor(UiTheme.text)
+                        maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                    if (host.isNotBlank()) addView(TextView(this@MainActivity).apply {
+                        text = host
+                        textSize = 11f
+                        setTextColor(UiTheme.dim)
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                }, FrameLayout.LayoutParams(MP, WC, Gravity.BOTTOM))
+
+                card.addView(iconButton(Ic.CLOSE, "Close tab", 12, 30, Color.WHITE) {
+                    closeBrowserTab(i)
+                    refreshCards(searchInput.text.toString().trim())
+                }.also {
+                    it.background = Glass.ripple(this, Glass.oval(0x8C0A0C12.toInt(), 0x33FFFFFF, dp(1)))
+                }, FrameLayout.LayoutParams(dp(30), dp(30), Gravity.TOP or Gravity.END).also { it.setMargins(0, dp(8), dp(8), 0) })
+
+                // border drawn above the content so the thumbnail cannot cover it
+                card.addView(View(this).apply {
+                    background = Glass.solid(
+                        this@MainActivity, 0x00000000, 22,
+                        if (active) UiTheme.accent else 0x24FFFFFF, if (active) 2.5f else 1f
+                    )
+                    isClickable = false
+                }, FrameLayout.LayoutParams(MP, MP))
+
                 grid.addView(card)
+                card.alpha = 0f
+                card.scaleX = 0.93f
+                card.scaleY = 0.93f
+                card.animate().alpha(1f).scaleX(1f).scaleY(1f).setStartDelay((pos * 22L).coerceAtMost(180L)).setDuration(220).start()
             }
         }
 
-        close.setOnClickListener { dialog.dismiss() }
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) { refreshCards(s?.toString()?.trim().orEmpty()) }
+        })
+
+        dialog = Sheets.create(this, root, fullScreen = true, bottom = false, dim = 0f)
         dialog.setOnShowListener {
-            dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-            dialog.window?.setLayout(MP, MP)
-            refreshCards()
+            root.alpha = 0f
+            root.animate().alpha(1f).setDuration(180).start()
+            refreshCards(filter)
         }
         dialog.show()
-        dialog.window?.setLayout(MP, MP)
-        refreshCards()
+    }
+
+    /** Bulk actions for the tab switcher. */
+    private fun showTabOptions(parentDialog: Dialog) {
+        lateinit var sheet: Dialog
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(18))
+            background = Sheets.sheetBackground(this@MainActivity)
+            addView(sheetHandle())
+            val group = sheetGroup()
+            group.addView(sheetRow(Ic.CLOSE, "Close other tabs", false) {
+                sheet.dismiss()
+                val keep = browserTabs[activeTabIndex]
+                browserTabs.filter { it !== keep }.forEach { deleteTabThumbnail(it) }
+                browserTabs.clear()
+                browserTabs.add(keep)
+                activeTabIndex = 0
+                persistBrowserTabs()
+                renderTabs()
+                parentDialog.dismiss()
+                showTabGrid()
+            }.view)
+            group.addView(sheetRow(Ic.CLOSE, "Close all tabs", true) {
+                sheet.dismiss()
+                browserTabs.forEach { deleteTabThumbnail(it) }
+                browserTabs.clear()
+                browserTabs.add(BrowserTab("New Tab", "https://www.google.com/"))
+                activeTabIndex = 0
+                novelWv.loadUrl(browserTabs[0].url)
+                persistBrowserTabs()
+                renderTabs()
+                parentDialog.dismiss()
+                showTabGrid()
+            }.view)
+            addView(group, LinearLayout.LayoutParams(MP, WC))
+        }
+        sheet = Sheets.create(this, col)
+        sheet.show()
     }
 
     private fun browserHistoryDialog() {
@@ -1158,10 +1294,15 @@ class MainActivity : Activity() {
     // ================================================================== modes / layout
     private fun setMode(m: Mode) {
         mode = m
-        modeBtn.text = when (m) {
-            Mode.NOVEL -> "📖"
-            Mode.CHAT -> "💬"
-            Mode.SPLIT -> "◫"
+        modeBtn.setImageDrawable(IconDrawable(when (m) {
+            Mode.NOVEL -> Ic.BOOK
+            Mode.CHAT -> Ic.CHAT
+            Mode.SPLIT -> Ic.SPLIT
+        }, UiTheme.iconIdle))
+        modeBtn.contentDescription = when (m) {
+            Mode.NOVEL -> "Novel only"
+            Mode.CHAT -> "Chatbot only"
+            Mode.SPLIT -> "Split view"
         }
         activeWv = if (m == Mode.CHAT) chatWv else novelWv
         applyLayout()
@@ -1229,16 +1370,20 @@ class MainActivity : Activity() {
     private fun buildStrip() {
         strip.removeAllViews()
         val a = bots()
+        val cur = Prefs.get(this, "botUrl", a.optJSONObject(0)?.optString("u", "") ?: "")
         for (i in 0 until a.length()) {
             val o = a.getJSONObject(i)
-            strip.addView(chip(o.getString("n"), { openBot(o.getString("u")) }, { removeBot(i) }))
+            val u = o.getString("u")
+            val active = Uri.parse(u).host != null && Uri.parse(u).host == Uri.parse(cur).host
+            strip.addView(botChip(o.getString("n"), active, { openBot(u) }, { removeBot(i) }))
         }
-        strip.addView(chip("＋", { addBotDialog() }, null))
+        strip.addView(botChip("+", false, { addBotDialog() }, null))
     }
 
     private fun openBot(u: String) {
         chatWv.loadUrl(u)
         Prefs.put(this, "botUrl", u)
+        buildStrip()
     }
 
     private fun removeBot(i: Int) {
@@ -2367,49 +2512,49 @@ markers preserved.
 
     private fun updatePill() {
         togglePill.visibility = if (hasTr && mode != Mode.CHAT) View.VISIBLE else View.GONE
-        togglePill.text = if (shownTranslated) "🌐 View Original" else "🌐 View Translation"
+        togglePill.text = if (shownTranslated) "View original" else "View translation"
     }
 
-    // ---- progress overlay
+    // ---- translation status card + the ring around the extract button
     private fun updateProgressUi() {
         val run = running
         if (run == null && queue.isEmpty()) {
             setProgressVisible(false)
+            extractBtn.ringProgress = -1
             return
         }
         val shown = lastChapter
-        val label: String
+        val title: String
         var pct = 0
         if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
-            label = "🌐 Translating…  $progress%"
+            title = "Translating" + (if (run.number.isNotBlank()) " · Chapter ${run.number}" else "")
             pct = progress
         } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
             val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
-            label = "⏳ Queued — $ahead ahead"
+            title = "Queued · $ahead ahead"
         } else {
-            label = "🌐 Another chapter is translating in the background  $progress%"
+            title = "Translating in the background"
             pct = progress
         }
-        progressTv.text = label + "   (Tap to stop)"
+        progressTv.text = title
+        progressPct.text = if (pct > 0) "$pct%" else ""
         progressBar.progress = pct
+        extractBtn.ringProgress = if (pct > 0) pct else 0
         setProgressVisible(true)
     }
 
     private fun setProgressVisible(v: Boolean) {
-        if (v && progressBox.visibility != View.VISIBLE) {
+        if (v == progressShown) return
+        progressShown = v
+        progressBox.animate().cancel()
+        if (v) {
+            progressBox.alpha = 0f
+            progressBox.translationY = -dp(14).toFloat()
             progressBox.visibility = View.VISIBLE
-            val a = ValueAnimator.ofFloat(0.45f, 1f)
-            a.duration = 900
-            a.repeatMode = ValueAnimator.REVERSE
-            a.repeatCount = ValueAnimator.INFINITE
-            a.addUpdateListener { progressBox.alpha = it.animatedValue as Float }
-            a.start()
-            pulse = a
-        } else if (!v && progressBox.visibility == View.VISIBLE) {
-            pulse?.cancel()
-            pulse = null
-            progressBox.alpha = 1f
-            progressBox.visibility = View.GONE
+            progressBox.animate().alpha(1f).translationY(0f).setDuration(230).start()
+        } else {
+            progressBox.animate().alpha(0f).translationY(-dp(10).toFloat()).setDuration(190)
+                .withEndAction { if (!progressShown) progressBox.visibility = View.GONE }.start()
         }
     }
 
@@ -2421,7 +2566,7 @@ markers preserved.
     }
 
     private fun refreshAutoBtn() {
-        autoBtn.alpha = if (Prefs.auto(this)) 1f else 0.35f
+        extractBtn.autoOn = Prefs.auto(this)
     }
 
     // ================================================================== save answer by hand (copy mode)
@@ -2437,6 +2582,130 @@ markers preserved.
 
     // ================================================================== menu
 
+    // ---------------------------------------------------------------- bottom-sheet building blocks
+    private fun sheetHandle(): View = View(this).apply {
+        background = Glass.solid(this@MainActivity, 0x47FFFFFF, 2)
+        layoutParams = LinearLayout.LayoutParams(dp(40), dp(4)).also {
+            it.gravity = Gravity.CENTER_HORIZONTAL
+            it.bottomMargin = dp(12)
+        }
+    }
+
+    private fun sectionLabel(t: String): TextView = TextView(this).apply {
+        text = t
+        textSize = 11.5f
+        typeface = boldMedium
+        letterSpacing = 0.12f
+        setTextColor(UiTheme.faint)
+        setPadding(dp(6), dp(16), dp(6), dp(7))
+    }
+
+    private fun sheetGroup(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = Glass.solid(this@MainActivity, 0x0FFFFFFF, 20, UiTheme.strokeSoft)
+    }
+
+    /** "✅ 🌙 Dark Mode: Auto" -> title "Dark Mode", badge "Auto"; toggles become ON/OFF badges. */
+    private fun splitLabel(raw: String): Triple<String, String?, Boolean?> {
+        var s = raw.trim()
+        var toggle: Boolean? = null
+        if (s.startsWith("✅")) { toggle = true; s = s.removePrefix("✅") }
+        else if (s.startsWith("⬜")) { toggle = false; s = s.removePrefix("⬜") }
+        s = s.replace(Regex("^[^A-Za-z0-9]+"), "").trim()
+        if (toggle != null) return Triple(s, if (toggle) "ON" else "OFF", toggle)
+        val k = s.lastIndexOf(": ")
+        return if (k > 0) Triple(s.substring(0, k), s.substring(k + 2), null) else Triple(s, null, null)
+    }
+
+    private inner class SheetRow(val view: LinearLayout, val title: TextView, val state: TextView) {
+        fun set(raw: String) {
+            val (t, s, on) = splitLabel(raw)
+            title.text = t
+            if (s == null) { state.visibility = View.GONE; return }
+            state.visibility = View.VISIBLE
+            state.text = s
+            when (on) {
+                true -> { state.setTextColor(0xFF06210F.toInt()); state.background = Glass.solid(this@MainActivity, UiTheme.ok, 12) }
+                false -> { state.setTextColor(UiTheme.faint); state.background = Glass.solid(this@MainActivity, 0x14FFFFFF, 12) }
+                null -> { state.setTextColor(UiTheme.dim); state.background = Glass.solid(this@MainActivity, 0x14FFFFFF, 12) }
+            }
+        }
+    }
+
+    private fun sheetRow(ic: Ic?, rawLabel: String, last: Boolean, onClick: () -> Unit): SheetRow {
+        val title = TextView(this).apply {
+            textSize = 14.5f
+            typeface = medium
+            setTextColor(UiTheme.text)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val state = TextView(this).apply {
+            textSize = 11.5f
+            typeface = boldMedium
+            gravity = Gravity.CENTER
+            setPadding(dp(10), 0, dp(10), 0)
+            visibility = View.GONE
+        }
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, dp(14), 0)
+            minimumHeight = dp(52)
+            background = Glass.ripple(this@MainActivity, null, 0)
+            isClickable = true
+            setOnClickListener { onClick() }
+            if (ic != null) {
+                val box = FrameLayout(this@MainActivity).apply { background = Glass.oval(0x14FFFFFF) }
+                box.addView(ImageView(this@MainActivity).apply { setImageDrawable(IconDrawable(ic, UiTheme.iconIdle)) },
+                    FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER))
+                addView(box, LinearLayout.LayoutParams(dp(34), dp(34)).also { it.marginEnd = dp(12) })
+            }
+            addView(title, LinearLayout.LayoutParams(0, WC, 1f))
+            addView(state, LinearLayout.LayoutParams(WC, dp(24)).also { it.marginStart = dp(8) })
+        }
+        val view = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(inner, LinearLayout.LayoutParams(MP, WC))
+            if (!last) addView(View(this@MainActivity).apply { setBackgroundColor(0x10FFFFFF) },
+                LinearLayout.LayoutParams(MP, dp(1)).also { it.marginStart = dp(58) })
+        }
+        return SheetRow(view, title, state).also { it.set(rawLabel) }
+    }
+
+    /** Square quick-action tile (Home, Share, New tab, Prompt, Auto). */
+    private fun tile(ic: Ic, label: String, on: Boolean, onClick: () -> Unit): Pair<LinearLayout, (Boolean) -> Unit> {
+        val iconView = ImageView(this)
+        val labelView = TextView(this).apply {
+            text = label
+            textSize = 11f
+            typeface = medium
+            gravity = Gravity.CENTER
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            setOnClickListener { onClick() }
+            addView(iconView, LinearLayout.LayoutParams(dp(22), dp(22)))
+            addView(labelView, LinearLayout.LayoutParams(WC, WC).also { it.topMargin = dp(7) })
+        }
+        fun style(active: Boolean) {
+            iconView.setImageDrawable(IconDrawable(ic, if (active) Color.WHITE else UiTheme.iconIdle))
+            labelView.setTextColor(if (active) Color.WHITE else UiTheme.iconIdle)
+            box.background = Glass.ripple(
+                this,
+                if (active) GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0x597B8CFF, 0x47B27CFF)).apply {
+                    cornerRadius = dp(20).toFloat(); setStroke(dp(1), UiTheme.accent)
+                } else Glass.solid(this, 0x12FFFFFF, 20, UiTheme.strokeSoft),
+                20
+            )
+        }
+        style(on)
+        return Pair(box, ::style)
+    }
+
+    // ---------------------------------------------------------------- main menu (bottom sheet)
     private fun menu() {
         val labels = arrayListOf(
             "📚 Library", "🕘 Browser History", "⬇️ Export All Translations (.txt)",
@@ -2449,41 +2718,24 @@ markers preserved.
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
             "🔍 Inspect Chatbot (Copy Report)"
         )
-        // Hide selected rows only. Their underlying features and code remain unchanged.
+        // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
-        val visibleIndices = labels.indices.filterNot { it in hidden }
-        val visibleLabels = visibleIndices.map { labels[it] }.toMutableList()
-        val lv = ListView(this).apply {
-            divider = android.graphics.drawable.ColorDrawable(0xFF252C3A.toInt())
-            dividerHeight = dp(1)
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            clipToPadding = false
-            isVerticalScrollBarEnabled = false
-            layoutParams = ViewGroup.LayoutParams(MP, dp(420))
-            setBackgroundColor(0x00161B24)
-        }
-        val adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, visibleLabels) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val row = (convertView as? TextView) ?: TextView(this@MainActivity).apply {
-                    textSize = 14.5f
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(14), dp(11), dp(14), dp(11))
-                }
-                row.text = getItem(position) ?: ""
-                row.setTextColor(cTxt)
-                row.background = pillBg(cCard, 12, 1, cFieldStroke)
-                row.layoutParams = AbsListView.LayoutParams(MP, WC)
-                return row
-            }
-        }
-        lv.adapter = adapter
-        val dlg = AlertDialog.Builder(this)
-            .setTitle("☰  NOVEL STUDIO")
-            .setView(lv)
-            .setNegativeButton("CLOSE", null)
-            .create()
-        lv.setOnItemClickListener { _, _, position, _ ->
-            val i = visibleIndices[position]
+        val icons = mapOf(
+            0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
+            7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
+            16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK
+        )
+        val sections = listOf(
+            "LIBRARY" to listOf(0, 1, 3, 4),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19),
+            "READER" to listOf(20, 23, 9),
+            "BROWSER" to listOf(15, 16, 21, 24)
+        )
+        lateinit var dlg: Dialog
+        val rows = HashMap<Int, SheetRow>()
+        fun refresh(i: Int, label: String) { labels[i] = label; rows[i]?.set(label) }
+
+        fun onItem(i: Int) {
             when (i) {
                 0 -> { dlg.dismiss(); libraryNovels() }
                 1 -> { dlg.dismiss(); browserHistoryDialog() }
@@ -2500,24 +2752,20 @@ markers preserved.
                     val d = darkMode()
                     Prefs.put(this, "dark", ((d + 1) % 3).toString())
                     applyDark()
-                    labels[i] = menuDarkLabel(); visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
+                    refresh(i, menuDarkLabel())
                 }
                 12 -> {
                     Prefs.putBool(this, "withPrompt", !Prefs.bool(this, "withPrompt"))
-                    labels[i] = menuPromptLabel(); visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
+                    refresh(i, menuPromptLabel())
                 }
                 14 -> {
                     Prefs.putBool(this, "autoExtractNext", !Prefs.bool(this, "autoExtractNext", true))
-                    labels[i] = menuNextExtractLabel(); visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
+                    refresh(i, menuNextExtractLabel())
                 }
                 15 -> {
                     val v = !Prefs.adblock(this)
                     Prefs.putBool(this, "noAdblock", !v)
-                    labels[i] = menuAdBlockLabel(); visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
+                    refresh(i, menuAdBlockLabel())
                 }
                 16 -> {
                     toast("⏳ Updating the block list…")
@@ -2528,61 +2776,80 @@ markers preserved.
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
-                    labels[i] = menuFontLabel(); visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
+                    refresh(i, menuFontLabel())
                     val ch = lastChapter
                     if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
                 }
                 21 -> { dlg.dismiss(); siteRulesDialog() }
                 23 -> {
                     Prefs.put(this, "trSize", ((Prefs.sizeIdx(this) + 1) % Prefs.SIZES.size).toString())
-                    labels[i] = menuSizeLabel(); visibleLabels[position] = labels[i]
-                    adapter.notifyDataSetChanged()
+                    refresh(i, menuSizeLabel())
                     val ch = lastChapter
                     if (ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
             }
         }
-        dlg.setOnShowListener {
-            dlg.window?.setBackgroundDrawable(GradientDrawable().apply {
-                cornerRadius = dp(26).toFloat()
-                setColor(0xF7161B24.toInt())
-                setStroke(dp(1), cFieldStroke)
-            })
-            dlg.window?.setDimAmount(0.10f)
-            dlg.window?.setLayout(
-                (resources.displayMetrics.widthPixels - dp(28)).coerceAtMost(dp(360)),
-                WC
-            )
-            dlg.window?.attributes = dlg.window?.attributes?.apply {
-                gravity = Gravity.TOP or Gravity.END
-                x = dp(10)
-                y = dp(66)
-            }
-            val titleId = resources.getIdentifier("alertTitle", "id", "android")
-            dlg.findViewById<TextView>(titleId)?.apply {
-                setTextColor(cTxt)
-                textSize = 17f
-                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
-            }
-            dlg.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {
-                setTextColor(cAccent)
-                textSize = 12.5f
-                isAllCaps = true
-            }
-            dlg.setCanceledOnTouchOutside(true)
+
+        // ---- quick actions
+        val tiles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun addTile(t: Pair<LinearLayout, (Boolean) -> Unit>) {
+            tiles.addView(t.first, LinearLayout.LayoutParams(0, dp(76), 1f).also { it.setMargins(dp(4), 0, dp(4), 0) })
         }
+        addTile(tile(Ic.HOME, "Home", false) {
+            dlg.dismiss()
+            val home = "https://www.google.com/"
+            urlBar.setText(home)
+            go(home)
+        })
+        addTile(tile(Ic.SHARE, "Share", false) {
+            dlg.dismiss()
+            val currentUrl = novelWv.url ?: browserTabs.getOrNull(activeTabIndex)?.url.orEmpty()
+            if (currentUrl.isNotBlank()) {
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, currentUrl)
+                }
+                startActivity(Intent.createChooser(send, "Share page"))
+            } else toast("No page to share")
+        })
+        addTile(tile(Ic.PLUS, "New tab", false) { dlg.dismiss(); newBrowserTab("https://www.google.com/") })
+        addTile(tile(Ic.SPARK, "Prompt", false) { dlg.dismiss(); deliver(Prefs.prompt(this), "Prompt") })
+        lateinit var styleAuto: (Boolean) -> Unit
+        val autoTile = tile(Ic.BOLT, "Auto", Prefs.auto(this)) {
+            toggleAuto()
+            styleAuto(Prefs.auto(this))
+        }
+        styleAuto = autoTile.second
+        addTile(autoTile)
+
+        // ---- grouped rows
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(20))
+            addView(sheetHandle())
+            addView(tiles, LinearLayout.LayoutParams(MP, WC))
+        }
+        for ((name, idx) in sections) {
+            val shown = idx.filter { it !in hidden }
+            if (shown.isEmpty()) continue
+            col.addView(sectionLabel(name))
+            val group = sheetGroup()
+            shown.forEachIndexed { n, i ->
+                val row = sheetRow(icons[i], labels[i], n == shown.lastIndex) { onItem(i) }
+                rows[i] = row
+                group.addView(row.view)
+            }
+            col.addView(group, LinearLayout.LayoutParams(MP, WC))
+        }
+        val scroll = MaxHeightScroll(this, (resources.displayMetrics.heightPixels * 0.86f).toInt()).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            background = Sheets.sheetBackground(this@MainActivity)
+            addView(col, ViewGroup.LayoutParams(MP, WC))
+        }
+        dlg = Sheets.create(this, scroll)
         dlg.show()
-        dlg.window?.setLayout(
-            (resources.displayMetrics.widthPixels - dp(28)).coerceAtMost(dp(360)),
-            WC
-        )
-        dlg.window?.attributes = dlg.window?.attributes?.apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = dp(10)
-            y = dp(66)
-        }
     }
 
     // ---------------------------------------------------------------- chatbot diagnosis
@@ -2791,12 +3058,61 @@ markers preserved.
     private fun menuAdBlockLabel(): String =
         (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
 
+    /** Glass bottom sheet with one tappable row per label (long-press optional). */
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
-        val lv = ListView(this)
-        lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
-        val dlg = AlertDialog.Builder(this).setTitle(title).setView(lv).setNegativeButton("Close", null).create()
-        lv.setOnItemClickListener { _, _, i, _ -> dlg.dismiss(); onClick(i) }
-        if (onLong != null) lv.setOnItemLongClickListener { _, _, i, _ -> dlg.dismiss(); onLong(i); true }
+        lateinit var dlg: Dialog
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(20))
+            addView(sheetHandle())
+            addView(TextView(this@MainActivity).apply {
+                text = title.replace(Regex("^[^A-Za-z0-9]+"), "").trim().ifBlank { title }
+                textSize = 20f
+                typeface = boldMedium
+                setTextColor(UiTheme.text)
+                setPadding(dp(6), dp(2), dp(6), dp(10))
+            })
+        }
+        val group = sheetGroup()
+        labels.forEachIndexed { i, label ->
+            val nl = label.indexOf('\n')
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                minimumHeight = dp(52)
+                gravity = Gravity.CENTER_VERTICAL
+                background = Glass.ripple(this@MainActivity, null, 0)
+                isClickable = true
+                setOnClickListener { dlg.dismiss(); onClick(i) }
+                if (onLong != null) setOnLongClickListener { dlg.dismiss(); onLong(i); true }
+                addView(TextView(this@MainActivity).apply {
+                    text = if (nl >= 0) label.substring(0, nl) else label
+                    textSize = 14.5f
+                    typeface = medium
+                    setTextColor(UiTheme.text)
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                if (nl >= 0) addView(TextView(this@MainActivity).apply {
+                    text = label.substring(nl + 1)
+                    textSize = 11.5f
+                    setTextColor(UiTheme.dim)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
+            group.addView(row, LinearLayout.LayoutParams(MP, WC))
+            if (i != labels.lastIndex) group.addView(View(this).apply { setBackgroundColor(0x10FFFFFF) },
+                LinearLayout.LayoutParams(MP, dp(1)).also { it.marginStart = dp(16) })
+        }
+        col.addView(group, LinearLayout.LayoutParams(MP, WC))
+        val scroll = MaxHeightScroll(this, (resources.displayMetrics.heightPixels * 0.82f).toInt()).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            background = Sheets.sheetBackground(this@MainActivity)
+            addView(col, ViewGroup.LayoutParams(MP, WC))
+        }
+        dlg = Sheets.create(this, scroll)
         dlg.show()
     }
 
