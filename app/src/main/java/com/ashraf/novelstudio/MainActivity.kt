@@ -598,7 +598,6 @@ class MainActivity : Activity() {
             addView(novelBox, FrameLayout.LayoutParams(MP, MP))
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
-            addView(prefetchWv, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
@@ -632,6 +631,8 @@ class MainActivity : Activity() {
                 }
             }
         }
+
+        content.addView(prefetchWv, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
 
         val contentHolder = FrameLayout(this).apply {
             setPadding(dp(8), dp(4), dp(8), dp(2))
