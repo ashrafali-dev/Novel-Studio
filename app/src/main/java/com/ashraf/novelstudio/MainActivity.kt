@@ -1904,7 +1904,7 @@ class MainActivity : Activity() {
     }
 
     private fun extractNow(view: WebView = novelWv, attempt: Int = 0, cb: (Chapter?) -> Unit) {
-        val url = novelWv.url ?: ""
+        val url = view.url ?: ""
         if (url.isBlank()) { cb(null); return }
 
         val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
@@ -1949,7 +1949,7 @@ class MainActivity : Activity() {
                     // Novel543 is explicitly included because its chapter body is
                     // stable at .chapter-content but can be missed while its DOM is
                     // still settling.
-                    extractWebNovelNow(cb)
+                    extractWebNovelNow(view, cb)
                     return@evaluateJavascript
                 }
 
