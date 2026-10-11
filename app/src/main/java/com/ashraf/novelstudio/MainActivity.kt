@@ -2269,7 +2269,8 @@ class MainActivity : Activity() {
                 }
                 pendingNavHash = null
                 pendingNavUrl = ""
-                handleChapter(ch)
+                // Manual ●/Instant is always a forced re-translation.
+                handleChapter(ch, useSavedTranslation = false)
             }
         }
 
@@ -2475,9 +2476,9 @@ class MainActivity : Activity() {
         handleChapter(ch)
     }
 
-    private fun handleChapter(ch: Chapter) {
+    private fun handleChapter(ch: Chapter, useSavedTranslation: Boolean = true) {
         onChapter(ch)
-        if (Prefs.bool(this, "prefetchNextChapter")) {
+        if (useSavedTranslation && Prefs.bool(this, "prefetchNextChapter")) {
             val saved = Store.find(this, ch)
             if (saved != null) {
                 val translated = Store.readRaw(this, saved.id)
