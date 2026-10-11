@@ -2159,6 +2159,7 @@ class MainActivity : Activity() {
         runToken++
         queue.clear()
         running = null
+        prefetchKeys.clear()
         autoCopy = false
         polling = false
         refreshPending = false
