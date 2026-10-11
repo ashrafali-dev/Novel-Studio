@@ -2810,15 +2810,9 @@ class MainActivity : Activity() {
         var blocks = text.split(Regex("\\n\\s*\\n"))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-        // Some WTR-LAB/fallback DOM paths flatten rendered .wtr-line elements
-        // to single newlines. If paragraph separators were lost, recover those
-        // line boundaries instead of assigning one marker to the whole chapter.
-        if (splitSingleLines && blocks.size <= 1) {
-            val lines = text.split(Regex("\\n+"))
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-            if (lines.size > 1) blocks = lines
-        }
+        // fastExtract joins WTR-LAB's real text blocks with blank lines. Do not
+        // split a flattened string at every single newline: those can be visual
+        // line wraps, not source paragraphs. Preserve paragraph boundaries.
         return blocks.mapIndexed { i, block ->
             "[${(i + 1).toString().padStart(3, '0')}] $block"
         }.joinToString("\\n\\n")
