@@ -2098,11 +2098,17 @@ class MainActivity : Activity() {
                     url.substringAfter("://", "").substringBefore('/').removePrefix("www.")
                 }
 
-                val number0 = Regex(
+                val explicitNumber = Regex(
                     "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
                     RegexOption.IGNORE_CASE
                 ).find(cleanTitle)?.groupValues?.getOrNull(1)
-                    ?: Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
+                val isWebNovel = Uri.parse(url).host.orEmpty().contains("webnovel.com", ignoreCase = true)
+                val number0 = when {
+                    isWebNovel && explicitNumber?.let { it.length >= 4 && it.startsWith("0") } == true -> ""
+                    explicitNumber != null -> explicitNumber
+                    isWebNovel -> ""
+                    else -> Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
+                }
                 // Novel543: /<book>/<vol>_<ch>_<part>.html is page <part> of the same chapter.
                 val partNo = if (isNovel543)
                     Regex("/\\d+_\\d+_(\\d+)\\.html").find(url)?.groupValues?.get(1)?.toIntOrNull() else null
