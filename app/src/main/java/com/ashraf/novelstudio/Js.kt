@@ -37,7 +37,7 @@ function __gen(){var sent=window.__nsSentN||'',baseM=window.__nsBaseM||new Set()
    if(bad)break;e=pa;len=pt.length;}
   if(!best||e.contains(best)||!best.contains(e))best=e;}
  return best;}
-function __esc(x){var sp='.*+?^{}()|[]\/-'+String.fromCharCode(36),o='';for(var k=0;k<x.length;k++){var c=x.charAt(k);o+=(sp.indexOf(c)>=0?'\\'+c:c);}return o;}
+function __esc(x){var sp='.*+?^{}()|[]\\/-'+String.fromCharCode(36),o='';for(var k=0;k<x.length;k++){var c=x.charAt(k);o+=(sp.indexOf(c)>=0?'\\'+c:c);}return o;}
 function __scan(){var sent=window.__nsSentN;if(!sent)return null;var raw=document.body.innerText||'';if(raw.length>400000)raw=raw.slice(-400000);
  var j=raw.lastIndexOf('[001]');
  if(j>=0){var seg=raw.slice(j);if(sent.indexOf(__nrm(seg).slice(0,50))<0)return {got:1,how:'marker',text:seg,len:seg.length,found:__mk(seg)};}
@@ -51,6 +51,15 @@ function __fixm(t){return String(t||'').replace(/\*{1,2}(\[\d{3}\])\*{1,2}/g,fun
 function __ntext(p,e){var i=(p.b&&e.querySelector(p.b))||e.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]')||e;return (i.innerText||i.textContent||'').trim();}
 function __new(p,l){var base=window.__nsBase||[],bm=new Map(),bt=new Set();base.forEach(function(x){bm.set(x.el,x.t);bt.add(x.t);});var now=l||__asst(p),hit=null;for(var i=0;i<now.length;i++){var e=now[i],t=(e.innerText||e.textContent||'').trim(),o=bm.get(e);if(o===undefined){if(bt.has(t))continue;hit=e;}else if(t!==o){hit=e;}}return hit||__gen();}
 function __mk(t){var m=t.match(/\[\d{3}\]/g)||[],s={},c=0;for(var i=0;i<m.length;i++){if(!s[m[i]]){s[m[i]]=1;c++;}}return c;}
+function __trk(){var bn=window.__nsBaseNodes,bt=window.__nsBaseTexts,sent=window.__nsSentN;if(!bn||!sent||!document.body)return null;
+ var skip='button,nav,aside,form,textarea,input,[contenteditable],[role="button"],[role="menu"],script,style,noscript,svg';
+ var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),n,parts=[];
+ while(n=tw.nextNode()){if(bn.has(n))continue;var v=n.nodeValue;if(!v||!v.trim())continue;var pe=n.parentElement;if(!pe)continue;
+  try{if(pe.closest(skip))continue;}catch(e){}
+  var t=__nrm(v);if(bt&&bt.has(t))continue;
+  if(t.length>=12&&(sent.indexOf(t)>=0||(t.length>=40&&sent.indexOf(t.slice(0,40))>=0)))continue;
+  parts.push(v);}
+ var text=parts.join('\n');return {len:text.length,found:__mk(text)};}
 function __vis(b){if(!b||!b.isConnected)return false;var s=getComputedStyle(b),r=b.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;}
 function __ok(b){return __vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=='true';}
 function __ctls(box){var out=[],seen=new Set(),c=box.parentElement,prev=[];for(var up=0;c&&up<7;up++,c=c.parentElement){var l=[].slice.call(c.querySelectorAll('button,[role="button"]'));if(l.length>14)break;prev=l;}prev.forEach(function(x){if(!seen.has(x)){seen.add(x);out.push(x);}});return out;}
@@ -79,6 +88,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   box.focus();
   var snap=__snap(box);
   window.__nsSentN=__nrm(text);
+  try{var __bs=new WeakSet(),__bt=new Set(),__tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),__nn;
+    while(__nn=__tw.nextNode()){__bs.add(__nn);var __x=__nrm(__nn.nodeValue);if(__x.length>=20)__bt.add(__x);}
+    window.__nsBaseNodes=__bs;window.__nsBaseTexts=__bt;window.__nsSentAt=Date.now();}catch(e){window.__nsBaseNodes=null;window.__nsBaseTexts=null;}
   try{var me=__markEls();window.__nsBaseM=new Set(me);window.__nsBaseT=new Set(me.map(function(e){return __nrm(e.innerText||e.textContent);}));}catch(e){window.__nsBaseM=new Set();window.__nsBaseT=new Set();}
   function boxText(){return String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();}
   if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
@@ -152,7 +164,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // "This job's reply" = an assistant node that is new, or whose text changed, since send().
     // "<assistant msg count>|<streaming 0/1>|<length of THIS job's reply>|<distinct [NNN] markers seen>|<new reply seen 0/1>"
     // 1) page-text scan (no selectors: works on any chatbot), 2) element detection as a fallback.
-    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var sc=__scan();var len=0,found=0,got=0;if(sc&&sc.got){got=1;len=sc.len;found=sc.found;}else{var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);len=b?((b.innerText||b.textContent||'').trim().length):0;}}var stop=__stream(p);var sendReady=0;try{var sb=p.send?document.querySelector(p.send):null;sendReady=__ok(sb)?1:0;if(!sendReady){var box=__box();var ct=box&&__ctls(box);sendReady=ct&&ct.some(function(b){return __ok(b)&&/send/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||''))})?1:0;}}catch(e){}var done=(got&&len>50&&!stop&&sendReady)?1:0;return l.length+'|'+stop+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+done;})()")
+    fun readLen(): String = run("(function(){var p=__prof();var l=__asst(p);var tk=__trk();var tkOn=!!window.__nsBaseNodes;var tkGot=!!tk&&tk.len>=20;var useOld=!tkOn||(!tkGot&&(Date.now()-(window.__nsSentAt||0))>12000);var sc=useOld?__scan():null;var len=0,found=0,got=0;if(tkGot){got=1;len=tk.len;found=tk.found;}else if(useOld){if(sc&&sc.got){got=1;len=sc.len;found=sc.found;}else{var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);len=b?((b.innerText||b.textContent||'').trim().length):0;}}}var stop=__stream(p);var sendReady=0;try{var sb=p.send?document.querySelector(p.send):null;sendReady=__ok(sb)?1:0;if(!sendReady){var box=__box();var ct=box&&__ctls(box);sendReady=ct&&ct.some(function(b){return __ok(b)&&/send/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||''))})?1:0;}}catch(e){}var done=(got&&len>50&&!stop&&sendReady)?1:0;return l.length+'|'+stop+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+done;})()")
 
     // Final reply text. Markers are forced to the start of a line so the paragraph split works
     // even when the chatbot put several paragraphs on one line.
@@ -723,10 +735,10 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       var len=(t||'').length,links=0;
       try{e.querySelectorAll('a').forEach(function(a){links+=(a.innerText||a.textContent||'').trim().length;});}catch(x){}
       if(len>0&&links/len>0.55)return true;
-      var s=String(t||'').replace(/\s+/g,' ').trim().toLowerCase();
+      var s=String(t||'').replace(/\\s+/g,' ').trim().toLowerCase();
       if(!s)return true;
       if(/^(wtr[- ]lab|library|novels?|ranking|leaderboard|table of contents|contents|previous|next|previous chapter|next chapter|আগের|পরের|সূচিপত্র|লাইব্রেরি|উপন্যাস|র‍্যাঙ্কিং|লিডারবোর্ড)$/.test(s))return true;
-      if(/^(?:chapter|episode)\s*\\d+\s*(?:\/|of)\s*\\d+$/i.test(s))return true;
+      if(/^(?:chapter|episode)\\s*\\d+\\s*(?:\\/|of)\\s*\\d+$/i.test(s))return true;
       if(/^\\d+(?:\\.\\d+)?%$/.test(s))return true;
       return false;
     }
@@ -941,36 +953,10 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
   function link(kind,sel){
     var e=null;
-    var isQidian=hostNow.indexOf('qidian.com')>=0;
     if(isN543)e=byText(kind);          // never trust a fixed nth-child here
-    // Qidian's chapter IDs are opaque and its generic remembered selector can
-    // point at the following-next link (skipping a chapter). Use its actual
-    // chapter navigation group first, then label-based detection as fallback.
-    if(isQidian){
-      // Do not use first/last-child here: Qidian's mobile nav can contain
-      // chapter +2 / volume links beside the true adjacent chapter link.
-      try{
-        var qLinks=Array.from(document.querySelectorAll('.nav-btn-group a[href],a[href]'));
-        var qRe=kind==='next'?/(下一章|下一节|下一話|下一话|下一回|next\s*chapter)/i:
-          /(上一章|上一节|上一話|上一话|上一回|previous\s*chapter|prev\s*chapter)/i;
-        var cu=new URL(location.href),bestQ=null,bestScore=-1;
-        qLinks.forEach(function(a){
-          var label=((a.innerText||a.textContent||'')+' '+(a.getAttribute('aria-label')||'')+' '+(a.title||'')).replace(/\s+/g,' ').trim();
-          if(!qRe.test(label))return;
-          var qu=new URL(a.href,location.href);
-          if(qu.origin!==cu.origin||qu.pathname===cu.pathname)return;
-          if(!/^\/chapter\/[^/]+\/[^/]+\/?$/i.test(qu.pathname))return;
-          var score=label.length<18?5:3;
-          if(a.closest('.nav-btn-group'))score+=4;
-          if(score>bestScore){bestScore=score;bestQ=a;}
-        });
-        if(bestQ)e=bestQ;
-      }catch(x){}
-      if(!e)e=byText(kind);
-    }
-    if(!e&&!isQidian)e=pick(sel);
-    if(!e&&!isN543&&!isQidian)e=byText(kind);
-    if(!e&&!isQidian){
+    if(!e)e=pick(sel);
+    if(!e&&!isN543)e=byText(kind);
+    if(!e){
       var q=kind==='next'
         ? 'link[rel="next"],a[rel="next"],a.next,.next a,.next-chapter a,.chapter-next a,'+
           'a[class*="next" i][href],[data-testid*="next" i] a,[aria-label*="next" i],[title*="next" i]'
