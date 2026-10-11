@@ -718,6 +718,12 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   var content=pick(__CONTENT__);
   var rootList=roots();
+  // WTR-LAB preloads neighbouring chapter bodies; always target the active one,
+  // even if a remembered generic selector matches an earlier body in the DOM.
+  if(location.hostname.toLowerCase().indexOf('wtr-lab.com')>=0){
+    var activeWtr=pick('.chapter-tracker.active .chapter-body');
+    if(activeWtr)content=activeWtr;
+  }
   if(content)rootList=[content].concat(rootList.filter(function(x){return x!==content;}));
 
   // Novel543 can expose a title-only .chapter-content while the real
