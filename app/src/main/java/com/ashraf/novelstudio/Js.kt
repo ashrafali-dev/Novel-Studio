@@ -353,7 +353,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   var curTitle=stripIndex(title);
   var sourcePath=sourceUrl?clean(sourceUrl):'';
-  var as=[].slice.call(document.querySelectorAll('.j_catalog_list .volume-item li a[href], .j_catalog_list a[href]'));
+  var as=[].slice.call(document.querySelectorAll('.j_catalog_list .volume-item li a[href], .j_catalog_list a[href], a[href]'));
   var links=[];
 
   for(var i=0;i<as.length;i++){
