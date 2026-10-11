@@ -175,6 +175,7 @@ class MainActivity : Activity() {
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
+    private var progressTicker: Runnable? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -2622,7 +2623,7 @@ class MainActivity : Activity() {
 
     private fun handleChapter(ch: Chapter, useSavedTranslation: Boolean = true) {
         onChapter(ch)
-        if (useSavedTranslation && Prefs.bool(this, "prefetchNextChapter")) {
+        if (useSavedTranslation) {
             val saved = Store.find(this, ch)
             if (saved != null) {
                 val translated = Store.readRaw(this, saved.id)
@@ -2690,7 +2691,7 @@ class MainActivity : Activity() {
         }
     }
     private fun schedulePrefetch(ch: Chapter) {
-        if (!Prefs.bool(this, "prefetchNextChapter") && !Prefs.auto(this)) return
+        if (!Prefs.bool(this, "prefetchNextChapter")) return
         val parsedCurrent = Uri.parse(ch.url)
         val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
         val inferredWtrNext = if (hostCurrent == "wtr-lab.com" || hostCurrent.endsWith(".wtr-lab.com")) {
@@ -2835,7 +2836,7 @@ class MainActivity : Activity() {
         // block whose paragraphs are separated by single newlines only. Then every
         // line is a paragraph; otherwise the model gets a single [001] marker and the
         // whole translation lands as one wall of text.
-        if (blocks.size <= 2) {
+        if (splitSingleLines && blocks.size <= 2) {
             val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
             if (lines.size >= 6) blocks = lines
         }
@@ -2953,6 +2954,7 @@ class MainActivity : Activity() {
     }
 
     private fun startNext() {
+        stopProgressTicker()
         if (queue.isEmpty()) {
             running = null
             updateProgressUi()
@@ -2963,7 +2965,35 @@ class MainActivity : Activity() {
         progress = 0
         val tok = ++runToken
         updateProgressUi()
+        startProgressTicker(tok)
         waitIdle(tok, ch, 0)
+    }
+
+    // WebView JavaScript timers are throttled when the chatbot pane is hidden.
+    // Keep the visible progress UI moving on the Android main-thread clock, but
+    // never let the estimate claim completion before the reply is verified.
+    private fun startProgressTicker(tok: Int) {
+        stopProgressTicker()
+        val ticker = object : Runnable {
+            override fun run() {
+                if (tok != runToken || running == null) {
+                    if (progressTicker === this) progressTicker = null
+                    return
+                }
+                if (progress < 88) {
+                    progress += 1
+                    updateProgressUi()
+                }
+                handler.postDelayed(this, 1400L)
+            }
+        }
+        progressTicker = ticker
+        handler.postDelayed(ticker, 1400L)
+    }
+
+    private fun stopProgressTicker() {
+        progressTicker?.let { handler.removeCallbacks(it) }
+        progressTicker = null
     }
 
     // make sure the chatbot is not still busy with something else before we send
@@ -3081,7 +3111,11 @@ markers preserved.
                 val completed = completedByMarkers || completedByUi ||
                     completedAfterStop || completedWithoutStopSignal
 
-                progress = if (completed) 100 else if (!got) 3 else maxOf(progress, pct)
+                // Marker counts can appear all at once (or be read from a prompt echo).
+                // Rate-limit increases so the bar cannot jump from 3% to ~98% in one poll.
+                progress = if (completed) 100
+                    else if (!got) maxOf(progress, 3)
+                    else maxOf(progress, minOf(90, pct, progress + 1))
                 updateProgressUi()
 
                 when {
@@ -3123,6 +3157,7 @@ markers preserved.
             }
             progress = 100
             updateProgressUi()
+            stopProgressTicker()
             val shown = lastChapter
             if (shown != null && keyOf(shown) == keyOf(ch)) {
                 applyTranslation(shown, rawTranslation, true)
@@ -3136,6 +3171,7 @@ markers preserved.
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
+        stopProgressTicker()
         queue.clear()
         running = null
         copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
@@ -3145,6 +3181,7 @@ markers preserved.
 
     private fun cancelAll() {
         runToken++
+        stopProgressTicker()
         queue.clear()
         running = null
         chatWv.evaluateJavascript(Js.stop(), null)
