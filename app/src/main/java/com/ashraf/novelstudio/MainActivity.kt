@@ -3007,7 +3007,7 @@ markers preserved.
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val completedByMarkers = got && effLen > 50 && !streaming && allMarkers && st >= 3
+                val completedByMarkers = got && effLen > 50 && !streaming && allMarkers && st >= 8
                 val completedByUi = got && effLen > 50 && uiDone && !streaming && st >= 8
                 val completedAfterStop = got && effLen > 50 && streamEnded && st >= 8
                 val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
