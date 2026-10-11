@@ -2822,7 +2822,10 @@ class MainActivity : Activity() {
         text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
 
     private fun splitInternalMarkedTranslation(text: String): List<String> {
-        val marker = Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*")
+        // Models sometimes keep [001][002] markers on the same physical line.
+        // Split on the marker itself, not only on a line-start marker. This keeps
+        // WTR-LAB's original paragraph alignment even when the model flattens newlines.
+        val marker = Regex("\\[\\d{3,}\\]\\s*")
         if (!marker.containsMatchIn(text)) {
             return text.split(Regex("\\n\\s*\\n"))
                 .map { it.trim() }
@@ -2991,7 +2994,8 @@ markers preserved.
                 // If the model doesn't preserve markers, fall back to output length.
                 val pct = when {
                     !got -> 3
-                    total > 0 && found > 0 -> (found * 100 / total).coerceIn(3, 98)
+                    total > 0 -> if (found > 0) (found * 100 / total).coerceIn(3, 98)
+                        else minOf(90, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                     else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
                 // A stream that grows by 1–2 characters is still changing, not stable.
@@ -3007,7 +3011,7 @@ markers preserved.
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val completedByMarkers = got && effLen > 50 && !streaming && allMarkers && st >= 8
+                val completedByMarkers = got && effLen > 50 && !streaming && allMarkers && st >= 4
                 val completedByUi = got && effLen > 50 && uiDone && !streaming && st >= 8
                 val completedAfterStop = got && effLen > 50 && streamEnded && st >= 8
                 val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
