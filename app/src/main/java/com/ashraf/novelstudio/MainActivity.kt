@@ -2987,30 +2987,33 @@ markers preserved.
                 val effLen = if (got) len else 0
                 val total = jobMarkers
                 val allMarkers = got && total > 0 && found >= total
+                // Marker progress is linear: each translated paragraph advances the bar.
+                // If the model doesn't preserve markers, fall back to output length.
                 val pct = when {
                     !got -> 3
-                    total > 0 && found > 0 -> ((2 * found - 1) * 50 / total).coerceIn(3, 98)
+                    total > 0 && found > 0 -> (found * 100 / total).coerceIn(3, 98)
                     else -> minOf(95, effLen * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
-                val st = if (got && kotlin.math.abs(effLen - lastLen) <= 2) stable + 1 else 0
+                // A stream that grows by 1–2 characters is still changing, not stable.
+                // Require an exactly unchanged reply length before calling it complete.
+                val st = if (got && effLen == lastLen) stable + 1 else 0
                 val elapsed = System.currentTimeMillis() - started
 
-                // Decide completion before painting progress, so a finished reply
-                // never sits visibly at 98% while finishJob() is waiting.
+                // The stop-button detector can miss a model's streaming state or the
+                // UI can briefly expose Send during a pause. Never treat that alone as
+                // completion: require the reply to stay unchanged across multiple polls.
                 val streamEnded = sawStream && !streaming
                 val expectedFloor = maxOf(
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                // Send becoming available is the reliable visible completion signal.
-                // Do not wait for the streaming heuristic, which can remain stale on
-                // some ChatGPT/Gemini versions after the visible answer is finished.
-                val completedByUi = got && effLen > 50 && uiDone &&
-                    (sawStream || allMarkers || st >= 2)
-                val completedAfterStop = got && effLen > 50 && streamEnded && st >= 2
+                val completedByMarkers = got && effLen > 50 && !streaming && allMarkers && st >= 3
+                val completedByUi = got && effLen > 50 && uiDone && !streaming && st >= 8
+                val completedAfterStop = got && effLen > 50 && streamEnded && st >= 8
                 val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
                     st >= 20 && (allMarkers || effLen >= expectedFloor)
-                val completed = completedByUi || completedAfterStop || completedWithoutStopSignal
+                val completed = completedByMarkers || completedByUi ||
+                    completedAfterStop || completedWithoutStopSignal
 
                 progress = if (completed) 100 else if (!got) 3 else maxOf(progress, pct)
                 updateProgressUi()
