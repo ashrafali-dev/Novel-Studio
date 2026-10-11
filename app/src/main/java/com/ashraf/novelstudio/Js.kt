@@ -770,8 +770,10 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     if(!e&&!isN543)e=byText(kind);
     if(!e){
       var q=kind==='next'
-        ? 'link[rel="next"],a[rel="next"],a.next,.next a,[aria-label*="next" i],[title*="next" i]'
-        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,[aria-label*="prev" i],[title*="prev" i]';
+        ? 'link[rel="next"],a[rel="next"],a.next,.next a,.next-chapter a,.chapter-next a,'+
+          'a[class*="next" i][href],[data-testid*="next" i] a,[aria-label*="next" i],[title*="next" i]'
+        : 'link[rel="prev"],a[rel="prev"],a.prev,.prev a,.prev-chapter a,.chapter-prev a,'+
+          'a[class*="prev" i][href],[data-testid*="prev" i] a,[aria-label*="prev" i],[title*="prev" i]';
       try{e=document.querySelector(q);}catch(x){e=null;}
     }
     if(e&&e.href&&(!isN543||n543ok(e.href)))return {href:e.href,text:text(e),selector:stable(e)};
