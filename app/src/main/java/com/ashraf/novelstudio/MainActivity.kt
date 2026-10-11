@@ -175,7 +175,6 @@ class MainActivity : Activity() {
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
-    private var progressTicker: Runnable? = null
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -1576,10 +1575,7 @@ class MainActivity : Activity() {
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
                 novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-                // Keep the chatbot WebView attached at a real size while hidden.
-                // A zero-height WebView can stall response polling when translation
-                // runs in the background, so place it just below the clipped viewport.
-                chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP).apply { topMargin = h }
+                chatBox.layoutParams = FrameLayout.LayoutParams(MP, 0)
                 chatBox.bringToFront()
                 novelBox.bringToFront()
             }
@@ -2101,17 +2097,11 @@ class MainActivity : Activity() {
                     url.substringAfter("://", "").substringBefore('/').removePrefix("www.")
                 }
 
-                val explicitNumber = Regex(
+                val number0 = Regex(
                     "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
                     RegexOption.IGNORE_CASE
                 ).find(cleanTitle)?.groupValues?.getOrNull(1)
-                val isWebNovel = Uri.parse(url).host.orEmpty().contains("webnovel.com", ignoreCase = true)
-                val number0 = when {
-                    isWebNovel && explicitNumber?.let { it.length >= 4 && it.startsWith("0") } == true -> ""
-                    explicitNumber != null -> explicitNumber
-                    isWebNovel -> ""
-                    else -> Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
-                }
+                    ?: Regex("(\\d{1,5})").find(cleanTitle)?.value.orEmpty()
                 // Novel543: /<book>/<vol>_<ch>_<part>.html is page <part> of the same chapter.
                 val partNo = if (isNovel543)
                     Regex("/\\d+_\\d+_(\\d+)\\.html").find(url)?.groupValues?.get(1)?.toIntOrNull() else null
@@ -2464,23 +2454,16 @@ class MainActivity : Activity() {
             val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
 
-            val host = Uri.parse(base.url).host.orEmpty().lowercase()
-            val isQidian = host == "qidian.com" || host.endsWith(".qidian.com")
-            if (webNovel) {
-                // WebNovel's reader URL/DOM can expose opaque or stale adjacent IDs.
-                // Resolve the actual neighbouring chapter from its catalogue instead.
-                clickAndWait(dir, base, token)
-            } else if (target != null && adjacentUrlIsSafe(currentUrl, target)) {
+            if (target != null && adjacentUrlIsSafe(currentUrl, target)) {
+                // Extension-style fast path: use the adjacent chapter URL
+                // already discovered from the rendered DOM. This also works
+                // for WebNovel and avoids opening /catalog on every Next click.
                 wipeStale(clearNovelDom = true)
                 navToken = token
                 loadAndWait(target, token, base)
-            } else if (isQidian) {
-                // Qidian chapter IDs are opaque. Clicking an ambiguous site control can
-                // skip chapters, so fail safely rather than silently jumping 1 -> 3.
-                hideNavLoading()
-                toast("❌ Qidian-এর পরের অধ্যায়ের নির্ভরযোগ্য লিংক পাওয়া যায়নি")
             } else {
-                // Use the site's own navigation when no reliable adjacent URL exists.
+                // Only fall back to the site's own navigation when the
+                // extractor could not discover an adjacent URL.
                 clickAndWait(dir, base, token)
             }
         }
@@ -2639,7 +2622,10 @@ class MainActivity : Activity() {
 
     private fun handleChapter(ch: Chapter, useSavedTranslation: Boolean = true) {
         onChapter(ch)
-        if (useSavedTranslation) {
+        val key = keyOf(ch)
+        // A translation made by the background prefetch is reused even when the "prefetch" menu
+        // switch is off and only auto-translate is on (before, it was thrown away and redone).
+        if (useSavedTranslation && (Prefs.bool(this, "prefetchNextChapter") || prefetchGeneratedKeys.contains(key))) {
             val saved = Store.find(this, ch)
             if (saved != null) {
                 val translated = Store.readRaw(this, saved.id)
@@ -2650,6 +2636,16 @@ class MainActivity : Activity() {
                     return
                 }
             }
+            // Its translation is still running (or queued) in the background: keep it going.
+            // finishJob() puts the text into this page the moment it completes. Before, ▶ restarted
+            // it from zero.
+            val r = running
+            if (prefetchGeneratedKeys.contains(key) &&
+                ((r != null && keyOf(r) == key) || queue.any { keyOf(it) == key })) {
+                updateProgressUi()
+                schedulePrefetch(ch)
+                return
+            }
         }
         if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
         schedulePrefetch(ch)
@@ -2657,25 +2653,46 @@ class MainActivity : Activity() {
 
     // On page load, check for a saved translation even when Next auto-extraction is off.
     private fun scheduleSavedTranslationCheck(pageUrl: String) {
-        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        if (!Prefs.bool(this, "prefetchNextChapter") && prefetchGeneratedKeys.isEmpty()) return
         val token = navToken
-        handler.postDelayed({
-            if (token != navToken || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return@postDelayed
-            if (hasTr && lastChapter?.let { cleanUrl(it.url) == cleanUrl(pageUrl) } == true) return@postDelayed
+        // SPA readers (WebNovel, WTR-LAB...) draw the chapter AFTER the page finishes loading.
+        // One try at +500 ms found nothing there, so the saved translation was never inserted.
+        fun attempt(n: Int) {
+            if (token != navToken || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return
+            if (hasTr && lastChapter?.let { cleanUrl(it.url) == cleanUrl(pageUrl) } == true) return
             extractNow { ch ->
-                if (token != navToken || ch == null || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return@extractNow
-                val saved = Store.find(this, ch) ?: return@extractNow
-                val translated = Store.readRaw(this, saved.id)
-                if (translated.length < 30) return@extractNow
-                autoCopy = false
-                polling = false
-                onChapter(ch)
-                markPrefetchedTranslationActive(ch, saved)
-                hideNavLoading()
-                applyTranslation(ch, translated, true)
-                schedulePrefetch(ch)
+                if (token != navToken || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return@extractNow
+                if (ch == null) {
+                    if (n < 14) handler.postDelayed({ attempt(n + 1) }, 800L)
+                    return@extractNow
+                }
+                val key = keyOf(ch)
+                val saved = Store.find(this, ch)
+                val translated = saved?.let { Store.readRaw(this, it.id) }.orEmpty()
+                if (saved != null && translated.length >= 30) {
+                    autoCopy = false
+                    polling = false
+                    onChapter(ch)
+                    markPrefetchedTranslationActive(ch, saved)
+                    hideNavLoading()
+                    applyTranslation(ch, translated, true)
+                    schedulePrefetch(ch)
+                    return@extractNow
+                }
+                // Not finished yet but being translated in the background: adopt this page so
+                // finishJob() inserts the text as soon as it is ready.
+                val r = running
+                if (lastChapter == null && prefetchGeneratedKeys.contains(key) &&
+                    ((r != null && keyOf(r) == key) || queue.any { keyOf(it) == key })) {
+                    autoCopy = false
+                    polling = false
+                    onChapter(ch)
+                    hideNavLoading()
+                    schedulePrefetch(ch)
+                }
             }
-        }, 500L)
+        }
+        handler.postDelayed({ attempt(0) }, 500L)
     }
 
     // Backup: double-tap ⚡ to insert a saved translation without translating again.
@@ -2707,7 +2724,7 @@ class MainActivity : Activity() {
         }
     }
     private fun schedulePrefetch(ch: Chapter) {
-        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        if (!Prefs.bool(this, "prefetchNextChapter") && !Prefs.auto(this)) return
         val parsedCurrent = Uri.parse(ch.url)
         val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
         val inferredWtrNext = if (hostCurrent == "wtr-lab.com" || hostCurrent.endsWith(".wtr-lab.com")) {
@@ -2852,7 +2869,7 @@ class MainActivity : Activity() {
         // block whose paragraphs are separated by single newlines only. Then every
         // line is a paragraph; otherwise the model gets a single [001] marker and the
         // whole translation lands as one wall of text.
-        if (splitSingleLines && blocks.size <= 2) {
+        if (blocks.size <= 2) {
             val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
             if (lines.size >= 6) blocks = lines
         }
@@ -2882,7 +2899,7 @@ class MainActivity : Activity() {
     private fun stripInternalMarkers(text: String): String =
         text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
 
-    private fun splitInternalMarkedTranslation(text: String, preserveParagraphs: Boolean = false): List<String> {
+    private fun splitInternalMarkedTranslation(text: String): List<String> {
         // Models sometimes keep [001][002] markers on the same physical line.
         // Split on the marker itself, not only on a line-start marker.
         val marker = Regex("\\[\\d{3,}\\]\\s*")
@@ -2897,16 +2914,12 @@ class MainActivity : Activity() {
         val one = parts.firstOrNull() ?: return parts
         val lines = one.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.size >= 3) return lines
-        if (one.length > (if (preserveParagraphs) 280 else 500)) {
+        if (one.length > 500) {
             val out = mutableListOf<String>()
             val sb = StringBuilder()
-            val threshold = if (preserveParagraphs) 180 else 220
             for (c in one) {
                 sb.append(c)
-                if (sb.length >= threshold && "।.!?！？”\u2026」』".indexOf(c) >= 0) {
-                    out.add(sb.toString().trim())
-                    sb.setLength(0)
-                }
+                if (sb.length >= 220 && "।!?”\u2026".indexOf(c) >= 0) { out.add(sb.toString().trim()); sb.setLength(0) }
             }
             if (sb.isNotBlank()) out.add(sb.toString().trim())
             if (out.size > 1) return out
@@ -2974,7 +2987,6 @@ class MainActivity : Activity() {
     }
 
     private fun startNext() {
-        stopProgressTicker()
         if (queue.isEmpty()) {
             running = null
             updateProgressUi()
@@ -2985,37 +2997,7 @@ class MainActivity : Activity() {
         progress = 0
         val tok = ++runToken
         updateProgressUi()
-        startProgressTicker(tok)
         waitIdle(tok, ch, 0)
-    }
-
-    // WebView JavaScript timers are throttled when the chatbot pane is hidden.
-    // Keep the visible progress UI moving on the Android main-thread clock, but
-    // never let the estimate claim completion before the reply is verified.
-    private fun startProgressTicker(tok: Int) {
-        stopProgressTicker()
-        val ticker = object : Runnable {
-            override fun run() {
-                if (tok != runToken || running == null) {
-                    if (progressTicker === this) progressTicker = null
-                    return
-                }
-                // This ticker only shows that the request is alive while the chatbot
-                // WebView is hidden. Actual percentage comes from measured reply text.
-                if (progress < 12) {
-                    progress += 1
-                    updateProgressUi()
-                }
-                handler.postDelayed(this, 1400L)
-            }
-        }
-        progressTicker = ticker
-        handler.postDelayed(ticker, 1400L)
-    }
-
-    private fun stopProgressTicker() {
-        progressTicker?.let { handler.removeCallbacks(it) }
-        progressTicker = null
     }
 
     // make sure the chatbot is not still busy with something else before we send
@@ -3106,12 +3088,12 @@ markers preserved.
                 val allMarkers = got && total > 0 && found >= total
                 // Marker progress is linear: each translated paragraph advances the bar.
                 // If the model doesn't preserve markers, fall back to output length.
-                // Never derive progress directly from marker count: some chatbots
-                // expose all markers at once (or briefly echo the prompt), which made
-                // the bar jump from a few percent to ~98%. Use reply growth instead;
-                // the UI below rate-limits each poll to at most +1%.
-                val pct = if (!got) 3 else
-                    minOf(90, (effLen * 100 / expectedLen(ch)).coerceAtLeast(3))
+                val pct = when {
+                    !got -> 3
+                    total > 0 -> if (found > 0) (found * 100 / total).coerceIn(3, 94)
+                        else minOf(90, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
+                    else -> minOf(95, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
+                }
                 // A stream that grows by 1–2 characters is still changing, not stable.
                 // Require an exactly unchanged reply length before calling it complete.
                 val st = if (got && effLen == lastLen) stable + 1 else 0
@@ -3133,11 +3115,7 @@ markers preserved.
                 val completed = completedByMarkers || completedByUi ||
                     completedAfterStop || completedWithoutStopSignal
 
-                // Marker counts can appear all at once (or be read from a prompt echo).
-                // Rate-limit increases so the bar cannot jump from 3% to ~98% in one poll.
-                progress = if (completed) 100
-                    else if (!got) maxOf(progress, 3)
-                    else maxOf(progress, minOf(90, pct, progress + 1))
+                progress = if (completed) 100 else if (!got) 3 else maxOf(progress, pct)
                 updateProgressUi()
 
                 when {
@@ -3179,7 +3157,6 @@ markers preserved.
             }
             progress = 100
             updateProgressUi()
-            stopProgressTicker()
             val shown = lastChapter
             if (shown != null && keyOf(shown) == keyOf(ch)) {
                 applyTranslation(shown, rawTranslation, true)
@@ -3193,7 +3170,6 @@ markers preserved.
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
-        stopProgressTicker()
         queue.clear()
         running = null
         copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
@@ -3203,7 +3179,6 @@ markers preserved.
 
     private fun cancelAll() {
         runToken++
-        stopProgressTicker()
         queue.clear()
         running = null
         chatWv.evaluateJavascript(Js.stop(), null)
@@ -3214,10 +3189,7 @@ markers preserved.
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val isWtrLab = Uri.parse(ch.url).host.orEmpty().lowercase().let {
-            it == "wtr-lab.com" || it.endsWith(".wtr-lab.com")
-        }
-        val paras = splitInternalMarkedTranslation(text, preserveParagraphs = isWtrLab)
+        val paras = splitInternalMarkedTranslation(text)
         shownTrRaw = text
         // A translation callback can arrive long after the user pressed Next.
         // Never write an old chapter's translation into the current page.
@@ -3296,8 +3268,7 @@ markers preserved.
         val title: String
         var pct = 0
         if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
-            val safeNumber = run.number.takeIf { !(it.length >= 4 && it.startsWith("0")) }.orEmpty()
-            title = "Translating" + (if (safeNumber.isNotBlank()) " · Chapter $safeNumber" else "")
+            title = "Translating" + (if (run.number.isNotBlank()) " · Chapter ${run.number}" else "")
             pct = progress
         } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
             val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
@@ -3564,28 +3535,12 @@ markers preserved.
                     if (enabled) {
                         lastChapter?.let { schedulePrefetch(it) }
                     } else {
-                        // Turning Prefetch off must stop both the hidden page load
-                        // and any queued/running translation created only for prefetch.
                         prefetchToken++
                         prefetchLoading = false
                         prefetchCatalogPending = false
                         prefetchTarget = ""
-                        try { prefetchWv.stopLoading() } catch (_: Exception) {}
-
-                        val cancelKeys = queue.filter { prefetchGeneratedKeys.contains(keyOf(it)) }
-                            .map { keyOf(it) }.toSet()
-                        queue.removeAll { cancelKeys.contains(keyOf(it)) }
-                        val activePrefetchKey = running?.let { keyOf(it).takeIf { k -> prefetchGeneratedKeys.contains(k) } }
-                        if (activePrefetchKey != null) {
-                            runToken++
-                            stopProgressTicker()
-                            running = null
-                            progress = 0
-                            chatWv.evaluateJavascript(Js.stop(), null)
-                        }
-                        prefetchGeneratedKeys.removeAll(cancelKeys + listOfNotNull(activePrefetchKey))
                         prefetchKeys.clear()
-                        if (running == null) startNext() else updateProgressUi()
+                        try { prefetchWv.stopLoading() } catch (_: Exception) {}
                     }
                     refresh(i, menuPrefetchLabel())
                 }
