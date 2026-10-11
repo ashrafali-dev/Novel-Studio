@@ -3538,12 +3538,28 @@ markers preserved.
                     if (enabled) {
                         lastChapter?.let { schedulePrefetch(it) }
                     } else {
+                        // Turning Prefetch off must stop both the hidden page load
+                        // and any queued/running translation created only for prefetch.
                         prefetchToken++
                         prefetchLoading = false
                         prefetchCatalogPending = false
                         prefetchTarget = ""
-                        prefetchKeys.clear()
                         try { prefetchWv.stopLoading() } catch (_: Exception) {}
+
+                        val cancelKeys = queue.filter { prefetchGeneratedKeys.contains(keyOf(it)) }
+                            .map { keyOf(it) }.toSet()
+                        queue.removeAll { cancelKeys.contains(keyOf(it)) }
+                        val activePrefetchKey = running?.let { keyOf(it).takeIf { k -> prefetchGeneratedKeys.contains(k) } }
+                        if (activePrefetchKey != null) {
+                            runToken++
+                            stopProgressTicker()
+                            running = null
+                            progress = 0
+                            chatWv.evaluateJavascript(Js.stop(), null)
+                        }
+                        prefetchGeneratedKeys.removeAll(cancelKeys + listOfNotNull(activePrefetchKey))
+                        prefetchKeys.clear()
+                        if (running == null) startNext() else updateProgressUi()
                     }
                     refresh(i, menuPrefetchLabel())
                 }
