@@ -941,9 +941,24 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
   function link(kind,sel){
     var e=null;
+    var isQidian=hostNow.indexOf('qidian.com')>=0;
     if(isN543)e=byText(kind);          // never trust a fixed nth-child here
+    // Qidian's chapter IDs are opaque and its generic remembered selector can
+    // point at the following-next link (skipping a chapter). Use its actual
+    // chapter navigation group first, then label-based detection as fallback.
+    if(isQidian){
+      try{
+        var qSel=kind==='next'?'.nav-btn-group a:last-child':'.nav-btn-group a:first-child';
+        var qa=pick(qSel);
+        if(qa&&qa.href){
+          var qu=new URL(qa.href,location.href),cu=new URL(location.href);
+          if(qu.origin===cu.origin&&qu.pathname.indexOf('/chapter/'+cu.pathname.split('/')[2]+'/')===0&&qu.pathname!==cu.pathname)e=qa;
+        }
+      }catch(x){}
+      if(!e)e=byText(kind);
+    }
     if(!e)e=pick(sel);
-    if(!e&&!isN543)e=byText(kind);
+    if(!e&&!isN543&&!isQidian)e=byText(kind);
     if(!e){
       var q=kind==='next'
         ? 'link[rel="next"],a[rel="next"],a.next,.next a,.next-chapter a,.chapter-next a,'+
