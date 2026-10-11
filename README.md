@@ -1,10 +1,10 @@
 # Novel Studio
 
-**Novel Studio** হলো API key ছাড়াই ওয়েব-ভিত্তিক AI chatbot ব্যবহার করে উপন্যাস পড়া ও বাংলা অনুবাদ করার জন্য তৈরি একটি Android Novel Translator / Reading Assistant।
+**Novel Studio হলো একটি Android app, যা novel পড়ার সময় chapter-এর লেখা বের করে ChatGPT, Gemini, Claude, DeepSeek বা Grok-এর web chatbot দিয়ে বাংলা অনুবাদ করায় এবং সেই অনুবাদ সরাসরি novel page-এ বসিয়ে দেয়।**
 
-যাদের আলাদা AI API নেই বা API-এর খরচ দিতে চান না, তারা নিজেদের ChatGPT, Gemini, Claude, DeepSeek বা Grok-এর ওয়েব অ্যাকাউন্টে লগইন করে Novel Studio-এর মাধ্যমে chapter অনুবাদ করতে পারেন।
+**সহজভাবে: Novel পড়ুন → Chapter Extract করুন → AI দিয়ে বাংলা Translate করুন → Translation Novel-এ দেখুন → Next Chapter-এ যান।**
 
-> **নোট:** AI chatbot-এ আগে লগইন থাকতে হবে। Novel Studio নিজে কোনো AI API key দেয় না।
+আলাদা AI API key না থাকলেও নিজের AI chatbot account দিয়ে এই workflow ব্যবহার করা যায়। AI chatbot-এ আগে login থাকতে হবে; Novel Studio নিজে কোনো API key দেয় না।
 
 ## কী কী করতে পারে
 
@@ -35,11 +35,11 @@ Built-in chatbot options:
 - DeepSeek
 - Grok
 
-Workflow:
+মূল workflow:
 
-**Novel → Extract Chapter → Chatbot → বাংলা Translation → Novel Page-এ Insert**
+**Novel → Extract Chapter → AI Chatbot → বাংলা Translation → Novel Page-এ Insert**
 
-Translation শেষ হলে উত্তর থেকে প্রয়োজনীয় অংশ বের করে novel page-এ বসানোর চেষ্টা করে। Insert করা না গেলে translation Library-তে সংরক্ষণ করা হয়।
+Translation শেষ হলে প্রয়োজনীয় translated text novel page-এ বসানোর চেষ্টা করে। Insert করা না গেলে translation Library-তে backup হিসেবে সংরক্ষণ করা হয়।
 
 ### 🔄 Auto Translation Mode
 Auto mode চালু থাকলে:
@@ -50,8 +50,6 @@ Auto mode চালু থাকলে:
 5. progress indicator দিয়ে কাজের অবস্থা দেখা যায়
 
 আগে save করা translation থাকলে সেটি ব্যবহার করে chapter-এ দ্রুত translation বসানো যায়।
-
-Auto mode বন্ধ করলে Next / Previous navigation-এর পরিবর্তে chapter text copy করার workflow ব্যবহার করা যায়।
 
 ### 📚 Offline Translation Library
 - অনুবাদ করা chapter locally save
@@ -73,7 +71,7 @@ Auto mode বন্ধ করলে Next / Previous navigation-এর পরি�
 - পুরো glossary copy করা
 - Glossary delete করা
 
-এতে character name, title এবং নির্দিষ্ট terminology বারবার একইভাবে translate করানোর জন্য consistent terminology রাখা যায়।
+এতে character name, title এবং নির্দিষ্ট terminology বারবার একইভাবে translate করানো যায়।
 
 ### 🔖 Bookmarks
 - Current novel page bookmark করা
@@ -81,7 +79,7 @@ Auto mode বন্ধ করলে Next / Previous navigation-এর পরি�
 - Long-press করে bookmark delete
 
 ### 🌐 Novel Sites
-অ্যাপের built-in site shortcuts-এর মধ্যে বর্তমানে রয়েছে:
+Built-in site shortcuts-এর মধ্যে বর্তমানে রয়েছে:
 - WebNovel
 - NovelBin
 
@@ -101,13 +99,13 @@ Auto mode বন্ধ করলে Next / Previous navigation-এর পরি�
 
 ## মূল উদ্দেশ্য
 
-Novel Studio-এর লক্ষ্য হলো **API না থাকা সাধারণ novel reader-এর জন্য AI-assisted translation workflow সহজ করা**।
+Novel Studio এমন readers-এর জন্য তৈরি যারা novel পড়েন কিন্তু আলাদা AI API key নেই বা API-এর খরচ দিতে চান না।
 
-আলাদা API key বা নিজের translation backend তৈরি না করেও reader তার ব্যবহৃত AI chatbot-এর web interface ব্যবহার করে:
+এটি novel reader এবং AI chatbot-কে একই workflow-এর মধ্যে এনে:
 
-**Novel পড়বে → Chapter extract করবে → AI-তে translate করবে → বাংলা translation novel page-এ বসাবে → পরের chapter-এ যাবে।**
+**Novel পড়া → Chapter Extract → AI Translation → বাংলা Translation Insert → Next Chapter**
 
-সবকিছু একই Android app-এর মধ্যে করার জন্য Novel Studio তৈরি করা হয়েছে।
+এই পুরো কাজটি সহজ করে।
 
 ## APK Build
 
