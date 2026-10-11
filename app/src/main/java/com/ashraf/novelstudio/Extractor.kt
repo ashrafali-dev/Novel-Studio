@@ -22,9 +22,12 @@ object Extractor {
     private const val BAD = "script,style,noscript,iframe,nav,header,footer,aside,form,button,svg,.ads,.ad,[class*=advert],[id*=advert],[class*=comment],[id*=comment],[class*=sidebar]"
 
     private val SELECTORS = listOf(
-        "#chapter-content", ".chapter-content", ".chapter_content", "#chr-content", ".chr-c",
+        // WTR-LAB's current reader uses chapter-body and chapter-container;
+        // keep these ahead of generic article/main fallbacks.
+        ".chapter-body", ".chapter-container .chapter-body", ".chapter-wrap .chapter-body",
+        ".chapter-content", "#chapter-content", ".chapter_content", "#chr-content", ".chr-c",
         ".reading-content", ".text-left", "#content", ".entry-content", ".cha-content", ".cha-words",
-        ".chapter-body", ".novel_content", ".j_readContent", ".txt", "#chaptercontent", ".chapter-c",
+        ".novel_content", ".j_readContent", ".txt", "#chaptercontent", ".chapter-c",
         "#article", ".article-content", ".content", "article"
     )
 
