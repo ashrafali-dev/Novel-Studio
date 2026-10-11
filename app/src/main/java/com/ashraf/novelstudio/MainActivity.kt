@@ -78,8 +78,6 @@ class MainActivity : Activity() {
     private enum class Mode { NOVEL, CHAT, SPLIT }
 
     private val MAX_RETAINED_TAB_STATES = 2
-    // Thumbnails are only UI previews. Never keep every tab preview decoded in RAM.
-    private val MAX_RETAINED_TAB_THUMBNAILS = 4
     private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     private val MP = ViewGroup.LayoutParams.MATCH_PARENT
     private val WC = ViewGroup.LayoutParams.WRAP_CONTENT
