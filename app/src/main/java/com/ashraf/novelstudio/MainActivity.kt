@@ -91,6 +91,9 @@ class MainActivity : Activity() {
     private var prefetchTarget = ""
     private var prefetchToken = 0
     private var prefetchLoading = false
+    private var prefetchCatalogPending = false
+    private var prefetchCatalogTitle = ""
+    private var prefetchSourceUrl = ""
     private val prefetchKeys = mutableSetOf<String>()
     private val botWebViews = mutableMapOf<String, WebView>()
     private var currentBotKey = ""
@@ -372,6 +375,22 @@ class MainActivity : Activity() {
                     super.onPageFinished(view, url)
                     if (!prefetchLoading || url.isNullOrBlank()) return
                     val token = prefetchToken
+                    if (prefetchCatalogPending) {
+                        prefetchCatalogPending = false
+                        val title = prefetchCatalogTitle
+                        prefetchWv.evaluateJavascript(Js.webNovelPickCatalog("next", title)) { raw ->
+                            if (!prefetchLoading || token != prefetchToken) return@evaluateJavascript
+                            val target = decode(raw)
+                            if (target.startsWith("http") && adjacentUrlIsSafe(prefetchSourceUrl, target)) {
+                                prefetchTarget = target
+                                prefetchWv.loadUrl(target)
+                            } else {
+                                prefetchLoading = false
+                                prefetchTarget = ""
+                            }
+                        }
+                        return
+                    }
                     fun readAttempt(attempt: Int) {
                         if (!prefetchLoading || token != prefetchToken) return
                         prefetchExtractNow { next ->
@@ -2464,10 +2483,29 @@ class MainActivity : Activity() {
 
     private fun schedulePrefetch(ch: Chapter) {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
-        val target = ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) } ?: return
+        val directTarget = ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
+        val target: String
+        val useCatalog: Boolean
+        if (directTarget != null) {
+            target = directTarget
+            useCatalog = false
+        } else {
+            // WebNovel often exposes Next only through its catalogue rather than
+            // as a direct adjacent URL in the chapter DOM.
+            val parsed = Uri.parse(ch.url)
+            val path = parsed.path.orEmpty()
+            val bookPath = Regex("^(/book/[^/]+)", RegexOption.IGNORE_CASE).find(path)?.value
+            if (!ch.url.contains("webnovel.com/", ignoreCase = true) ||
+                bookPath == null || parsed.scheme.isNullOrBlank() || parsed.authority.isNullOrBlank()) return
+            target = parsed.scheme + "://" + parsed.authority + bookPath + "/catalog"
+            useCatalog = true
+        }
         if (prefetchLoading && cleanUrl(prefetchTarget) == cleanUrl(target)) return
         prefetchToken++
         val token = prefetchToken
+        prefetchSourceUrl = ch.url
+        prefetchCatalogTitle = ch.title
+        prefetchCatalogPending = useCatalog
         prefetchTarget = target
         prefetchLoading = true
         prefetchWv.stopLoading()
@@ -2475,6 +2513,7 @@ class MainActivity : Activity() {
         handler.postDelayed({
             if (prefetchLoading && token == prefetchToken) {
                 prefetchLoading = false
+                prefetchCatalogPending = false
                 prefetchTarget = ""
                 try { prefetchWv.stopLoading() } catch (_: Exception) {}
             }
@@ -3116,6 +3155,7 @@ markers preserved.
                     } else {
                         prefetchToken++
                         prefetchLoading = false
+                        prefetchCatalogPending = false
                         prefetchTarget = ""
                         prefetchKeys.clear()
                         try { prefetchWv.stopLoading() } catch (_: Exception) {}
