@@ -46,6 +46,18 @@ object Store {
     fun chapters(c: Context, novel: String): List<Tr> =
         list(c).filter { it.novel == novel }.sortedWith(compareBy<Tr>({ it.sortKey }, { it.id }))
 
+    private fun bookKey(url: String): String {
+        return try {
+            val u = Uri.parse(url)
+            val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
+            val parts = u.pathSegments
+            val i = parts.indexOfFirst { it.equals("book", true) }
+            if (host.endsWith("webnovel.com") && i >= 0 && parts.size > i + 1)
+                host + "/book/" + parts[i + 1].lowercase()
+            else ""
+        } catch (_: Exception) { "" }
+    }
+
     fun save(c: Context, ch: Chapter?, text: String): Tr {
         val raw = (ch?.novel ?: "").ifBlank { "Unknown" }
         val novel = Prefs.get(c, "alias_$raw", raw)
@@ -56,8 +68,10 @@ object Store {
         val normTitle = title.trim().lowercase().replace(Regex("\\s+"), " ")
         // Same-URL readers (notably WebNovel) use one reader URL for many
         // chapters. Number/title identity must therefore win over URL identity.
+        val bk = bookKey(url)
         val existing = items.firstOrNull {
             (number.isNotEmpty() && it.novel == novel && it.number == number) ||
+            (number.isNotEmpty() && bk.isNotEmpty() && it.number == number && bookKey(it.url) == bk) ||
             (normTitle.isNotEmpty() && it.novel == novel &&
                 it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
         } ?: items.firstOrNull {
@@ -72,24 +86,37 @@ object Store {
         return tr
     }
 
-    // saved translation for this chapter (matched by URL, or novel name + chapter number)
+    // Match by book + chapter identity first. WebNovel can reuse a reader URL
+    // across chapters, so URL alone is never a safe chapter key.
     fun find(c: Context, ch: Chapter): Tr? {
         val raw = ch.novel.ifBlank { "Unknown" }
         val novel = Prefs.get(c, "alias_$raw", raw)
         val normTitle = ch.title.trim().lowercase().replace(Regex("\\s+"), " ")
-        // Match chapter number/title before URL so a shared reader URL can
-        // never return the translation belonging to the previous chapter.
-        return list(c).firstOrNull {
-            (ch.number.isNotEmpty() && it.novel == novel && it.number == ch.number) ||
-            (normTitle.isNotEmpty() && it.novel == novel &&
-                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
-        } ?: list(c).firstOrNull {
+        val bk = bookKey(ch.url)
+        val items = list(c)
+        return items.firstOrNull {
+            ch.number.isNotEmpty() && it.novel == novel && it.number == ch.number
+        } ?: items.firstOrNull {
+            ch.number.isNotEmpty() && bk.isNotEmpty() && it.number == ch.number && bookKey(it.url) == bk
+        } ?: items.firstOrNull {
+            normTitle.isNotEmpty() && it.novel == novel &&
+                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
+        } ?: items.firstOrNull {
+            bk.isNotEmpty() && bookKey(it.url) == bk && normTitle.isNotEmpty() &&
+                it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle
+        } ?: items.firstOrNull {
             ch.url.isNotEmpty() && it.url == ch.url &&
                 (normTitle.isEmpty() || it.title.trim().lowercase().replace(Regex("\\s+"), " ") == normTitle)
         }
     }
 
-    fun read(c: Context, id: Long): String = try { File(dir(c), "$id.txt").readText() } catch (e: Exception) { "" }
+    fun readRaw(c: Context, id: Long): String =
+        try { File(dir(c), "$id.txt").readText() } catch (_: Exception) { "" }
+
+    // Internal [NNN] paragraph markers stay in storage for alignment, but are
+    // hidden from library reading and exports.
+    fun read(c: Context, id: Long): String =
+        readRaw(c, id).replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
 
     fun delete(c: Context, id: Long) {
         File(dir(c), "$id.txt").delete()
