@@ -483,7 +483,6 @@ class MainActivity : Activity() {
         val browserChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(topWrap, LinearLayout.LayoutParams(MP, WC))
-            addView(tabRail, LinearLayout.LayoutParams(MP, WC))
             addView(shortcutScroll, LinearLayout.LayoutParams(MP, WC))
         }
 
