@@ -175,7 +175,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
     // ---------------------------------------------------------------- novel page: replace text / toggle
     private const val APPLY_BODY = """
-(function(sel,paras,font,size){
+(function(sel,paras,font,size,pageId){
   var el=null;
   try{ if(sel) el=document.querySelector(sel); }catch(e){}
   // Jsoup's generated cssSelector can become stale after a SPA/navigation
@@ -240,21 +240,27 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var frag=document.createDocumentFragment();
   for(var i=0;i<paras.length;i++){ var p=document.createElement('p'); p.textContent=paras[i]; p.style.margin='0 0 1em 0'; p.style.lineHeight='1.75'; if(fam){p.style.fontFamily=fam;} wrap.appendChild(p); }
   frag.appendChild(wrap);
-  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1'); window.__nsShown=1;
+  el.innerHTML=''; el.appendChild(frag); el.setAttribute('data-ns','1');
+  el.setAttribute('data-ns-page-id',pageId||'');
+  window.__nsPageId=pageId||'';
+  window.__nsShown=1;
   return 'ok';
-})(__SEL__,__PARAS__,__FONT__,__SIZE__)
+})(__SEL__,__PARAS__,__FONT__,__SIZE__,__PAGE_ID__)
 """
 
-    fun apply(sel: String, parasJson: String, font: String = "", size: Int = 18): String =
+    fun apply(sel: String, parasJson: String, font: String = "", size: Int = 18, pageId: String = ""): String =
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
             .replace("__FONT__", org.json.JSONObject.quote(font)).replace("__SIZE__", size.toString())
+            .replace("__PAGE_ID__", org.json.JSONObject.quote(pageId))
 
-    fun stillApplied(sel: String): String =
-        "(function(sel){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
+    fun stillApplied(sel: String, pageId: String = ""): String =
+        "(function(sel,pid){var el=null;try{if(sel)el=document.querySelector(sel);}catch(e){}" +
         "if(!el&&window.__nsEl&&document.contains(window.__nsEl))el=window.__nsEl;" +
         "if(!el)el=document.querySelector('[data-ns=\"1\"]');" +
-        "return (el&&el.getAttribute('data-ns')==='1')?'ok':'lost';})(" +
-        org.json.JSONObject.quote(sel) + ")"
+        "if(!el||el.getAttribute('data-ns')!=='1')return 'lost';" +
+        "if(pid&&el.getAttribute('data-ns-page-id')!==pid)return 'lost-page';" +
+        "return 'ok';})(" +
+        org.json.JSONObject.quote(sel) + "," + org.json.JSONObject.quote(pageId) + ")"
 
     val TOGGLE = "(function(){var el=window.__nsEl;if(!el||window.__nsOrig==null||!document.contains(el))return 'none';" +
         "if(window.__nsShown){window.__nsTr=el.innerHTML;el.innerHTML=window.__nsOrig;window.__nsShown=0;el.removeAttribute('data-ns');return 'orig';}" +
