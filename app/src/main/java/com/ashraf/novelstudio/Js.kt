@@ -567,7 +567,13 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     var host=location.hostname.toLowerCase(), sels=[];
     if(host.indexOf('novel543.com')>=0)sels.push('.chapter-content','#content','.article-content');
     if(host.indexOf('webnovel.com')>=0)sels.push('.cha-words','.cha-content','.chapter-content','.chapter_content','article','main');
-    if(host.indexOf('wtr-lab.com')>=0)sels.push('article','.chapter-content','main');
+    // WTR-LAB renders the reader and chapter navigation inside shared page
+    // containers. Prefer the actual chapter body before broad article/main shells.
+    if(host.indexOf('wtr-lab.com')>=0)sels.push(
+      '.chapter-content','#chapter-content','.reader-content','.reading-content',
+      '[class*="chapter-content"]','[id*="chapter-content"]',
+      'article','main'
+    );
     sels.push(
       __CONTENT__,
       '.cha-words','.cha-content','.chapter-content','.chapter_content',
@@ -592,11 +598,32 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
 
   function units(root){
     var out=[],seen=new Set();
+    // Reject site chrome even when the website uses generic DIVs instead of
+    // semantic NAV/FOOTER tags. WTR-LAB puts the TOC, chapter progress and
+    // previous/next controls near the reader, and broad roots used to collect them.
+    var chromeSel='nav,header,footer,aside,[role="navigation"],[role="menu"],' +
+      '[class*="sidebar" i],[id*="sidebar" i],[class*="pagination" i],[id*="pagination" i],' +
+      '[class*="chapter-list" i],[id*="chapter-list" i],[class*="toc" i],[id*="toc" i],' +
+      '[class*="toolbar" i],[id*="toolbar" i],[class*="breadcrumb" i],[id*="breadcrumb" i],' +
+      '[class*="reader-nav" i],[id*="reader-nav" i],[class*="chapter-nav" i],[id*="chapter-nav" i]';
+    function isChrome(e,t){
+      try{if(e.closest(chromeSel))return true;}catch(x){}
+      // Link-heavy rows are navigation/TOC entries, not story paragraphs.
+      var len=(t||'').length,links=0;
+      try{e.querySelectorAll('a').forEach(function(a){links+=(a.innerText||a.textContent||'').trim().length;});}catch(x){}
+      if(len>0&&links/len>0.55)return true;
+      var s=String(t||'').replace(/\\s+/g,' ').trim().toLowerCase();
+      if(!s)return true;
+      if(/^(wtr[- ]lab|library|novels?|ranking|leaderboard|table of contents|contents|previous|next|previous chapter|next chapter|আগের|পরের|সূচিপত্র|লাইব্রেরি|উপন্যাস|র‍্যাঙ্কিং|লিডারবোর্ড)$/.test(s))return true;
+      if(/^(?:chapter|episode)\\s*\\d+\\s*(?:\\/|of)\\s*\\d+$/i.test(s))return true;
+      if(/^\\d+(?:\\.\\d+)?%$/.test(s))return true;
+      return false;
+    }
     function add(e){
       if(!e||SKIP[e.tagName]||seen.has(e)||!e.isConnected)return;
       if(hasBlockChild(e))return;
       var t=text(e);
-      if(!meaningful(t))return;
+      if(!meaningful(t)||isChrome(e,t))return;
       seen.add(e);out.push(e);
     }
 
