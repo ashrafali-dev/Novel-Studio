@@ -89,6 +89,7 @@ class MainActivity : Activity() {
     private lateinit var urlBar: EditText
     private lateinit var tabCountBtn: TextView
     private lateinit var content: FrameLayout
+    private lateinit var modeTransitionCover: ImageView
     private lateinit var novelBox: FrameLayout
     private lateinit var chatBox: LinearLayout
     private lateinit var strip: LinearLayout
@@ -120,6 +121,9 @@ class MainActivity : Activity() {
     private var lastFastWhy = ""               // why the fast extractor failed (shown in the failure toast)
     private var shownTrRaw: String? = null     // translation text currently on the page (for font/size re-apply)
     private val handler = Handler(Looper.getMainLooper())
+    // Freeze the current panes briefly while live WebViews resize during mode changes.
+    private var modeTransitionBitmap: Bitmap? = null
+    private var modeTransitionHide: Runnable? = null
 
     // navigation (▶ ◀ ●) — every action gets a fresh token, old callbacks with an old token are ignored
     private var navToken = 0
@@ -568,6 +572,13 @@ class MainActivity : Activity() {
             setOnClickListener { toggleView() }
         }
 
+        modeTransitionCover = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
+            visibility = View.GONE
+            isClickable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+
         content = FrameLayout(this).apply {
             clipToOutline = true
             outlineProvider = object : ViewOutlineProvider() {
@@ -577,6 +588,7 @@ class MainActivity : Activity() {
             }
             addView(novelBox, FrameLayout.LayoutParams(MP, MP))
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
+            addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
@@ -1305,7 +1317,59 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== modes / layout
+    // WebView may briefly expose a white surface frame when its viewport changes.
+    // Keep a bitmap of the currently visible panes above them until the new layout settles.
+    private fun beginModeTransition(): Boolean {
+        if (!::content.isInitialized || !::modeTransitionCover.isInitialized ||
+            content.width <= 0 || content.height <= 0) return false
+
+        // If the user switches again before the current transition ends, keep the
+        // same stable frame rather than synchronously drawing another large bitmap.
+        if (modeTransitionCover.visibility == View.VISIBLE && modeTransitionBitmap != null) return true
+
+        val snapshot = try {
+            Bitmap.createBitmap(content.width, content.height, Bitmap.Config.ARGB_8888)
+        } catch (_: Exception) {
+            return false
+        }
+        val progressVisibility = progressBox.visibility
+        val pillVisibility = togglePill.visibility
+        return try {
+            // These controls are redrawn above the cover immediately after the mode switch.
+            progressBox.visibility = View.GONE
+            togglePill.visibility = View.GONE
+            content.draw(Canvas(snapshot))
+            modeTransitionBitmap?.let { if (!it.isRecycled) it.recycle() }
+            modeTransitionBitmap = snapshot
+            modeTransitionCover.setImageBitmap(snapshot)
+            modeTransitionCover.visibility = View.VISIBLE
+            true
+        } catch (_: Exception) {
+            if (!snapshot.isRecycled) snapshot.recycle()
+            false
+        } finally {
+            progressBox.visibility = progressVisibility
+            togglePill.visibility = pillVisibility
+        }
+    }
+
+    private fun scheduleModeTransitionRelease() {
+        modeTransitionHide?.let { handler.removeCallbacks(it) }
+        val release = Runnable {
+            modeTransitionCover.setImageDrawable(null)
+            modeTransitionCover.visibility = View.GONE
+            modeTransitionBitmap?.let { if (!it.isRecycled) it.recycle() }
+            modeTransitionBitmap = null
+            modeTransitionHide = null
+        }
+        modeTransitionHide = release
+        // Two to four display frames on common refresh rates; short enough not to
+        // feel delayed, long enough to cover the WebView's resize/repaint frame.
+        handler.postDelayed(release, 64L)
+    }
+
     private fun setMode(m: Mode) {
+        val keepFrame = mode != m && beginModeTransition()
         mode = m
         modeBtn.setImageDrawable(IconDrawable(when (m) {
             Mode.NOVEL -> Ic.BOOK
@@ -1320,6 +1384,12 @@ class MainActivity : Activity() {
         activeWv = if (m == Mode.CHAT) chatWv else novelWv
         applyLayout()
         updatePill()
+        if (keepFrame) {
+            modeTransitionCover.bringToFront()
+            progressBox.bringToFront()
+            togglePill.bringToFront()
+            scheduleModeTransitionRelease()
+        }
     }
 
     // Keep both WebView containers full-size and reveal only the needed region.
@@ -3284,6 +3354,10 @@ markers preserved.
         navToken++
         handler.removeCallbacksAndMessages(null)
         pulse?.cancel()
+        if (::modeTransitionCover.isInitialized) modeTransitionCover.setImageDrawable(null)
+        modeTransitionBitmap?.let { if (!it.isRecycled) it.recycle() }
+        modeTransitionBitmap = null
+        modeTransitionHide = null
         novelWv.destroy()
         chatWv.destroy()
         super.onDestroy()
