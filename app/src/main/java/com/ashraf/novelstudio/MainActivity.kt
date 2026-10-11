@@ -1819,7 +1819,10 @@ class MainActivity : Activity() {
     private inner class NovelClient : WebViewClient() {
         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             val r = request ?: return null
-            if (r.url.host == "ns.local") {
+            // Serve bundled Bengali fonts from a same-origin-looking path as well as the
+            // legacy ns.local host. WebNovel's CSP can block cross-origin font URLs.
+            val localFontPath = r.url.path?.startsWith("/__ns_font/") == true
+            if (r.url.host == "ns.local" || localFontPath) {
                 val name = (r.url.lastPathSegment ?: "").removeSuffix(".ttf")
                 if (name in Prefs.FONT_FILES && name.isNotEmpty()) {
                     return try {
