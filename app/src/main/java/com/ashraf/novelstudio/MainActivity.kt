@@ -2465,7 +2465,7 @@ markers preserved.
                     else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming)
                 }
             }
-        }, 300)
+        }, 500)
     }
 
     private fun cleanReply(t: String): String =
