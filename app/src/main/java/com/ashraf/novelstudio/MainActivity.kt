@@ -2174,16 +2174,22 @@ class MainActivity : Activity() {
             if (ch != th && !th.endsWith(".$ch") && !ch.endsWith(".$th")) return false
 
             val tp = t.path.orEmpty().trimEnd('/')
-            if (th == "novel543.com" || th.endsWith(".novel543.com")) {
-                // /<book>/<vol>_<ch>.html or /<book>/<vol>_<ch>_<part>.html, same book only
-                val rx = Regex("^/(\\d+)/\\d+_\\d+(?:_\\d+)?\\.html$")
-                val tm = rx.find(tp) ?: return false
-                val cm = rx.find(c.path.orEmpty().trimEnd('/'))
-                if (cm != null && cm.groupValues[1] != tm.groupValues[1]) return false
-            }
             if (tp.isBlank() || tp == "/" ||
                 tp.equals("/home", true) || tp.equals("/index", true) ||
                 tp.endsWith("/home", true) || tp.endsWith("/index", true)) return false
+
+            // If the site exposes a stable book ID, the next link MUST point to
+            // that same book. Chapter numbers/titles alone are never enough.
+            val currentBook = sourceKey(current)
+            val targetBook = sourceKey(target)
+            if (currentBook.isNotBlank() && targetBook != currentBook) return false
+
+            if (th == "novel543.com" || th.endsWith(".novel543.com")) {
+                // Accept the site's observed /<bookId>/<chapter> and
+                // /<bookId>/<volume>_<chapter>[_<part>].html forms, same book only.
+                val chapterPath = Regex("^/\\d{7,}/\\d+(?:_\\d+){0,2}(?:\\.html)?$")
+                if (!chapterPath.matches(tp)) return false
+            }
 
             // Do not compare path depth: valid +1 sites often use a shallower
             // path for chapters (e.g. /chapter-2 vs /book/foo/chapter-1).
