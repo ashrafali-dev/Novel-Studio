@@ -1360,11 +1360,17 @@ class MainActivity : Activity() {
                     topMargin = half
                 }
 
-                novelBox.bringToFront()
-                chatBox.bringToFront()
+                // Ensure the lower chatbot pane wins hit-testing as well as drawing.
+                // WebViews can retain stale sibling Z ordering after their bounds change.
+                novelBox.elevation = 0f
+                chatBox.elevation = dp(2).toFloat()
+                content.bringChildToFront(novelBox)
+                content.bringChildToFront(chatBox)
+                chatWv.bringToFront()
             }
         }
 
+        // Keep overlays above both panes, without covering the chatbot's touch area.
         progressBox.bringToFront()
         togglePill.bringToFront()
     }
