@@ -970,7 +970,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
     if(!e&&!isQidian)e=pick(sel);
     if(!e&&!isN543&&!isQidian)e=byText(kind);
-    if(!e){
+    if(!e&&!isQidian){
       var q=kind==='next'
         ? 'link[rel="next"],a[rel="next"],a.next,.next a,.next-chapter a,.chapter-next a,'+
           'a[class*="next" i][href],[data-testid*="next" i] a,[aria-label*="next" i],[title*="next" i]'
