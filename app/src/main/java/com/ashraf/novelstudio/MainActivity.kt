@@ -2948,7 +2948,7 @@ class MainActivity : Activity() {
             val threshold = if (preserveParagraphs) 180 else 220
             for (c in one) {
                 sb.append(c)
-                if (sb.length >= threshold && "।.!?！？”\\u2026」』".indexOf(c) >= 0) {
+                if (sb.length >= threshold && "।.!?！？”\u2026」』".indexOf(c) >= 0) {
                     out.add(sb.toString().trim())
                     sb.setLength(0)
                 }
