@@ -245,13 +245,11 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   }
 
   // Parse stable marker IDs. [000] is the title when present; [001+] are body units.
-  var map={},re=/\[(\d{3,})\]\s*/g,mr;
-  while((mr=re.exec(String(translation||'')))!==null){
-    var id=mr[1],start=mr.index+mr[0].length,next=re.exec(String(translation||''));
-    var end=next?next.index:String(translation||'').length;
-    if(!map[id])map[id]=String(translation||'').slice(start,end).trim();
-    if(next)re.lastIndex=next.index;
-  }
+  var map={},chunks=String(translation||'').split(/(?=\[\d{3,}\]\s*)/);
+  chunks.forEach(function(chunk){
+    var mm=chunk.match(/^\[(\d{3,})\]\s*/);
+    if(mm){var id=mm[1],val=chunk.slice(mm[0].length).trim();if(val&&!map[id])map[id]=val;}
+  });
   if(!Object.keys(map).length)return 'no-markers';
 
   // Candidate elements are existing leaf/block text elements only. Never create
@@ -296,7 +294,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   // First align the title by exact source text, then each body marker by its
   // original source segment. The source list is the extraction-time identity map.
   for(var si=0;si<source.length;si++){
-    var src=norm(source[si]),id=String(si).padStart(3,'0'),val=map[id];
+    var src=norm(source[si]),id=String(si+1).padStart(3,'0'),val=map[id];
     if(val===undefined)continue;
     var target=exactFind(src);
     if(!target && si===0)target=el.querySelector(':scope > h1,:scope > h2,:scope > h3');
@@ -311,7 +309,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   // original DOM order only for the still-unmatched source units.
   var remaining=fallbackBodyNodes();
   for(var ri=0;ri<source.length;ri++){
-    var rid=String(ri).padStart(3,'0'),rv=map[rid];
+    var rid=String(ri+1).padStart(3,'0'),rv=map[rid];
     if(rv===undefined||pairs.some(function(p){return p.id===rid;}))continue;
     var t=remaining.shift();
     if(!t)continue;
