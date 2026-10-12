@@ -2908,7 +2908,7 @@ class MainActivity : Activity() {
     }
 
     private fun chunkBySentences(t: String, target: Int = 280): List<String> {
-        val ends = "。！？!?…」』”"
+        val ends = "。！？!?…」』”।"
         val out = mutableListOf<String>()
         val sb = StringBuilder()
         for (c in t) {
