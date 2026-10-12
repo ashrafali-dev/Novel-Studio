@@ -2869,17 +2869,38 @@ class MainActivity : Activity() {
         var blocks = text.split(Regex("\\n\\s*\\n"))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-        // Normal case: the extractor joined the real text blocks with blank lines.
-        // Some readers (WTR-LAB in particular) can hand over the whole chapter as ONE
-        // block whose paragraphs are separated by single newlines only. Then every
-        // line is a paragraph; otherwise the model gets a single [001] marker and the
-        // whole translation lands as one wall of text.
-        if (blocks.size <= 2) {
+
+        // WTR-LAB can flatten the entire .chapter-body into one long text node.
+        // In that case the input contains a title plus one body block, so the old
+        // "one huge block" fallback never ran and only two markers were generated.
+        // First preserve explicit line breaks; if the body is still a single blob,
+        // split that body at sentence boundaries into manageable aligned units.
+        if (splitSingleLines && blocks.size <= 2) {
+            val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+            if (lines.size >= 3) {
+                blocks = lines
+            } else {
+                val titleLike = Regex("^(?:#?\\d+\\s+)?(?:chapter|অধ্যায়|অধ্যায়)\\b", RegexOption.IGNORE_CASE)
+                val bodyIndex = blocks.indexOfFirst { !titleLike.containsMatchIn(it) && it.length > 500 }
+                    .takeIf { it >= 0 }
+                    ?: blocks.indices.maxByOrNull { blocks[it].length }
+                if (bodyIndex != null && blocks[bodyIndex].length > 500) {
+                    val split = chunkBySentences(blocks[bodyIndex], 260)
+                    if (split.size > 1) {
+                        blocks = blocks.toMutableList().also {
+                            it.removeAt(bodyIndex)
+                            it.addAll(bodyIndex, split)
+                        }
+                    }
+                }
+            }
+        } else if (blocks.size <= 2) {
+            // Other sites may return paragraph breaks as single newlines.
             val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
             if (lines.size >= 6) blocks = lines
         }
-        // Last resort: one huge line with no newlines at all. Cut it at sentence ends
-        // so the translation still comes back as readable paragraphs.
+
+        // Generic fallback for a genuinely single large block.
         if (blocks.size == 1 && blocks[0].length > 800) blocks = chunkBySentences(blocks[0])
         return blocks.mapIndexed { i, block ->
             "[${(i + 1).toString().padStart(3, '0')}] $block"
