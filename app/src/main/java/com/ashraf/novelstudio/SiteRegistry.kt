@@ -5,7 +5,8 @@ import android.content.Context
 internal object SiteRegistry {
     private fun adapters(context: Context): List<SiteAdapter> = listOf(
         WebNovelSystem(context),
-        WtrLabSystem(context)
+        WtrLabSystem(context),
+        QidianSystem(context)
     )
 
     fun find(context: Context, url: String?): SiteAdapter? =
