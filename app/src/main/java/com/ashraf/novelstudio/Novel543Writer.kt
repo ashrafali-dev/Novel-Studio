@@ -14,7 +14,7 @@ internal class Novel543Writer {
   if(!root)return 'no-root';
   var title=root.querySelector(':scope > h1'), body=root.querySelector(':scope > .content');
   if(!title||!body)return 'no-title-or-body';
-  var lines=Array.from(body.querySelectorAll(':scope > p')).filter(function(p){return String(p.innerText||p.textContent||'').replace(/\\u00a0/g,' ').trim().length>0;});
+  var lines=Array.from(body.querySelectorAll(':scope > p')).filter(function(p){return String(p.innerText||p.textContent||'').replace(/\u00a0/g,' ').trim().length>0;});
   var offset=paras.length===lines.length+1?1:0;
   if(paras.length-offset!==lines.length)return 'line-mismatch:'+paras.length+':'+lines.length;
   if(offset===1){title.textContent=String(paras[0]||'');if(font)title.style.setProperty('font-family',font,'important');}
