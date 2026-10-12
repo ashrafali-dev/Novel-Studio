@@ -172,6 +172,7 @@ class MainActivity : Activity() {
     // WebNovel-specific behavior lives behind this site adapter.
     private val webNovelSystem by lazy { WebNovelSystem(this) }
     private val wtrLabSystem by lazy { WtrLabSystem(this) }
+    private val qidianSystem by lazy { QidianSystem(this) }
 
     // background translation queue
     private val queue = mutableListOf<Chapter>()
@@ -2022,6 +2023,10 @@ class MainActivity : Activity() {
             wtrLabSystem.extract(novelWv, attempt, cb)
             return
         }
+        if (qidianSystem.matches(url)) {
+            qidianSystem.extract(novelWv, attempt, cb)
+            return
+        }
 
         val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
         val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
@@ -2471,6 +2476,19 @@ class MainActivity : Activity() {
 
         fun navigate(base: Chapter) {
             if (token != navToken) return
+            if (qidianSystem.matches(base.url)) {
+                qidianSystem.pickAdjacent(novelWv, dir, base.url) { picked ->
+                    if (token != navToken) return@pickAdjacent
+                    if (picked != null && picked.startsWith("http") && adjacentUrlIsSafe(base.url, picked)) {
+                        wipeStale(clearNovelDom = true)
+                        loadAndWait(picked, token, base)
+                    } else {
+                        hideNavLoading()
+                        toast(if (picked == "edge") "ℹ️ No more chapters" else "❌ Qidian catalog chapter link not found")
+                    }
+                }
+                return
+            }
             val target = if (dir == "next") base.next else base.prev
             val webNovel = base.url.contains("webnovel.com/", ignoreCase = true)
 
@@ -2806,6 +2824,10 @@ class MainActivity : Activity() {
         }
         if (wtrLabSystem.matches(url)) {
             wtrLabSystem.extract(prefetchWv, 0, cb)
+            return
+        }
+        if (qidianSystem.matches(url)) {
+            qidianSystem.extract(prefetchWv, 0, cb)
             return
         }
         val host = Uri.parse(url).host?.lowercase().orEmpty()
@@ -3232,6 +3254,24 @@ markers preserved.
 
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
+        if (qidianSystem.matches(ch.url)) {
+            shownTrRaw = text
+            if (lastChapter !== ch) return
+            injectBengaliFont()
+            qidianSystem.writeTranslation(
+                novelWv, ch, text, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
+            ) { ok ->
+                if (lastChapter !== ch) return@writeTranslation
+                if (ok) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                } else {
+                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                }
+            }
+            return
+        }
         if (wtrLabSystem.matches(ch.url)) {
             shownTrRaw = text
             if (lastChapter !== ch) return
