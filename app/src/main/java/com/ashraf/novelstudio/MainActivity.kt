@@ -2487,7 +2487,7 @@ class MainActivity : Activity() {
         // /chapter-1, /chapter_1, /chapter/1
         // /chapters/101, /chapter-001, and optional .html/title suffixes.
         val regex = Regex(
-            """(?i)(/chapter(?:s)?[-_/])(\\d+)(?=(?:[-_.][^/]*)?/?$)"""
+            """(?i)(/chapter(?:s)?[-_/])(\d+)(?=(?:[-_.][^/]*)?/?$)"""
         )
         val match = regex.find(path) ?: return null
         val number = match.groupValues[2].toLongOrNull() ?: return null
