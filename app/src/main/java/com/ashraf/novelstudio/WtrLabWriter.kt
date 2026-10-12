@@ -4,8 +4,8 @@ import android.webkit.WebView
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** WTR-LAB writer: replace chapter text while preserving the source DOM's
- * inline HTML (strong/em/span/br/etc.) so formatting survives translation. */
+/** WTR-LAB writer: replace translated text inside the original block elements.
+ * Inline styling is intentionally discarded; block placement stays accurate. */
 internal class WtrLabWriter {
     fun write(
         webView: WebView,
@@ -121,28 +121,13 @@ internal class WtrLabWriter {
     return (pos-a<=b-pos)?a:b;
   }
 
-  // Replace only text nodes. Existing <strong>, <b>, <em>, <i>, <u>,
-  // <span>, <a>, <br>, etc. stay in the DOM.
-  function writePreservingMarkup(el,val){
-    var nodes=textNodes(el);
-    if(!nodes.length)return false;
-    if(nodes.length===1){nodes[0].nodeValue=val;return true;}
-    var lens=nodes.map(function(n){return Math.max(1,n.nodeValue.length);});
-    var total=lens.reduce(function(a,b){return a+b;},0);
-    nodes.forEach(function(n){n.nodeValue='';});
-    var pos=0;
-    for(var i=0;i<nodes.length;i++){
-      var remainingLen=val.length-pos;
-      if(i===nodes.length-1){
-        nodes[i].nodeValue=val.slice(pos).trim();
-      }else{
-        var want=Math.round(val.length*(lens[i]/total));
-        var end=cutAtSpace(val,pos+Math.max(1,want));
-        if(end<=pos)end=Math.min(val.length,pos+Math.max(1,want));
-        nodes[i].nodeValue=val.slice(pos,end).trim();
-        pos=end;
-      }
-    }
+  // Deliberately replace only the text of each original block.
+  // Keep the original block element (<p>/<li>/blockquote/etc.) in place, but
+  // do NOT preserve inline formatting. This gives stable, accurate paragraph
+  // placement without inventing wrong bold/italic formatting in Bengali.
+  function writeBlock(el,val){
+    if(!el)return false;
+    el.textContent=String(val||'').trim();
     return true;
   }
 
@@ -157,7 +142,7 @@ internal class WtrLabWriter {
   }
 
   pairs.forEach(function(p){
-    writePreservingMarkup(p.el,p.val);
+    writeBlock(p.el,p.val);
     p.el.style.setProperty('font-size',(size||18)+'px','important');
     p.el.style.setProperty('line-height','1.75','important');
     p.el.style.setProperty('word-break','normal','important');
@@ -195,7 +180,7 @@ internal class WtrLabWriter {
           var cand=fresh[q];
           if(norm(cand.innerText||cand.textContent)===targetText){found=cand;break;}
         }
-        if(found){writePreservingMarkup(found,paras[k]||'');matched++;}
+        if(found){writeBlock(found,paras[k]||'');matched++;}
       }
       if(matched>=Math.max(1,Math.floor(paras.length*0.75))){
         el.setAttribute('data-ns','1');
