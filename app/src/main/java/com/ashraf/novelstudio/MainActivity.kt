@@ -406,6 +406,7 @@ class MainActivity : Activity() {
                                     handler.postDelayed({ pickAttempt(attempt + 1) }, 800L)
                                 } else {
                                     prefetchLoading = false
+                                    prefetchRequestedUrls.remove(cleanUrl(prefetchTarget))
                                     prefetchTarget = ""
                                 }
                             }
@@ -425,6 +426,7 @@ class MainActivity : Activity() {
                                     handler.postDelayed({ readAttempt(attempt + 1) }, 900L)
                                 } else {
                                     prefetchLoading = false
+                                    prefetchRequestedUrls.remove(cleanUrl(prefetchTarget))
                                     prefetchTarget = ""
                                 }
                                 return@prefetchExtractNow
