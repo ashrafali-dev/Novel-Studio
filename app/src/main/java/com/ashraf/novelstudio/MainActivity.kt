@@ -2801,6 +2801,9 @@ class MainActivity : Activity() {
         val url = prefetchWv.url ?: prefetchTarget
         if (url.isBlank()) { cb(null); return }
         if (webNovelSystem.isWebNovel(url)) {
+            // Prefetch uses the exact same rendered-DOM path as the #553 implementation.
+            // Keep this path isolated from the visible-page extractor so background
+            // loading cannot inherit visible navigation state.
             webNovelSystem.extract(prefetchWv, 0, cb)
             return
         }
