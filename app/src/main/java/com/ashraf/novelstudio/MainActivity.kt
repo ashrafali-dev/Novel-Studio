@@ -1981,6 +1981,35 @@ class MainActivity : Activity() {
         webNovelSystem.extract(novelWv, 0, cb)
     }
 
+    // Generic full-page fallback for non-WebNovel sites. WebNovel never uses
+    // this path unless its dedicated rendered-DOM extractor explicitly falls back.
+    private fun extractFullNow(cb: (Chapter?) -> Unit) {
+        novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
+            val url = novelWv.url ?: ""
+            Thread {
+                val ch: Chapter? = try {
+                    val html = decode(raw)
+                    if (html.isEmpty()) null else {
+                        val doc = Jsoup.parse(html, url)
+                        val host = Uri.parse(url).host?.lowercase().orEmpty()
+                        val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
+                        Extractor.extract(
+                            doc, url,
+                            if (isNovel543) ".chapter-content" else SiteProfiles.selector(this@MainActivity, url, "content"),
+                            if (isNovel543) "h1" else SiteProfiles.selector(this@MainActivity, url, "title"),
+                            if (isNovel543) ".warp:nth-child(2) > a:nth-child(5)" else SiteProfiles.selector(this@MainActivity, url, "next"),
+                            if (isNovel543) ".warp:nth-child(2) > a:nth-child(1)" else SiteProfiles.selector(this@MainActivity, url, "prev")
+                        )
+                    }
+                } catch (_: Exception) { null }
+                runOnUiThread {
+                    if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
+                    cb(ch)
+                }
+            }.start()
+        }
+    }
+
     private fun extractNow(attempt: Int = 0, cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
@@ -2019,7 +2048,7 @@ class MainActivity : Activity() {
                 // The script itself failed to run/parse (e.g. very old WebView). Use the
                 // slower full-page parser instead of giving up.
                 lastFastWhy = "js-null"
-                extractWebNovelNow(cb)
+                extractFullNow(cb)
                 return@evaluateJavascript
             }
 
@@ -2031,7 +2060,7 @@ class MainActivity : Activity() {
                     // Novel543 is explicitly included because its chapter body is
                     // stable at .chapter-content but can be missed while its DOM is
                     // still settling.
-                    extractWebNovelNow(cb)
+                    extractFullNow(cb)
                     return@evaluateJavascript
                 }
 
@@ -2053,7 +2082,7 @@ class MainActivity : Activity() {
                             extractNow(attempt + 1, cb)
                         }, 120L)
                     } else if (isNovel543) {
-                        extractWebNovelNow(cb)
+                        extractFullNow(cb)
                     } else {
                         cb(null)
                     }
