@@ -4,8 +4,14 @@ import android.webkit.WebView
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** WTR-LAB writer: replace translated text inside the original block elements.
- * Inline styling is intentionally discarded; block placement stays accurate. */
+/**
+ * WTR-LAB writer.
+ *
+ * Important: do not recreate the chapter as one HTML string. WTR's reader
+ * contains real paragraph/block elements, so translation must replace the
+ * text inside the corresponding original block only. Inline formatting is
+ * intentionally NOT copied because it was not reliably aligned with Bengali.
+ */
 internal class WtrLabWriter {
     fun write(
         webView: WebView,
@@ -16,195 +22,252 @@ internal class WtrLabWriter {
         pageKey: String,
         callback: (Boolean) -> Unit
     ) {
-        val paras = splitInternalMarkedTranslation(translatedText)
+        val translated = splitInternalMarkedTranslation(translatedText)
         val source = sourceSegments(chapter.text)
-        if (paras.isEmpty() || source.isEmpty()) {
+        if (translated.isEmpty() || source.isEmpty() || translated.size != source.size) {
             callback(false)
             return
         }
 
         val js = """
-(function(paras,source,font,size,pageId){
-  function norm(s){return String(s||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();}
+(function(translated,source,font,size,pageId){
+  function norm(s){
+    return String(s||'')
+      .replace(/\u00a0/g,' ')
+      .replace(/[\t\r\n]+/g,' ')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
   function visible(e){
     if(!e)return false;
-    var r=e.getBoundingClientRect();
-    return r.width>0 && r.height>0;
+    var r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>0 && r.height>0 && s.display!=='none' && s.visibility!=='hidden';
   }
+
   function activeBody(){
-    var tr=document.querySelector('.chapter-tracker.active[data-chapter-no]')||document.querySelector('.chapter-tracker.active');
-    var no=tr&&tr.getAttribute('data-chapter-no');
+    var tr=document.querySelector('.chapter-tracker.active[data-chapter-no]') ||
+            document.querySelector('.chapter-tracker.active');
+    var no=tr && tr.getAttribute('data-chapter-no');
     var sels=[];
-    if(no)sels.push('#chapter-'+no+' .chapter-body',
-      '#tracker-'+no+' .chapter-body',
-      '.chapter-tracker[data-chapter-no="'+no+'"] .chapter-body',
-      '[data-chapter-no="'+no+'"] .chapter-body');
-    sels.push('#chapter-content','.chapter-tracker.active .chapter-body','.chapter-body','.chapter-content');
+    if(no){
+      sels.push(
+        '#chapter-'+no+' .chapter-body',
+        '#tracker-'+no+' .chapter-body',
+        '.chapter-tracker[data-chapter-no="'+no+'"] .chapter-body',
+        '[data-chapter-no="'+no+'"] .chapter-body'
+      );
+    }
+    sels.push('#chapter-content','.chapter-tracker.active .chapter-body',
+              '.chapter-body','.chapter-content');
     for(var i=0;i<sels.length;i++){
       try{
         var e=document.querySelector(sels[i]);
-        if(e&&norm(e.innerText||e.textContent).length>=40)return e;
+        if(e && norm(e.innerText||e.textContent).length>=40)return e;
       }catch(x){}
     }
     return null;
   }
 
-  var el=activeBody();
-  if(!el)return 'no-body';
+  var root=activeBody();
+  if(!root)return 'no-body';
 
-  var old=el.innerHTML;
-  var tags='p,li,blockquote,pre,h1,h2,h3,h4,h5,h6,div,section,article';
-  var all=[].slice.call(el.querySelectorAll(tags));
-  var used=new Set(), pairs=[];
+  // If this exact chapter was already translated, restore the original DOM
+  // before mapping again. Never map a translation onto another translation.
+  if(root.getAttribute('data-ns')==='1' &&
+     root.getAttribute('data-ns-page-id')===String(pageId||'') &&
+     window.__nsOrig){
+    try{ root.innerHTML=window.__nsOrig; }catch(x){}
+  }
 
-  function leaf(e){
-    if(!e||!visible(e))return false;
+  var selectors=[
+    'p','.wtr-line','[data-line]','li','blockquote','pre',
+    'h1','h2','h3','h4','h5','h6',
+    'div'
+  ];
+  var nodes=[];
+  var seen=new Set();
+
+  function isBlock(e){
+    if(!e || seen.has(e) || !visible(e))return false;
     var t=norm(e.innerText||e.textContent);
     if(!t)return false;
-    if(/^(DIV|SECTION|ARTICLE)$/.test(e.tagName) &&
-       e.querySelector('p,li,blockquote,pre,h1,h2,h3,h4,h5,h6'))return false;
+
+    // A wrapper is not a paragraph. Only accept it when it does not contain
+    // another candidate block. This prevents the whole chapter being treated
+    // as one giant <p>/<div>.
+    var nested=0;
+    try{
+      nested=e.querySelectorAll('p,.wtr-line,[data-line],li,blockquote,pre,h1,h2,h3,h4,h5,h6,div').length;
+    }catch(x){}
+    if(e.tagName==='DIV' && nested>0)return false;
+    if(/^(SECTION|ARTICLE)$/.test(e.tagName))return false;
+
     return true;
   }
 
-  function exact(src){
-    var s=norm(src),best=null;
-    for(var i=0;i<all.length;i++){
-      var e=all[i];
-      if(used.has(e)||!leaf(e))continue;
-      if(norm(e.innerText||e.textContent)===s){
-        var pri=/^H[1-6]$/.test(e.tagName)?5:(e.tagName==='P'?4:(e.tagName==='LI'?3:1));
-        var score=pri*100000-Math.abs((e.innerText||'').length-s.length);
-        if(!best||score>best.score)best={el:e,score:score};
+  for(var s=0;s<selectors.length;s++){
+    try{
+      var list=root.querySelectorAll(selectors[s]);
+      for(var i=0;i<list.length;i++){
+        var e=list[i];
+        if(isBlock(e)){
+          seen.add(e);
+          nodes.push(e);
+        }
+      }
+    }catch(x){}
+  }
+
+  // querySelectorAll above groups by selector, not DOM order. Put blocks back
+  // into their actual document order.
+  nodes.sort(function(a,b){
+    if(a===b)return 0;
+    var p=a.compareDocumentPosition(b);
+    return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+  });
+
+  // First and safest mapping: source paragraph text must equal the original
+  // text inside its DOM block (ignoring whitespace). This guarantees that we
+  // never put Bengali into the wrong paragraph.
+  var used=new Set();
+  var pairs=[];
+  for(var i=0;i<source.length;i++){
+    var wanted=norm(source[i]);
+    var found=null;
+    for(var j=0;j<nodes.length;j++){
+      var candidate=nodes[j];
+      if(used.has(candidate))continue;
+      if(norm(candidate.innerText||candidate.textContent)===wanted){
+        found=candidate;
+        break;
       }
     }
-    return best&&best.el;
-  }
-
-  for(var i=0;i<source.length && i<paras.length;i++){
-    var target=exact(source[i]);
-    if(target){
-      used.add(target);
-      pairs.push({el:target,val:paras[i]});
+    if(!found){
+      // Do not guess. A wrong paragraph is worse than showing no translation.
+      return 'map-mismatch:'+i+':'+source.length+':'+nodes.length;
     }
+    used.add(found);
+    pairs.push({el:found,val:translated[i]});
   }
 
-  // If WTR flattened whitespace/spans, align remaining units by DOM order.
-  var remaining=all.filter(function(e){return !used.has(e)&&leaf(e)&&!/^H[1-6]$/.test(e.tagName);});
-  for(var j=0;j<paras.length;j++){
-    if(pairs.some(function(p){return p.val===paras[j];}))continue;
-    var t=remaining.shift();
-    if(!t)break;
-    used.add(t);
-    pairs.push({el:t,val:paras[j]});
-  }
+  // We deliberately require every translation block to have an original block.
+  // No "put the rest into the last <p>" fallback.
+  if(pairs.length!==translated.length)return 'map-mismatch';
 
-  // Never partially rewrite a chapter. A bad alignment is worse than no write.
-  if(pairs.length<Math.max(1,Math.floor(paras.length*0.75)))return 'map-mismatch:'+pairs.length+':'+paras.length;
+  var old=root.innerHTML;
 
-  function textNodes(root){
-    var out=[],w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null);
-    var n;
-    while((n=w.nextNode())){
-      if(!n.nodeValue||!n.nodeValue.trim())continue;
-      var p=n.parentElement;
-      if(!p||/^(SCRIPT|STYLE|NOSCRIPT)$/.test(p.tagName))continue;
-      out.push(n);
-    }
-    return out;
-  }
-
-  function cutAtSpace(s,pos){
-    if(pos<=0||pos>=s.length)return pos;
-    var a=s.lastIndexOf(' ',pos),b=s.indexOf(' ',pos);
-    if(a<1)return b>0?b:pos;
-    if(b<0)return a;
-    return (pos-a<=b-pos)?a:b;
-  }
-
-  // Deliberately replace only the text of each original block.
-  // Keep the original block element (<p>/<li>/blockquote/etc.) in place, but
-  // do NOT preserve inline formatting. This gives stable, accurate paragraph
-  // placement without inventing wrong bold/italic formatting in Bengali.
-  function writeBlock(el,val){
-    if(!el)return false;
-    el.textContent=String(val||'').trim();
-    return true;
-  }
-
-  var fam='';
-  if(font&&font.length){
-    try{
-      var st=document.getElementById('__ns_font');
-      if(!st){st=document.createElement('style');st.id='__ns_font';(document.head||document.documentElement).appendChild(st);}
-      st.textContent="@font-face{font-family:'NSBn';src:url('"+location.origin+"/__ns_font/"+font+".ttf') format('truetype');font-display:swap;}";
-      fam="'NSBn',sans-serif";
-    }catch(e){}
-  }
-
-  pairs.forEach(function(p){
-    writeBlock(p.el,p.val);
+  // Replace ONLY the text content of the matched original block.
+  // Therefore the original paragraph/block position remains exactly where WTR
+  // put it, while all English text in that block disappears.
+  for(var k=0;k<pairs.length;k++){
+    var p=pairs[k];
+    p.el.textContent=String(p.val||'').trim();
     p.el.style.setProperty('font-size',(size||18)+'px','important');
     p.el.style.setProperty('line-height','1.75','important');
     p.el.style.setProperty('word-break','normal','important');
     p.el.style.setProperty('overflow-wrap','break-word','important');
-    if(fam)p.el.style.setProperty('font-family',fam,'important');
-  });
+  }
 
-  try{
-    if(window.__nsWtrObserver)window.__nsWtrObserver.disconnect();
-  }catch(e){}
-  el.setAttribute('data-ns','1');
-  el.setAttribute('data-ns-page-id',pageId||'');
-  el.setAttribute('data-ns-wtr-translation','1');
-  window.__nsEl=el;
+  // Font is applied only to the translated blocks. No inline bold/italic
+  // reconstruction is attempted.
+  if(font && font.length){
+    try{
+      var st=document.getElementById('__ns_font');
+      if(!st){
+        st=document.createElement('style');
+        st.id='__ns_font';
+        (document.head||document.documentElement).appendChild(st);
+      }
+      st.textContent="@font-face{font-family:'NSBn';src:url('"+location.origin+"/__ns_font/"+font+".ttf') format('truetype');font-display:swap;}";
+      for(var z=0;z<pairs.length;z++){
+        pairs[z].el.style.setProperty('font-family',"'NSBn',sans-serif",'important');
+      }
+    }catch(x){}
+  }
+
+  try{ if(window.__nsWtrObserver)window.__nsWtrObserver.disconnect(); }catch(x){}
+
+  root.setAttribute('data-ns','1');
+  root.setAttribute('data-ns-page-id',pageId||'');
+  root.setAttribute('data-ns-wtr-translation','1');
+  window.__nsEl=root;
   window.__nsOrig=old;
   window.__nsShown=1;
   window.__nsPageId=pageId||'';
 
-  // WTR-LAB may re-render the active chapter after SPA navigation. Re-apply
-  // from the original source DOM if the site replaces our nodes.
-  var expected=el.innerHTML, applying=false;
+  // WTR may redraw the SPA chapter. If it does, do not blindly inject one
+  // giant Bengali <p>. Re-run the exact source->original-block mapping.
+  var observerBusy=false;
   window.__nsWtrObserver=new MutationObserver(function(){
-    if(applying||!window.__nsShown||!document.contains(el))return;
-    if(el.getAttribute('data-ns')!=='1')return;
-    if(el.innerHTML===expected)return;
-    applying=true;
+    if(observerBusy || !window.__nsShown || !document.contains(root))return;
+    if(root.getAttribute('data-ns')!=='1')return;
+
+    observerBusy=true;
     try{
-      // Re-run the same mapping against the new DOM.
-      var fresh=el.querySelectorAll(tags);
-      var matched=0;
-      for(var k=0;k<pairs.length;k++){
-        var targetText=norm(source[k]||'');
-        var found=null;
-        for(var q=0;q<fresh.length;q++){
-          var cand=fresh[q];
-          if(norm(cand.innerText||cand.textContent)===targetText){found=cand;break;}
+      var fresh=[];
+      var freshSeen=new Set();
+      for(var q=0;q<selectors.length;q++){
+        var list=root.querySelectorAll(selectors[q]);
+        for(var u=0;u<list.length;u++){
+          var e=list[u];
+          if(isBlock(e) && !freshSeen.has(e)){
+            freshSeen.add(e);
+            fresh.push(e);
+          }
         }
-        if(found){writeBlock(found,paras[k]||'');matched++;}
       }
-      if(matched>=Math.max(1,Math.floor(paras.length*0.75))){
-        el.setAttribute('data-ns','1');
-        expected=el.innerHTML;
+      fresh.sort(function(a,b){
+        var p=a.compareDocumentPosition(b);
+        return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+      });
+
+      var remap=[];
+      var ok=true, taken=new Set();
+      for(var a=0;a<source.length;a++){
+        var want=norm(source[a]), hit=null;
+        for(var b=0;b<fresh.length;b++){
+          if(taken.has(fresh[b]))continue;
+          if(norm(fresh[b].innerText||fresh[b].textContent)===want){
+            hit=fresh[b];break;
+          }
+        }
+        if(!hit){ok=false;break;}
+        taken.add(hit);
+        remap.push(hit);
       }
-    }finally{applying=false;}
+
+      if(ok){
+        for(var d=0;d<remap.length;d++){
+          remap[d].textContent=String(translated[d]||'').trim();
+          remap[d].style.setProperty('font-size',(size||18)+'px','important');
+          remap[d].style.setProperty('line-height','1.75','important');
+          remap[d].style.setProperty('word-break','normal','important');
+          remap[d].style.setProperty('overflow-wrap','break-word','important');
+          if(font)remap[d].style.setProperty('font-family',"'NSBn',sans-serif",'important');
+        }
+      }
+    }finally{
+      observerBusy=false;
+    }
   });
-  try{window.__nsWtrObserver.observe(el,{childList:true,subtree:true});}catch(e){}
+
+  try{root.__nsOriginalMutationGuard=true;window.__nsWtrObserver.observe(root,{childList:true,subtree:true});}catch(x){}
   return 'ok:mapped:'+pairs.length;
-})(__PARAS__,__SOURCE__,__FONT__,__SIZE__,__PAGE_ID__)
+})(__TRANSLATED__,__SOURCE__,__FONT__,__SIZE__,__PAGE_ID__)
 """.trimIndent()
-            .replace("__PARAS__", JSONArray(paras).toString())
+            .replace("__TRANSLATED__", JSONArray(translated).toString())
             .replace("__SOURCE__", JSONArray(source).toString())
             .replace("__FONT__", JSONObject.quote(fontFile))
             .replace("__SIZE__", fontSizePx.toString())
             .replace("__PAGE_ID__", JSONObject.quote(pageKey))
 
         webView.evaluateJavascript(js) { result ->
-            callback(result != null && result.contains("ok"))
+            callback(result != null && result.contains("ok:mapped:"))
         }
     }
 
     private fun splitInternalMarkedTranslation(text: String): List<String> {
-        val marker = Regex("""\[\d{3,}\]\s*""")
+        val marker = Regex("""(?m)^\[\d{3,}\]\s*""")
         val marked = marker.split(text).map { it.trim() }.filter { it.isNotEmpty() }
         if (marked.size > 1) return marked
         return text.split(Regex("""\n\s*\n|\n+"""))
@@ -214,36 +277,18 @@ internal class WtrLabWriter {
 
     private fun sourceSegments(text: String): List<String> {
         var blocks = text.split(Regex("""\n\s*\n"""))
-            .map { it.trim() }.filter { it.isNotEmpty() }
-        if (blocks.size <= 2) {
-            val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
-            if (lines.size >= 3) blocks = lines
-            else {
-                val idx = blocks.indices.maxByOrNull { blocks[it].length }
-                if (idx != null && blocks[idx].length > 500) {
-                    val chunks = chunkBySentences(blocks[idx], 260)
-                    if (chunks.size > 1) blocks = blocks.toMutableList().also {
-                        it.removeAt(idx); it.addAll(idx, chunks)
-                    }
-                }
-            }
-        }
-        if (blocks.size == 1 && blocks[0].length > 800) blocks = chunkBySentences(blocks[0])
-        return blocks
-    }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
 
-    private fun chunkBySentences(text: String, target: Int = 260): List<String> {
-        val ends = "。！？!?…」』”।"
-        val out = mutableListOf<String>()
-        val sb = StringBuilder()
-        for (c in text) {
-            sb.append(c)
-            if (sb.length >= target && ends.indexOf(c) >= 0) {
-                out.add(sb.toString().trim())
-                sb.setLength(0)
+        if (blocks.size <= 2) {
+            val lines = text.split('\n')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (lines.size >= 3) {
+                blocks = lines
             }
         }
-        if (sb.isNotBlank()) out.add(sb.toString().trim())
-        return out.filter { it.isNotEmpty() }
+
+        return blocks
     }
 }
