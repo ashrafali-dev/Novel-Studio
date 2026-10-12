@@ -361,7 +361,10 @@ class MainActivity : Activity() {
         chatWv = WebView(this)
         setup(novelWv)
         setup(chatWv)
-        novelWv.settings.setSupportMultipleWindows(true)
+        // Reader sites commonly mark chapter/title links as target="_blank".
+        // With multiple windows enabled, NovelChrome rejects onCreateWindow(), so those
+        // taps appear to do nothing. Route user-opened links into this same reader WebView.
+        novelWv.settings.setSupportMultipleWindows(false)
         novelWv.settings.javaScriptCanOpenWindowsAutomatically = false
         novelWv.webViewClient = NovelClient()
         novelWv.webChromeClient = NovelChrome()
