@@ -31,10 +31,14 @@ internal class QidianWriter {
     el.textContent=String(paras[i+offset]||'');
     el.style.setProperty('font-size',(size||18)+'px','important');
     el.style.setProperty('line-height','1.8','important');
+    el.style.setProperty('word-break','normal','important');
+    el.style.setProperty('overflow-wrap','break-word','important');
     if(font)el.style.setProperty('font-family','NSBn','important');
   });
   if(title && offset===1){
     title.style.setProperty('font-size',(size||18)+'px','important');
+    title.style.setProperty('word-break','normal','important');
+    title.style.setProperty('overflow-wrap','break-word','important');
     if(font)title.style.setProperty('font-family','NSBn','important');
   }
   root.setAttribute('data-ns','1');
