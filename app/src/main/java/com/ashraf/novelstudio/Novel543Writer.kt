@@ -17,8 +17,8 @@ internal class Novel543Writer {
   var lines=Array.from(body.querySelectorAll(':scope > p')).filter(function(p){return String(p.innerText||p.textContent||'').replace(/\u00a0/g,' ').trim().length>0;});
   var offset=paras.length===lines.length+1?1:0;
   if(paras.length-offset!==lines.length)return 'line-mismatch:'+paras.length+':'+lines.length;
-  if(offset===1){title.textContent=String(paras[0]||'');if(font)title.style.setProperty('font-family',font,'important');}
-  lines.forEach(function(p,i){p.textContent=String(paras[i+offset]||'');p.style.setProperty('font-size',(size||18)+'px','important');p.style.setProperty('line-height','1.8','important');if(font)p.style.setProperty('font-family',font,'important');});
+  if(offset===1){title.textContent=String(paras[0]||'');title.style.setProperty('word-break','normal','important');title.style.setProperty('overflow-wrap','break-word','important');if(font)title.style.setProperty('font-family',font,'important');}
+  lines.forEach(function(p,i){p.textContent=String(paras[i+offset]||'');p.style.setProperty('font-size',(size||18)+'px','important');p.style.setProperty('line-height','1.8','important');p.style.setProperty('word-break','normal','important');p.style.setProperty('overflow-wrap','break-word','important');if(font)p.style.setProperty('font-family',font,'important');});
   root.setAttribute('data-ns','1');root.setAttribute('data-ns-page-id',pageId||'');
   window.__nsEl=root;window.__nsOrig=null;window.__nsShown=1;window.__nsPageId=pageId||'';
   return 'ok';
