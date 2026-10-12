@@ -14,14 +14,14 @@ internal class Novel543Navigator {
         if (!matches(chapterUrl)) return null
         val uri = Uri.parse(chapterUrl)
         val bookId = uri.pathSegments.firstOrNull()?.takeIf { it.matches(Regex("\\d+")) } ?: return null
-        return "\${uri.scheme ?: "https"}://\${uri.host}/$bookId/dir"
+        return "${uri.scheme ?: "https"}://${uri.host}/$bookId/dir"
     }
     fun prefetchTarget(chapterUrl: String): String? = null
     fun adjacentScript(direction: String): String {
         val wanted = if (direction == "prev") "上一章" else "下一章"
         return """
 (function(){
-  var wanted=\${JSONObject.quote(wanted)};
+  var wanted=${JSONObject.quote(wanted)};
   var links=Array.from(document.querySelectorAll('.foot-nav a[href]'));
   var a=links.find(function(x){return (x.innerText||x.textContent||'').trim().indexOf(wanted)>=0;});
   if(!a)return 'edge';
@@ -33,10 +33,10 @@ internal class Novel543Navigator {
         val delta = if (direction == "prev") -1 else 1
         return """
 (function(){
-  function norm(u){try{var x=new URL(u,location.href);return x.origin+x.pathname.replace(/\\/+$/,'');}catch(e){return '';}}
-  var source=\${JSONObject.quote(sourceUrl)};
+  function norm(u){try{var x=new URL(u,location.href);return x.origin+x.pathname.replace(/\/+$/,'');}catch(e){return '';}}
+  var source=${JSONObject.quote(sourceUrl)};
   var links=Array.from(document.querySelectorAll('a[href]')).filter(function(a){
-    try {var p=new URL(a.href,location.href).pathname;return /\\.html?$/i.test(p)&&/\\/\\d+\\//.test(p);}catch(e){return false;}
+    try {var p=new URL(a.href,location.href).pathname;return /\.html?$/i.test(p)&&/\/\d+\//.test(p);}catch(e){return false;}
   });
   var items=[],seen={}; links.forEach(function(a){var h=norm(a.href);if(h&&!seen[h]){seen[h]=1;items.push(h);}});
   var i=items.indexOf(source), n=i+($delta);
