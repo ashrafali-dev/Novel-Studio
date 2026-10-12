@@ -2925,7 +2925,7 @@ class MainActivity : Activity() {
     private fun stripInternalMarkers(text: String): String =
         text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
 
-    private fun splitInternalMarkedTranslation(text: String): List<String> {
+    private fun splitInternalMarkedTranslation(text: String, preserveParagraphs: Boolean = false): List<String> {
         // Models sometimes keep [001][002] markers on the same physical line.
         // Split on the marker itself, not only on a line-start marker.
         val marker = Regex("\\[\\d{3,}\\]\\s*")
@@ -2935,17 +2935,23 @@ class MainActivity : Activity() {
             text.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
         }
         if (parts.size > 1) return parts
-        // Only ONE block came back (markers lost / flattened by the chatbot): rebuild paragraphs
-        // from its single newlines, or from sentence ends, instead of one wall of text.
+        // If a chatbot drops the markers, keep existing paragraph breaks first.
+        // WTR-LAB needs the same recovery path as its rendered-DOM extractor.
         val one = parts.firstOrNull() ?: return parts
+        val blankLines = one.split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (blankLines.size >= 2) return blankLines
         val lines = one.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.size >= 3) return lines
         if (one.length > 500) {
             val out = mutableListOf<String>()
             val sb = StringBuilder()
+            val threshold = if (preserveParagraphs) 180 else 220
             for (c in one) {
                 sb.append(c)
-                if (sb.length >= 220 && "।!?”\u2026".indexOf(c) >= 0) { out.add(sb.toString().trim()); sb.setLength(0) }
+                if (sb.length >= threshold && "।.!?！？”\\u2026」』".indexOf(c) >= 0) {
+                    out.add(sb.toString().trim())
+                    sb.setLength(0)
+                }
             }
             if (sb.isNotBlank()) out.add(sb.toString().trim())
             if (out.size > 1) return out
@@ -3215,7 +3221,10 @@ markers preserved.
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
-        val paras = splitInternalMarkedTranslation(text)
+        val isWtrLab = Uri.parse(ch.url).host.orEmpty().lowercase().let {
+            it == "wtr-lab.com" || it.endsWith(".wtr-lab.com")
+        }
+        val paras = splitInternalMarkedTranslation(text, preserveParagraphs = isWtrLab)
         shownTrRaw = text
         // A translation callback can arrive long after the user pressed Next.
         // Never write an old chapter's translation into the current page.
