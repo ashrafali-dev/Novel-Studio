@@ -169,6 +169,8 @@ class MainActivity : Activity() {
     private var webNovelCatalogSourceUrl = ""
     private var webNovelCatalogOldHash = 0
     private var webNovelCatalogToken = 0
+    // WebNovel-specific behavior lives behind this site adapter.
+    private val webNovelSystem by lazy { WebNovelSystem(this) }
 
     // background translation queue
     private val queue = mutableListOf<Chapter>()
@@ -1915,7 +1917,7 @@ class MainActivity : Activity() {
                 val sourceUrl = webNovelCatalogSourceUrl
                 val oldHash = webNovelCatalogOldHash
                 webNovelCatalogPending = false
-                view.evaluateJavascript(Js.webNovelPickCatalog(dir, title, sourceUrl)) { raw ->
+                view.evaluateJavascript(webNovelSystem.catalogPickScript(dir, title, sourceUrl)) { raw ->
                     if (tk != navToken) return@evaluateJavascript
                     val target = decode(raw)
                     if (target.startsWith("http")) {
@@ -1976,34 +1978,16 @@ class MainActivity : Activity() {
     // WebNovel uses a reader DOM that the fast direct-text extractor can miss.
     // Keep its proven commit-96 extraction path isolated from every other site.
     private fun extractWebNovelNow(cb: (Chapter?) -> Unit) {
-        novelWv.evaluateJavascript("document.documentElement.outerHTML") { raw ->
-            val url = novelWv.url ?: ""
-            Thread {
-                val ch: Chapter? = try {
-                    val html = decode(raw)
-                    if (html.isEmpty()) null else {
-                        val doc = Jsoup.parse(html, url)
-                        val host = Uri.parse(url).host?.lowercase().orEmpty()
-                        val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
-                        Extractor.extract(
-                            doc, url,
-                            if (isNovel543) ".chapter-content" else SiteProfiles.selector(this@MainActivity, url, "content"),
-                            if (isNovel543) "h1" else SiteProfiles.selector(this@MainActivity, url, "title"),
-                            if (isNovel543) ".warp:nth-child(2) > a:nth-child(5)" else SiteProfiles.selector(this@MainActivity, url, "next"),
-                            if (isNovel543) ".warp:nth-child(2) > a:nth-child(1)" else SiteProfiles.selector(this@MainActivity, url, "prev")
-                        )
-                    }
-                } catch (e: Exception) { null }
-                runOnUiThread {
-                    if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
-                    cb(ch)                }
-            }.start()
-        }
+        webNovelSystem.extract(novelWv, 0, cb)
     }
 
     private fun extractNow(attempt: Int = 0, cb: (Chapter?) -> Unit) {
         val url = novelWv.url ?: ""
         if (url.isBlank()) { cb(null); return }
+        if (webNovelSystem.isWebNovel(url)) {
+            webNovelSystem.extract(novelWv, attempt, cb)
+            return
+        }
 
         val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
         val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
@@ -2519,15 +2503,12 @@ class MainActivity : Activity() {
             // in this WebView but kept completely covered by the loading
             // overlay; onPageFinished extracts the adjacent chapter URL and
             // immediately loads that chapter.
-            val parsed = Uri.parse(base.url)
-            val path = parsed.path ?: ""
-            val match = Regex("^(/book/[^/]+)", RegexOption.IGNORE_CASE).find(path)
-            if (match == null || parsed.scheme.isNullOrEmpty() || parsed.authority.isNullOrEmpty()) {
+            val catalogUrl = webNovelSystem.catalogUrl(base.url)
+            if (catalogUrl.isNullOrBlank()) {
                 hideNavLoading()
                 toast("❌ Could not identify the WebNovel book URL")
                 return
             }
-            val catalogUrl = parsed.scheme + "://" + parsed.authority + match.value + "/catalog"
             webNovelCatalogPending = true
             webNovelCatalogDir = dir
             webNovelCatalogTitle = base.title
@@ -2755,12 +2736,8 @@ class MainActivity : Activity() {
         } else {
             // WebNovel often exposes Next only through its catalogue rather than
             // as a direct adjacent URL in the chapter DOM.
-            val parsed = Uri.parse(ch.url)
-            val path = parsed.path.orEmpty()
-            val bookPath = Regex("^(/book/[^/]+)", RegexOption.IGNORE_CASE).find(path)?.value
-            if (!ch.url.contains("webnovel.com/", ignoreCase = true) ||
-                bookPath == null || parsed.scheme.isNullOrBlank() || parsed.authority.isNullOrBlank()) return
-            target = parsed.scheme + "://" + parsed.authority + bookPath + "/catalog"
+            val catalog = webNovelSystem.prefetchTarget(ch.url) ?: return
+            target = catalog
             useCatalog = true
         }
         if (prefetchLoading && cleanUrl(prefetchTarget) == cleanUrl(target)) return
@@ -2794,6 +2771,10 @@ class MainActivity : Activity() {
     private fun prefetchExtractNow(cb: (Chapter?) -> Unit) {
         val url = prefetchWv.url ?: prefetchTarget
         if (url.isBlank()) { cb(null); return }
+        if (webNovelSystem.isWebNovel(url)) {
+            webNovelSystem.extract(prefetchWv, 0, cb)
+            return
+        }
         val host = Uri.parse(url).host?.lowercase().orEmpty()
         val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
         val contentSel = if (isNovel543) ".chapter-content" else SiteProfiles.selector(this, url, "content")
@@ -3218,6 +3199,42 @@ markers preserved.
 
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
+        if (webNovelSystem.isWebNovel(ch.url)) {
+            shownTrRaw = text
+            if (lastChapter !== ch) return
+            injectBengaliFont()
+            webNovelSystem.writeTranslation(
+                novelWv,
+                ch,
+                text,
+                Prefs.fontFile(this),
+                Prefs.sizePx(this),
+                pageKey(ch.url)
+            ) { ok ->
+                if (lastChapter !== ch) return@writeTranslation
+                if (ok) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {
+                        handler.postDelayed({
+                            if (shownTranslated && lastChapter === ch) {
+                                val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
+                                novelWv.evaluateJavascript(Js.stillApplied(sel, pageKey(ch.url))) { s ->
+                                    if (lastChapter === ch && s != null && s.contains("lost")) {
+                                        applyTranslation(ch, text, false)
+                                    }
+                                }
+                            }
+                        }, 2500L)
+                    }
+                } else {
+                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                }
+            }
+            return
+        }
+
         val sel = ch.contentSel.ifBlank { SiteProfiles.selector(this, ch.url, "content") }
         val isWtrLab = Uri.parse(ch.url).host.orEmpty().lowercase().let {
             it == "wtr-lab.com" || it.endsWith(".wtr-lab.com")
