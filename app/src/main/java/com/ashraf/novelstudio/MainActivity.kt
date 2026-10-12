@@ -2762,12 +2762,14 @@ class MainActivity : Activity() {
         if (directTarget != null) {
             target = directTarget
             useCatalog = false
-        } else {
-            // WebNovel often exposes Next only through its catalogue rather than
+        } else if (isWebNovel) {
+            // WebNovel often exposes Next only through the catalogue rather than
             // as a direct adjacent URL in the chapter DOM.
             val catalog = webNovelSystem.prefetchTarget(ch.url) ?: return
             target = catalog
             useCatalog = true
+        } else {
+            return
         }
         if (prefetchLoading && cleanUrl(prefetchTarget) == cleanUrl(target)) return
         prefetchToken++
