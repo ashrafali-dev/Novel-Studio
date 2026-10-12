@@ -29,6 +29,8 @@ internal class WtrLabWriter {
     line.style.setProperty('font-size',(size||18)+'px','important');
     if(font)line.style.setProperty('font-family',font,'important');
     line.style.setProperty('line-height','1.75','important');
+    line.style.setProperty('word-break','normal','important');
+    line.style.setProperty('overflow-wrap','break-word','important');
   }
   body.setAttribute('data-ns','1'); body.setAttribute('data-ns-page-id',pageId||'');
   window.__nsEl=body; window.__nsOrig=old; window.__nsShown=1; window.__nsPageId=pageId||'';
