@@ -3248,6 +3248,9 @@ markers preserved.
             val shown = lastChapter
             if (shown != null && keyOf(shown) == keyOf(ch)) {
                 applyTranslation(shown, rawTranslation, true)
+                // Keep the one-chapter-ahead pipeline moving while the reader is
+                // already on this chapter; do not chain ahead while reading another one.
+                schedulePrefetch(shown)
             }
             toast("✅ Translation saved" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             running = null
