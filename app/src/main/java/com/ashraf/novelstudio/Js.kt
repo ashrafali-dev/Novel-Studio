@@ -1002,7 +1002,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   if(hostNow.indexOf('wtr-lab.com')>=0 && chosen && chosenUnits.length<3){
     var wtrText=text(chosen);
     if(title){
-      wtrText=wtrText.split(/\n+/).filter(function(s){return clean(s)!==title;}).join('\\n');
+      wtrText=wtrText.split(/\n+/).filter(function(s){return clean(s)!==title;}).join('\n');
       if(wtrText.trim()===title)wtrText='';
     }
     var wtrBlocks=wtrText.split(/\n\s*\n/).map(function(s){return clean(s);}).filter(function(s){return meaningful(s)&&s.length>1;});
