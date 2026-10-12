@@ -286,7 +286,38 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       fam="'NSBn',sans-serif";
     }catch(e){}
   }
-  // side margin: only when the site's own container hugs the screen edge
+  // IMPORTANT: write into the site's existing HTML elements first.
+  // Do NOT build a new translation <div>/<p> tree when the page already has
+  // one paragraph element per extracted paragraph. This keeps the site's
+  // original DOM, classes, CSS, spacing and exact paragraph positions.
+  var existing=Array.from(el.querySelectorAll(':scope > p')).filter(function(p){
+    return String(p.innerText||p.textContent||'').replace(/\\u00a0/g,' ').trim().length>0;
+  });
+  if(existing.length>=3){
+    var off=paras.length===existing.length+1?1:0;
+    if(paras.length-off===existing.length){
+      var hs=off?el.querySelector(':scope > h1, :scope > h2, :scope > h3'):null;
+      if(off&&hs){
+        hs.textContent=String(paras[0]||'');
+        hs.style.setProperty('font-size',(size||18)+'px','important');
+        if(fam)hs.style.setProperty('font-family',fam,'important');
+      }
+      existing.forEach(function(p,i){
+        p.textContent=String(paras[i+off]||'');
+        p.style.setProperty('font-size',(size||18)+'px','important');
+        p.style.setProperty('line-height','1.75','important');
+        if(fam)p.style.setProperty('font-family',fam,'important');
+      });
+      el.setAttribute('data-ns','1');
+      el.setAttribute('data-ns-page-id',pageId||'');
+      window.__nsPageId=pageId||'';
+      window.__nsShown=1;
+      return 'ok';
+    }
+  }
+
+  // Legacy fallback for sites whose chapter DOM cannot be aligned with the
+  // extracted paragraphs. Only this path creates replacement HTML.
   var rc=el.getBoundingClientRect(), cst=getComputedStyle(el);
   var padL=Math.max(0,16-Math.max(rc.left,0)-(parseFloat(cst.paddingLeft)||0));
   var padR=Math.max(0,16-Math.max(window.innerWidth-rc.right,0)-(parseFloat(cst.paddingRight)||0));
