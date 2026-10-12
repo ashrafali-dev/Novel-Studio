@@ -2527,9 +2527,9 @@ class MainActivity : Activity() {
         // This keeps /chapter-1 -> /chapter-2 sites fast while catalog-based
         // sites continue through the normal extraction/navigation path.
         val numberedTarget = numberedChapterUrl(currentUrl, dir)
-        if (numberedTarget != null) {
-            val base = cached?.takeIf { cleanUrl(it.url) == currentUrl }
-            loadAndWait(numberedTarget, token, base)
+        if (numberedTarget != null && cached != null &&
+            cleanUrl(cached.url) == currentUrl) {
+            loadAndWait(numberedTarget, token, cached)
             return
         }
 
@@ -2597,11 +2597,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadAndWait(url: String, token: Int, base: Chapter?) {
+    private fun loadAndWait(url: String, token: Int, base: Chapter) {
         // For a direct next/prev URL, remember the TARGET URL, not the old
         // URL. SPA readers can change the heading/URL before replacing body.
         pendUrl = cleanUrl(url)
-        pendHash = base?.let { bodyHash(it) }
+        pendHash = bodyHash(base)
         val autoExtract = Prefs.bool(this, "autoExtractNext", true)
         autoCopy = autoExtract
         // Load the target exactly once. The extension-style extractor reads
