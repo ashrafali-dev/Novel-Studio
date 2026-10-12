@@ -3383,6 +3383,13 @@ markers preserved.
             it == "wtr-lab.com" || it.endsWith(".wtr-lab.com")
         }
         val paras = splitInternalMarkedTranslation(text, preserveParagraphs = isWtrLab)
+        // Recreate the exact marker units used for this chapter, so [001] maps
+        // to the same source element that produced [001] in the AI request.
+        val sourceSegments = splitInternalMarkedTranslation(
+            addInternalMarkers(ch.text, splitSingleLines = isWtrLab),
+            preserveParagraphs = true
+        )
+        val sourceJson = JSONArray(sourceSegments).toString()
         shownTrRaw = text
         // A translation callback can arrive long after the user pressed Next.
         // Never write an old chapter's translation into the current page.
@@ -3390,7 +3397,14 @@ markers preserved.
 
         injectBengaliFont()
         novelWv.evaluateJavascript(
-            Js.apply(sel, JSONArray(paras).toString(), Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
+            Js.applyMapped(
+                sel,
+                text,
+                sourceJson,
+                Prefs.fontFile(this),
+                Prefs.sizePx(this),
+                pageKey(ch.url)
+            )
         ) { r ->
             if (lastChapter !== ch) return@evaluateJavascript
             if (r != null && r.contains("ok")) {
