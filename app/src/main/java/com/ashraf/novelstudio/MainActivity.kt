@@ -171,6 +171,7 @@ class MainActivity : Activity() {
     private var webNovelCatalogToken = 0
     // WebNovel-specific behavior lives behind this site adapter.
     private val webNovelSystem by lazy { WebNovelSystem(this) }
+    private val wtrLabSystem by lazy { WtrLabSystem(this) }
 
     // background translation queue
     private val queue = mutableListOf<Chapter>()
@@ -2017,6 +2018,10 @@ class MainActivity : Activity() {
             webNovelSystem.extract(novelWv, attempt, cb)
             return
         }
+        if (wtrLabSystem.matches(url)) {
+            wtrLabSystem.extract(novelWv, attempt, cb)
+            return
+        }
 
         val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
         val isNovel543 = host == "novel543.com" || host.endsWith(".novel543.com")
@@ -2741,15 +2746,8 @@ class MainActivity : Activity() {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
         val parsedCurrent = Uri.parse(ch.url)
         val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
-        val inferredWtrNext = if (hostCurrent == "wtr-lab.com" || hostCurrent.endsWith(".wtr-lab.com")) {
-            try {
-                val path = parsedCurrent.path.orEmpty()
-                val m = Regex("^(.*?/chapter-)(\\d+)/?$", RegexOption.IGNORE_CASE).find(path)
-                if (m != null) {
-                    val nextPath = m.groupValues[1] + (m.groupValues[2].toLong() + 1L)
-                    parsedCurrent.buildUpon().path(nextPath).build().toString()
-                } else null
-            } catch (_: Exception) { null }
+        val inferredWtrNext = if (wtrLabSystem.matches(ch.url)) {
+            wtrLabSystem.prefetchTarget(ch.url)
         } else null
         // WebNovel's reader can expose a non-adjacent/opaque chapter URL as "Next".
         // Always resolve its next chapter from the catalog, just like the visible Next button.
@@ -2803,10 +2801,11 @@ class MainActivity : Activity() {
         val url = prefetchWv.url ?: prefetchTarget
         if (url.isBlank()) { cb(null); return }
         if (webNovelSystem.isWebNovel(url)) {
-            // Prefetch uses the exact same rendered-DOM path as the #553 implementation.
-            // Keep this path isolated from the visible-page extractor so background
-            // loading cannot inherit visible navigation state.
             webNovelSystem.extract(prefetchWv, 0, cb)
+            return
+        }
+        if (wtrLabSystem.matches(url)) {
+            wtrLabSystem.extract(prefetchWv, 0, cb)
             return
         }
         val host = Uri.parse(url).host?.lowercase().orEmpty()
@@ -3233,6 +3232,36 @@ markers preserved.
 
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
+        if (wtrLabSystem.matches(ch.url)) {
+            shownTrRaw = text
+            if (lastChapter !== ch) return
+            injectBengaliFont()
+            wtrLabSystem.writeTranslation(
+                novelWv, ch, text, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
+            ) { ok ->
+                if (lastChapter !== ch) return@writeTranslation
+                if (ok) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                    if (retry) {
+                        handler.postDelayed({
+                            if (shownTranslated && lastChapter === ch) {
+                                val sel = ch.contentSel.ifBlank { ".chapter-body" }
+                                novelWv.evaluateJavascript(Js.stillApplied(sel, pageKey(ch.url))) { s ->
+                                    if (lastChapter === ch && s != null && s.contains("lost")) {
+                                        applyTranslation(ch, text, false)
+                                    }
+                                }
+                            }
+                        }, 2500L)
+                    }
+                } else {
+                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                }
+            }
+            return
+        }
         if (webNovelSystem.isWebNovel(ch.url)) {
             shownTrRaw = text
             if (lastChapter !== ch) return
