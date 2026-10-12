@@ -113,7 +113,7 @@ class MainActivity : Activity() {
     private lateinit var modeBtn: ImageView
     private lateinit var extractBtn: ExtractButton
     private lateinit var progressBox: LinearLayout
-    private lateinit var progressBar: GlowBar
+    private lateinit var progressBar: BookwormProgress
     private lateinit var progressTv: TextView
     private lateinit var togglePill: TextView
     private lateinit var tabRail: HorizontalScrollView
@@ -599,7 +599,7 @@ class MainActivity : Activity() {
         }
 
         // ================= translation status card (floats over the page)
-        progressBar = GlowBar(this)
+        progressBar = BookwormProgress(this)
         progressTv = TextView(this).apply {
             textSize = 13.5f
             typeface = medium
@@ -627,7 +627,8 @@ class MainActivity : Activity() {
         progressBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
-            setPadding(dp(14), dp(10), dp(10), dp(12))
+            clipChildren = false // lets the mascot's sparkles overshoot the bar a little
+            setPadding(dp(14), dp(10), dp(10), dp(6))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(0xF2282C3E.toInt(), 0xF2181B28.toInt())
@@ -637,7 +638,7 @@ class MainActivity : Activity() {
             }
             elevation = dp(10).toFloat()
             addView(progRow, LinearLayout.LayoutParams(MP, WC))
-            addView(progressBar, LinearLayout.LayoutParams(MP, dp(5)).also { it.topMargin = dp(9) })
+            addView(progressBar, LinearLayout.LayoutParams(MP, dp(44)).also { it.topMargin = dp(2) })
         }
 
         togglePill = TextView(this).apply {
@@ -996,8 +997,7 @@ class MainActivity : Activity() {
             })
             if (active && browserTabs.size > 1) {
                 chipView.addView(iconButton(Ic.CLOSE, "Close tab", 11, 24, UiTheme.iconIdle) { closeBrowserTab(i) }.also {
-                    it.layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).also { lp -> lp.marginStart = dp(4) }
-                })
+                    it.layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).also { lp -> lp.marginStart = dp(4) }                })
                 activeChip = chipView
             }
             tabStrip.addView(chipView)
@@ -1996,8 +1996,7 @@ class MainActivity : Activity() {
                 } catch (e: Exception) { null }
                 runOnUiThread {
                     if (ch != null) SiteProfiles.remember(this@MainActivity, ch)
-                    cb(ch)
-                }
+                    cb(ch)                }
             }.start()
         }
     }
@@ -2996,8 +2995,7 @@ class MainActivity : Activity() {
     }
 
     // ================================================================== auto mode (⚡ on)
-    private fun autoFlow(ch: Chapter) {
-        // Every extraction is translated from scratch. Saved translations are
+    private fun autoFlow(ch: Chapter) {        // Every extraction is translated from scratch. Saved translations are
         // never reused. If the same chapter is already being translated
         // (● pressed again), restart it cleanly instead of ignoring the press.
         val r = running
@@ -3295,6 +3293,9 @@ markers preserved.
     private fun updateProgressUi() {
         val run = running
         if (run == null && queue.isEmpty()) {
+            // keep the finish animation (worm → butterfly) alive until it has played out
+            if (progressBar.progress == 100) progressTv.text = "Translated"
+            progressBar.running = false
             setProgressVisible(false)
             extractBtn.ringProgress = -1
             return
@@ -3315,6 +3316,7 @@ markers preserved.
         progressTv.text = title
         progressPct.text = if (pct > 0) "$pct%" else ""
         progressBar.progress = pct
+        progressBar.running = run != null
         extractBtn.ringProgress = if (pct > 0) pct else 0
         setProgressVisible(true)
     }
@@ -3327,9 +3329,9 @@ markers preserved.
             progressBox.alpha = 0f
             progressBox.translationY = -dp(14).toFloat()
             progressBox.visibility = View.VISIBLE
-            progressBox.animate().alpha(1f).translationY(0f).setDuration(230).start()
+            progressBox.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(230).start()
         } else {
-            progressBox.animate().alpha(0f).translationY(-dp(10).toFloat()).setDuration(190)
+            progressBox.animate().alpha(0f).translationY(-dp(10).toFloat()).setStartDelay(progressBar.holdMs()).setDuration(190)
                 .withEndAction { if (!progressShown) progressBox.visibility = View.GONE }.start()
         }
     }
@@ -3992,8 +3994,7 @@ markers preserved.
             { i ->
                 if (mode == Mode.CHAT) setMode(Mode.SPLIT)
                 novelWv.loadUrl(l[i].lastUrl.ifEmpty { l[i].url })
-            },
-            { i -> Store.removeBookmark(this, i) })
+            },            { i -> Store.removeBookmark(this, i) })
     }
 
     private fun editPrompt() {
