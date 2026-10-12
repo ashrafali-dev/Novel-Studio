@@ -126,33 +126,68 @@ internal class WtrLabWriter {
     return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
   });
 
-  // First and safest mapping: source paragraph text must equal the original
-  // text inside its DOM block (ignoring whitespace). This guarantees that we
-  // never put Bengali into the wrong paragraph.
+  // Match consecutive source chunks to each original visible block.
+  // Long source paragraphs may have been split into several internal markers;
+  // join those translated chunks back into their original DOM paragraph.
   var used=new Set();
   var pairs=[];
-  for(var i=0;i<source.length;i++){
-    var wanted=norm(source[i]);
-    var found=null;
-    for(var j=0;j<nodes.length;j++){
-      var candidate=nodes[j];
-      if(used.has(candidate))continue;
-      if(norm(candidate.innerText||candidate.textContent)===wanted){
-        found=candidate;
+  var si=0;
+  var ordered=nodes.filter(function(e,idx){
+    // Drop duplicate wrappers that expose exactly the same text as a nested
+    // candidate; otherwise one paragraph can be counted twice.
+    var t=norm(e.innerText||e.textContent);
+    for(var k=0;k<nodes.length;k++){
+      if(k===idx)continue;
+      var child=nodes[k];
+      if(e.contains(child) && norm(child.innerText||child.textContent)===t) return false;
+    }
+    return true;
+  });
+
+  for(var ni=0;ni<ordered.length && si<source.length;ni++){
+    var node=ordered[ni];
+    if(used.has(node))continue;
+    var wanted=norm(node.innerText||node.textContent);
+    if(!wanted)continue;
+
+    // Exact one-to-one match.
+    if(norm(source[si])===wanted){
+      pairs.push({el:node,val:translated[si]});
+      used.add(node);si++;
+      continue;
+    }
+
+    // Try combining adjacent marked source chunks until they exactly match
+    // this original paragraph. This handles long paragraphs split for AI.
+    var acc='', vals=[], matched=false;
+    for(var take=si;take<source.length && take<si+12;take++){
+      acc=acc ? acc+' '+norm(source[take]) : norm(source[take]);
+      vals.push(String(translated[take]||'').trim());
+      if(acc===wanted){
+        pairs.push({el:node,val:vals.join(' ')});
+        used.add(node);
+        si=take+1;
+        matched=true;
         break;
       }
+      if(acc.length>wanted.length+40 || !wanted.startsWith(acc.substring(0,Math.min(acc.length,80)))) break;
     }
-    if(!found){
-      // Do not guess. A wrong paragraph is worse than showing no translation.
-      return 'map-mismatch:'+i+':'+source.length+':'+nodes.length;
+    if(matched)continue;
+
+    // If extraction normalized line breaks differently, allow a conservative
+    // punctuation/whitespace-insensitive equality check.
+    function compact(s){return norm(s).replace(/[\\s\\p{P}]+/gu,'').toLowerCase();}
+    if(compact(source[si])===compact(wanted)){
+      pairs.push({el:node,val:translated[si]});
+      used.add(node);si++;
+      continue;
     }
-    used.add(found);
-    pairs.push({el:found,val:translated[i]});
+
+    // Do not shift subsequent paragraphs onto the wrong place.
+    return 'map-mismatch:'+si+':'+source.length+':'+ordered.length;
   }
 
-  // We deliberately require every translation block to have an original block.
-  // No "put the rest into the last <p>" fallback.
-  if(pairs.length!==translated.length)return 'map-mismatch';
+  if(si!==source.length || pairs.length===0)return 'map-mismatch:'+si+':'+source.length+':'+ordered.length;
 
   var old=root.innerHTML;
 
@@ -195,63 +230,10 @@ internal class WtrLabWriter {
   window.__nsShown=1;
   window.__nsPageId=pageId||'';
 
-  // WTR may redraw the SPA chapter. If it does, do not blindly inject one
-  // giant Bengali <p>. Re-run the exact source->original-block mapping.
-  var observerBusy=false;
-  window.__nsWtrObserver=new MutationObserver(function(){
-    if(observerBusy || !window.__nsShown || !document.contains(root))return;
-    if(root.getAttribute('data-ns')!=='1')return;
+  // Do not observe every mutation: WTR updates counters/progress during
+  // reading, and a broad observer can race with the user's chapter navigation.
+  // Each chapter is re-extracted and translated through the normal app flow.
 
-    observerBusy=true;
-    try{
-      var fresh=[];
-      var freshSeen=new Set();
-      for(var q=0;q<selectors.length;q++){
-        var list=root.querySelectorAll(selectors[q]);
-        for(var u=0;u<list.length;u++){
-          var e=list[u];
-          if(isBlock(e) && !freshSeen.has(e)){
-            freshSeen.add(e);
-            fresh.push(e);
-          }
-        }
-      }
-      fresh.sort(function(a,b){
-        var p=a.compareDocumentPosition(b);
-        return (p & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
-      });
-
-      var remap=[];
-      var ok=true, taken=new Set();
-      for(var a=0;a<source.length;a++){
-        var want=norm(source[a]), hit=null;
-        for(var b=0;b<fresh.length;b++){
-          if(taken.has(fresh[b]))continue;
-          if(norm(fresh[b].innerText||fresh[b].textContent)===want){
-            hit=fresh[b];break;
-          }
-        }
-        if(!hit){ok=false;break;}
-        taken.add(hit);
-        remap.push(hit);
-      }
-
-      if(ok){
-        for(var d=0;d<remap.length;d++){
-          remap[d].textContent=String(translated[d]||'').trim();
-          remap[d].style.setProperty('font-size',(size||18)+'px','important');
-          remap[d].style.setProperty('line-height','1.75','important');
-          remap[d].style.setProperty('word-break','normal','important');
-          remap[d].style.setProperty('overflow-wrap','break-word','important');
-          if(font)remap[d].style.setProperty('font-family',"'NSBn',sans-serif",'important');
-        }
-      }
-    }finally{
-      observerBusy=false;
-    }
-  });
-
-  try{root.__nsOriginalMutationGuard=true;window.__nsWtrObserver.observe(root,{childList:true,subtree:true});}catch(x){}
   return 'ok:mapped:'+pairs.length;
 })(__TRANSLATED__,__SOURCE__,__FONT__,__SIZE__,__PAGE_ID__)
 """.trimIndent()
