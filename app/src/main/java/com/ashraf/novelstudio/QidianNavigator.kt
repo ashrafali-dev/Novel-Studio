@@ -18,16 +18,16 @@ internal class QidianNavigator {
         return """
 (function(){
   function norm(u){
-    try { var x=new URL(u,location.href); return x.origin+x.pathname.replace(/\\/+$/,''); }
-    catch(e){ return String(u||'').replace(/[?#].*$/,'').replace(/\\/+$/,''); }
+    try { var x=new URL(u,location.href); return x.origin+x.pathname.replace(/\/+$/,''); }
+    catch(e){ return String(u||'').replace(/[?#].*$/,'').replace(/\/+$/,''); }
   }
-  var source=norm(\${org.json.JSONObject.quote(sourceUrl)});
+  var source=norm(${org.json.JSONObject.quote(sourceUrl)});
   var links=Array.from(document.querySelectorAll('li[id^="chapter-item-"] > a[href*="/chapter/"]'));
   var items=[],seen={};
   links.forEach(function(a){var href=norm(a.href);if(href&&!seen[href]){seen[href]=1;items.push(href);}});
   var index=items.indexOf(source);
   if(index<0){
-    var m=source.match(/\\/chapter\\/(\\d+)\\/(\\d+)/);
+    var m=source.match(/\/chapter\/(\\d+)\/(\\d+)/);
     if(m) index=items.findIndex(function(h){return new RegExp('/chapter/'+m[1]+'/'+m[2]+'$').test(h);});
   }
   var at=index+($delta);
