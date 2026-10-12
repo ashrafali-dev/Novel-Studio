@@ -267,28 +267,85 @@ internal class WtrLabWriter {
     }
 
     private fun splitInternalMarkedTranslation(text: String): List<String> {
-        val marker = Regex("""(?m)^\[\d{3,}\]\s*""")
-        val marked = marker.split(text).map { it.trim() }.filter { it.isNotEmpty() }
-        if (marked.size > 1) return marked
-        return text.split(Regex("""\n\s*\n|\n+"""))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
+        // Match MainActivity's parser: markers may be adjacent or on the same line.
+        val marker = Regex("""\[\d{3,}\]\s*""")
+        val parts = if (marker.containsMatchIn(text)) {
+            marker.split(text).map { it.trim() }.filter { it.isNotEmpty() }
+        } else {
+            text.split(Regex("""\n\s*\n""")).map { it.trim() }.filter { it.isNotEmpty() }
+        }
+        if (parts.size > 1) return parts
+        val one = parts.firstOrNull() ?: return emptyList()
+        val blankLines = one.split(Regex("""\n\s*\n""")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (blankLines.size >= 2) return blankLines
+        val lines = one.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.size >= 3) return lines
+        if (one.length > 500) {
+            val out = mutableListOf<String>()
+            val sb = StringBuilder()
+            for (ch in one) {
+                sb.append(ch)
+                if (sb.length >= 220 && "।.!?！？”…」』".indexOf(ch) >= 0) {
+                    out.add(sb.toString().trim())
+                    sb.setLength(0)
+                }
+            }
+            if (sb.isNotBlank()) out.add(sb.toString().trim())
+            return out.filter { it.isNotEmpty() }
+        }
+        return listOf(one)
     }
 
+    // Must mirror MainActivity.addInternalMarkers(text, splitSingleLines = true)
+    // exactly; otherwise source/translation counts diverge and WTR refuses to paste.
     private fun sourceSegments(text: String): List<String> {
         var blocks = text.split(Regex("""\n\s*\n"""))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
         if (blocks.size <= 2) {
-            val lines = text.split('\n')
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
+            val lines = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
             if (lines.size >= 3) {
                 blocks = lines
+            } else {
+                val titleLike = Regex(
+                    """^(?:#?\d+\s+)?(?:chapter|অধ্যায়|অধ্যায়)\b""",
+                    RegexOption.IGNORE_CASE
+                )
+                val bodyIndex = blocks.indexOfFirst {
+                    !titleLike.containsMatchIn(it) && it.length > 500
+                }.takeIf { it >= 0 } ?: blocks.indices.maxByOrNull { blocks[it].length }
+
+                if (bodyIndex != null && blocks[bodyIndex].length > 500) {
+                    val split = chunkBySentences(blocks[bodyIndex], 260)
+                    if (split.size > 1) {
+                        blocks = blocks.toMutableList().also {
+                            it.removeAt(bodyIndex)
+                            it.addAll(bodyIndex, split)
+                        }
+                    }
+                }
             }
         }
 
+        if (blocks.size == 1 && blocks[0].length > 800) {
+            blocks = chunkBySentences(blocks[0], 280)
+        }
         return blocks
+    }
+
+    private fun chunkBySentences(text: String, target: Int): List<String> {
+        val ends = "。！？!?…」』”"
+        val out = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (ch in text) {
+            sb.append(ch)
+            if (sb.length >= target && ends.indexOf(ch) >= 0) {
+                out.add(sb.toString().trim())
+                sb.setLength(0)
+            }
+        }
+        if (sb.isNotBlank()) out.add(sb.toString().trim())
+        return out.filter { it.isNotEmpty() }
     }
 }
