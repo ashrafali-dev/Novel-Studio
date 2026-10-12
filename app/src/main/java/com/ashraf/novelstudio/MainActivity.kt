@@ -3577,6 +3577,31 @@ markers preserved.
         if (lastChapter !== ch) return
 
         injectBengaliFont()
+
+        // WTR-LAB is a same-URL SPA and its reader blocks are not compatible
+        // with the generic HTML mapper. Use the WTR writer so [001], [002]...
+        // are mapped to the actual rendered blocks in DOM order.
+        if (isWtrLab) {
+            WtrLabWriter().write(
+                novelWv,
+                ch,
+                text,
+                Prefs.fontFile(this),
+                Prefs.sizePx(this),
+                pageKey(ch.url)
+            ) { ok ->
+                if (lastChapter !== ch) return@write
+                if (ok) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                } else {
+                    toast("⚠️ WTR: translation blocks did not match the chapter")
+                }
+            }
+            return
+        }
+
         novelWv.evaluateJavascript(
             Js.applyMapped(
                 sel,
@@ -3592,7 +3617,7 @@ markers preserved.
                 hasTr = true
                 shownTranslated = true
                 updatePill()
-                if (retry) {   // some sites re-render the content a moment later — put it back once
+                if (retry) {
                     handler.postDelayed({
                         if (shownTranslated && lastChapter === ch) {
                             novelWv.evaluateJavascript(Js.stillApplied(sel, pageKey(ch.url))) { s ->
