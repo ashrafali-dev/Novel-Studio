@@ -93,6 +93,8 @@ class MainActivity : Activity() {
     private var prefetchToken = 0
     private var prefetchLoading = false
     private var prefetchCatalogPending = false
+    private var prefetchWtrSpaPending = false
+    private var prefetchWtrSourceNumber = ""
     private var prefetchCatalogTitle = ""
     private var prefetchSourceUrl = ""
     private val prefetchRequestedUrls = mutableSetOf<String>()
@@ -391,6 +393,57 @@ class MainActivity : Activity() {
                     super.onPageFinished(view, url)
                     if (!prefetchLoading || url.isNullOrBlank()) return
                     val token = prefetchToken
+                    if (prefetchWtrSpaPending) {
+                        // WTR-LAB keeps the same URL. Load the reader once, click
+                        // its own Next button, then wait for the chapter number/DOM
+                        // to change before extracting the prefetched chapter.
+                        prefetchWtrSpaPending = false
+                        val sourceNumber = prefetchWtrSourceNumber
+                        fun clickAttempt(attempt: Int) {
+                            if (!prefetchLoading || token != prefetchToken) return
+                            prefetchWv.evaluateJavascript(Js.clickNext("next")) { raw ->
+                                if (!prefetchLoading || token != prefetchToken) return@evaluateJavascript
+                                val result = decode(raw).lowercase()
+                                if (result.contains("clicked")) {
+                                    fun readWtr(chAttempt: Int) {
+                                        if (!prefetchLoading || token != prefetchToken) return
+                                        wtrLabSystem.extract(prefetchWv, 0) { next ->
+                                            if (!prefetchLoading || token != prefetchToken) return
+                                            val changed = next != null &&
+                                                next.number.isNotBlank() &&
+                                                (sourceNumber.isBlank() || next.number != sourceNumber) &&
+                                                next.text.length >= 80
+                                            if (changed) {
+                                                prefetchLoading = false
+                                                prefetchTarget = ""
+                                                val current = lastChapter
+                                                if (current != null && keyOf(next!!) == keyOf(current)) return@extract
+                                                if (Store.find(this@MainActivity, next!!) != null) return@extract
+                                                val nextKey = keyOf(next)
+                                                if (prefetchKeys.add(nextKey)) {
+                                                    prefetchGeneratedKeys.add(nextKey)
+                                                    enqueue(next)
+                                                }
+                                            } else if (chAttempt < 20) {
+                                                handler.postDelayed({ readWtr(chAttempt + 1) }, 500L)
+                                            } else {
+                                                prefetchLoading = false
+                                                prefetchTarget = ""
+                                            }
+                                        }
+                                    }
+                                    handler.postDelayed({ readWtr(0) }, 400L)
+                                } else if (attempt < 10) {
+                                    handler.postDelayed({ clickAttempt(attempt + 1) }, 500L)
+                                } else {
+                                    prefetchLoading = false
+                                    prefetchTarget = ""
+                                }
+                            }
+                        }
+                        handler.postDelayed({ clickAttempt(0) }, 700L)
+                        return
+                    }
                     if (prefetchCatalogPending) {
                         prefetchCatalogPending = false
                         val title = prefetchCatalogTitle
@@ -2896,20 +2949,28 @@ class MainActivity : Activity() {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
         val parsedCurrent = Uri.parse(ch.url)
         val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
-        val inferredWtrNext = if (wtrLabSystem.matches(ch.url)) {
-            wtrLabSystem.prefetchTarget(ch.url)
-        } else null
+        val isWtrLab = wtrLabSystem.matches(ch.url)
+        val inferredWtrNext = if (isWtrLab) wtrLabSystem.prefetchTarget(ch.url) else null
         // WebNovel's reader can expose a non-adjacent/opaque chapter URL as "Next".
         // Always resolve its next chapter from the catalog, just like the visible Next button.
         val isWebNovel = ch.url.contains("webnovel.com/", ignoreCase = true)
-        val directTarget = if (isWebNovel) null else
+        val directTarget = if (isWebNovel || isWtrLab) null else
             (ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
                 ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) })
         val target: String
         val useCatalog: Boolean
-        if (directTarget != null) {
+        if (isWtrLab) {
+            // WTR-LAB is a same-URL SPA. The next chapter is obtained by
+            // clicking its in-page Next button in the isolated prefetch WebView.
+            target = ch.url
+            useCatalog = false
+            prefetchWtrSpaPending = true
+            prefetchWtrSourceNumber = ch.number.trim()
+        } else if (directTarget != null) {
             target = directTarget
             useCatalog = false
+            prefetchWtrSpaPending = false
+            prefetchWtrSourceNumber = ""
         } else if (isWebNovel) {
             // WebNovel often exposes Next only through the catalogue rather than
             // as a direct adjacent URL in the chapter DOM.
