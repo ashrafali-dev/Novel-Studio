@@ -13,14 +13,28 @@ internal class WtrLabExtractor {
             .find(url)?.groupValues?.getOrNull(1)
         val titleSel = chapterNo?.let { "#chapter-$it > span" }.orEmpty()
 
-        webView.evaluateJavascript(Js.fastExtract(".chapter-body", titleSel, "", "")) { raw ->
+        // WTR-LAB may render the active chapter under a different wrapper
+        // depending on the reader layout. Try progressively broader selectors
+        // instead of retrying the same failed selector nine times.
+        val contentSelectors = listOf(
+            ".chapter-tracker.active .chapter-body",
+            "#chapter-${chapterNo.orEmpty()} .chapter-body",
+            ".chapter-body",
+            ".chapter-content",
+            "#chapter-content",
+            ".reader-content",
+            ""
+        )
+        val selectorIndex = (attempt / 2).coerceAtMost(contentSelectors.lastIndex)
+        val contentSelector = contentSelectors[selectorIndex]
+        webView.evaluateJavascript(Js.fastExtract(contentSelector, titleSel, "", "")) { raw ->
             val payload = decode(raw)
             val parsed = runCatching { JSONObject(payload) }.getOrNull()
             val body = parsed?.optString("text", "")?.trim().orEmpty()
             val count = parsed?.optInt("count", 0) ?: 0
             val ok = parsed?.optBoolean("ok", false) == true && body.length >= 40 && count > 0
             if (!ok) {
-                if (attempt < 8) webView.postDelayed({ extract(webView, attempt + 1, callback) }, 150L)
+                if (attempt < 13) webView.postDelayed({ extract(webView, attempt + 1, callback) }, 180L)
                 else callback(null)
                 return@evaluateJavascript
             }
