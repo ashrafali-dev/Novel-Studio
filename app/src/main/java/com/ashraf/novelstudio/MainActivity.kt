@@ -154,6 +154,8 @@ class MainActivity : Activity() {
     private var pendHash = 0
     private var pendingNavHash: Int? = null
     private var pendingNavUrl = ""
+    // WTR-LAB keeps the same URL while its SPA swaps the visible chapter.
+    private var pendingWtrChapterNumber = ""
 
     // lightweight browser layer: one WebView, multiple saved navigation sessions
     private val browserTabs = mutableListOf<BrowserTab>()
@@ -2515,6 +2517,7 @@ class MainActivity : Activity() {
         val currentUrl = cleanUrl(novelWv.url ?: "")
         pendingNavHash = cached?.let { bodyHash(it) }
         pendingNavUrl = currentUrl
+        pendingWtrChapterNumber = if (wtrLabSystem.matches(currentUrl)) cached?.number.orEmpty() else ""
 
         // Do not re-extract the current chapter before clicking Next/Prev.
         // The cached chapter already contains its adjacent URL.
@@ -2739,19 +2742,37 @@ class MainActivity : Activity() {
         if (token != navToken) return
         extractNow { ch ->
             if (token != navToken) return@extractNow
+            val wtrSpa = wtrLabSystem.matches(novelWv.url.orEmpty())
+            // WTR-LAB changes the chapter inside the same URL. Its visible
+            // chapter counter is therefore a stronger navigation signal than
+            // URL identity (and safer than waiting for an impossible URL change).
+            val wtrChapterChanged = wtrSpa &&
+                pendingWtrChapterNumber.isNotBlank() &&
+                ch?.number?.isNotBlank() == true &&
+                ch.number != pendingWtrChapterNumber
+            val bodyChanged = ch != null && bodyHash(ch) != pendHash
+            val urlOk = pendUrl.isEmpty() ||
+                (ch != null && cleanUrl(ch.url) == pendUrl) ||
+                (ch != null && cleanUrl(ch.url) == cleanUrl(novelWv.url ?: ""))
+
             if (ch != null && ch.text.length > 80 &&
-                bodyHash(ch) != pendHash &&
-                (pendUrl.isEmpty() || cleanUrl(ch.url) == pendUrl || cleanUrl(ch.url) == cleanUrl(novelWv.url ?: ""))) {
+                (bodyChanged || wtrChapterChanged) && urlOk) {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
-            } else if (n < 8) {
-                handler.postDelayed({ pollExtract(n + 1, token, reloaded) }, if (n < 4) 150L else 220L)
             } else {
-                autoCopy = false
-                polling = false
-                hideNavLoading()
-                toast("❌ Next chapter text was not found. Tap ● to retry.")
+                val maxAttempts = if (wtrSpa) 40 else 8
+                if (n < maxAttempts) {
+                    handler.postDelayed(
+                        { pollExtract(n + 1, token, reloaded) },
+                        if (n < 4) 150L else 220L
+                    )
+                } else {
+                    autoCopy = false
+                    polling = false
+                    hideNavLoading()
+                    toast("❌ Next chapter text was not found. Tap ● to retry.")
+                }
             }
         }
     }
@@ -2762,6 +2783,7 @@ class MainActivity : Activity() {
         hideNavLoading()
         pendingNavHash = null
         pendingNavUrl = ""
+        pendingWtrChapterNumber = ""
         handleChapter(ch)
     }
 
