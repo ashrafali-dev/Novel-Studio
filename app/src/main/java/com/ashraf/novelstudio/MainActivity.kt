@@ -2526,6 +2526,37 @@ class MainActivity : Activity() {
         // chapter first just to discover a URL that can be calculated directly.
         // This keeps /chapter-1 -> /chapter-2 sites fast while catalog-based
         // sites continue through the normal extraction/navigation path.
+        // WTR-LAB's reader is an SPA: its own Next/Prev buttons replace
+        // #chapter-content but keep /en/novel/<id>/<slug> unchanged. Never
+        // synthesize a URL for this reader; click the in-page control and
+        // detect the changed chapter DOM instead.
+        if (wtrLabSystem.matches(currentUrl) && cached != null &&
+            cleanUrl(cached.url) == currentUrl) {
+            pendHash = bodyHash(cached)
+            pendUrl = ""
+            val autoExtract = Prefs.bool(this, "autoExtractNext", true)
+            autoCopy = autoExtract
+            polling = false
+            refreshPending = false
+            refreshToken = 0
+            novelWv.evaluateJavascript(Js.clickNext(dir)) { res ->
+                if (token != navToken) return@evaluateJavascript
+                val result = res.orEmpty().lowercase()
+                if (result.contains("none") || result.contains("failed")) {
+                    autoCopy = false
+                    hideNavLoading()
+                    toast("❌ Next chapter link not found")
+                } else if (autoExtract) {
+                    handler.postDelayed({
+                        if (token == navToken) pollExtract(0, token)
+                    }, 250L)
+                } else {
+                    hideNavLoading()
+                }
+            }
+            return
+        }
+
         val numberedTarget = numberedChapterUrl(currentUrl, dir)
         if (numberedTarget != null && cached != null &&
             cleanUrl(cached.url) == currentUrl) {
@@ -2584,7 +2615,9 @@ class MainActivity : Activity() {
             return
         }
 
-        // First page / stale state: only then do a fresh extraction.
+        // On WTR-LAB, a novel page can already have an active chapter even
+        // though its URL has no /chapter-N segment. Extract that visible DOM
+        // first, cache it, then let the SPA-specific branch above click Next.
         extractNow { cur ->
             if (token != navToken) return@extractNow
             val base = cur ?: lastChapter
@@ -2593,7 +2626,12 @@ class MainActivity : Activity() {
                 toast("❌ Open a novel chapter page first")
                 return@extractNow
             }
-            navigate(base)
+            lastChapter = base
+            if (wtrLabSystem.matches(currentUrl)) {
+                step(dir)
+            } else {
+                navigate(base)
+            }
         }
     }
 
