@@ -2724,7 +2724,9 @@ class MainActivity : Activity() {
         }
     }
     private fun schedulePrefetch(ch: Chapter) {
-        if (!Prefs.bool(this, "prefetchNextChapter") && !Prefs.auto(this)) return
+        // ONLY the menu switch decides. (It used to also run when ⚡ auto was on, so the
+        // switch looked like it did nothing.)
+        if (!Prefs.bool(this, "prefetchNextChapter")) return
         val parsedCurrent = Uri.parse(ch.url)
         val hostCurrent = parsedCurrent.host?.lowercase().orEmpty()
         val inferredWtrNext = if (hostCurrent == "wtr-lab.com" || hostCurrent.endsWith(".wtr-lab.com")) {
@@ -3540,6 +3542,8 @@ markers preserved.
                         prefetchCatalogPending = false
                         prefetchTarget = ""
                         prefetchKeys.clear()
+                        // Chapters still waiting in the queue for prefetch are dropped too.
+                        queue.removeAll { prefetchGeneratedKeys.contains(keyOf(it)) }
                         try { prefetchWv.stopLoading() } catch (_: Exception) {}
                     }
                     refresh(i, menuPrefetchLabel())
