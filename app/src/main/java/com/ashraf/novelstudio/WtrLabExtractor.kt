@@ -17,11 +17,12 @@ internal class WtrLabExtractor {
         // depending on the reader layout. Try progressively broader selectors
         // instead of retrying the same failed selector nine times.
         val contentSelectors = listOf(
+            // Exact WTR-LAB reader container from the supplied page HTML.
+            "#chapter-content",
             ".chapter-tracker.active .chapter-body",
             "#chapter-${chapterNo.orEmpty()} .chapter-body",
             ".chapter-body",
             ".chapter-content",
-            "#chapter-content",
             ".reader-content",
             ""
         )
@@ -56,7 +57,7 @@ internal class WtrLabExtractor {
                 url,
                 parsed?.optString("novel", "")?.trim().orEmpty().ifBlank { "wtr-lab.com" },
                 number,
-                parsed?.optString("contentSel", ".chapter-body").orEmpty().ifBlank { ".chapter-body" },
+                parsed?.optString("contentSel", "#chapter-content").orEmpty().ifBlank { "#chapter-content" },
                 parsed?.optString("titleSel", titleSel).orEmpty(),
                 parsed?.optJSONObject("next")?.optString("selector", "").orEmpty(),
                 parsed?.optJSONObject("prev")?.optString("selector", "").orEmpty()
