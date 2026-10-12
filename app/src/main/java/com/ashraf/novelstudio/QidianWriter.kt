@@ -55,8 +55,30 @@ internal class QidianWriter {
     }
 
     private fun split(text: String): List<String> {
-        val marker = Regex("\\[\\d{3,}\\]\\s*")
-        val parts = if (marker.containsMatchIn(text)) marker.split(text) else text.split(Regex("\\n\\s*\\n"))
-        return parts.map { it.trim() }.filter { it.isNotEmpty() }
+        // Qidian appends review counts such as [522] to paragraphs. A simple
+        // [digits] split mistakes a 3-digit review count for an internal marker,
+        // producing a paragraph-count mismatch and preventing insertion.
+        // Accept only the expected sequential markers: [001], [002], [003]...
+        val marker = Regex("\\[(\\d{3,})\\]\\s*")
+        val matches = marker.findAll(text).toList()
+        val starts = mutableListOf<MatchResult>()
+        var expected = 1
+        for (match in matches) {
+            if (match.groupValues[1].toIntOrNull() == expected) {
+                starts.add(match)
+                expected++
+            }
+        }
+        if (starts.size >= 2 && starts.first().groupValues[1].toIntOrNull() == 1) {
+            return starts.mapIndexed { index, match ->
+                val from = match.range.last + 1
+                val to = starts.getOrNull(index + 1)?.range?.first ?: text.length
+                text.substring(from, to).trim()
+            }.filter { it.isNotEmpty() }
+        }
+        // Fallback for chatbot responses that dropped the internal markers.
+        return text.split(Regex("\\n\\s*\\n"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
     }
 }
