@@ -166,7 +166,7 @@ internal class WtrLabWriter {
     }
 
     private fun splitSource(text: String): List<String> {
-        var blocks = text.split(Regex("\n\s*\n"))
+        var blocks = text.split(Regex("\\n\\s*\\n"))
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
