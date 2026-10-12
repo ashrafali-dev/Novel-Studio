@@ -995,6 +995,25 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       if(filtered.length)segs=filtered;
     }
   }
+  // WTR-LAB sometimes renders a chapter as one wrapper with <br> / text-node
+  // paragraph breaks instead of real <p> or .wtr-line elements. In that case the
+  // generic leaf-unit collector returns one huge unit, so recover the rendered
+  // paragraph boundaries from innerText before Kotlin adds internal markers.
+  if(hostNow.indexOf('wtr-lab.com')>=0 && chosen && chosenUnits.length<3){
+    var wtrText=text(chosen);
+    if(title){
+      wtrText=wtrText.split(/\\n+/).filter(function(s){return clean(s)!==title;}).join('\\n');
+      if(wtrText.trim()===title)wtrText='';
+    }
+    var wtrBlocks=wtrText.split(/\\n\\s*\\n/).map(function(s){return clean(s);}).filter(function(s){return meaningful(s)&&s.length>1;});
+    if(wtrBlocks.length<3){
+      wtrBlocks=wtrText.split(/\\n+/).map(function(s){return clean(s);}).filter(function(s){return meaningful(s)&&s.length>1;});
+    }
+    // Use recovered units only when they look like actual rendered paragraph/line
+    // blocks. If there are no DOM line breaks, Kotlin's sentence fallback handles it.
+    if(wtrBlocks.length>=3)segs=wtrBlocks;
+  }
+
   var body=segs.join('\n\n');
   var novel='';
   try{
