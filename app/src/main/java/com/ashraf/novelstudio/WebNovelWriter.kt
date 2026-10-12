@@ -27,18 +27,18 @@ internal class WebNovelWriter {
 
     // Kept here so the WebNovel writer owns the paragraph-alignment decision.
     private fun splitInternalMarkedTranslation(text: String, preserveParagraphs: Boolean): List<String> {
-        val marker = Regex("\[\d{3,}\]\s*")
+        val marker = Regex("""\[\d{3,}\]\s*""")
         val marked = marker.split(text)
             .map { it.trim() }
             .filter { it.isNotEmpty() }
         if (marked.size > 1) return marked
 
         return if (preserveParagraphs) {
-            text.split(Regex("\n\s*\n|\n+"))
+            text.split(Regex("""\n\s*\n|\n+"""))
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
         } else {
-            text.split(Regex("\n\s*\n"))
+            text.split(Regex("""\n\s*\n"""))
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
         }
