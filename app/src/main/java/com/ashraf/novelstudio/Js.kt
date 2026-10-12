@@ -186,6 +186,161 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
             org.json.JSONObject.quote(expected) + ")")
 
     // ---------------------------------------------------------------- novel page: replace text / toggle
+    // Marker-aware DOM writer: map each translated [NNN] block back to the
+    // exact original DOM element whose source text was extracted. This prevents
+    // "first translation -> first <p>" drift when the AI merges/reorders formatting.
+    private const val APPLY_MAPPED_BODY = """
+(function(sel,translation,sourceJson,font,size,pageId){
+  function norm(s){return String(s||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();}
+  function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  var source=[];
+  try{source=JSON.parse(sourceJson||'[]');}catch(e){source=[];}
+
+  // Resolve the same chapter root used by the normal writer.
+  var el=null;
+  try{if(sel)el=document.querySelector(sel);}catch(e){}
+  if(!el){
+    var sels=['#chapter-content','.chapter-content','.chapter_content','#chr-content','.chr-c',
+      '.reading-content','.text-left','#content','.entry-content','.cha-content','.cha-words',
+      '.chapter-body','.novel_content','.j_readContent','.txt','#chaptercontent','.chapter-c',
+      '#article','.article-content','.content','article','main'];
+    var best=null,bs=0;
+    for(var i=0;i<sels.length;i++){
+      var es=[];try{es=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){es=[];}
+      for(var j=0;j<es.length;j++){
+        var x=es[j],tx=norm(x.innerText||x.textContent);
+        if(tx.length<80)continue;
+        var p=x.querySelectorAll('p').length;
+        var sc=tx.length+p*250;
+        if(sc>bs){bs=sc;best=x;}
+      }
+    }
+    el=best;
+  }
+  if(!el)return 'noel';
+
+  // WTR-LAB has multiple preloaded chapter bodies. Prefer the active body.
+  if(location.hostname.toLowerCase().indexOf('wtr-lab.com')>=0){
+    try{
+      var tr=document.querySelector('.chapter-tracker.active[data-chapter-no]')||document.querySelector('.chapter-tracker.active');
+      var no=tr&&(tr.getAttribute('data-chapter-no')||'');
+      var m=location.pathname.match(/\/chapter-(\d+)\/?$/i);
+      if(m)no=m[1];
+      if(no){
+        var q=['#chapter-'+no+' .chapter-body','#tracker-'+no+' .chapter-body',
+          '.chapter-tracker[data-chapter-no="'+no+'"] .chapter-body','[data-chapter-no="'+no+'"] .chapter-body'];
+        for(var qi=0;qi<q.length&&!el;qi++){try{el=document.querySelector(q[qi]);}catch(e){}}
+      }
+    }catch(e){}
+  }
+
+  var fam='';
+  if(font&&font.length){
+    try{
+      var st=document.getElementById('__ns_font');
+      if(!st){st=document.createElement('style');st.id='__ns_font';(document.head||document.documentElement).appendChild(st);}
+      st.textContent="@font-face{font-family:'NSBn';src:url('"+location.origin+"/__ns_font/"+font+".ttf') format('truetype');font-display:swap;}";
+      fam="'NSBn',sans-serif";
+    }catch(e){}
+  }
+
+  // Parse stable marker IDs. [000] is the title when present; [001+] are body units.
+  var map={},re=/\[(\d{3,})\]\s*/g,mr;
+  while((mr=re.exec(String(translation||'')))!==null){
+    var id=mr[1],start=mr.index+mr[0].length,next=re.exec(String(translation||''));
+    var end=next?next.index:String(translation||'').length;
+    if(!map[id])map[id]=String(translation||'').slice(start,end).trim();
+    if(next)re.lastIndex=next.index;
+  }
+  if(!Object.keys(map).length)return 'no-markers';
+
+  // Candidate elements are existing leaf/block text elements only. Never create
+  // replacement <p> nodes. The exact source-text match is the primary alignment.
+  var tags='p,li,blockquote,pre,h1,h2,h3,h4,h5,h6,div,section,article,span';
+  var all=[].slice.call(el.querySelectorAll(tags));
+  var used=new Set(), pairs=[], titleEl=null;
+
+  function isLeafish(e){
+    if(!e||!e.isConnected)return false;
+    var t=norm(e.innerText||e.textContent);
+    if(!t)return false;
+    if(e.tagName==='DIV'||e.tagName==='SECTION'||e.tagName==='ARTICLE'||e.tagName==='SPAN'){
+      var bad=e.querySelector('p,li,blockquote,pre,h1,h2,h3,h4,h5,h6');
+      if(bad)return false;
+    }
+    return true;
+  }
+
+  function exactFind(src){
+    var s=norm(src),best=null;
+    if(!s)return null;
+    for(var i=0;i<all.length;i++){
+      var e=all[i];if(used.has(e)||!isLeafish(e))continue;
+      if(norm(e.innerText||e.textContent)===s){
+        // Prefer semantic paragraph/title nodes over generic wrappers.
+        var pri=/^H[1-6]$/.test(e.tagName)?5:(e.tagName==='P'?4:(e.tagName==='LI'?3:1));
+        var score=pri*100000-Math.abs((e.innerText||'').length-s.length);
+        if(!best||score>best.score)best={el:e,score:score};
+      }
+    }
+    return best&&best.el;
+  }
+
+  function fallbackBodyNodes(){
+    var direct=[].slice.call(el.querySelectorAll(':scope > p,:scope > li,:scope > blockquote,:scope > pre'));
+    direct=direct.filter(function(e){return !used.has(e)&&norm(e.innerText||e.textContent);});
+    if(direct.length)return direct;
+    return all.filter(function(e){return !used.has(e)&&isLeafish(e)&&!/^H[1-6]$/.test(e.tagName);});
+  }
+
+  // First align the title by exact source text, then each body marker by its
+  // original source segment. The source list is the extraction-time identity map.
+  for(var si=0;si<source.length;si++){
+    var src=norm(source[si]),id=String(si).padStart(3,'0'),val=map[id];
+    if(val===undefined)continue;
+    var target=exactFind(src);
+    if(!target && si===0)target=el.querySelector(':scope > h1,:scope > h2,:scope > h3');
+    if(target){
+      used.add(target);
+      pairs.push({id:id,el:target,val:val});
+      if(si===0)titleEl=target;
+    }
+  }
+
+  // If exact text failed because the site inserted whitespace/spans, use the
+  // original DOM order only for the still-unmatched source units.
+  var remaining=fallbackBodyNodes();
+  for(var ri=0;ri<source.length;ri++){
+    var rid=String(ri).padStart(3,'0'),rv=map[rid];
+    if(rv===undefined||pairs.some(function(p){return p.id===rid;}))continue;
+    var t=remaining.shift();
+    if(!t)continue;
+    used.add(t);pairs.push({id:rid,el:t,val:rv});
+  }
+
+  // Safety: do not partially rewrite a chapter. We need a strong majority of
+  // source units mapped, otherwise leave the original page untouched.
+  var wanted=Object.keys(map).length;
+  var mapped=pairs.length;
+  if(mapped<wanted || mapped<Math.max(1,Math.floor(wanted*0.75)))return 'map-mismatch:'+mapped+':'+wanted;
+
+  if(window.__nsEl!==el||window.__nsOrig==null){
+    window.__nsOrig=el.innerHTML;window.__nsEl=el;
+  }
+  pairs.forEach(function(p){
+    p.el.textContent=p.val;
+    p.el.style.setProperty('font-size',(size||18)+'px','important');
+    p.el.style.setProperty('line-height','1.75','important');
+    if(fam)p.el.style.setProperty('font-family',fam,'important');
+  });
+  el.setAttribute('data-ns','1');
+  el.setAttribute('data-ns-page-id',pageId||'');
+  window.__nsPageId=pageId||'';
+  window.__nsShown=1;
+  return 'ok:mapped:'+mapped;
+})(__SEL__,__TRANSLATION__,__SOURCE__,__FONT__,__SIZE__,__PAGE_ID__)
+""";
+
     private const val APPLY_BODY = """
 (function(sel,paras,font,size,pageId){
   var el=null;
@@ -355,6 +510,15 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     fun apply(sel: String, parasJson: String, font: String = "", size: Int = 18, pageId: String = ""): String =
         APPLY_BODY.replace("__SEL__", org.json.JSONObject.quote(sel)).replace("__PARAS__", parasJson)
             .replace("__FONT__", org.json.JSONObject.quote(font)).replace("__SIZE__", size.toString())
+            .replace("__PAGE_ID__", org.json.JSONObject.quote(pageId))
+
+    fun applyMapped(sel: String, translation: String, sourceSegmentsJson: String, font: String = "", size: Int = 18, pageId: String = ""): String =
+        APPLY_MAPPED_BODY
+            .replace("__SEL__", org.json.JSONObject.quote(sel))
+            .replace("__TRANSLATION__", org.json.JSONObject.quote(translation))
+            .replace("__SOURCE__", org.json.JSONObject.quote(sourceSegmentsJson))
+            .replace("__FONT__", org.json.JSONObject.quote(font))
+            .replace("__SIZE__", size.toString())
             .replace("__PAGE_ID__", org.json.JSONObject.quote(pageId))
 
     fun stillApplied(sel: String, pageId: String = ""): String =
