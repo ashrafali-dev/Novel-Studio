@@ -27,7 +27,7 @@ internal class QidianNavigator {
   links.forEach(function(a){var href=norm(a.href);if(href&&!seen[href]){seen[href]=1;items.push(href);}});
   var index=items.indexOf(source);
   if(index<0){
-    var m=source.match(/\/chapter\/(\\d+)\/(\\d+)/);
+    var m=source.match(/\/chapter\/(\d+)\/(\d+)/);
     if(m) index=items.findIndex(function(h){return new RegExp('/chapter/'+m[1]+'/'+m[2]+'$').test(h);});
   }
   var at=index+($delta);
