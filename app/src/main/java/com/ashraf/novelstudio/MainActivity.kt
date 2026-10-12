@@ -2474,6 +2474,38 @@ class MainActivity : Activity() {
         }
     }
 
+
+    // Direct navigation for sites whose chapter URL contains an explicit
+    // numeric chapter segment. These sites do not need extraction/catalog
+    // lookup just to find the next/previous URL.
+    private fun numberedChapterUrl(url: String, dir: String): String? {
+        val delta = if (dir == "next") 1 else if (dir == "prev") -1 else return null
+        val uri = try { Uri.parse(url) } catch (_: Exception) { return null }
+        val path = uri.path ?: return null
+
+        // Supports:
+        // /chapter-1, /chapter_1, /chapter/1
+        // /chapters/101, /chapter-001, and optional .html/title suffixes.
+        val regex = Regex(
+            """(?i)(/chapter(?:s)?[-_/])(\\d+)(?=(?:[-_.][^/]*)?/?$)"""
+        )
+        val match = regex.find(path) ?: return null
+        val number = match.groupValues[2].toLongOrNull() ?: return null
+        val next = number + delta
+        if (next < 1) return null
+
+        val oldDigits = match.groupValues[2]
+        val replacement = next.toString().padStart(oldDigits.length, '0')
+        val newPath = buildString {
+            append(path, 0, match.range.first)
+            append(match.groupValues[1])
+            append(replacement)
+            append(path, match.range.last + 1, path.length)
+        }
+
+        return uri.buildUpon().path(newPath).build().toString()
+    }
+
     // ▶ / ◀ : go to next/prev chapter and handle it. Screen mode is never changed.
     private fun step(dir: String) {
         // Capture the current chapter BEFORE invalidating navigation state.
@@ -2489,6 +2521,17 @@ class MainActivity : Activity() {
         wipeStale()
         showNavLoading()
         val token = navToken
+
+        // Numbered chapter URLs are deterministic. Do not extract the current
+        // chapter first just to discover a URL that can be calculated directly.
+        // This keeps /chapter-1 -> /chapter-2 sites fast while catalog-based
+        // sites continue through the normal extraction/navigation path.
+        val numberedTarget = numberedChapterUrl(currentUrl, dir)
+        if (numberedTarget != null) {
+            val base = cached?.takeIf { cleanUrl(it.url) == currentUrl }
+            loadAndWait(numberedTarget, token, base)
+            return
+        }
 
         fun navigate(base: Chapter) {
             if (token != navToken) return
@@ -2554,11 +2597,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadAndWait(url: String, token: Int, base: Chapter) {
+    private fun loadAndWait(url: String, token: Int, base: Chapter?) {
         // For a direct next/prev URL, remember the TARGET URL, not the old
         // URL. SPA readers can change the heading/URL before replacing body.
         pendUrl = cleanUrl(url)
-        pendHash = bodyHash(base)
+        pendHash = base?.let { bodyHash(it) }
         val autoExtract = Prefs.bool(this, "autoExtractNext", true)
         autoCopy = autoExtract
         // Load the target exactly once. The extension-style extractor reads
