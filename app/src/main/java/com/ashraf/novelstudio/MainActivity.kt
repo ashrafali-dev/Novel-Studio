@@ -95,6 +95,7 @@ class MainActivity : Activity() {
     private var prefetchCatalogPending = false
     private var prefetchCatalogTitle = ""
     private var prefetchSourceUrl = ""
+    private val prefetchRequestedUrls = mutableSetOf<String>()
     private val prefetchKeys = mutableSetOf<String>()
     private val prefetchGeneratedKeys = mutableSetOf<String>()
     private val prefetchedTranslationIds = mutableMapOf<String, Long>()
@@ -429,7 +430,15 @@ class MainActivity : Activity() {
                                 return@prefetchExtractNow
                             }
                             prefetchLoading = false
+                            val requestedUrl = cleanUrl(prefetchTarget)
                             prefetchTarget = ""
+                            val extractedUrl = cleanUrl(next.url)
+                            // The extracted chapter must match the URL we deliberately prefetched.
+                            if (requestedUrl.isNotBlank() && extractedUrl.isNotBlank() &&
+                                requestedUrl != extractedUrl && pageKey(next.url) != pageKey(requestedUrl)) {
+                                prefetchRequestedUrls.remove(requestedUrl)
+                                return@prefetchExtractNow
+                            }
                             val current = lastChapter
                             if (current != null && keyOf(next) == keyOf(current)) return@prefetchExtractNow
                             if (Store.find(this@MainActivity, next) != null) return@prefetchExtractNow
@@ -2805,7 +2814,10 @@ class MainActivity : Activity() {
         } else {
             return
         }
-        if (prefetchLoading && cleanUrl(prefetchTarget) == cleanUrl(target)) return
+        val targetKey = cleanUrl(target)
+        if (prefetchLoading && cleanUrl(prefetchTarget) == targetKey) return
+        if (prefetchRequestedUrls.contains(targetKey)) return
+        prefetchRequestedUrls.add(targetKey)
         prefetchToken++
         val token = prefetchToken
         prefetchSourceUrl = ch.url
@@ -3753,6 +3765,7 @@ markers preserved.
                         prefetchLoading = false
                         prefetchCatalogPending = false
                         prefetchTarget = ""
+                        prefetchRequestedUrls.clear()
                         prefetchKeys.clear()
                         // Chapters still waiting in the queue for prefetch are dropped too.
                         queue.removeAll { prefetchGeneratedKeys.contains(keyOf(it)) }
@@ -4221,6 +4234,7 @@ markers preserved.
         modeTransitionBitmap = null
         modeTransitionHide = null
         novelWv.destroy()
+        prefetchRequestedUrls.clear()
         try { prefetchWv.destroy() } catch (_: Exception) {}
         botWebViews.values.toSet().forEach { wv -> try { wv.destroy() } catch (_: Exception) {} }
         botWebViews.clear()
