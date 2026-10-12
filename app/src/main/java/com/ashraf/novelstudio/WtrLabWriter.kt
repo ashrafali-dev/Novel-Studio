@@ -76,12 +76,19 @@ internal class WtrLabWriter {
   if(!ids.length)return 'no-markers';
 
   // Existing WTR blocks in DOM order. We do not create replacement <p>s.
-  var nodes=[].slice.call(body.querySelectorAll(':scope > p,:scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > li,:scope > blockquote,:scope > pre'))
-    .filter(function(e){return norm(e.innerText||e.textContent).length>0;});
+  // WTR-LAB's real structure: .chapter-body > div.wtr-line[data-line]. There
+  // are NO <p> tags, so the .wtr-line blocks must be tried first.
+  function nonEmpty(e){return norm(e.innerText||e.textContent).length>0;}
+  var nodes=[].slice.call(body.querySelectorAll(':scope > .wtr-line')).filter(nonEmpty);
 
   if(nodes.length<2){
-    nodes=[].slice.call(body.querySelectorAll('p,h1,h2,h3,h4,li,blockquote,pre'))
-      .filter(function(e){return norm(e.innerText||e.textContent).length>0;});
+    nodes=[].slice.call(body.querySelectorAll(':scope > p,:scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > li,:scope > blockquote,:scope > pre'))
+      .filter(nonEmpty);
+  }
+
+  if(nodes.length<2){
+    nodes=[].slice.call(body.querySelectorAll('.wtr-line,p,h1,h2,h3,h4,li,blockquote,pre'))
+      .filter(nonEmpty);
   }
   if(!nodes.length)return 'no-blocks';
 
