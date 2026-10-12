@@ -408,7 +408,7 @@ class MainActivity : Activity() {
                                     fun readWtr(chAttempt: Int) {
                                         if (!prefetchLoading || token != prefetchToken) return
                                         wtrLabSystem.extract(prefetchWv, 0) { next ->
-                                            if (!prefetchLoading || token != prefetchToken) return
+                                            if (!prefetchLoading || token != prefetchToken) return@extract
                                             val changed = next != null &&
                                                 next.number.isNotBlank() &&
                                                 (sourceNumber.isBlank() || next.number != sourceNumber) &&
