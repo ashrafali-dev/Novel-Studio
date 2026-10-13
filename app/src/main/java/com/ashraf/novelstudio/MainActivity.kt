@@ -320,7 +320,21 @@ class MainActivity : Activity() {
         } else v.background = pillBg(color, radiusDp)
     }
 
+    private var lastToastMessage = ""
+    private var lastToastElapsedMs = 0L
+
     private fun toast(m: String) {
+        // In AI real-time mode, OCR-empty is a normal scan miss, not a user-facing error.
+        // Never spam the screen with repeated image-scan status/failure messages.
+        if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+            val lower = m.lowercase()
+            if (lower.contains("ai ocr:") || lower.contains("ocr found no text")) return
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (m == lastToastMessage && now - lastToastElapsedMs < 2500L) return
+        lastToastMessage = m
+        lastToastElapsedMs = now
+
         var text = m
         val translations = listOf(
             "🔄 Reloading both pages" to "🔄 Reloading both pages",
