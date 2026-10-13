@@ -4010,8 +4010,9 @@ rendering of what it most likely says. Keep each translation short enough to fit
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
             if (tok != runToken) return@evaluateJavascript
+            val livePanelBatch = isDeepSeekLivePanel(ch)
             val rawTranslation = cleanReply(decode(raw))
-            if (rawTranslation.length < 30) {
+            if (rawTranslation.length < if (livePanelBatch) 2 else 30) {
                 failJob(tok, ch, "Could not read the answer")
                 return@evaluateJavascript
             }
@@ -4019,25 +4020,28 @@ rendering of what it most likely says. Keep each translation short enough to fit
             // clipboard or saved chapter, but keep the raw marked response for DOM
             // insertion so paragraph alignment survives AI formatting changes.
             val t = stripInternalMarkers(rawTranslation)
-            if (t.length < 30) {
+            if (t.isBlank() || (!livePanelBatch && t.length < 30)) {
                 failJob(tok, ch, "Could not read the translation")
                 return@evaluateJavascript
             }
             copy(t)
-            val savedTranslation = Store.save(this, ch, rawTranslation)
+            // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
+            // would overwrite the library entry with a partial translation.
+            val savedTranslation = if (livePanelBatch) null else Store.save(this, ch, rawTranslation)
             if (DeepSeekRealtimeTranslation.isEnabled(this)) {
-                deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hash ->
-                    synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
-                    synchronized(deepSeekTranslatedTextHashes) {
-                        deepSeekTranslatedTextHashes.add(hash)
-                        while (deepSeekTranslatedTextHashes.size > 300) {
+                deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hashes ->
+                    synchronized(deepSeekInFlightTextHashes) {
+                        deepSeekInFlightTextHashes.removeAll(hashes)
+                        deepSeekTranslatedTextHashes.addAll(hashes)
+                        while (deepSeekTranslatedTextHashes.size > 2000) {
                             deepSeekTranslatedTextHashes.remove(deepSeekTranslatedTextHashes.first())
                         }
                     }
                 }
             }
+            deepSeekLastOcrAtMs = System.currentTimeMillis()
             val savedKey = keyOf(ch)
-            if (prefetchGeneratedKeys.contains(savedKey)) {
+            if (prefetchGeneratedKeys.contains(savedKey) && savedTranslation != null) {
                 prefetchedTranslationIds[savedKey] = savedTranslation.id
             }
             progress = 100
@@ -4045,11 +4049,13 @@ rendering of what it most likely says. Keep each translation short enough to fit
             val shown = lastChapter
             if (shown != null && keyOf(shown) == keyOf(ch)) {
                 applyTranslation(shown, rawTranslation, true)
-                // Keep the one-chapter-ahead pipeline moving while the reader is
-                // already on this chapter; do not chain ahead while reading another one.
-                schedulePrefetch(shown)
+                // Real-time page scans translate visible bubbles in sequence; don't prefetch a whole
+                // chapter into the same DeepSeek chat session.
+                if (!livePanelBatch) schedulePrefetch(shown)
             }
-            toast("✅ Translation saved" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
+            if (!livePanelBatch) {
+                toast("✅ Translation saved" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
+            }
             running = null
             startNext()
         }
@@ -4059,10 +4065,11 @@ rendering of what it most likely says. Keep each translation short enough to fit
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
         if (DeepSeekRealtimeTranslation.isEnabled(this)) {
-            deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hash ->
-                synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
+            deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hashes ->
+                synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.removeAll(hashes) }
             }
         }
+        deepSeekLastOcrAtMs = System.currentTimeMillis()
         queue.clear()
         running = null
         copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
