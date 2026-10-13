@@ -33,8 +33,19 @@ object Store {
                     return host + "/" + book + "/" + m.groupValues[1] + "_" + m.groupValues[2] + ":part" + part
                 }
             }
-            url.substringBefore("#").trimEnd('/')
-        } catch (_: Exception) { url.substringBefore("#").trimEnd('/') }
+            // Canonicalize mobile/desktop host aliases so a prefetched chapter
+            // saved from m.webtoons.com also matches the visible www.webtoons.com page.
+            val canonicalHost = host
+            val canonicalPath = u.encodedPath.orEmpty().trimEnd('/')
+            val query = u.encodedQuery?.let { "?$it" }.orEmpty()
+            canonicalHost + canonicalPath + query
+        } catch (_: Exception) {
+            try {
+                val u = Uri.parse(url)
+                val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
+                host + u.encodedPath.orEmpty().trimEnd('/') + (u.encodedQuery?.let { "?$it" } ?: "")
+            } catch (_: Exception) { url.substringBefore("#").trimEnd('/') }
+        }
     }
 
 
