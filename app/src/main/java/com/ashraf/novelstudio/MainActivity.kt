@@ -1840,6 +1840,10 @@ class MainActivity : Activity() {
                 // page by 100vh) then report a 0-size composer, the app cannot find the input box
                 // and only copies the text to the clipboard. Keep it full-size UNDER the novel pane.
                 chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
+                // Elevation beats bringToFront(): SPLIT leaves chatBox raised, which would draw the
+                // (hidden, full-size) chatbot over the novel page. Raise the novel pane explicitly.
+                chatBox.elevation = 0f
+                novelBox.elevation = dp(2).toFloat()
                 chatBox.bringToFront()
                 novelBox.bringToFront()
             }
@@ -1852,6 +1856,8 @@ class MainActivity : Activity() {
                 chatBox.clipBounds = null
                 novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)   // keep its viewport alive (images lazy-load)
                 chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
+                novelBox.elevation = 0f
+                chatBox.elevation = dp(2).toFloat()
                 novelBox.bringToFront()
                 chatBox.bringToFront()
             }
