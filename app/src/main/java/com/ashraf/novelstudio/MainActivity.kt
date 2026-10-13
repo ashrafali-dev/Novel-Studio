@@ -4348,7 +4348,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
-            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel()
+            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this)
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4356,11 +4356,11 @@ rendering of what it most likely says. Keep each translation short enough to fit
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 32),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29)
         )
@@ -4433,6 +4433,29 @@ rendering of what it most likely says. Keep each translation short enough to fit
                     }
                     refresh(i, menuWebModeLabel())
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
+                }
+                32 -> {
+                    if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
+                        DeepSeekRealtimeTranslation.enable(this)
+                        openBot(DeepSeekRealtimeTranslation.DEEPSEEK_URL)
+                        refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
+                        refresh(31, menuWebModeLabel())
+                        dlg.dismiss()
+                        toast("🤖 DeepSeek mode ON — log in if needed, then tap ● to translate this chapter")
+                    } else {
+                        val previousBot = DeepSeekRealtimeTranslation.disable(this)
+                        openBot(previousBot)
+                        if (!webModeOn()) {
+                            webModeHandle?.cancel(); webModeHandle = null
+                            webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
+                            webModePrefetchBusy = false
+                            clearWebModeProgress()
+                            updateProgressUi()
+                        }
+                        refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
+                        refresh(31, menuWebModeLabel())
+                        toast("📖 DeepSeek Real-time Translation OFF — previous settings restored")
+                    }
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
