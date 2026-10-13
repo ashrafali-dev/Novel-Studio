@@ -4441,9 +4441,9 @@ rendering of what it most likely says. Keep each translation short enough to fit
             } catch (_: Exception) { "" }
         }
         if (b64.isEmpty()) return
-        val js = "(function(n,b){try{if(window.__nsFontName===n)return 'have';var s=atob(b),l=s.length,u=new Uint8Array(l);" +
-            "for(var i=0;i<l;i++)u[i]=s.charCodeAt(i);var f=new FontFace('NSBn',u.buffer);" +
-            "f.load().then(function(){document.fonts.add(f);window.__nsFontName=n;}).catch(function(){});return 'ok';}" +
+        val js = "(function(n,b){try{if(window.__nsFontName===n||window.__nsFontLoading===n)return 'have';var s=atob(b),l=s.length,u=new Uint8Array(l);" +
+            "for(var i=0;i<l;i++)u[i]=s.charCodeAt(i);var f=new FontFace('NSBn',u.buffer);document.fonts.add(f);window.__nsFontLoading=n;" +
+            "f.load().then(function(){window.__nsFontName=n;window.__nsFontLoading='';}).catch(function(){window.__nsFontLoading='';});return 'ok';}" +
             "catch(e){return 'err';}})('" + name + "','" + b64 + "')"
         novelWv.evaluateJavascript("(window.__nsFontName||'')") { cur ->
             if (cur == null || !cur.contains(name)) novelWv.evaluateJavascript(js, null)
