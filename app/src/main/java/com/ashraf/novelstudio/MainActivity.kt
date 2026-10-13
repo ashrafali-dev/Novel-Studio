@@ -2802,7 +2802,7 @@ class MainActivity : Activity() {
                                 fallbackText(0)
                             } else if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
-                                toast("🤖 AI OCR: " + out.message)
+                                // Suppress repeated OCR-failure toasts in real-time mode; retry silently.
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                                 // The same panel must be eligible for another OCR attempt after failure.
                                 deepSeekVisibleSignature = ""
