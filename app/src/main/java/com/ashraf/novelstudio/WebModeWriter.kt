@@ -229,6 +229,7 @@ internal object WmSfx {
 
     fun fix(t: String): String {
         if (t.isEmpty()) return t
+        if (t == "~" || t == "-" || t == "—" || t == "…") return ""     // chatbot's "this was noise" answer: leave the picture alone
         val l = letters(t)
         if (l.isEmpty() || l.any { it.code > 0x24F }) return t          // already (partly) non-Latin
         val key = l.uppercase().replace(Regex("(.)\\1{2,}"), "$1$1")

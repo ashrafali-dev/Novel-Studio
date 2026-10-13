@@ -280,8 +280,15 @@ internal object WmBubbleStyle {
         val bw = bmp.width
         val bh = bmp.height
         var l = box[0]; var t = box[1]; var r = box[2]; var b = box[3]
-        val bg = ringMedian(bmp, l, t, r, b)
+        var bg = ringMedian(bmp, l, t, r, b, 3)
         val soft = !ringFlat(bmp, l, t, r, b, bg)
+        if (soft) {
+            // Glow / shadow around the lettering tints the ring right next to it (that gave grey boxes on
+            // black). Read the cover colour from a ring OUTSIDE the glow instead, if that ring is flat.
+            val rp = ((b - t) * 0.22f).toInt().coerceIn(6, 26)
+            val outer = ringMedian(bmp, l - rp, t - rp, r + rp, b + rp, 3)
+            if (ringFlat(bmp, l - rp, t - rp, r + rp, b + rp, outer)) bg = outer
+        }
         val mid = (t + b) / 2
         val fgTop = textColour(bmp, l, t, r, maxOf(t + 1, mid), bg)
         val fgBot = textColour(bmp, l, minOf(mid, b - 1), r, b, bg)
@@ -357,8 +364,7 @@ internal object WmBubbleStyle {
     }
 
     /** Median colour of a thin ring just outside the text box = the bubble's fill. */
-    private fun ringMedian(bmp: Bitmap, l: Int, t: Int, r: Int, b: Int): Int {
-        val pad = 3
+    private fun ringMedian(bmp: Bitmap, l: Int, t: Int, r: Int, b: Int, pad: Int = 3): Int {
         val x0 = (l - pad).coerceAtLeast(0)
         val y0 = (t - pad).coerceAtLeast(0)
         val x1 = (r + pad).coerceAtMost(bmp.width - 1)

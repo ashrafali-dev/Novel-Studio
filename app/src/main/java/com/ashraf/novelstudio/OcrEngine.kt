@@ -78,6 +78,55 @@ internal object OcrPost {
         return if (small <= 0f) 0f else inter(a, b) / small
     }
 
+    /** Grayscale with strongly stretched contrast: makes glowing / outlined lettering readable for OCR. */
+    fun boostContrast(src: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(out)
+        val cm = android.graphics.ColorMatrix()
+        cm.setSaturation(0f)
+        val k = 2.2f
+        val o = -128f * (k - 1f)
+        cm.postConcat(android.graphics.ColorMatrix(floatArrayOf(
+            k, 0f, 0f, 0f, o,
+            0f, k, 0f, 0f, o,
+            0f, 0f, k, 0f, o,
+            0f, 0f, 0f, 1f, 0f)))
+        val p = android.graphics.Paint()
+        p.colorFilter = android.graphics.ColorMatrixColorFilter(cm)
+        c.drawBitmap(src, 0f, 0f, p)
+        return out
+    }
+
+    /**
+     * Keeps only the BRIGHT lettering (white text with a glow / dark outline on black) as black on
+     * white. The glow haze that confuses the recogniser disappears and the letters come out clean.
+     */
+    fun brightMask(src: Bitmap): Bitmap {
+        val w = src.width; val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        for (i in px.indices) {
+            val c = px[i]
+            val l = (((c shr 16) and 255) * 3 + ((c shr 8) and 255) * 6 + (c and 255)) / 10
+            px[i] = if (l >= 205) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /** Drops blocks that are clearly recogniser noise: no letters, mostly symbols, or hair-thin streaks. */
+    fun isNoise(b: OcrBlock): Boolean {
+        val t = b.text.trim()
+        if (t.isEmpty()) return true
+        val letters = t.count { it.isLetter() }
+        if (letters == 0) return true
+        if (t.length >= 3 && letters * 100 < t.length * 45) return true
+        if (b.h < 9f || b.w < 9f) return true
+        if (b.h > b.w * 6f && t.length <= 4) return true    // vertical smear of a few "letters"
+        return false
+    }
+
     fun scaled(b: OcrBlock, k: Float): OcrBlock = OcrBlock(
         b.text, (b.top * k).toInt(), (b.left * k).toInt(),
         b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical
@@ -111,7 +160,7 @@ internal object OcrPost {
 
     private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
         if (a.vertical || b.vertical) return false
-        if (Math.abs(a.angle) >= 3f || Math.abs(b.angle) >= 3f) return false   // tilted text stays as it is
+        if (Math.abs(a.angle) >= 6f || Math.abs(b.angle) >= 6f) return false   // clearly tilted text stays as it is
         val fa = if (a.fontPx > 0f) a.fontPx else a.h
         val fb = if (b.fontPx > 0f) b.fontPx else b.h
         if (fa <= 0f || fb <= 0f) return false
@@ -177,29 +226,50 @@ internal class MlKitOcrEngine : OcrEngine {
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
         try {
             val rec = recognizer(script)
-            val first = readBlocks(rec, bitmap)
-            val all = ArrayList<OcrBlock>(first)
-            // Second look at half size: ML Kit loses very large lettering (sound effects such as
-            // BOOM / HAH), which fits its working size only after shrinking. Only blocks the first
-            // pass did not already find are added.
-            if (bitmap.width >= 240 && bitmap.height >= 240) {
-                var small: Bitmap? = null
-                try {
-                    small = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
-                    for (b in readBlocks(rec, small!!)) {
-                        val big = OcrPost.scaled(b, 2f)
-                        if (big.text.length < 2) continue
-                        if (first.none { OcrPost.overlapOfSmaller(it, big) > 0.25f }) all.add(big)
-                    }
-                } catch (_: ExecutionException) {
-                } catch (_: MlKitException) {
-                } catch (_: OutOfMemoryError) {
-                } finally {
-                    if (small != null && small !== bitmap) small.recycle()
+            // Stylised sound effects are what ML Kit misses most: huge, outlined, glowing or
+            // gradient lettering. Look at the picture in several ways AT THE SAME TIME (ML Kit runs
+            // the tasks in parallel, so this costs little more than one pass) and keep every block
+            // that an earlier look did not already find:
+            //   1x original, 1/2 size, 1/2 size with boosted contrast (glow/outline), 1/4 size (giant letters)
+            val mine = ArrayList<Bitmap>()                       // bitmaps we created and must recycle
+            val tasks = ArrayList<com.google.android.gms.tasks.Task<com.google.mlkit.vision.text.Text>>()
+            val scale = ArrayList<Float>()
+            try {
+                tasks.add(rec.process(InputImage.fromBitmap(bitmap, 0))); scale.add(1f)
+                if (bitmap.width >= 240 && bitmap.height >= 240) {
+                    try {
+                        val half = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+                        mine.add(half)
+                        tasks.add(rec.process(InputImage.fromBitmap(half, 0))); scale.add(2f)
+                        val boosted = OcrPost.boostContrast(half)
+                        mine.add(boosted)
+                        tasks.add(rec.process(InputImage.fromBitmap(boosted, 0))); scale.add(2f)
+                        val bright = OcrPost.brightMask(half)
+                        mine.add(bright)
+                        tasks.add(rec.process(InputImage.fromBitmap(bright, 0))); scale.add(2f)
+                        if (bitmap.width >= 480 && bitmap.height >= 480) {
+                            val quarter = Bitmap.createScaledBitmap(bitmap, bitmap.width / 4, bitmap.height / 4, true)
+                            mine.add(quarter)
+                            tasks.add(rec.process(InputImage.fromBitmap(quarter, 0))); scale.add(4f)
+                        }
+                    } catch (_: OutOfMemoryError) { }
                 }
+                val all = ArrayList<OcrBlock>()
+                for ((i, t) in tasks.withIndex()) {
+                    val blocks = try { toBlocks(Tasks.await(t)) }
+                        catch (e: ExecutionException) { if (i == 0) throw e else emptyList() }
+                    for (b in blocks) {
+                        val big = if (scale[i] == 1f) b else OcrPost.scaled(b, scale[i])
+                        if (i > 0 && big.text.trim().length < 2) continue
+                        if (i > 0 && all.any { OcrPost.overlapOfSmaller(it, big) > 0.25f }) continue
+                        all.add(big)
+                    }
+                }
+                val merged = OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) })
+                return OcrResult(merged)
+            } finally {
+                for (m in mine) if (m !== bitmap) m.recycle()
             }
-            val merged = OcrPost.mergeNeighbours(all)
-            return OcrResult(merged)
         } catch (e: ExecutionException) {
             val c = e.cause
             if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
@@ -209,8 +279,7 @@ internal class MlKitOcrEngine : OcrEngine {
         }
     }
 
-    private fun readBlocks(rec: TextRecognizer, bmp: Bitmap): List<OcrBlock> {
-        val vt = Tasks.await(rec.process(InputImage.fromBitmap(bmp, 0)))
+    private fun toBlocks(vt: com.google.mlkit.vision.text.Text): List<OcrBlock> {
         return vt.textBlocks
             .mapNotNull { b ->
                 val t = b.text.trim()

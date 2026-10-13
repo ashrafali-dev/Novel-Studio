@@ -119,6 +119,8 @@ class MainActivity : Activity() {
     private val deepSeekTranslatedTextHashes = LinkedHashSet<String>()
     private val deepSeekInFlightTextHashes = LinkedHashSet<String>()
     private val deepSeekTextHashByChapter = mutableMapOf<String, Set<String>>()
+    private var deepSeekPendingSig = ""
+    private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
     private var deepSeekPollBusy = false
     private val deepSeekVisiblePoll = object : Runnable {
@@ -150,10 +152,14 @@ class MainActivity : Activity() {
                 val textFallbackDue = signature.startsWith("TXT:") && deepSeekNoImageTriedUrl != pageKeyNow
                 val changed = signature.isNotEmpty() && signature != deepSeekVisibleSignature
                 // Per-bubble hashes below stop resubmission during these periodic same-image checks.
-                val periodicRecheck = hasImages && now - deepSeekLastOcrAtMs >= 5000L
+                val periodicRecheck = hasImages && now - deepSeekLastOcrAtMs >= 3000L
+                // While the reader is still flicking through panels, do not start an OCR for every
+                // intermediate frame (each one would be thrown away): wait until the view rests ~300 ms.
+                if (signature != deepSeekPendingSig) { deepSeekPendingSig = signature; deepSeekPendingSince = now }
+                val settled = now - deepSeekPendingSince >= 300L
                 val idle = webModeHandle == null && running == null && queue.isEmpty()
                 if (idle && signature.isNotEmpty() &&
-                    ((hasImages && (changed || periodicRecheck)) || textFallbackDue)) {
+                    ((hasImages && ((changed && settled) || periodicRecheck)) || textFallbackDue)) {
                     deepSeekVisibleSignature = signature
                     deepSeekLastOcrAtMs = now
                     if (!hasImages) deepSeekNoImageTriedUrl = pageKeyNow
@@ -162,7 +168,7 @@ class MainActivity : Activity() {
                     chatWv.resumeTimers()
                     startWebModeExtract(token, useSaved = false)
                 }
-                handler.postDelayed(this, 250L)
+                handler.postDelayed(this, 150L)
             }
         }
     }
@@ -668,6 +674,21 @@ class MainActivity : Activity() {
             false
         }
         chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
+
+        // Long-press a link: Chrome-style menu (new tab / background tab / copy).
+        novelWv.setOnLongClickListener {
+            val type = novelWv.hitTestResult.type
+            if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE ||
+                type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+                val h = Handler(Looper.getMainLooper()) { m ->
+                    val u = m.data?.getString("url").orEmpty()
+                    if (u.startsWith("http")) showLinkMenu(u)
+                    true
+                }
+                novelWv.requestFocusNodeHref(h.obtainMessage())
+                true
+            } else false
+        }
 
         window.statusBarColor = UiTheme.bg
         window.navigationBarColor = UiTheme.bg
@@ -1301,6 +1322,26 @@ class MainActivity : Activity() {
         persistBrowserTabs()
     }
 
+    private fun showLinkMenu(url: String) {
+        val shown = if (url.length > 70) url.take(67) + "…" else url
+        AlertDialog.Builder(this)
+            .setTitle(shown)
+            .setItems(arrayOf("Open in new tab", "Open in background tab", "Copy link address")) { _, which ->
+                when (which) {
+                    0 -> newBrowserTab(url)
+                    1 -> {
+                        saveCurrentTabState()
+                        browserTabs.add(BrowserTab("New Tab", url))
+                        renderTabs()
+                        persistBrowserTabs()
+                        toast("Opened in background tab (${browserTabs.size})")
+                    }
+                    2 -> { copy(url); toast("Link copied") }
+                }
+            }
+            .show()
+    }
+
     private fun newBrowserTab(url: String) {
         saveCurrentTabState()
         browserTabs.add(BrowserTab("New Tab", url))
@@ -1795,7 +1836,10 @@ class MainActivity : Activity() {
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
                 novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-                chatBox.layoutParams = FrameLayout.LayoutParams(MP, 0)
+                // Never collapse the chatbot to 0 height: DeepSeek (and other sites that size their
+                // page by 100vh) then report a 0-size composer, the app cannot find the input box
+                // and only copies the text to the clipboard. Keep it full-size UNDER the novel pane.
+                chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
                 chatBox.bringToFront()
                 novelBox.bringToFront()
             }
@@ -1806,7 +1850,7 @@ class MainActivity : Activity() {
                 chatBox.translationY = 0f
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
-                novelBox.layoutParams = FrameLayout.LayoutParams(MP, 0)
+                novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)   // keep its viewport alive (images lazy-load)
                 chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
                 novelBox.bringToFront()
                 chatBox.bringToFront()
@@ -3939,8 +3983,12 @@ Every marker is one piece of text read from a comic image: speech, narration, a 
 sound effect. Translate EVERY marker into Bengali script, including sound effects and exclamations
 (BOOM -> ধুম!, HAH -> হাঃ, GRR -> গরররর!). If a word has no Bengali equivalent, write its sound in
 Bengali letters. Never leave a marker in English letters, never skip a marker, and never put two
-markers' text under one marker. If a text looks like OCR noise, still return a short Bengali
-rendering of what it most likely says. Keep each translation short enough to fit a speech bubble.
+markers' text under one marker.
+The markers are in reading order and ONE sentence is often split across consecutive markers
+(for example "...THE" / "HERO'S LIFE..."). Read the neighbouring markers together for the meaning,
+then translate each marker as only the part it carries, so every part still fits its own box.
+If a marker is clearly meaningless OCR noise (random letters or symbols), answer exactly ~ for it.
+Do not invent text. Keep each translation short enough to fit a speech bubble.
 """.trimIndent() + "\n\n" else ""
         // Real-time OCR translation uses its own editable prompt.
         val full = promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +

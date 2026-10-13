@@ -430,14 +430,21 @@ internal class WebModeExtractor(
             val k = sample.toFloat()
             for ((i, b) in blocks.withIndex()) {
                 val tilt = OcrPost.usableTilt(b.angle)          // never upside down, never sideways
-                val rotated = Math.abs(tilt) >= 3f
+                val rotated = Math.abs(tilt) >= 6f
                 val others = rects.filterIndexed { j, _ -> j != i }
                 val s = WmBubbleStyle.analyse(bmp, rects[i], others, expand = !rotated)
                 val cx: Float; val cy: Float; val bw: Float; val bh: Float
+                // Wipe the old lettering COMPLETELY: OCR boxes are tight, but outlines, glow, shadows and
+                // descenders reach past them. Pad by a share of the line height (more on artwork).
+                val lineH = (if (b.fontPx > 0f) b.fontPx else minOf(b.w, b.h)).coerceAtLeast(8f)
+                val pad = lineH * (if (s.soft) 0.34f else 0.2f) + 3f
                 if (rotated) {
-                    cx = b.cx; cy = b.cy; bw = b.w * 1.1f + 6f; bh = b.h * 1.1f + 6f
+                    cx = b.cx; cy = b.cy; bw = b.w * 1.1f + pad * 2f; bh = b.h * 1.1f + pad * 2f
                 } else {
-                    cx = (s.l + s.r) / 2f; cy = (s.t + s.b) / 2f; bw = (s.r - s.l) + 4f; bh = (s.b - s.t) + 4f
+                    // flat bubbles already grew to their interior (kept inside the outline); only pad the text-sized ones
+                    val grown = (s.r - s.l) > (rects[i][2] - rects[i][0]) + 8 || (s.b - s.t) > (rects[i][3] - rects[i][1]) + 8
+                    val p = if (grown) 2f else pad
+                    cx = (s.l + s.r) / 2f; cy = (s.t + s.b) / 2f; bw = (s.r - s.l) + p * 2f; bh = (s.b - s.t) + p * 2f
                 }
                 val text = b.text.replace(NEWLINES, " ").trim()
                 val nb = WmBubble(
