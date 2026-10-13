@@ -180,8 +180,12 @@ class MainActivity : Activity() {
     private val scanIndicatorRunnable = object : Runnable {
         override fun run() {
             if (::scanDot.isInitialized) {
-                val scanning = webModePrefetchBusy
-                val waiting = prefetchLoading && !webModePrefetchBusy
+                // In real-time mode, blink green for the full OCR → chatbot → bubble-write job,
+                // not only while the background chapter scanner is busy.
+                val realtimeTranslating = DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) &&
+                    (webModeHandle != null || running != null || queue.isNotEmpty())
+                val scanning = webModePrefetchBusy || realtimeTranslating
+                val waiting = prefetchLoading && !scanning
                 scanDot.visibility = View.VISIBLE
                 when {
                     scanning -> {
