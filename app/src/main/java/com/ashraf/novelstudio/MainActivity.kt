@@ -125,13 +125,26 @@ class MainActivity : Activity() {
     private val scanIndicatorRunnable = object : Runnable {
         override fun run() {
             if (::scanDot.isInitialized) {
-                val scanning = prefetchLoading || webModePrefetchBusy
-                scanDot.visibility = if (scanning) View.VISIBLE else View.GONE
-                if (scanning) {
-                    scanDotPhase = !scanDotPhase
-                    scanDot.alpha = if (scanDotPhase) 1f else 0.22f
-                } else {
-                    scanDot.alpha = 1f
+                val scanning = webModePrefetchBusy
+                val waiting = prefetchLoading && !webModePrefetchBusy
+                scanDot.visibility = View.VISIBLE
+                when {
+                    scanning -> {
+                        // Green blinking dot: the background OCR scanner is actively running.
+                        (scanDot.background as? GradientDrawable)?.setColor(0xFF69F0AE.toInt())
+                        scanDotPhase = !scanDotPhase
+                        scanDot.alpha = if (scanDotPhase) 1f else 0.22f
+                    }
+                    waiting -> {
+                        // Amber steady dot: next chapter is loading/waiting for its scan turn.
+                        (scanDot.background as? GradientDrawable)?.setColor(0xFFFFC107.toInt())
+                        scanDot.alpha = 1f
+                    }
+                    else -> {
+                        // Dark grey dot: no background scan is active or queued.
+                        (scanDot.background as? GradientDrawable)?.setColor(0xFF555A64.toInt())
+                        scanDot.alpha = 1f
+                    }
                 }
             }
             handler.postDelayed(this, 450L)
