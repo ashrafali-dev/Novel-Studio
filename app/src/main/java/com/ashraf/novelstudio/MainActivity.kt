@@ -3750,6 +3750,26 @@ markers preserved.
 
     // ---- put the translation into the novel page itself
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
+        // Web Mode (image chapters): there is no text node to replace, so show a reader panel instead.
+        if (webModeOn() && ch.contentSel.isBlank()) {
+            shownTrRaw = text
+            if (lastChapter !== ch) return
+            injectBengaliFont()
+            val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
+            novelWv.evaluateJavascript(
+                WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
+            ) { r ->
+                if (lastChapter !== ch) return@evaluateJavascript
+                if (r != null && r.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                } else {
+                    toast("⚠️ Could not show the translation on this page; it is saved in the library")
+                }
+            }
+            return
+        }
         if (novel543System.matches(ch.url)) {
             shownTrRaw = text
             if (lastChapter !== ch) return
