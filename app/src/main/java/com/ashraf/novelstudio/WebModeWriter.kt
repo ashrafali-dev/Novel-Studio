@@ -73,10 +73,10 @@ internal object WebModeWriter {
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
       // measures both axes and shrinks the text instead of letting it spill outside.
       t.style.cssText='display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;'
-        +'text-align:center;line-height:1.18;white-space:normal;word-break:normal;'
-        +'overflow-wrap:break-word;hyphens:none;font-kerning:normal;'
-        +'font-variant-ligatures:normal;font-feature-settings:"kern","liga","clig","calt";'
-        +'text-rendering:optimizeLegibility;';
+        +'text-align:center;line-height:1.18;white-space:normal;word-break:keep-all;'
+        +'overflow-wrap:normal;hyphens:none;font-kerning:normal;'
+        // Keep browser defaults for complex-script shaping (including Bengali conjuncts).
+        +'font-variant-ligatures:normal;text-rendering:optimizeLegibility;';
       if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
         t.style.background='linear-gradient(to bottom,'+it.fg+','+it.g2+')';
@@ -161,6 +161,18 @@ internal object WebModeWriter {
     window.__nsEl=w; window.__nsOrig=''; window.__nsTr=w.innerHTML; window.__nsShown=1;
     w.setAttribute('data-ns','1'); w.setAttribute('data-ns-page-id',pid||''); window.__nsPageId=pid||'';
     lastRun=0; layout();
+    // First layout may measure a fallback font while the bundled Bengali font is still loading.
+    // Re-fit every bubble after font readiness so conjuncts and long Bengali words stay intact.
+    try{
+      if(font && document.fonts && document.fonts.ready){
+        document.fonts.ready.then(function(){
+          if(!document.contains(w))return;
+          var bs=w.querySelectorAll('.__ns_b');
+          for(var fi=0;fi<bs.length;fi++)bs[fi].removeAttribute('data-fw');
+          lastRun=0;layout();
+        });
+      }
+    }catch(e){}
     return 'ok';
   }catch(e){return 'err:'+e;}
 })(__ITEMS__,__FONT__,__PID__)
