@@ -111,6 +111,7 @@ class MainActivity : Activity() {
     private var webModePrefetchBusy = false
     private var webModeStage = ""
     private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
+    private var deepSeekAutoStartedUrl = "" // prevent duplicate OCR jobs for the same loaded chapter
     private val prefetchKeys = mutableSetOf<String>()
     private val prefetchGeneratedKeys = mutableSetOf<String>()
     private val prefetchedTranslationIds = mutableMapOf<String, Long>()
@@ -2131,6 +2132,7 @@ class MainActivity : Activity() {
 
             if (view === novelWv && !url.isNullOrBlank() && !webNovelCatalogPending) {
                 scheduleSavedTranslationCheck(url)
+                scheduleDeepSeekAutoTranslation(url)
             }
 
             if (view === novelWv && wtrLabSystem.matches(url)) startWtrWatch()
@@ -2690,6 +2692,31 @@ class MainActivity : Activity() {
                 }
             }
         ))
+    }
+
+    /**
+     * DeepSeek experimental mode: start OCR automatically when a chapter page is ready.
+     * No tap on the extract button is needed. The normal translation/cache/overlay pipeline
+     * remains responsible for sending the OCR result to the chatbot and applying the reply.
+     */
+    private fun scheduleDeepSeekAutoTranslation(pageUrl: String) {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) return
+        val url = pageUrl.trim()
+        if (!url.startsWith("http", ignoreCase = true)) return
+        val host = Uri.parse(url).host.orEmpty().lowercase()
+        if (host.isBlank() || host.contains("deepseek.com") || host.contains("chatgpt.com") ||
+            host.contains("gemini.google.com") || host.contains("claude.ai") || host.contains("grok.com")) return
+        if (deepSeekAutoStartedUrl == url) return
+        deepSeekAutoStartedUrl = url
+        val token = navToken
+        handler.postDelayed({
+            if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() ||
+                token != navToken || cleanUrl(novelWv.url.orEmpty()) != cleanUrl(url)) return@postDelayed
+            // Keep WebView JavaScript timers active while the chatbot pane is not foregrounded.
+            chatWv.onResume()
+            chatWv.resumeTimers()
+            startWebModeExtract(token, useSaved = true)
+        }, 900L)
     }
 
     private fun extractCopy() {
@@ -3687,6 +3714,8 @@ class MainActivity : Activity() {
 
     // make sure the chatbot is not still busy with something else before we send
     private fun waitIdle(tok: Int, ch: Chapter, n: Int) {
+        chatWv.onResume()
+        chatWv.resumeTimers()
         chatWv.evaluateJavascript(Js.readLen()) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val parts = decode(raw).split("|")
@@ -4141,6 +4170,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
             progressBar.running = true
             extractBtn.ringProgress = if (webModePct > 0) webModePct else 0
             setProgressVisible(true)
+            progressBox.bringToFront()
             return
         }
         val run = running
@@ -4171,6 +4201,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
         progressBar.running = run != null
         extractBtn.ringProgress = if (pct > 0) pct else 0
         setProgressVisible(true)
+        progressBox.bringToFront()
     }
 
     private fun setProgressVisible(v: Boolean) {
@@ -4438,10 +4469,13 @@ rendering of what it most likely says. Keep each translation short enough to fit
                     if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
                         DeepSeekRealtimeTranslation.enable(this)
                         openBot(DeepSeekRealtimeTranslation.DEEPSEEK_URL)
+                        chatWv.onResume()
+                        chatWv.resumeTimers()
                         refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
                         refresh(31, menuWebModeLabel())
                         dlg.dismiss()
-                        toast("🤖 DeepSeek mode ON — log in if needed, then tap ● to translate this chapter")
+                        scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
+                        toast("🤖 DeepSeek mode ON — chapter panels will auto-translate when ready")
                     } else {
                         val previousBot = DeepSeekRealtimeTranslation.disable(this)
                         openBot(previousBot)
