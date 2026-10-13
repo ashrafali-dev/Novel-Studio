@@ -122,7 +122,11 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                 val b = withoutTitle.count { !it.isNullOrBlank() }
                 val out = if (b > a) withoutTitle else withTitle
                 val found = maxOf(a, b)
-                return if (found * 100 >= n * 70) out else null
+                // A preserved marker identifies its bubble exactly. In live mode, place any
+                // correctly marked answers and leave missing bubbles untranslated instead of
+                // abandoning the whole batch and switching to reader view.
+                if (found > 0 && (found * 100 >= n * 70 || layout.titleOffset == 0)) return out
+                return null
             }
             val paras = text.split(BLANK).map { it.trim() }.filter { it.isNotEmpty() }
             if (paras.size != n + layout.titleOffset) return null
