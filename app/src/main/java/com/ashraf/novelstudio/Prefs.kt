@@ -13,6 +13,16 @@ object Prefs {
 
 এখন থেকে আমি যা পাঠাব সেটাই অনুবাদ করবে।"""
 
+    const val DEFAULT_REALTIME_PROMPT = """তুমি একজন দক্ষ ওয়েবটুন, ম্যানহো ও কমিক অনুবাদক। ছবির OCR থেকে পাওয়া প্রতিটি লেখা প্রাঞ্জল, স্বাভাবিক বাংলায় অনুবাদ করো।
+
+নিয়ম:
+- প্রতিটি [001], [002] ইত্যাদি মার্কার হুবহু একই ক্রমে ঠিক একবার রাখবে।
+- সংলাপ, বর্ণনা, সিস্টেম উইন্ডো এবং শব্দ-প্রভাব—কোনো লেখা বাদ দেবে না।
+- কথার আবেগ, চরিত্রের কণ্ঠ এবং দৃশ্যের অর্থ বজায় রাখবে। বাবলের জন্য অনুবাদ সংক্ষিপ্ত ও স্বাভাবিক রাখবে।
+- মূল ভাষার লেখা পুনরায় লিখবে না; সারাংশ বা ব্যাখ্যাও দেবে না।
+- নিজের চিন্তা, reasoning, status, heading, disclaimer বা অতিরিক্ত কোনো মন্তব্য দেবে না।
+- শুধু মার্কারসহ বাংলা অনুবাদ ফেরত দেবে।"""
+
     private fun sp(c: Context) = c.getSharedPreferences("ns", Context.MODE_PRIVATE)
 
     fun get(c: Context, k: String, def: String = ""): String = sp(c).getString(k, def) ?: def
@@ -21,6 +31,12 @@ object Prefs {
     fun bool(c: Context, k: String, def: Boolean): Boolean = sp(c).getBoolean(k, def)
     fun putBool(c: Context, k: String, v: Boolean) = sp(c).edit().putBoolean(k, v).apply()
     fun prompt(c: Context): String = get(c, "prompt", DEFAULT_PROMPT)
+    fun realtimePrompt(c: Context): String =
+        get(c, "realtimePrompt", "").ifBlank { DEFAULT_REALTIME_PROMPT }
+
+    /** Use its own editable prompt only while AI Real-time Translation is enabled. */
+    fun activeTranslationPrompt(c: Context): String =
+        if (DeepSeekRealtimeTranslation.isEnabled(c)) realtimePrompt(c) else prompt(c)
     fun adblock(c: Context): Boolean = !bool(c, "noAdblock")
     fun auto(c: Context): Boolean = !bool(c, "noAuto")
 
