@@ -3,7 +3,7 @@ package com.ashraf.novelstudio
 import android.content.Context
 
 /**
- * Experimental webtoon real-time mode.
+ * Chatbot-independent webtoon real-time mode.
  *
  * Keeps its own preference snapshot so switching it off restores the user's
  * previous extraction/chatbot settings instead of permanently changing them.
@@ -21,7 +21,7 @@ internal object DeepSeekRealtimeTranslation {
 
     fun menuLabel(context: Context): String =
         (if (isEnabled(context)) "✅" else "⬜") +
-            " 🤖 DeepSeek Real-time Translation"
+            " 🤖 AI Real-time Translation"
 
     fun enable(context: Context) {
         if (!isEnabled(context)) {
@@ -37,7 +37,7 @@ internal object DeepSeekRealtimeTranslation {
         Prefs.putBool(context, "webMode", true)
         Prefs.putBool(context, "noAuto", false)
         Prefs.putBool(context, "autoExtractNext", true)
-        Prefs.put(context, "botUrl", DEEPSEEK_URL)
+        // Keep the currently selected chatbot; real-time OCR is provider-independent.
     }
 
     /** Returns the chatbot URL that was selected before this mode was enabled. */
