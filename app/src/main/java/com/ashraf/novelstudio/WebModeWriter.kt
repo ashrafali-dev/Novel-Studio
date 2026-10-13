@@ -69,7 +69,14 @@ internal object WebModeWriter {
         +'background:'+it.bg+';color:'+it.fg+';font-family:'+fam+';font-weight:600;'
         +(it.sf?'border-radius:12px;box-shadow:0 0 7px 5px '+it.bg+';':'border-radius:6px;');
       var t=document.createElement('div'); t.textContent=it.t;
-      t.style.cssText='width:100%;text-align:center;line-height:1.3;overflow-wrap:break-word;';
+      // Preserve Bengali grapheme clusters/ conjuncts and use a shaping-friendly text layout.
+      // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
+      // measures both axes and shrinks the text instead of letting it spill outside.
+      t.style.cssText='display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;'
+        +'text-align:center;line-height:1.18;white-space:normal;word-break:normal;'
+        +'overflow-wrap:break-word;hyphens:none;font-kerning:normal;'
+        +'font-variant-ligatures:normal;font-feature-settings:"kern","liga","clig","calt";'
+        +'text-rendering:optimizeLegibility;';
       if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
         t.style.background='linear-gradient(to bottom,'+it.fg+','+it.g2+')';
@@ -97,12 +104,21 @@ internal object WebModeWriter {
       miss[s]=now; return null;}
     // Largest font (up to maxPx) at which the text still fits inside its box.
     function fit(b,maxPx){
-      var t=b.firstChild,lo=5,hi=Math.max(6,maxPx),best=5;
-      for(var n=0;n<9;n++){
+      var t=b.firstChild,lo=3.5,hi=Math.max(4,maxPx),best=3.5;
+      // Binary-search the largest font size that fits horizontally AND vertically.
+      // Checking scrollHeight as well as width prevents multi-line Bengali text from
+      // escaping the speech-bubble overlay when the translated sentence is longer.
+      for(var n=0;n<12;n++){
         var mid=(lo+hi)/2; t.style.fontSize=mid+'px';
-        if(t.offsetHeight<=b.clientHeight-4&&t.scrollWidth<=t.clientWidth+1){best=mid;lo=mid;}else{hi=mid;}
+        var fits=t.scrollWidth<=t.clientWidth+1 &&
+          t.scrollHeight<=b.clientHeight-4 &&
+          t.getBoundingClientRect().height<=b.clientHeight-2;
+        if(fits){best=mid;lo=mid;}else{hi=mid;}
       }
-      t.style.fontSize=best+'px';}
+      t.style.fontSize=best+'px';
+      t.style.maxHeight=Math.max(1,b.clientHeight-4)+'px';
+      t.style.overflow='hidden';
+    }
     var MARGIN=1400;
     function layout(){
       if(!document.contains(w)){stop();return;}
