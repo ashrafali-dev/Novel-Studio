@@ -128,8 +128,15 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                 if (found > 0 && (found * 100 >= n * 70 || layout.titleOffset == 0)) return out
                 return null
             }
-            val paras = text.split(BLANK).map { it.trim() }.filter { it.isNotEmpty() }
-            if (paras.size != n + layout.titleOffset) return null
+            val blankLineParas = text.split(BLANK).map { it.trim() }.filter { it.isNotEmpty() }
+            val lineParas = text.split('\\n').map { it.trim() }.filter { it.isNotEmpty() }
+            val expected = n + layout.titleOffset
+            val paras = when {
+                blankLineParas.size == expected -> blankLineParas
+                lineParas.size == expected -> lineParas
+                else -> blankLineParas
+            }
+            if (paras.size != expected) return null
             return List(n) { i -> paras[i + layout.titleOffset].replace(NL, " ") }
         }
     }
