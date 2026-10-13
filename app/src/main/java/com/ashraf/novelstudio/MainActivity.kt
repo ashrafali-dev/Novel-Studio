@@ -4071,7 +4071,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
         )
         uiLabels.forEach { s = it.replace(s, " ") }
         return s.replace(Regex("[ \\t]+"), " ")
-            .replace(Regex("\\n{3,}"), "\\n\\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
     }
 
