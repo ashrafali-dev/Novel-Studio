@@ -2760,8 +2760,13 @@ class MainActivity : Activity() {
         // Capture the current chapter BEFORE invalidating navigation state.
         // wipeStale() intentionally clears lastChapter so no old chapter can
         // be committed by a late async callback.
-        val cached = lastChapter
         val currentUrl = cleanUrl(novelWv.url ?: "")
+        // Image-only Webtoon chapters may have been prefetched and translated without
+        // ever setting lastChapter from DOM text. Recover the active chapter record by URL
+        // so the app's own Next/Prev buttons can navigate from that known chapter.
+        val cached = lastChapter ?: if (webModeOn()) {
+            prefetchNextOf.values.firstOrNull { pageKey(it.url) == pageKey(currentUrl) }
+        } else null
         pendingNavHash = cached?.let { bodyHash(it) }
         pendingNavUrl = currentUrl
         pendingWtrChapterNumber = if (wtrLabSystem.matches(currentUrl)) cached?.number.orEmpty() else ""
@@ -3064,7 +3069,9 @@ class MainActivity : Activity() {
         val key = keyOf(ch)
         // A translation made by the background prefetch is reused even when the "prefetch" menu
         // switch is off and only auto-translate is on (before, it was thrown away and redone).
-        if (useSavedTranslation && (Prefs.bool(this, "prefetchNextChapter") || prefetchGeneratedKeys.contains(key))) {
+        // Web Mode pages are image-only, so a successfully prefetched translation
+        // must be reused by exact page identity even if the prefetch toggle changed later.
+        if (useSavedTranslation && (webModeOn() || Prefs.bool(this, "prefetchNextChapter") || prefetchGeneratedKeys.contains(key))) {
             val saved = Store.find(this, ch)
             if (saved != null) {
                 val translated = Store.readRaw(this, saved.id)
