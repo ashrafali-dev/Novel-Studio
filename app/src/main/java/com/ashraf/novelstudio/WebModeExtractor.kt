@@ -64,6 +64,8 @@ internal sealed class WebModeOutcome {
 
 internal class WebModeRequest(
     val webView: WebView,
+    /** When true, OCR only images intersecting the current viewport and never scrolls the reader. */
+    val visibleOnly: Boolean = false,
     /** False once the user navigated away / started another action: the job stops and reports nothing useful. */
     val isValid: () -> Boolean,
     val onProgress: (stage: String, pct: Int) -> Unit,
@@ -147,7 +149,7 @@ internal class WebModeExtractor(
         fun begin() {
             ensureBridge(wv)
             progress("Discovering chapter panels", 1)
-            tick(0, -1, 0)
+            if (req.visibleOnly) finishDiscovery() else tick(0, -1, 0)
         }
 
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
@@ -179,7 +181,8 @@ internal class WebModeExtractor(
         }
 
         private fun finishDiscovery() {
-            wv.evaluateJavascript(wrap(LIB + JS_COLLECT)) { raw ->
+            val collectScript = if (req.visibleOnly) JS_COLLECT_VISIBLE else JS_COLLECT
+            wv.evaluateJavascript(wrap(LIB + collectScript)) { raw ->
                 restoreScroll()
                 if (!alive()) { fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
                 val o = parseJson(raw)
@@ -560,6 +563,29 @@ if(sc&&window.__nsWmS!==undefined)sc.scrollTop=window.__nsWmS;
 else if(window.__nsWmY!==undefined)window.scrollTo(0,window.__nsWmY);
 try{delete window.__nsWmY;delete window.__nsWmS;}catch(e){}
 return '1';
+"""
+
+        private const val JS_COLLECT_VISIBLE = """
+var sc=scroller(),c=cands(sc);
+var top=sc?(sc.scrollTop||0):(window.pageYOffset||de.scrollTop||0);
+var height=sc?(sc.clientHeight||window.innerHeight||800):(window.innerHeight||800);
+var bottom=top+height;
+c=c.filter(function(p){return p.t < bottom && (p.t+p.h) > top;});
+function q(s){var e=document.querySelector(s);return e?(e.textContent||'').trim():'';}
+function link(kind){
+  var re=kind==='next'?/next|\\u4e0b\\u4e00|\\ub2e4\\uc74c|\\u6b21\\u306e|\\u6b21\\u3078|\\u6b21\\u7ae0/i:/prev(?!iew)|\\u4e0a\\u4e00|\\uc774\\uc804|\\u524d\\u306e|\\u524d\\u3078|\\u524d\\u7ae0/i;
+  var cur=location.href.split('#')[0],cand=[];
+  var el=document.querySelector('link[rel='+kind+'],a[rel='+kind+']');
+  if(el&&el.href)cand.push(el.href);
+  var as=document.querySelectorAll('a[href]');
+  for(var i=0;i<as.length;i++){var a=as[i],cls=(a.className&&a.className.baseVal!==undefined?a.className.baseVal:a.className||'')+' '+(a.id||'')+' '+(a.getAttribute('aria-label')||'')+' '+(a.title||''),t=(a.textContent||'').trim();if(/disabled/i.test(cls)||a.getAttribute('aria-disabled')==='true')continue;if((t.length<=30&&re.test(t))||re.test(cls))cand.push(a.href);}
+  var root=function(h){return h.split('.').slice(-2).join('.');};
+  for(var j=0;j<cand.length;j++){var h=cand[j];if(h&&/^https?:/i.test(h)&&h.split('#')[0]!==cur){try{if(root(new URL(h).hostname)===root(location.hostname))return h;}catch(e){}}}
+  return '';}
+var og=document.querySelector('meta[property="og:title"]');
+var title=q('.subj_episode')||q('h1')||(og&&og.content)||document.title||'';
+var novel=q('.detail_header .subj')||q('a.subj')||q('.series-title')||q('.comic-title')||'';
+return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,title:title,novel:novel,next:link('next'),prev:link('prev'),imgs:c.slice(0,600)});
 """
 
         private const val JS_COLLECT = """
