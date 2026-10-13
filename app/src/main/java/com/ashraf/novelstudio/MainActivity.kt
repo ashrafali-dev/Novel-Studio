@@ -3172,6 +3172,23 @@ class MainActivity : Activity() {
     private fun scheduleSavedTranslationCheck(pageUrl: String) {
         if (!Prefs.bool(this, "prefetchNextChapter") && prefetchGeneratedKeys.isEmpty()) return
         val token = navToken
+        // Webtoon pages contain images, not chapter text. If this URL belongs to a
+        // chapter already extracted by background prefetch, adopt that Chapter object
+        // and insert its saved translation immediately; never call extractNow() here.
+        if (webModeOn()) {
+            val here = pageKey(pageUrl)
+            val prefetched = prefetchNextOf.values.firstOrNull { pageKey(it.url) == here }
+            if (prefetched != null) {
+                val saved = Store.find(this, prefetched)
+                val translated = saved?.let { Store.readRaw(this, it.id) }.orEmpty()
+                if (saved != null && translated.length >= 30) {
+                    onChapter(prefetched)
+                    markPrefetchedTranslationActive(prefetched, saved)
+                    applyTranslation(prefetched, translated, true)
+                }
+            }
+            return
+        }
         // SPA readers (WebNovel, WTR-LAB...) draw the chapter AFTER the page finishes loading.
         // One try at +500 ms found nothing there, so the saved translation was never inserted.
         val fast = qidianSystem.matches(pageUrl)      // short, cheap polling for Qidian
@@ -3227,6 +3244,13 @@ class MainActivity : Activity() {
     // Backup: double-tap ⚡ to insert a saved translation without translating again.
     private fun insertSavedTranslation() {
         val token = navToken
+        // Webtoon chapters are image-only: extractNow() reads DOM text and always fails.
+        // A deliberate double-tap is explicit permission to run Web Mode OCR;
+        // it then reuses the saved prefetch translation instead of translating again.
+        if (webModeOn()) {
+            startWebModeExtract(token, useSaved = true)
+            return
+        }
         val cached = lastChapter
         fun useChapter(ch: Chapter) {
             if (token != navToken) return
