@@ -3933,10 +3933,15 @@ rendering of what it most likely says. Keep each translation short enough to fit
                 val parts = r.substring(3).split(":")
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                // Give the chatbot UI a short moment to create the new turn.
+                // Real-time mode starts checking almost immediately; normal jobs keep the old startup delay.
                 handler.postDelayed({
-                    if (tok == runToken) pollJob(tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0)
-                }, 300)
+                    if (tok == runToken) {
+                        pollJob(
+                            tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0,
+                            pollDelayMs = 0L
+                        )
+                    }
+                }, RealtimeCompletionPolicy.firstPollDelayMs(this))
             } else {
                 failJob(tok, ch, "Chat input not found — check that you are logged in to the chatbot")
             }
@@ -3956,7 +3961,8 @@ rendering of what it most likely says. Keep each translation short enough to fit
 
     private fun pollJob(
         tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long,
-        lastLen: Int, stable: Int, sawStream: Boolean = false, firstLen: Int = -1
+        lastLen: Int, stable: Int, sawStream: Boolean = false, firstLen: Int = -1,
+        pollDelayMs: Long = 500L
     ) {
         handler.postDelayed({
             if (tok != runToken) return@postDelayed
@@ -3986,9 +3992,11 @@ rendering of what it most likely says. Keep each translation short enough to fit
                         else minOf(90, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
                     else -> minOf(95, grown * 100 / expectedLen(ch)).coerceAtLeast(3)
                 }
-                // A stream that grows by 1–2 characters is still changing, not stable.
-                // Require an exactly unchanged reply length before calling it complete.
-                val st = if (got && effLen == lastLen) stable + 1 else 0
+                // Normal jobs retain their original length-stability rule. In real-time mode,
+                // only count stable polls after streaming is no longer detected, so one brief pause
+                // during generation cannot prematurely finish the translation.
+                val realtimeFast = RealtimeCompletionPolicy.enabled(this)
+                val st = if (got && effLen == lastLen && (!realtimeFast || !streaming)) stable + 1 else 0
                 val elapsed = System.currentTimeMillis() - started
 
                 // The stop-button detector can miss a model's streaming state or the
@@ -4003,11 +4011,21 @@ rendering of what it most likely says. Keep each translation short enough to fit
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val completedByMarkers = got && effLen >= minReplyLength && !streaming && allMarkers && st >= 4
-                val completedByUi = got && effLen >= minReplyLength && uiDone && !streaming && st >= 8
-                val completedAfterStop = got && effLen >= minReplyLength && streamEnded && st >= 8
-                val completedWithoutStopSignal = got && effLen >= minReplyLength && !sawStream && !streaming &&
-                    st >= (if (livePanelBatch) 8 else 20) && (allMarkers || effLen >= expectedFloor)
+                val markerStableNeeded = RealtimeCompletionPolicy.stableThreshold(this, 4)
+                val uiStableNeeded = RealtimeCompletionPolicy.stableThreshold(this, 8)
+                val stopStableNeeded = RealtimeCompletionPolicy.stableThreshold(this, 8)
+                val noSignalStableNeeded = RealtimeCompletionPolicy.noStopSignalThreshold(
+                    this, if (livePanelBatch) 8 else 20
+                )
+                val completedByMarkers = got && effLen >= minReplyLength && !streaming &&
+                    allMarkers && st >= markerStableNeeded
+                val completedByUi = got && effLen >= minReplyLength && uiDone &&
+                    !streaming && st >= uiStableNeeded
+                val completedAfterStop = got && effLen >= minReplyLength &&
+                    streamEnded && st >= stopStableNeeded
+                val completedWithoutStopSignal = got && effLen >= minReplyLength &&
+                    !sawStream && !streaming && st >= noSignalStableNeeded &&
+                    (allMarkers || effLen >= expectedFloor)
                 val completed = completedByMarkers || completedByUi ||
                     completedAfterStop || completedWithoutStopSignal
 
@@ -4019,10 +4037,14 @@ rendering of what it most likely says. Keep each translation short enough to fit
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
-                    else -> pollJob(tok, ch, n0, baseLen, started, effLen, st, sawStream || streaming, baseLen0)
+                    else -> pollJob(
+                        tok, ch, n0, baseLen, started, effLen, st,
+                        sawStream || streaming, baseLen0,
+                        RealtimeCompletionPolicy.nextPollDelayMs(this, streaming, got)
+                    )
                 }
             }
-        }, 500)
+        }, pollDelayMs)
     }
 
     private fun cleanReply(t: String): String =
