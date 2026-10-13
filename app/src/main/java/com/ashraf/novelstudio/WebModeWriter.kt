@@ -65,7 +65,7 @@ internal object WebModeWriter {
       b.setAttribute('data-s',it.s);
       b.setAttribute('data-g',[it.cx,it.cy,it.w,it.h,it.a,it.f].join(','));
       b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:hidden;'
-        +'align-items:center;justify-content:center;padding:2px;pointer-events:none;will-change:transform;'
+        +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
         +'background:'+it.bg+';color:'+it.fg+';font-family:'+fam+';font-weight:600;'
         +(it.sf?'border-radius:12px;box-shadow:0 0 7px 5px '+it.bg+';':'border-radius:6px;');
       var t=document.createElement('div'); t.textContent=it.t;
@@ -73,7 +73,10 @@ internal object WebModeWriter {
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
       // measures both axes and shrinks the text instead of letting it spill outside.
       t.style.cssText='display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;'
-        +'text-align:center;line-height:1.18;white-space:normal;word-break:keep-all;'
+        +'text-align:center;line-height:1.55;white-space:normal;word-break:keep-all;'
+        // Bengali vowel signs (ি ী ু ৃ ে ৈ) stick out above and below the line box; room for them
+        // stops them being clipped by the box edge or by the gradient's background-clip.
+        +'padding:0.22em 0.1em;'
         +'overflow-wrap:normal;hyphens:none;font-kerning:normal;'
         // Keep browser defaults for complex-script shaping (including Bengali conjuncts).
         +'font-variant-ligatures:normal;text-rendering:optimizeLegibility;';
@@ -116,8 +119,7 @@ internal object WebModeWriter {
         if(fits){best=mid;lo=mid;}else{hi=mid;}
       }
       t.style.fontSize=best+'px';
-      t.style.maxHeight=Math.max(1,b.clientHeight-4)+'px';
-      t.style.overflow='hidden';
+      t.style.overflow='visible';
     }
     var MARGIN=1400;
     function layout(){
