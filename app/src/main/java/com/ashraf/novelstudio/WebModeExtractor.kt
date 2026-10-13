@@ -214,6 +214,7 @@ internal class WebModeExtractor(
         private fun process(panels: List<PanelRef>, meta: PageMeta) {
             val total = panels.size
             val texts = arrayOfNulls<String>(total)
+            val layouts = arrayOfNulls<List<WmBubble>>(total)
             val seen = HashSet<String>()
             val script = ScriptState(WebModeLogic.pickScript(meta.lang, meta.url))
             var fetchFailed = 0
@@ -227,11 +228,13 @@ internal class WebModeExtractor(
                 if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
                 diag.downloaded++
                 try {
-                    val t = ocrBytes(bytes, script)
+                    val po = ocrBytes(bytes, script, p.src)
                     diag.decoded++
-                    if (t == null) continue                       // too small to be a panel: ignored, not an error
+                    if (po == null) continue                      // too small to be a panel: ignored, not an error
+                    val t = po.text
                     if (t.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += t.length }
                     texts[i] = t
+                    layouts[i] = po.bubbles
                 } catch (e: OcrUnavailableException) {
                     fail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label)
                     return
@@ -254,6 +257,11 @@ internal class WebModeExtractor(
             }
             val title = meta.title.ifBlank { hostOf(meta.url) }
             val text = WebModeLogic.assemble(title, texts.map { it.orEmpty() })
+            // Where every paragraph of `text` sat on its image, in the same order, so the translation
+            // can be put back into the original bubbles (see WebModeWriter.bubbleScript).
+            val allBubbles = ArrayList<WmBubble>()
+            for (l in layouts) if (l != null) allBubbles.addAll(l)
+            WebModeLayoutStore.put(meta.url, WebModeLayout(if (title.trim().isEmpty()) 0 else 1, allBubbles))
             val ch = Chapter(
                 title = title,
                 text = text,
@@ -351,8 +359,8 @@ internal class WebModeExtractor(
             }
         }
 
-        // ---- decode + OCR. Returns null for images too small to be a panel, "" for a panel without text.
-        private fun ocrBytes(bytes: ByteArray, st: ScriptState): String? {
+        // ---- decode + OCR. Returns null for images too small to be a panel; no bubbles for a panel without text.
+        private fun ocrBytes(bytes: ByteArray, st: ScriptState, src: String): PanelOcr? {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth
@@ -361,10 +369,11 @@ internal class WebModeExtractor(
             if (w < MIN_W || h < MIN_H) return null
             val sample = when { w > 3200 -> 4; w > 1600 -> 2; else -> 1 }
             val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
-            val parts = ArrayList<String>()
+            val texts = ArrayList<String>()
+            val bubbles = ArrayList<WmBubble>()
             if (h <= WebModeLogic.SLICE_H) {
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: throw DecodeException()
-                try { parts.add(recognize(bmp, st)) } finally { bmp.recycle() }
+                try { readSlice(bmp, st, 0, sample, w, h, src, texts, bubbles) } finally { bmp.recycle() }
             } else {
                 @Suppress("DEPRECATION")
                 val region = (try { BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) } catch (_: Exception) { null })
@@ -374,22 +383,57 @@ internal class WebModeExtractor(
                         if (!alive()) break
                         val bmp = region.decodeRegion(Rect(0, y0, w, y1), opts) ?: throw DecodeException()
                         try {
-                            if (bmp.width >= 32 && bmp.height >= 32) parts.add(recognize(bmp, st))
+                            if (bmp.width >= 32 && bmp.height >= 32) readSlice(bmp, st, y0, sample, w, h, src, texts, bubbles)
                         } finally { bmp.recycle() }
                     }
                 } finally { region.recycle() }
             }
-            return parts.filter { it.isNotBlank() }.joinToString("\n\n")
+            return PanelOcr(texts.joinToString("\n\n"), bubbles)
         }
 
-        private fun recognize(bmp: Bitmap, st: ScriptState): String {
-            val first = engine.recognize(bmp, st.current).text
-            if (first.length >= 2) { st.locked = true; return first }
+        /**
+         * OCR one slice and describe every block: its text (one line = one paragraph for the chatbot)
+         * and where it sat on the full image. [texts] and [out] stay index-aligned.
+         */
+        private fun readSlice(
+            bmp: Bitmap, st: ScriptState, y0: Int, sample: Int, fullW: Int, fullH: Int,
+            src: String, texts: MutableList<String>, out: MutableList<WmBubble>
+        ) {
+            val blocks = recognize(bmp, st).blocks.filter { it.text.isNotBlank() }
+            if (blocks.isEmpty()) return
+            val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
+            val k = sample.toFloat()
+            for ((i, b) in blocks.withIndex()) {
+                val rotated = Math.abs(b.angle) >= 3f
+                val others = rects.filterIndexed { j, _ -> j != i }
+                val s = WmBubbleStyle.analyse(bmp, rects[i], others, expand = !rotated)
+                val cx: Float; val cy: Float; val bw: Float; val bh: Float
+                if (rotated) {
+                    // Keep the text's own rotated box (a little roomier); it is rotated again when drawn.
+                    cx = b.cx; cy = b.cy; bw = b.w * 1.1f + 6f; bh = b.h * 1.1f + 6f
+                } else {
+                    cx = (s.l + s.r) / 2f; cy = (s.t + s.b) / 2f; bw = (s.r - s.l) + 4f; bh = (s.b - s.t) + 4f
+                }
+                texts.add(b.text.replace(NEWLINES, " ").trim())
+                out.add(WmBubble(
+                    src = src,
+                    cx = cx * k / fullW, cy = (y0 + cy * k) / fullH,
+                    w = bw * k / fullW, h = bh * k / fullH,
+                    angle = if (rotated) b.angle else 0f,
+                    font = b.fontPx * k / fullW,
+                    bg = s.bg, fg = s.fg
+                ))
+            }
+        }
+
+        private fun recognize(bmp: Bitmap, st: ScriptState): OcrResult {
+            val first = engine.recognize(bmp, st.current)
+            if (first.text.length >= 2) { st.locked = true; return first }
             if (!st.locked && st.fallbackBudget > 0) {
                 st.fallbackBudget--
                 for (s in WebModeLogic.fallbackScripts(st.current)) {
-                    val t = engine.recognize(bmp, s).text
-                    if (t.length >= 2) { st.current = s; st.locked = true; return t }
+                    val r = engine.recognize(bmp, s)
+                    if (r.text.length >= 2) { st.current = s; st.locked = true; return r }
                 }
             }
             return first
@@ -398,10 +442,12 @@ internal class WebModeExtractor(
 
     private class ScriptState(var current: OcrScript) { var locked = false; var fallbackBudget = 3 }
     private class DecodeException : Exception()
+    private class PanelOcr(val text: String, val bubbles: List<WmBubble>)
     private class PageMeta(val url: String, val lang: String, val title: String, val novel: String, val next: String?, val prev: String?)
 
     companion object {
         private const val TAG = "NsWebMode"
+        private val NEWLINES = Regex("\\s*\\n\\s*")
         private const val MAX_PANELS = 400
         private const val MAX_TICKS = 400
         private const val MAX_BYTES = 25 * 1024 * 1024

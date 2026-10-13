@@ -3755,10 +3755,19 @@ markers preserved.
             shownTrRaw = text
             if (lastChapter !== ch) return
             injectBengaliFont()
-            val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
-            novelWv.evaluateJavascript(
+            // Preferred: put every translated paragraph back into the bubble it came from.
+            // If the translation cannot be matched to the bubbles, fall back to the reader panel.
+            val wmLayout = WebModeLayoutStore.get(this, ch.url)
+            val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
+            val wmScript = if (wmLayout != null && wmPlaced != null) {
+                WebModeLayoutStore.persist(this, ch.url)
+                WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
+            } else {
+                if (wmLayout != null) toast("⚠️ Translation could not be matched to the bubbles; showing the reader view")
+                val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
                 WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
-            ) { r ->
+            }
+            novelWv.evaluateJavascript(wmScript) { r ->
                 if (lastChapter !== ch) return@evaluateJavascript
                 if (r != null && r.contains("ok")) {
                     hasTr = true
