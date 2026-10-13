@@ -4034,16 +4034,9 @@ rendering of what it most likely says. Keep each translation short enough to fit
             // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
             // would overwrite the library entry with a partial translation.
             val savedTranslation = if (livePanelBatch) null else Store.save(this, ch, rawTranslation)
-            if (DeepSeekRealtimeTranslation.isEnabled(this)) {
-                deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hashes ->
-                    synchronized(deepSeekInFlightTextHashes) {
-                        deepSeekInFlightTextHashes.removeAll(hashes)
-                        deepSeekTranslatedTextHashes.addAll(hashes)
-                        while (deepSeekTranslatedTextHashes.size > 2000) {
-                            deepSeekTranslatedTextHashes.remove(deepSeekTranslatedTextHashes.first())
-                        }
-                    }
-                }
+            if (DeepSeekRealtimeTranslation.isEnabled(this) && !livePanelBatch) {
+                // Full text fallback: the chatbot reply itself completes the normalized text hash.
+                completeDeepSeekHashBatch(ch)
             }
             deepSeekLastOcrAtMs = System.currentTimeMillis()
             val savedKey = keyOf(ch)
@@ -4058,6 +4051,9 @@ rendering of what it most likely says. Keep each translation short enough to fit
                 // Real-time page scans translate visible bubbles in sequence; don't prefetch a whole
                 // chapter into the same DeepSeek chat session.
                 if (!livePanelBatch) schedulePrefetch(shown)
+            } else if (livePanelBatch) {
+                // The reader changed before placement; leave these bubbles eligible for a later scan.
+                releaseDeepSeekHashBatch(ch)
             }
             if (!livePanelBatch) {
                 toast("✅ Translation saved" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
@@ -4070,11 +4066,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
-        if (DeepSeekRealtimeTranslation.isEnabled(this)) {
-            deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hashes ->
-                synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.removeAll(hashes) }
-            }
-        }
+        releaseDeepSeekHashBatch(ch)
         deepSeekLastOcrAtMs = System.currentTimeMillis()
         queue.clear()
         running = null
@@ -4100,6 +4092,26 @@ rendering of what it most likely says. Keep each translation short enough to fit
     private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
         DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
 
+    /** Resolve only the bubble hashes that were actually inserted successfully. */
+    private fun completeDeepSeekHashBatch(ch: Chapter, matched: Set<String>? = null) {
+        val reserved = deepSeekTextHashByChapter.remove(keyOf(ch)) ?: emptySet()
+        synchronized(deepSeekInFlightTextHashes) {
+            deepSeekInFlightTextHashes.removeAll(reserved)
+            val completed = if (matched == null) reserved else matched.intersect(reserved)
+            deepSeekTranslatedTextHashes.addAll(completed)
+            while (deepSeekTranslatedTextHashes.size > 2000) {
+                deepSeekTranslatedTextHashes.remove(deepSeekTranslatedTextHashes.first())
+            }
+        }
+    }
+
+    private fun releaseDeepSeekHashBatch(ch: Chapter) {
+        val reserved = deepSeekTextHashByChapter.remove(keyOf(ch)) ?: emptySet()
+        synchronized(deepSeekInFlightTextHashes) {
+            deepSeekInFlightTextHashes.removeAll(reserved)
+        }
+    }
+
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         // Web Mode (image chapters): there is no text node to replace, so show a reader panel instead.
         if (webModeOn() && ch.contentSel.isBlank()) {
@@ -4114,6 +4126,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
             val wmScript: String
             if (livePanelBatch) {
                 if (wmLayout == null || wmPlaced == null) {
+                    releaseDeepSeekHashBatch(ch)
                     toast("⚠️ এই ব্যাচের অনুবাদ বাবলের সঙ্গে মেলেনি; ভুল জায়গায় বসানো হয়নি")
                     return
                 }
@@ -4133,12 +4146,22 @@ rendering of what it most likely says. Keep each translation short enough to fit
                 wmScript = WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
             }
             novelWv.evaluateJavascript(wmScript) { r ->
-                if (lastChapter !== ch) return@evaluateJavascript
+                if (lastChapter !== ch) {
+                    if (livePanelBatch) releaseDeepSeekHashBatch(ch)
+                    return@evaluateJavascript
+                }
                 if (r != null && r.contains("ok")) {
+                    if (livePanelBatch) {
+                        val matched = wmLayout?.bubbles?.mapIndexedNotNull { index, bubble ->
+                            if (wmPlaced?.getOrNull(index).isNullOrBlank()) null else WebModeLayout.fingerprint(bubble)
+                        }?.toSet().orEmpty()
+                        completeDeepSeekHashBatch(ch, matched)
+                    }
                     hasTr = true
                     shownTranslated = true
                     updatePill()
                 } else {
+                    if (livePanelBatch) releaseDeepSeekHashBatch(ch)
                     toast("⚠️ Could not show the translation on this page; it is saved in the library")
                 }
             }
