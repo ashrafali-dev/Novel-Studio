@@ -12,6 +12,16 @@ internal class WtrLabNavigator {
     fun prevFromUrl(chapterUrl: String): String? = adjacent(chapterUrl, -1)
     fun prefetchTarget(chapterUrl: String): String? = nextFromUrl(chapterUrl)
 
+    /** Same book/slug, explicit chapter number. WTR keeps the URL unchanged while its
+     *  SPA swaps chapters, so the number must come from the page, not the URL. */
+    fun chapterUrl(url: String, number: Long): String? = runCatching {
+        if (number < 1) return@runCatching null
+        val u = Uri.parse(url)
+        val m = Regex("^(.*?/chapter-)(\\d+)/?$", RegexOption.IGNORE_CASE).find(u.path.orEmpty())
+            ?: return@runCatching null
+        u.buildUpon().path(m.groupValues[1] + number).clearQuery().fragment(null).build().toString()
+    }.getOrNull()
+
     private fun adjacent(url: String, delta: Long): String? = runCatching {
         val u = Uri.parse(url)
         val path = u.path.orEmpty()

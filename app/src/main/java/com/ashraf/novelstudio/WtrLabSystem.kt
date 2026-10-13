@@ -14,5 +14,6 @@ internal class WtrLabSystem(private val context: android.content.Context) : Site
     override fun catalogUrl(chapterUrl: String): String? = null
     override fun catalogPickScript(direction: String, title: String, sourceUrl: String): String = ""
     override fun prefetchTarget(chapterUrl: String): String? = navigator.prefetchTarget(chapterUrl)
+    fun chapterUrl(url: String, number: Long): String? = navigator.chapterUrl(url, number)
     override fun writeTranslation(webView: WebView, chapter: Chapter, translatedText: String, fontFile: String, fontSizePx: Int, pageKey: String, callback: (Boolean) -> Unit) = writer.write(webView, chapter, translatedText, fontFile, fontSizePx, pageKey, callback)
 }

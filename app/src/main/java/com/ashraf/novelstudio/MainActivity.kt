@@ -478,7 +478,13 @@ class MainActivity : Activity() {
                         if (!prefetchLoading || token != prefetchToken) return
                         prefetchExtractNow { next ->
                             if (!prefetchLoading || token != prefetchToken) return@prefetchExtractNow
-                            if (next == null || next.text.length < 80) {
+                            // WTR: the chapter we extract must be the one whose URL we loaded.
+                            val wantNo = if (wtrLabSystem.matches(prefetchTarget))
+                                Regex("/chapter-(\\d+)", RegexOption.IGNORE_CASE)
+                                    .find(prefetchTarget)?.groupValues?.get(1) else null
+                            val wtrWrong = next != null && wantNo != null &&
+                                next.number.isNotBlank() && next.number != wantNo
+                            if (next == null || next.text.length < 80 || wtrWrong) {
                                 if (attempt < 14) {
                                     // SPA readers fetch the chapter text after load; scroll a little to wake lazy loaders.
                                     prefetchWv.evaluateJavascript(
@@ -2965,12 +2971,22 @@ class MainActivity : Activity() {
         val target: String
         val useCatalog: Boolean
         if (isWtrLab) {
-            // WTR-LAB is a same-URL SPA. The next chapter is obtained by
-            // clicking its in-page Next button in the isolated prefetch WebView.
-            target = ch.url
+            // The in-page Next click leaves the next chapter un-rendered in the hidden
+            // prefetch view (lazy tracker). Load the next chapter's own URL instead, built
+            // from the page's chapter NUMBER (the URL itself is stale after SPA navigation).
+            val nextNo = ch.number.trim().toLongOrNull()?.plus(1)
+            val direct = nextNo?.let { wtrLabSystem.chapterUrl(ch.url, it) }
             useCatalog = false
-            prefetchWtrSpaPending = true
-            prefetchWtrSourceNumber = ch.number.trim()
+            if (direct != null) {
+                target = direct
+                prefetchWtrSpaPending = false
+                prefetchWtrSourceNumber = ""
+            } else {
+                // No usable number: fall back to the old click-Next flow.
+                target = ch.url
+                prefetchWtrSpaPending = true
+                prefetchWtrSourceNumber = ch.number.trim()
+            }
         } else if (directTarget != null) {
             target = directTarget
             useCatalog = false

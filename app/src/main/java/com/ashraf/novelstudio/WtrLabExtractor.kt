@@ -121,9 +121,15 @@ internal class WtrLabExtractor {
     if(!heading)heading=lines[0]||'';
 
     var number='';
+    try{
+      // The active tracker knows its own chapter number; the page-level "Ch. x / y"
+      // counter can belong to a different (preloaded / neighbouring) chapter.
+      var tn=actT&&actT.getAttribute('data-chapter-no');
+      if(tn&&/^\d+$/.test(tn))number=tn;
+    }catch(x){}
     var counterNodes=[];
     try{counterNodes=Array.from(document.querySelectorAll('body *')).filter(function(e){return e.children.length===0&&visible(e)&&/\bCh\.?\s*\d+\s*\/\s*\d+/i.test(e.textContent||'');});}catch(x){}
-    if(counterNodes.length){
+    if(!number&&counterNodes.length){
       var cm=(counterNodes[0].textContent||'').match(/\bCh\.?\s*(\d+)\s*\/\s*(\d+)/i);
       if(cm)number=cm[1];
     }
