@@ -4162,6 +4162,20 @@ rendering of what it most likely says. Keep each translation short enough to fit
 
     // ---- translation status card + the ring around the extract button
     private fun updateProgressUi() {
+        // Real-time DeepSeek mode should not keep popping the large progress card over panels.
+        // OCR/translation continues normally; the small scan status dot remains the indicator.
+        if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+            progressBar.running = false
+            extractBtn.ringProgress = -1
+            if (progressShown || progressBox.visibility == View.VISIBLE) {
+                progressShown = false
+                progressBox.animate().cancel()
+                progressBox.alpha = 0f
+                progressBox.translationY = -dp(10).toFloat()
+                progressBox.visibility = View.GONE
+            }
+            return
+        }
         if (webModePct >= 0) {
             // Web Mode OCR pass for the visible chapter: same bar, same ring, never 100 until the chatbot is done.
             progressTv.text = webModeStage
