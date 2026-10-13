@@ -425,6 +425,11 @@ class MainActivity : Activity() {
                                                     enqueue(next)
                                                 }
                                             } else if (chAttempt < 20) {
+                                                // Nudge WTR's lazy renderer: bring the active chapter into view.
+                                                prefetchWv.evaluateJavascript(
+                                                    "(function(){try{var a=document.querySelector('.chapter-tracker.active');if(a)a.scrollIntoView({block:'start'});window.dispatchEvent(new Event('scroll'));}catch(e){}return 'n';})()",
+                                                    null
+                                                )
                                                 handler.postDelayed({ readWtr(chAttempt + 1) }, 500L)
                                             } else {
                                                 prefetchLoading = false
