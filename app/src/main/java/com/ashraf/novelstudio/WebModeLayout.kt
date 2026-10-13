@@ -83,8 +83,15 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     val body = text.substring(m.range.last + 1, end).trim()
                     if (body.isNotEmpty() && no !in byNo) byNo[no] = body
                 }
-                val out = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
-                val found = out.count { it != null }
+                // Some models preserve the title marker; others omit the title entirely and
+                // renumber the first bubble as [001]. Evaluate both layouts and use the one
+                // that maps the most actual bubbles instead of shifting every translation.
+                val withTitle = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
+                val withoutTitle = List(n) { i -> byNo[i + 1]?.replace(NL, " ") }
+                val a = withTitle.count { !it.isNullOrBlank() }
+                val b = withoutTitle.count { !it.isNullOrBlank() }
+                val out = if (b > a) withoutTitle else withTitle
+                val found = maxOf(a, b)
                 return if (found * 100 >= n * 70) out else null
             }
             val paras = text.split(BLANK).map { it.trim() }.filter { it.isNotEmpty() }
