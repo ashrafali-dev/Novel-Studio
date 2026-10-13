@@ -2664,11 +2664,15 @@ class MainActivity : Activity() {
                             updateProgressUi()
                             if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
-                                // Images may still be loading when the reader first opens; retry without moving the page.
-                                deepSeekAutoStartedUrl = ""
+                                // Do not fail silently: expose the exact OCR/extraction error so the broken
+                                // stage can be diagnosed. Retry once after the reader has settled.
+                                toast("🤖 DeepSeek OCR: " + out.message)
+                                deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                                 handler.postDelayed({
-                                    if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this))
+                                    if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this)) {
+                                        deepSeekAutoStartedUrl = ""
                                         scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
+                                    }
                                 }, 1800L)
                             } else if (out.error != WebModeError.NAVIGATION_INVALIDATED) {
                                 toast("❌ " + out.message)
