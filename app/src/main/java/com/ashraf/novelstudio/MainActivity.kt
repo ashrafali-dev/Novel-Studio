@@ -113,10 +113,12 @@ class MainActivity : Activity() {
     private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
     private var deepSeekAutoStartedUrl = ""
     private var deepSeekVisibleSignature = ""
-    private val deepSeekSeenPanelSignatures = LinkedHashSet<String>()
+    private var deepSeekLastOcrAtMs = 0L
+    private var deepSeekNoImageTriedUrl = ""
+    // Hash each OCR bubble (text + image + relative position), not a viewport's combined text.
     private val deepSeekTranslatedTextHashes = LinkedHashSet<String>()
     private val deepSeekInFlightTextHashes = LinkedHashSet<String>()
-    private val deepSeekTextHashByChapter = mutableMapOf<String, String>()
+    private val deepSeekTextHashByChapter = mutableMapOf<String, Set<String>>()
     private var deepSeekPollUrl = ""
     private var deepSeekPollBusy = false
     private val deepSeekVisiblePoll = object : Runnable {
@@ -130,35 +132,35 @@ class MainActivity : Activity() {
                 handler.postDelayed(this, 250L)
                 return
             }
-            if (cleanUrl(url) != cleanUrl(deepSeekPollUrl)) {
+            val pageKeyNow = cleanUrl(url)
+            if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
                 deepSeekPollUrl = url
                 deepSeekVisibleSignature = ""
+                deepSeekLastOcrAtMs = 0L
+                deepSeekNoImageTriedUrl = ""
             }
-            // Cheap DOM-only visibility probe every 250 ms. OCR/network work starts only when
-            // the visible panel signature changes and no OCR job is already running.
-            val js = "(function(){try{var a=[].slice.call(document.images),v=[];for(var i=0;i<a.length;i++){var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';if(!s||r.width<100||r.height<70||r.bottom<=0||r.top>innerHeight)continue;v.push(s);}return v.join('|');}catch(e){return '';}})();"
+            // Probe the viewport 4x/second. Image changes trigger OCR quickly; a stable image set
+            // is rechecked periodically, while text-only pages get one safe HTML-extraction fallback.
+            val js = "(function(){try{var a=[].slice.call(document.images),v=[];for(var i=0;i<a.length;i++){var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||e.getAttribute('data-src')||e.getAttribute('data-lazy-src')||'';if(!s||/^data:image\\/(gif|svg)/i.test(s)||r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;v.push(s+'@'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));}if(v.length)return 'IMG:'+v.join('|');var root=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;var t=String((root&&(root.innerText||root.textContent))||'').replace(/\\s+/g,' ').trim().slice(0,1200);return t.length>=40?'TXT:'+t:'';}catch(e){return '';}})();"
             novelWv.evaluateJavascript(js) { raw ->
                 if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
                 val signature = decode(raw).trim()
-                if (signature.isNotEmpty() && signature != deepSeekVisibleSignature && webModeHandle == null) {
+                val now = System.currentTimeMillis()
+                val hasImages = signature.startsWith("IMG:")
+                val textFallbackDue = signature.startsWith("TXT:") && deepSeekNoImageTriedUrl != pageKeyNow
+                val changed = signature.isNotEmpty() && signature != deepSeekVisibleSignature
+                // Per-bubble hashes below stop resubmission during these periodic same-image checks.
+                val periodicRecheck = hasImages && now - deepSeekLastOcrAtMs >= 5000L
+                val idle = webModeHandle == null && running == null && queue.isEmpty()
+                if (idle && signature.isNotEmpty() &&
+                    ((hasImages && (changed || periodicRecheck)) || textFallbackDue)) {
                     deepSeekVisibleSignature = signature
-                    val alreadyScanned = synchronized(deepSeekSeenPanelSignatures) {
-                        deepSeekSeenPanelSignatures.contains(signature)
-                    }
-                    if (!alreadyScanned) {
-                        // Reserve the visible panel signature while OCR runs. A failed OCR pass
-                        // must release this reservation so the same panel can be retried.
-                        synchronized(deepSeekSeenPanelSignatures) {
-                            deepSeekSeenPanelSignatures.add(signature)
-                            while (deepSeekSeenPanelSignatures.size > 120) {
-                                deepSeekSeenPanelSignatures.remove(deepSeekSeenPanelSignatures.first())
-                            }
-                        }
-                        val token = navToken
-                        chatWv.onResume()
-                        chatWv.resumeTimers()
-                        startWebModeExtract(token, useSaved = true)
-                    }
+                    deepSeekLastOcrAtMs = now
+                    if (!hasImages) deepSeekNoImageTriedUrl = pageKeyNow
+                    val token = navToken
+                    chatWv.onResume()
+                    chatWv.resumeTimers()
+                    startWebModeExtract(token, useSaved = false)
                 }
                 handler.postDelayed(this, 250L)
             }
