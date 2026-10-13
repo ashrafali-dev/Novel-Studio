@@ -20,7 +20,11 @@ internal data class WmBubble(
     /** Colour at the bottom of the lettering; differs from [fg] when the original text was a gradient. */
     val fg2: Int = fg,
     /** True when the old text sat on artwork (not a flat bubble): the cover gets soft, feathered edges. */
-    val soft: Boolean = false
+    val soft: Boolean = false,
+    /** Exact normalized OCR text captured at this position; used to bind output to the right bubble. */
+    val sourceText: String = "",
+    /** Bengali text already translated for this position. Empty means not translated yet. */
+    val translatedText: String = ""
 )
 
 /**
@@ -34,7 +38,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
         for (b in bubbles) a.put(JSONObject()
             .put("s", b.src).put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
             .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
-            .put("fg2", b.fg2).put("sf", b.soft))
+            .put("fg2", b.fg2).put("sf", b.soft)
+            .put("srcText", b.sourceText).put("tr", b.translatedText))
         return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
@@ -53,13 +58,38 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.getDouble("w").toFloat(), b.getDouble("h").toFloat(),
                     b.getDouble("a").toFloat(), b.getDouble("f").toFloat(),
                     b.getInt("bg"), b.getInt("fg"),
-                    b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false)
+                    b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false),
+                    b.optString("srcText", ""), b.optString("tr", "")
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
         } catch (_: Exception) { null }
 
         private val MARK = Regex("\\[(\\d{3,})\\]")
+        private val HASH_NOISE = Regex("[\\s\\p{P}\\p{S}]+")
+
+        /** Canonical OCR text: OCR whitespace, case and punctuation variation must not resend it. */
+        fun normalizeOcrText(text: String): String =
+            text.lowercase().replace(HASH_NOISE, "").trim()
+
+        /** Stable per-bubble fingerprint: normalized OCR text plus its image and relative position. */
+        fun fingerprint(b: WmBubble): String {
+            val src = WebModeLogic.normalizeUrl(b.src)
+            val text = normalizeOcrText(b.sourceText)
+            val geometry = listOf(b.cx, b.cy, b.w, b.h).joinToString(",") {
+                Math.round(it * 10000f).toInt().toString()
+            }
+            val bytes = java.security.MessageDigest.getInstance("SHA-256")
+                .digest("$src|$geometry|$text".toByteArray(Charsets.UTF_8))
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
+
+        /** Map the current reply to the current scan, then retain the result on the matching bubbles. */
+        fun translated(layout: WebModeLayout, values: List<String?>): WebModeLayout =
+            WebModeLayout(layout.titleOffset, layout.bubbles.mapIndexed { i, b ->
+                val value = values.getOrNull(i)?.trim().orEmpty()
+                if (value.isEmpty()) b else b.copy(translatedText = value)
+            })
         private val BLANK = Regex("\\n\\s*\\n")
         private val NL = Regex("\\s*\\n\\s*")
 
@@ -109,6 +139,10 @@ internal object WebModeLayoutStore {
     private const val KEY = "wmLayouts"
     private const val MAX = 8
 
+    // Latest OCR batch (used to align this answer) and cumulative translated layout (kept while scrolling).
+    private val scans = object : LinkedHashMap<String, WebModeLayout>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, WebModeLayout>?): Boolean = size > MAX
+    }
     private val mem = object : LinkedHashMap<String, WebModeLayout>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, WebModeLayout>?): Boolean = size > MAX
     }
@@ -116,7 +150,18 @@ internal object WebModeLayoutStore {
     private fun key(url: String) = WebModeLogic.normalizeUrl(url)
 
     @Synchronized
-    fun put(url: String, layout: WebModeLayout) { mem[key(url)] = layout }
+    fun put(url: String, layout: WebModeLayout) {
+        val k = key(url)
+        scans[k] = layout
+        // If this page already has a cumulative layout in memory, merge newly visible bubbles into it.
+        mem[k]?.let { mem[k] = mergeLayouts(it, layout) }
+    }
+
+    @Synchronized
+    fun setScan(url: String, layout: WebModeLayout) { scans[key(url)] = layout }
+
+    @Synchronized
+    fun getScan(url: String): WebModeLayout? = scans[key(url)]
 
     @Synchronized
     fun get(ctx: Context, url: String): WebModeLayout? {
@@ -130,6 +175,56 @@ internal object WebModeLayoutStore {
         } catch (_: Exception) { null }
     }
 
+    /** Merge translated current bubbles into the full-page layout so previously translated bubbles stay visible. */
+    @Synchronized
+    fun mergeTranslated(
+        ctx: Context,
+        url: String,
+        scan: WebModeLayout,
+        translated: List<String?>
+    ): WebModeLayout {
+        val current = WebModeLayout.translated(scan, translated)
+        val old = get(ctx, url)
+        val merged = mergeLayouts(old, current)
+        mem[key(url)] = merged
+        persist(ctx, url)
+        return merged
+    }
+
+    /** Replace the stored layout for a deliberate whole-page Web Mode translation. */
+    @Synchronized
+    fun replace(ctx: Context, url: String, layout: WebModeLayout) {
+        scans[key(url)] = layout
+        mem[key(url)] = layout
+        persist(ctx, url)
+    }
+
+    private fun samePosition(a: WmBubble, b: WmBubble): Boolean =
+        WebModeLogic.normalizeUrl(a.src) == WebModeLogic.normalizeUrl(b.src) &&
+            kotlin.math.abs(a.cx - b.cx) < 0.012f &&
+            kotlin.math.abs(a.cy - b.cy) < 0.012f &&
+            kotlin.math.abs(a.w - b.w) < 0.018f &&
+            kotlin.math.abs(a.h - b.h) < 0.018f
+
+    private fun mergeLayouts(old: WebModeLayout?, incoming: WebModeLayout): WebModeLayout {
+        val result = old?.bubbles?.toMutableList() ?: mutableListOf()
+        for (fresh in incoming.bubbles) {
+            val at = result.indexOfFirst { samePosition(it, fresh) }
+            if (at < 0) {
+                result.add(fresh)
+            } else {
+                val prior = result[at]
+                val sameText = WebModeLayout.normalizeOcrText(prior.sourceText) ==
+                    WebModeLayout.normalizeOcrText(fresh.sourceText)
+                result[at] = fresh.copy(
+                    sourceText = fresh.sourceText.ifBlank { prior.sourceText },
+                    translatedText = if (sameText) prior.translatedText.ifBlank { fresh.translatedText } else fresh.translatedText
+                )
+            }
+        }
+        return WebModeLayout(incoming.titleOffset, result)
+    }
+
     @Synchronized
     fun persist(ctx: Context, url: String) {
         val k = key(url)
@@ -137,7 +232,6 @@ internal object WebModeLayoutStore {
         try {
             val root = try { JSONObject(Prefs.get(ctx, KEY, "{}")) } catch (_: Exception) { JSONObject() }
             val data = root.optJSONObject("data") ?: JSONObject()
-            if (data.has(k)) return
             val order = ArrayList<String>()
             root.optJSONArray("order")?.let { for (i in 0 until it.length()) order.add(it.getString(i)) }
             order.remove(k); order.add(k)
