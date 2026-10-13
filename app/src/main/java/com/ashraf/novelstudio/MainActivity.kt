@@ -1944,19 +1944,26 @@ class MainActivity : Activity() {
                 AdBlock.logEntry("NAV gesture=${r.hasGesture()} redirect=${r.isRedirect} url=${r.url}")
             }
             if (Prefs.adblock(this@MainActivity) && r.isForMainFrame && !r.hasGesture()) {
-                val why = AdBlock.blockReason(r.url)
                 val cur = Uri.parse(view?.url ?: "").host
+                val why = AdBlock.blockReason(r.url, cur)
                 val nh = r.url.host
                 val cross = cur != null && nh != null && AdBlock.root(cur) != AdBlock.root(nh)
-                if (why != null || cross) {
-                    AdBlock.logEntry("NAV ${if (AdBlock.networkEnforce) "CANCELLED" else "WOULD-CANCEL"} [${why ?: "cross-domain"}] from=$cur to=${r.url}")
+                // Only cancel script-started navigations that go to a known ad/tracker target.
+                // A plain cross-domain redirect is NOT cancelled any more: sites such as
+                // novel543.com serve a stub page that redirects through another domain and back
+                // to the chapter, and cancelling it left the page blank.
+                if (why != null || (cross && AdBlock.navStrict(cur))) {
+                    AdBlock.logEntry("NAV ${if (AdBlock.networkEnforce) "CANCELLED" else "WOULD-CANCEL"} [${why ?: "nav: block-cross rule"}] from=$cur to=${r.url}")
                     if (AdBlock.networkEnforce) return true
+                } else if (cross) {
+                    AdBlock.logEntry("NAV allowed (cross-domain, not a known ad target) from=$cur to=${r.url}")
                 }
             }
             return false
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+            if (view === novelWv && url != null) AdBlock.pageHost = Uri.parse(url).host?.lowercase()
             if (view === novelWv && url != null && !restoringTab) {
                 browserTabs.getOrNull(activeTabIndex)?.url = url
                 browserTabs.getOrNull(activeTabIndex)?.label =
@@ -1986,7 +1993,7 @@ class MainActivity : Activity() {
 
         override fun onPageFinished(view: WebView?, url: String?) {
             if (Prefs.adblock(this@MainActivity) && AdBlock.cosmeticEnabled && !AdBlock.exempt(Uri.parse(url ?: "").host)) {
-                view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
+                view?.evaluateJavascript(AdBlock.cosmeticJs(Uri.parse(url ?: "").host), null)
             }
             if (Prefs.adblock(this@MainActivity) && view === novelWv && url != null) {
                 // Debug evidence only: what the cosmetic filter touched + how much text the page has.
@@ -4027,7 +4034,8 @@ markers preserved.
             menuGlossaryLabel(), menuFontLabel(), "🌐 Site Settings",
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
-            "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report"
+            "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
+            "✏️ AdBlock Rules (paste)"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4035,13 +4043,13 @@ markers preserved.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26),
             "READER" to listOf(20, 23, 9),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -4091,7 +4099,8 @@ markers preserved.
                     refresh(i, "🧪 AdBlock Debug: " + AdBlock.debugModeName())
                     toast("🧪 ${AdBlock.debugModeName()} — reload the page, then copy the report")
                 }
-                28 -> { copy(AdBlock.report()); toast("📋 AdBlock report copied — paste it here") }
+                28 -> { copy(AdBlock.report()); toast("📋 AdBlock report copied — paste it into a chatbot") }
+                29 -> { dlg.dismiss(); adblockRulesDialog() }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
@@ -4253,6 +4262,31 @@ markers preserved.
     }
 
     // ---------------------------------------------------------------- site rules
+    private fun adblockRulesDialog() {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = EditText(this).apply {
+            hint = "Paste the AdBlock rules from the chatbot here"
+            setText(AdBlock.rulesText(this@MainActivity))
+            minLines = 8
+            textSize = 13f
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0); addView(box) }
+        AlertDialog.Builder(this)
+            .setTitle("✏️ AdBlock Rules")
+            .setView(ScrollView(this).apply { addView(col) })
+            .setPositiveButton("Save") { _, _ ->
+                val w = AdBlock.setRules(this, box.text.toString())
+                toast(if (w == 0) "✅ Rules saved — reload the page" else "⚠️ Saved, but $w line(s) were not understood — reload the page")
+            }
+            .setNeutralButton("Clear") { _, _ -> AdBlock.setRules(this, ""); toast("Rules cleared") }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun siteRulesDialog() {
         val rules = SiteRules.all(this)
         val labels = ArrayList<String>()
