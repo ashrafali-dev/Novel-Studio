@@ -2719,11 +2719,8 @@ class MainActivity : Activity() {
                                     return@onDone
                                 }
                                 synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.add(textHash) }
-                                val originalOnChapter = lastChapter
-                                val hashKey = textHash
-                                // Mark this exact OCR text once the normal translation pipeline finishes
-                                // by associating the hash with the chapter key.
-                                deepSeekTextHashByChapter[keyOf(out.chapter)] = hashKey
+                                // Associate the exact OCR text with this chapter until the job completes.
+                                deepSeekTextHashByChapter[keyOf(out.chapter)] = textHash
                             }
                             if (out.failedPanels > 0 && !DeepSeekRealtimeTranslation.isEnabled(this))
                                 toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
@@ -3956,6 +3953,17 @@ rendering of what it most likely says. Keep each translation short enough to fit
             }
             copy(t)
             val savedTranslation = Store.save(this, ch, rawTranslation)
+            if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+                deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hash ->
+                    synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
+                    synchronized(deepSeekTranslatedTextHashes) {
+                        deepSeekTranslatedTextHashes.add(hash)
+                        while (deepSeekTranslatedTextHashes.size > 300) {
+                            deepSeekTranslatedTextHashes.remove(deepSeekTranslatedTextHashes.first())
+                        }
+                    }
+                }
+            }
             val savedKey = keyOf(ch)
             if (prefetchGeneratedKeys.contains(savedKey)) {
                 prefetchedTranslationIds[savedKey] = savedTranslation.id
@@ -3978,6 +3986,11 @@ rendering of what it most likely says. Keep each translation short enough to fit
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
+        if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+            deepSeekTextHashByChapter.remove(keyOf(ch))?.let { hash ->
+                synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
+            }
+        }
         queue.clear()
         running = null
         copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
