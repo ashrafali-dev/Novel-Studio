@@ -21,9 +21,9 @@ internal object RealtimeCompletionPolicy {
     fun firstPollDelayMs(context: Context): Long =
         if (enabled(context)) REALTIME_FIRST_POLL_MS else 300L
 
-    fun nextPollDelayMs(context: Context, streaming: Boolean): Long {
+    fun nextPollDelayMs(context: Context, streaming: Boolean, replyAvailable: Boolean = true): Long {
         if (!enabled(context)) return NORMAL_POLL_MS
-        return if (streaming) REALTIME_STREAMING_POLL_MS else REALTIME_IDLE_POLL_MS
+        return if (streaming || !replyAvailable) REALTIME_STREAMING_POLL_MS else REALTIME_IDLE_POLL_MS
     }
 
     fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 3): Int =
