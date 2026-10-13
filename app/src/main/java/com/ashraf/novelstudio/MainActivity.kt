@@ -103,6 +103,14 @@ class MainActivity : Activity() {
     private val prefetchNextOf = mutableMapOf<String, Chapter>()
     private var prefetchSourceChapter: Chapter? = null
     private val prefetchGapMs = 4000L
+    // Web Mode (OCR for image chapters). Off by default; the menu switch only picks the extraction strategy.
+    private val webModeLazy = lazy { WebModeExtractor(handler, UA) }
+    private val webMode: WebModeExtractor get() = webModeLazy.value
+    private var webModeHandle: WebModeExtractor.Handle? = null
+    private var webModePrefetchHandle: WebModeExtractor.Handle? = null
+    private var webModePrefetchBusy = false
+    private var webModeStage = ""
+    private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
     private val prefetchKeys = mutableSetOf<String>()
     private val prefetchGeneratedKeys = mutableSetOf<String>()
     private val prefetchedTranslationIds = mutableMapOf<String, Long>()
@@ -2551,11 +2559,92 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= 26) WebView.getCurrentWebViewPackage()?.versionName ?: "?" else "old"
     } catch (_: Exception) { "?" }
 
+    // ---- Web Mode -------------------------------------------------------------------------
+    private fun webModeOn(): Boolean = Prefs.bool(this, "webMode")
+
+    private fun menuWebModeLabel(): String =
+        (if (webModeOn()) "✅" else "⬜") + " 🖼 Web Mode (OCR for image chapters)"
+
+    private fun clearWebModeProgress() {
+        webModePct = -1
+        webModeStage = ""
+    }
+
+    /**
+     * The existing extract button, when Web Mode is on: OCR the chapter images of the page that is
+     * already open, then hand the finished Chapter to the SAME handleChapter() pipeline that normal
+     * extraction uses (prompt, glossary, chatbot, response handling, cache, prefetch).
+     */
+    private fun startWebModeExtract(token: Int) {
+        webModeHandle?.cancel()
+        webModePct = 1
+        webModeStage = "Discovering chapter panels"
+        updateProgressUi()
+        webModeHandle = webMode.start(WebModeRequest(
+            webView = novelWv,
+            isValid = { token == navToken },
+            onProgress = { stage, pct ->
+                if (token == navToken) {
+                    webModeStage = stage
+                    webModePct = pct
+                    updateProgressUi()
+                }
+            },
+            onDone = { out ->
+                // A newer tap or a navigation owns the progress UI now; never touch it from a stale job.
+                if (token == navToken) {
+                    webModeHandle = null
+                    clearWebModeProgress()
+                    when (out) {
+                        is WebModeOutcome.Success -> {
+                            if (out.failedPanels > 0) toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
+                            // Forced fresh translation, exactly like tapping ● on a normal chapter.
+                            handleChapter(out.chapter, useSavedTranslation = false)
+                        }
+                        is WebModeOutcome.Failure -> {
+                            updateProgressUi()
+                            if (out.error != WebModeError.NAVIGATION_INVALIDATED)
+                                toast("❌ " + out.message)
+                        }
+                    }
+                }
+            }
+        ))
+    }
+
+    /** Background prefetch in Web Mode: same OCR pass, but on the hidden prefetch WebView. */
+    private fun webModePrefetchExtract(cb: (Chapter?) -> Unit) {
+        // One OCR pass per prefetch page: the retry loop in the prefetch client must not start duplicates.
+        if (webModePrefetchBusy) return
+        webModePrefetchBusy = true
+        val token = prefetchToken
+        webModePrefetchHandle = webMode.start(WebModeRequest(
+            webView = prefetchWv,
+            isValid = { prefetchLoading && token == prefetchToken },
+            onProgress = { _, _ -> },
+            onDone = { out ->
+                webModePrefetchBusy = false
+                webModePrefetchHandle = null
+                val stillWanted = prefetchLoading && token == prefetchToken
+                if (out is WebModeOutcome.Success && stillWanted) {
+                    cb(out.chapter)
+                } else if (stillWanted) {
+                    // Do not re-OCR the same page 14 times: give up on this target (it is retried later).
+                    prefetchLoading = false
+                    prefetchRequestedUrls.remove(cleanUrl(prefetchTarget))
+                    prefetchTarget = ""
+                    cb(null)
+                }
+            }
+        ))
+    }
+
     private fun extractCopy() {
         // ● is always a real extraction. Never wait for WebView.progress and
         // never turn it into the original/translation toggle.
         navToken++
         val token = navToken
+        if (webModeOn()) { startWebModeExtract(token); return }
         val cached = lastChapter
         // A displayed translation is not the source; keep using cached chapter text.
 
@@ -3197,7 +3286,7 @@ class MainActivity : Activity() {
                 prefetchTarget = ""
                 try { prefetchWv.stopLoading() } catch (_: Exception) {}
             }
-        }, 30000L)
+        }, if (webModeOn()) 10 * 60_000L else 30000L)
     }
 
     private fun menuPrefetchDepthLabel(): String = "⚡ Prefetch how many chapters ahead: ${prefetchAhead()}"
@@ -3213,6 +3302,7 @@ class MainActivity : Activity() {
     private fun prefetchExtractNow(cb: (Chapter?) -> Unit) {
         val url = prefetchWv.url ?: prefetchTarget
         if (url.isBlank()) { cb(null); return }
+        if (webModeOn()) { webModePrefetchExtract(cb); return }
         if (webNovelSystem.isWebNovel(url)) {
             webNovelSystem.extract(prefetchWv, 0, cb)
             return
@@ -3646,6 +3736,10 @@ markers preserved.
     }
 
     private fun cancelAll() {
+        webModeHandle?.cancel(); webModeHandle = null
+        webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
+        webModePrefetchBusy = false
+        clearWebModeProgress()
         runToken++
         queue.clear()
         running = null
@@ -3870,6 +3964,16 @@ markers preserved.
 
     // ---- translation status card + the ring around the extract button
     private fun updateProgressUi() {
+        if (webModePct >= 0) {
+            // Web Mode OCR pass for the visible chapter: same bar, same ring, never 100 until the chatbot is done.
+            progressTv.text = webModeStage
+            progressPct.text = if (webModePct > 0) "$webModePct%" else ""
+            progressBar.progress = webModePct
+            progressBar.running = true
+            extractBtn.ringProgress = if (webModePct > 0) webModePct else 0
+            setProgressVisible(true)
+            return
+        }
         val run = running
         if (run == null && queue.isEmpty()) {
             // keep the finish animation (worm → butterfly) alive until it has played out
@@ -4075,7 +4179,7 @@ markers preserved.
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
-            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel()
+            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4083,11 +4187,11 @@ markers preserved.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29)
         )
@@ -4147,6 +4251,19 @@ markers preserved.
                     Prefs.put(this, "prefetchAhead", nextN.toString())
                     refresh(i, menuPrefetchDepthLabel())
                     if (Prefs.bool(this, "prefetchNextChapter")) lastChapter?.let { schedulePrefetch(it) }
+                }
+                31 -> {
+                    val on = !webModeOn()
+                    Prefs.putBool(this, "webMode", on)
+                    if (!on) {
+                        webModeHandle?.cancel(); webModeHandle = null
+                        webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
+                        webModePrefetchBusy = false
+                        clearWebModeProgress()
+                        updateProgressUi()
+                    }
+                    refresh(i, menuWebModeLabel())
+                    toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
@@ -4649,6 +4766,9 @@ markers preserved.
     }
 
     override fun onDestroy() {
+        webModeHandle?.cancel()
+        webModePrefetchHandle?.cancel()
+        if (webModeLazy.isInitialized()) webModeLazy.value.shutdown()
         runToken++
         navToken++
         handler.removeCallbacksAndMessages(null)
