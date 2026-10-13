@@ -16,7 +16,11 @@ internal data class WmBubble(
     val src: String,
     val cx: Float, val cy: Float, val w: Float, val h: Float,
     val angle: Float, val font: Float,
-    val bg: Int, val fg: Int
+    val bg: Int, val fg: Int,
+    /** Colour at the bottom of the lettering; differs from [fg] when the original text was a gradient. */
+    val fg2: Int = fg,
+    /** True when the old text sat on artwork (not a flat bubble): the cover gets soft, feathered edges. */
+    val soft: Boolean = false
 )
 
 /**
@@ -29,8 +33,9 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
         val a = JSONArray()
         for (b in bubbles) a.put(JSONObject()
             .put("s", b.src).put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
-            .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg))
-        return JSONObject().put("v", 1).put("to", titleOffset).put("b", a).toString()
+            .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
+            .put("fg2", b.fg2).put("sf", b.soft))
+        return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
     companion object {
@@ -47,7 +52,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.getDouble("cx").toFloat(), b.getDouble("cy").toFloat(),
                     b.getDouble("w").toFloat(), b.getDouble("h").toFloat(),
                     b.getDouble("a").toFloat(), b.getDouble("f").toFloat(),
-                    b.getInt("bg"), b.getInt("fg")
+                    b.getInt("bg"), b.getInt("fg"),
+                    b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false)
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
@@ -141,7 +147,7 @@ internal object WebModeLayoutStore {
  * the tight text box (so a longer translation has room instead of overflowing).
  */
 internal object WmBubbleStyle {
-    class Style(val l: Int, val t: Int, val r: Int, val b: Int, val bg: Int, val fg: Int)
+    class Style(val l: Int, val t: Int, val r: Int, val b: Int, val bg: Int, val fg: Int, val fg2: Int, val soft: Boolean)
 
     private const val TOL = 38          // per-channel distance still counted as "the same background"
     private const val STEP = 2
@@ -163,7 +169,15 @@ internal object WmBubbleStyle {
         val bh = bmp.height
         var l = box[0]; var t = box[1]; var r = box[2]; var b = box[3]
         val bg = ringMedian(bmp, l, t, r, b)
-        val fg = textColour(bmp, l, t, r, b, bg)
+        val soft = !ringFlat(bmp, l, t, r, b, bg)
+        val mid = (t + b) / 2
+        val fgTop = textColour(bmp, l, t, r, maxOf(t + 1, mid), bg)
+        val fgBot = textColour(bmp, l, minOf(mid, b - 1), r, b, bg)
+        val fgAll = textColour(bmp, l, t, r, b, bg)
+        // Two clearly different halves = a gradient lettering: keep both ends, else one colour.
+        val grad = colourDist(fgTop, fgBot) > 70 && contrast(fgTop, bg) >= MIN_CONTRAST && contrast(fgBot, bg) >= MIN_CONTRAST
+        val fg = if (grad) fgTop else fgAll
+        val fg2 = if (grad) fgBot else fgAll
         if (expand) {
             val buf = IntArray(maxOf(bw, bh) + 4)
             val maxX = maxOf(12, ((r - l) * 0.8f).toInt())
@@ -198,7 +212,7 @@ internal object WmBubbleStyle {
             if (gt > 6) t += 3
             if (gb > 6) b -= 3
         }
-        return Style(l, t, r, b, bg, fg)
+        return Style(l, t, r, b, bg, fg, fg2, soft)
     }
 
     private fun hits(others: List<IntArray>, x0: Int, y0: Int, x1: Int, y1: Int): Boolean {
@@ -254,6 +268,28 @@ internal object WmBubbleStyle {
         return (0xFF shl 24) or (median(rs, n) shl 16) or (median(gs, n) shl 8) or median(bs, n)
     }
 
+    private const val MIN_CONTRAST = 45   // the old threshold (90) threw away most coloured lettering for black/white
+
+    private fun colourDist(a: Int, b: Int): Int =
+        abs(((a shr 16) and 255) - ((b shr 16) and 255)) + abs(((a shr 8) and 255) - ((b shr 8) and 255)) + abs((a and 255) - (b and 255))
+
+    private fun contrast(a: Int, b: Int): Int = abs(lum(a) - lum(b))
+
+    /** True when the ring around the text is one flat colour (a speech bubble), false on artwork. */
+    private fun ringFlat(bmp: Bitmap, l: Int, t: Int, r: Int, b: Int, bg: Int): Boolean {
+        val pad = 3
+        val x0 = (l - pad).coerceAtLeast(0); val y0 = (t - pad).coerceAtLeast(0)
+        val x1 = (r + pad).coerceAtMost(bmp.width - 1); val y1 = (b + pad).coerceAtMost(bmp.height - 1)
+        var n = 0; var bad = 0
+        val step = maxOf(1, ((x1 - x0) + (y1 - y0)) / 60)
+        fun chk(x: Int, y: Int) { n++; if (!near(bmp.getPixel(x, y), bg)) bad++ }
+        var x = x0
+        while (x <= x1) { chk(x, y0); chk(x, y1); x += step }
+        var y = y0
+        while (y <= y1) { chk(x0, y); chk(x1, y); y += step }
+        return n == 0 || bad * 100 <= n * 15
+    }
+
     private fun lum(c: Int): Int = (((c shr 16) and 255) * 299 + ((c shr 8) and 255) * 587 + (c and 255) * 114) / 1000
 
     /** The colour the old text was drawn in: the average of the pixels farthest from the background. */
@@ -284,6 +320,6 @@ internal object WmBubbleStyle {
         }
         val fg = (0xFF shl 24) or ((rr / take).toInt() shl 16) or ((gg / take).toInt() shl 8) or (bb / take).toInt()
         // Anti-aliasing and busy artwork can blur the estimate; if it is not clearly readable, use black/white.
-        return if (abs(lum(fg) - lum(bg)) < 90) fallback else fg
+        return if (abs(lum(fg) - lum(bg)) < MIN_CONTRAST) fallback else fg
     }
 }

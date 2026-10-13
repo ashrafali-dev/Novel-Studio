@@ -42,6 +42,110 @@ internal class OcrResult(val blocks: List<OcrBlock>) {
 /** Failure reported by an engine (model missing, init failure, ...). */
 internal class OcrUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+/** Geometry helpers shared by the engine and Web Mode (pure Kotlin, no Android types). */
+internal object OcrPost {
+    /**
+     * ML Kit sometimes reports stylised or skewed text as turned by ~180 degrees, and the translation
+     * was then drawn upside down. Text is never meant to be read upside down, so fold the angle into
+     * (-90, 90]. Anything steeper than [MAX_TILT] after that is treated as "not tilted".
+     */
+    const val MAX_TILT = 50f
+
+    fun foldAngle(a: Float): Float {
+        var x = a % 360f
+        if (x > 180f) x -= 360f
+        if (x <= -180f) x += 360f
+        if (x > 90f) x -= 180f
+        if (x <= -90f) x += 180f
+        return x
+    }
+
+    fun usableTilt(a: Float): Float {
+        val f = foldAngle(a)
+        return if (Math.abs(f) <= MAX_TILT) f else 0f
+    }
+
+    /** Axis-aligned overlap area of two centre/size boxes. */
+    private fun inter(a: OcrBlock, b: OcrBlock): Float {
+        val x = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
+        val y = Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2)
+        return if (x > 0 && y > 0) x * y else 0f
+    }
+
+    /** Share of the SMALLER box that lies inside the other one. */
+    fun overlapOfSmaller(a: OcrBlock, b: OcrBlock): Float {
+        val small = Math.min(a.w * a.h, b.w * b.h)
+        return if (small <= 0f) 0f else inter(a, b) / small
+    }
+
+    fun scaled(b: OcrBlock, k: Float): OcrBlock = OcrBlock(
+        b.text, (b.top * k).toInt(), (b.left * k).toInt(),
+        b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical
+    )
+
+    /**
+     * ML Kit often cuts ONE speech bubble into several blocks ("WHY IS THIS ROPE SO" / "HARD TO
+     * UNTIE?"). The chatbot then got fragments, translated some and left the rest in English.
+     * Blocks that sit right under each other, overlap horizontally and have the same text size and
+     * tilt are one sentence: join them into one block.
+     */
+    fun mergeNeighbours(blocks: List<OcrBlock>): List<OcrBlock> {
+        if (blocks.size < 2) return blocks
+        val work = ArrayList(blocks.sortedWith(compareBy({ it.cy }, { it.cx })))
+        var changed = true
+        while (changed) {
+            changed = false
+            loop@ for (i in 0 until work.size) {
+                for (j in i + 1 until work.size) {
+                    val a = work[i]; val b = work[j]
+                    if (!joinable(a, b)) continue
+                    work[i] = join(a, b)
+                    work.removeAt(j)
+                    changed = true
+                    break@loop
+                }
+            }
+        }
+        return work.sortedWith(compareBy({ it.top }, { it.left }))
+    }
+
+    private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
+        if (a.vertical || b.vertical) return false
+        if (Math.abs(a.angle) >= 3f || Math.abs(b.angle) >= 3f) return false   // tilted text stays as it is
+        val fa = if (a.fontPx > 0f) a.fontPx else a.h
+        val fb = if (b.fontPx > 0f) b.fontPx else b.h
+        if (fa <= 0f || fb <= 0f) return false
+        val ratio = fa / fb
+        if (ratio < 0.65f || ratio > 1.55f) return false
+        val f = Math.max(fa, fb)
+        val top = if (a.cy <= b.cy) a else b
+        val bot = if (top === a) b else a
+        val gap = (bot.cy - bot.h / 2) - (top.cy + top.h / 2)
+        if (gap > f * 1.1f || gap < -f * 0.6f) return false
+        val ox = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
+        val narrow = Math.min(a.w, b.w)
+        if (narrow <= 0f || ox < narrow * 0.45f) return false
+        // centred lines of one bubble share a middle; a side-by-side caption does not
+        if (Math.abs(a.cx - b.cx) > Math.max(a.w, b.w) * 0.5f) return false
+        return true
+    }
+
+    private fun join(a: OcrBlock, b: OcrBlock): OcrBlock {
+        val top = if (a.cy <= b.cy) a else b
+        val bot = if (top === a) b else a
+        val l = Math.min(a.cx - a.w / 2, b.cx - b.w / 2)
+        val r = Math.max(a.cx + a.w / 2, b.cx + b.w / 2)
+        val t = Math.min(a.cy - a.h / 2, b.cy - b.h / 2)
+        val bt = Math.max(a.cy + a.h / 2, b.cy + b.h / 2)
+        val text = top.text.trim() + " " + bot.text.trim()
+        return OcrBlock(
+            text, t.toInt(), l.toInt(),
+            (l + r) / 2f, (t + bt) / 2f, r - l, bt - t, 0f,
+            Math.max(a.fontPx, b.fontPx), false
+        )
+    }
+}
+
 /**
  * The only OCR surface the rest of the app sees. Swap the implementation in
  * [WebModeExtractor.defaultEngine] to change engines; nothing else depends on ML Kit.
@@ -72,14 +176,30 @@ internal class MlKitOcrEngine : OcrEngine {
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
         try {
-            val vt = Tasks.await(recognizer(script).process(InputImage.fromBitmap(bitmap, 0)))
-            val blocks = vt.textBlocks
-                .mapNotNull { b ->
-                    val t = b.text.trim()
-                    if (t.isEmpty()) null else toBlock(t, b)
+            val rec = recognizer(script)
+            val first = readBlocks(rec, bitmap)
+            val all = ArrayList<OcrBlock>(first)
+            // Second look at half size: ML Kit loses very large lettering (sound effects such as
+            // BOOM / HAH), which fits its working size only after shrinking. Only blocks the first
+            // pass did not already find are added.
+            if (bitmap.width >= 240 && bitmap.height >= 240) {
+                var small: Bitmap? = null
+                try {
+                    small = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+                    for (b in readBlocks(rec, small!!)) {
+                        val big = OcrPost.scaled(b, 2f)
+                        if (big.text.length < 2) continue
+                        if (first.none { OcrPost.overlapOfSmaller(it, big) > 0.25f }) all.add(big)
+                    }
+                } catch (_: ExecutionException) {
+                } catch (_: MlKitException) {
+                } catch (_: OutOfMemoryError) {
+                } finally {
+                    if (small != null && small !== bitmap) small.recycle()
                 }
-                .sortedWith(compareBy({ it.top }, { it.left }))
-            return OcrResult(blocks)
+            }
+            val merged = OcrPost.mergeNeighbours(all)
+            return OcrResult(merged)
         } catch (e: ExecutionException) {
             val c = e.cause
             if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
@@ -87,6 +207,16 @@ internal class MlKitOcrEngine : OcrEngine {
         } catch (e: MlKitException) {
             throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
         }
+    }
+
+    private fun readBlocks(rec: TextRecognizer, bmp: Bitmap): List<OcrBlock> {
+        val vt = Tasks.await(rec.process(InputImage.fromBitmap(bmp, 0)))
+        return vt.textBlocks
+            .mapNotNull { b ->
+                val t = b.text.trim()
+                if (t.isEmpty()) null else toBlock(t, b)
+            }
+            .sortedWith(compareBy({ it.top }, { it.left }))
     }
 
     private class Geo(val cx: Float, val cy: Float, val w: Float, val h: Float, val angle: Float)
@@ -99,7 +229,7 @@ internal class MlKitOcrEngine : OcrEngine {
             val w = Math.hypot((corners[1].x - corners[0].x).toDouble(), (corners[1].y - corners[0].y).toDouble()).toFloat()
             val h = Math.hypot((corners[2].x - corners[1].x).toDouble(), (corners[2].y - corners[1].y).toDouble()).toFloat()
             val a = Math.toDegrees(Math.atan2((corners[1].y - corners[0].y).toDouble(), (corners[1].x - corners[0].x).toDouble())).toFloat()
-            return Geo(cx, cy, w, h, a)
+            return Geo(cx, cy, w, h, OcrPost.foldAngle(a))
         }
         if (box != null) return Geo(box.exactCenterX(), box.exactCenterY(), box.width().toFloat(), box.height().toFloat(), 0f)
         return null

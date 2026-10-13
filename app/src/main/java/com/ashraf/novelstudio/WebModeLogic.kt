@@ -33,14 +33,23 @@ internal object WebModeLogic {
     fun fallbackScripts(first: OcrScript): List<OcrScript> =
         listOf(OcrScript.CHINESE, OcrScript.JAPANESE, OcrScript.KOREAN, OcrScript.LATIN).filter { it != first }
 
-    /** [start, endExclusive) row ranges, each at most [sliceH] tall. */
-    fun slices(height: Int, sliceH: Int = SLICE_H): List<Pair<Int, Int>> {
+    /** Rows shared by two neighbouring slices, so text sitting on a cut is whole in at least one of them. */
+    const val SLICE_OVERLAP = 240
+
+    /**
+     * [start, endExclusive) row ranges, each at most [sliceH] tall. Neighbouring slices share
+     * [overlap] rows (text on the cut line used to be split in half and skipped by OCR).
+     */
+    fun slices(height: Int, sliceH: Int = SLICE_H, overlap: Int = SLICE_OVERLAP): List<Pair<Int, Int>> {
         if (height <= 0) return emptyList()
         val out = ArrayList<Pair<Int, Int>>()
+        val ov = overlap.coerceIn(0, sliceH / 2)
         var y = 0
-        while (y < height) {
-            out.add(y to minOf(height, y + sliceH))
-            y += sliceH
+        while (true) {
+            val end = minOf(height, y + sliceH)
+            out.add(y to end)
+            if (end >= height) break
+            y = end - ov
         }
         return out
     }

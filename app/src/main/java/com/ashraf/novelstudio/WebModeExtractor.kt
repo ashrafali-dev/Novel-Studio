@@ -373,17 +373,20 @@ internal class WebModeExtractor(
             val bubbles = ArrayList<WmBubble>()
             if (h <= WebModeLogic.SLICE_H) {
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: throw DecodeException()
-                try { readSlice(bmp, st, 0, sample, w, h, src, texts, bubbles) } finally { bmp.recycle() }
+                try { readSlice(bmp, st, 0, sample, w, h, src, texts, bubbles, true, true) } finally { bmp.recycle() }
             } else {
                 @Suppress("DEPRECATION")
                 val region = (try { BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) } catch (_: Exception) { null })
                     ?: throw DecodeException()
                 try {
-                    for ((y0, y1) in WebModeLogic.slices(h)) {
+                    val sl = WebModeLogic.slices(h)
+                    for ((idx, yy) in sl.withIndex()) {
+                        val (y0, y1) = yy
                         if (!alive()) break
                         val bmp = region.decodeRegion(Rect(0, y0, w, y1), opts) ?: throw DecodeException()
                         try {
-                            if (bmp.width >= 32 && bmp.height >= 32) readSlice(bmp, st, y0, sample, w, h, src, texts, bubbles)
+                            if (bmp.width >= 32 && bmp.height >= 32)
+                                readSlice(bmp, st, y0, sample, w, h, src, texts, bubbles, idx == 0, idx == sl.size - 1)
                         } finally { bmp.recycle() }
                     }
                 } finally { region.recycle() }
@@ -397,33 +400,61 @@ internal class WebModeExtractor(
          */
         private fun readSlice(
             bmp: Bitmap, st: ScriptState, y0: Int, sample: Int, fullW: Int, fullH: Int,
-            src: String, texts: MutableList<String>, out: MutableList<WmBubble>
+            src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
+            firstSlice: Boolean, lastSlice: Boolean
         ) {
-            val blocks = recognize(bmp, st).blocks.filter { it.text.isNotBlank() }
+            // Slices overlap. A block touching a cut edge is only part of its text; the neighbouring
+            // slice sees it whole, so it is dropped here instead of being translated in halves.
+            val edge = 4f
+            val blocks = recognize(bmp, st).blocks.filter { b ->
+                if (b.text.isBlank()) return@filter false
+                val top = b.cy - b.h / 2f
+                val bot = b.cy + b.h / 2f
+                !((!firstSlice && top <= edge) || (!lastSlice && bot >= bmp.height - edge))
+            }
             if (blocks.isEmpty()) return
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
             for ((i, b) in blocks.withIndex()) {
-                val rotated = Math.abs(b.angle) >= 3f
+                val tilt = OcrPost.usableTilt(b.angle)          // never upside down, never sideways
+                val rotated = Math.abs(tilt) >= 3f
                 val others = rects.filterIndexed { j, _ -> j != i }
                 val s = WmBubbleStyle.analyse(bmp, rects[i], others, expand = !rotated)
                 val cx: Float; val cy: Float; val bw: Float; val bh: Float
                 if (rotated) {
-                    // Keep the text's own rotated box (a little roomier); it is rotated again when drawn.
                     cx = b.cx; cy = b.cy; bw = b.w * 1.1f + 6f; bh = b.h * 1.1f + 6f
                 } else {
                     cx = (s.l + s.r) / 2f; cy = (s.t + s.b) / 2f; bw = (s.r - s.l) + 4f; bh = (s.b - s.t) + 4f
                 }
-                texts.add(b.text.replace(NEWLINES, " ").trim())
-                out.add(WmBubble(
+                val nb = WmBubble(
                     src = src,
                     cx = cx * k / fullW, cy = (y0 + cy * k) / fullH,
                     w = bw * k / fullW, h = bh * k / fullH,
-                    angle = if (rotated) b.angle else 0f,
+                    angle = if (rotated) tilt else 0f,
                     font = b.fontPx * k / fullW,
-                    bg = s.bg, fg = s.fg
-                ))
+                    bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft
+                )
+                val text = b.text.replace(NEWLINES, " ").trim()
+                // Same text seen by two overlapping slices: keep the bigger box once.
+                var dup = -1
+                for (j in out.indices) {
+                    if (out[j].src == src && sameSpot(out[j], nb)) { dup = j; break }
+                }
+                if (dup >= 0) {
+                    if (nb.w * nb.h > out[dup].w * out[dup].h * 1.15f) { out[dup] = nb; texts[dup] = text }
+                    continue
+                }
+                texts.add(text)
+                out.add(nb)
             }
+        }
+
+        private fun sameSpot(a: WmBubble, b: WmBubble): Boolean {
+            val x = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
+            val y = Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2)
+            if (x <= 0f || y <= 0f) return false
+            val small = Math.min(a.w * a.h, b.w * b.h)
+            return small > 0f && x * y / small > 0.5f
         }
 
         private fun recognize(bmp: Bitmap, st: ScriptState): OcrResult {

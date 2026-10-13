@@ -497,7 +497,7 @@ class MainActivity : Activity() {
                                     .find(prefetchTarget)?.groupValues?.get(1) else null
                             val wtrWrong = next != null && wantNo != null &&
                                 next.number.isNotBlank() && next.number != wantNo
-                            if (next == null || next.text.length < 80 || wtrWrong) {
+                            if (next == null || (!webModeOn() && next.text.length < 80) || wtrWrong) {
                                 if (attempt < 14) {
                                     // SPA readers fetch the chapter text after load; scroll a little to wake lazy loaders.
                                     prefetchWv.evaluateJavascript(
@@ -2575,7 +2575,7 @@ class MainActivity : Activity() {
      * already open, then hand the finished Chapter to the SAME handleChapter() pipeline that normal
      * extraction uses (prompt, glossary, chatbot, response handling, cache, prefetch).
      */
-    private fun startWebModeExtract(token: Int) {
+    private fun startWebModeExtract(token: Int, useSaved: Boolean = false) {
         webModeHandle?.cancel()
         webModePct = 1
         webModeStage = "Discovering chapter panels"
@@ -2599,7 +2599,7 @@ class MainActivity : Activity() {
                         is WebModeOutcome.Success -> {
                             if (out.failedPanels > 0) toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
                             // Forced fresh translation, exactly like tapping ● on a normal chapter.
-                            handleChapter(out.chapter, useSavedTranslation = false)
+                            handleChapter(out.chapter, useSavedTranslation = useSaved)
                         }
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
@@ -2688,6 +2688,35 @@ class MainActivity : Activity() {
     // Direct navigation for sites whose chapter URL contains an explicit
     // numeric chapter segment. These sites do not need extraction/catalog
     // lookup just to find the next/previous URL.
+    /**
+     * Image readers (Webtoons & co.) rarely expose a normal "next" link, but their episode number sits
+     * in the URL: ?episode_no=3 and/or /episode-3/. Returns the URL with that number moved by one.
+     */
+    private fun inferEpisodeUrl(url: String, dir: String): String? {
+        val delta = if (dir == "next") 1 else if (dir == "prev") -1 else return null
+        val uri = try { Uri.parse(url) } catch (_: Exception) { return null }
+        val qKey = listOf("episode_no", "episode", "ep", "chapter_no", "chapter")
+            .firstOrNull { uri.getQueryParameter(it)?.toLongOrNull() != null }
+        val pathRe = Regex("(?i)(/(?:episode|ep|chapter)[-_/]?)(\\d+)(?=[/?#]|$)")
+        val path = uri.path.orEmpty()
+        val pm = pathRe.find(path)
+        if (qKey == null && pm == null) return null
+        var out = url
+        if (qKey != null) {
+            val old = uri.getQueryParameter(qKey)!!.toLong()
+            val n = old + delta
+            if (n < 1) return null
+            out = Regex("([?&]" + Regex.escape(qKey) + "=)\\d+").replace(out) { it.groupValues[1] + n }
+        }
+        if (pm != null) {
+            val n = pm.groupValues[2].toLong() + delta
+            if (n < 1) return null
+            val newPath = path.replaceRange(pm.range, pm.groupValues[1] + n)
+            out = out.replaceFirst(path, newPath)
+        }
+        return if (out == url) null else out
+    }
+
     private fun numberedChapterUrl(url: String, dir: String): String? {
         val delta = if (dir == "next") 1 else if (dir == "prev") -1 else return null
         val uri = try { Uri.parse(url) } catch (_: Exception) { return null }
@@ -2771,7 +2800,8 @@ class MainActivity : Activity() {
         // WebNovel / Qidian URLs carry opaque chapter ids (and WebNovel titles like
         // "Chapter-12-..."): a +1 on the number is a wrong URL. They navigate via the catalogue.
         val numberedTarget = if (webNovelSystem.isWebNovel(currentUrl) || qidianSystem.matches(currentUrl)) null
-            else numberedChapterUrl(currentUrl, dir)
+            else (numberedChapterUrl(currentUrl, dir)
+                ?: (if (webModeOn()) inferEpisodeUrl(currentUrl, dir) else null))
         if (numberedTarget != null && cached != null &&
             cleanUrl(cached.url) == currentUrl) {
             loadAndWait(numberedTarget, token, cached)
@@ -2952,6 +2982,19 @@ class MainActivity : Activity() {
     private var pollPrevHash = 0
     private fun pollExtract(n: Int, token: Int, reloaded: Boolean = false) {
         if (token != navToken) return
+        if (webModeOn() && !wtrLabSystem.matches(novelWv.url.orEmpty())) {
+            // Image chapter: there is no text to poll for. Use the chapter the background prefetch
+            // already read (its translation is saved, so it appears at once); otherwise read the page
+            // now and still reuse a saved translation if one exists.
+            autoCopy = false
+            polling = false
+            val here = pageKey(novelWv.url.orEmpty())
+            val pre = prefetchNextOf.values.firstOrNull { pageKey(it.url) == here }
+            if (pre != null) { commit(pre, token); return }
+            hideNavLoading()
+            startWebModeExtract(token, useSaved = true)
+            return
+        }
         if (n == 0) pollPrevHash = 0
         extractNow { ch ->
             if (token != navToken) return@extractNow
@@ -3231,7 +3274,10 @@ class MainActivity : Activity() {
         val isWebNovel = ch.url.contains("webnovel.com/", ignoreCase = true)
         val directTarget = if (isWebNovel || isWtrLab) null else
             (ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
-                ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) })
+                ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) }
+                // Webtoon-style readers have no plain "next" link: build it from the episode number.
+                ?: (if (webModeOn()) inferEpisodeUrl(ch.url, "next") else null)
+                    ?.takeIf { adjacentUrlIsSafe(ch.url, it) })
         val target: String
         val useCatalog: Boolean
         if (isWtrLab) {
@@ -3587,8 +3633,18 @@ Keep every marker exactly once, in the same order. Do not translate, remove,
 merge, split, or reorder the markers. Return only the translation with the
 markers preserved.
 """.trimIndent()
+        val imageRules = if (webModeOn() && ch.contentSel.isBlank()) """
+
+[Comic / webtoon page]
+Every marker is one piece of text read from a comic image: speech, narration, a system window or a
+sound effect. Translate EVERY marker into Bengali script, including sound effects and exclamations
+(BOOM -> ধুম!, HAH -> হাঃ, GRR -> গরররর!). If a word has no Bengali equivalent, write its sound in
+Bengali letters. Never leave a marker in English letters, never skip a marker, and never put two
+markers' text under one marker. If a text looks like OCR noise, still return a short Bengali
+rendering of what it most likely says. Keep each translation short enough to fit a speech bubble.
+""".trimIndent() + "\n\n" else ""
         val full = promptWithGlossary(Prefs.prompt(this), marked) +
-            markerInstruction + "\n\n" + marked
+            markerInstruction + "\n\n" + imageRules + marked
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
