@@ -2923,8 +2923,18 @@ class MainActivity : Activity() {
     private fun inferEpisodeUrl(url: String, dir: String): String? {
         val delta = if (dir == "next") 1 else if (dir == "prev") -1 else return null
         val uri = try { Uri.parse(url) } catch (_: Exception) { return null }
-        val qKey = listOf("episode_no", "episode", "ep", "chapter_no", "chapter")
-            .firstOrNull { uri.getQueryParameter(it)?.toLongOrNull() != null }
+        // NAVER Webtoon mobile episode URLs use ?titleId=<series>&no=<episode>.
+        // Do not treat arbitrary "no" parameters as chapter numbers on unrelated sites.
+        val isNaverWebtoon = (uri.host.orEmpty().equals("m.comic.naver.com", true) ||
+            uri.host.orEmpty().equals("comic.naver.com", true)) &&
+            uri.path.orEmpty().contains("/webtoon/detail") &&
+            uri.getQueryParameter("titleId")?.toLongOrNull() != null
+        val qKey = if (isNaverWebtoon && uri.getQueryParameter("no")?.toLongOrNull() != null) {
+            "no"
+        } else {
+            listOf("episode_no", "episode", "ep", "chapter_no", "chapter")
+                .firstOrNull { uri.getQueryParameter(it)?.toLongOrNull() != null }
+        }
         val pathRe = Regex("(?i)(/(?:episode|ep|chapter)[-_/]?)(\\d+)(?=[/?#]|$)")
         val path = uri.path.orEmpty()
         val pm = pathRe.find(path)
@@ -3035,9 +3045,15 @@ class MainActivity : Activity() {
         val numberedTarget = if (webNovelSystem.isWebNovel(currentUrl) || qidianSystem.matches(currentUrl)) null
             else (numberedChapterUrl(currentUrl, dir)
                 ?: (if (webModeOn()) inferEpisodeUrl(currentUrl, dir) else null))
-        if (numberedTarget != null && cached != null &&
-            cleanUrl(cached.url) == currentUrl) {
-            loadAndWait(numberedTarget, token, cached)
+        if (numberedTarget != null) {
+            // Image-only Webtoons may have no Extractor Chapter cached at all.
+            // Direct URL navigation must still work; loadAndWait only needs the old
+            // URL/hash for stale-page detection, so create a minimal navigation base.
+            val navigationBase = cached?.takeIf { cleanUrl(it.url) == currentUrl } ?: Chapter(
+                title = "", text = "", next = null, prev = null, url = currentUrl,
+                novel = "", number = "", contentSel = ""
+            )
+            loadAndWait(numberedTarget, token, navigationBase)
             return
         }
 
