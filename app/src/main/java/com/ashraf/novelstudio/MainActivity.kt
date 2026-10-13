@@ -2763,29 +2763,46 @@ class MainActivity : Activity() {
                         }
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
+                            deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error == WebModeError.NO_IMAGES) {
-                                // Some chapter sites (including text editions of comics) render
-                                // readable HTML instead of image panels. Use the normal extractor
-                                // there; don't leave the user with an empty OCR result.
-                                extractNow { ch ->
-                                    if (token != navToken || !DeepSeekRealtimeTranslation.isEnabled(this)) return@extractNow
-                                    if (ch != null && ch.text.isNotBlank()) {
-                                        handleChapter(ch, useSavedTranslation = useSaved)
-                                    } else {
-                                        toast("🤖 No image panels or readable chapter text found")
-                                        deepSeekVisibleSignature = ""
+                                // Text-only chapters do not produce image OCR. Retry the normal extractor
+                                // briefly while the reader settles, then hash the extracted source so it
+                                // is not sent repeatedly.
+                                fun fallbackText(attempt: Int) {
+                                    extractNow { ch ->
+                                        if (token != navToken || !DeepSeekRealtimeTranslation.isEnabled(this)) return@extractNow
+                                        if ((ch == null || ch.text.isBlank()) && attempt < 4) {
+                                            handler.postDelayed({ fallbackText(attempt + 1) }, 400L)
+                                            return@extractNow
+                                        }
+                                        if (ch == null || ch.text.isBlank()) {
+                                            toast("🤖 No image panels or readable chapter text found")
+                                            deepSeekLastOcrAtMs = System.currentTimeMillis()
+                                            return@extractNow
+                                        }
+                                        val normalized = WebModeLayout.normalizeOcrText(ch.text)
+                                        val hash = java.security.MessageDigest.getInstance("SHA-256")
+                                            .digest((cleanUrl(ch.url) + "|" + normalized).toByteArray(Charsets.UTF_8))
+                                            .joinToString("") { "%02x".format(it) }
+                                        val accepted = synchronized(deepSeekInFlightTextHashes) {
+                                            if (hash in deepSeekTranslatedTextHashes || hash in deepSeekInFlightTextHashes) false
+                                            else { deepSeekInFlightTextHashes.add(hash); true }
+                                        }
+                                        if (accepted) {
+                                            deepSeekTextHashByChapter[keyOf(ch)] = setOf(hash)
+                                            handleChapter(ch, useSavedTranslation = false)
+                                        }
                                     }
                                 }
+                                fallbackText(0)
                             } else if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
-                                // Do not fail silently: expose the exact OCR/extraction error so the broken
-                                // stage can be diagnosed. Release the signature so the same panel can retry.
                                 toast("🤖 DeepSeek OCR: " + out.message)
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
-                                synchronized(deepSeekSeenPanelSignatures) {
-                                    deepSeekSeenPanelSignatures.remove(deepSeekVisibleSignature)
-                                }
+                                // The same panel must be eligible for another OCR attempt after failure.
+                                deepSeekVisibleSignature = ""
+                                deepSeekLastOcrAtMs = 0L
                                 handler.postDelayed({
                                     if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this)) {
                                         deepSeekVisibleSignature = ""
@@ -3266,18 +3283,20 @@ class MainActivity : Activity() {
     private fun handleChapter(ch: Chapter, useSavedTranslation: Boolean = true) {
         onChapter(ch)
         val key = keyOf(ch)
+        val livePanelBatch = isDeepSeekLivePanel(ch)
         // A translation made by the background prefetch is reused even when the "prefetch" menu
         // switch is off and only auto-translate is on (before, it was thrown away and redone).
         // Web Mode pages are image-only, so a successfully prefetched translation
         // must be reused by exact page identity even if the prefetch toggle changed later.
-        if (useSavedTranslation && (webModeOn() || Prefs.bool(this, "prefetchNextChapter") || prefetchGeneratedKeys.contains(key))) {
+        if (useSavedTranslation && !livePanelBatch &&
+            (webModeOn() || Prefs.bool(this, "prefetchNextChapter") || prefetchGeneratedKeys.contains(key))) {
             val saved = Store.find(this, ch)
             if (saved != null) {
                 val translated = Store.readRaw(this, saved.id)
                 if (translated.length >= 30) {
                     markPrefetchedTranslationActive(ch, saved)
                     applyTranslation(ch, translated, true)
-                    schedulePrefetch(ch)
+                    if (!livePanelBatch) schedulePrefetch(ch)
                     return
                 }
             }
@@ -3293,7 +3312,9 @@ class MainActivity : Activity() {
             }
         }
         if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
-        schedulePrefetch(ch)
+        // A live OCR batch represents only newly visible bubbles, not a complete chapter.
+        // Do not let chapter prefetch compete with its real-time chat submission.
+        if (!livePanelBatch) schedulePrefetch(ch)
     }
 
     // ---- WTR-LAB SPA watcher ---------------------------------------------------
@@ -4063,23 +4084,40 @@ rendering of what it most likely says. Keep each translation short enough to fit
     }
 
     // ---- put the translation into the novel page itself
+    private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
+        DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
+
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         // Web Mode (image chapters): there is no text node to replace, so show a reader panel instead.
         if (webModeOn() && ch.contentSel.isBlank()) {
             shownTrRaw = text
             if (lastChapter !== ch) return
             injectBengaliFont()
-            // Preferred: put every translated paragraph back into the bubble it came from.
-            // If the translation cannot be matched to the bubbles, fall back to the reader panel.
-            val wmLayout = WebModeLayoutStore.get(this, ch.url)
+            // Real-time batches must align against the exact bubbles that produced this reply,
+            // then merge into the cumulative page overlay. Never replace the bubbles already translated.
+            val livePanelBatch = isDeepSeekLivePanel(ch)
+            val wmLayout = WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
             val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
-            val wmScript = if (wmLayout != null && wmPlaced != null) {
-                WebModeLayoutStore.persist(this, ch.url)
-                WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
+            val wmScript: String
+            if (livePanelBatch) {
+                if (wmLayout == null || wmPlaced == null) {
+                    toast("⚠️ এই ব্যাচের অনুবাদ বাবলের সঙ্গে মেলেনি; ভুল জায়গায় বসানো হয়নি")
+                    return
+                }
+                val cumulative = WebModeLayoutStore.mergeTranslated(this, ch.url, wmLayout, wmPlaced)
+                wmScript = WebModeWriter.bubbleScript(
+                    cumulative,
+                    cumulative.bubbles.map { it.translatedText.takeIf { value -> value.isNotBlank() } },
+                    Prefs.fontFile(this), pageKey(ch.url)
+                )
+            } else if (wmLayout != null && wmPlaced != null) {
+                val translatedLayout = WebModeLayout.translated(wmLayout, wmPlaced)
+                WebModeLayoutStore.replace(this, ch.url, translatedLayout)
+                wmScript = WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
             } else {
                 if (wmLayout != null) toast("⚠️ Translation could not be matched to the bubbles; showing the reader view")
                 val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
-                WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
+                wmScript = WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
             }
             novelWv.evaluateJavascript(wmScript) { r ->
                 if (lastChapter !== ch) return@evaluateJavascript
