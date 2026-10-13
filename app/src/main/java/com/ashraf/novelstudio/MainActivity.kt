@@ -111,7 +111,42 @@ class MainActivity : Activity() {
     private var webModePrefetchBusy = false
     private var webModeStage = ""
     private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
-    private var deepSeekAutoStartedUrl = "" // prevent duplicate OCR jobs for the same loaded chapter
+    private var deepSeekAutoStartedUrl = ""
+    private var deepSeekVisibleSignature = ""
+    private var deepSeekPollUrl = ""
+    private var deepSeekPollBusy = false
+    private val deepSeekVisiblePoll = object : Runnable {
+        override fun run() {
+            if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
+                deepSeekPollBusy = false
+                return
+            }
+            val url = novelWv.url.orEmpty()
+            if (!url.startsWith("http", ignoreCase = true)) {
+                handler.postDelayed(this, 250L)
+                return
+            }
+            if (cleanUrl(url) != cleanUrl(deepSeekPollUrl)) {
+                deepSeekPollUrl = url
+                deepSeekVisibleSignature = ""
+            }
+            // Cheap DOM-only visibility probe every 250 ms. OCR/network work starts only when
+            // the visible panel signature changes and no OCR job is already running.
+            val js = "(function(){try{var a=[].slice.call(document.images),v=[];for(var i=0;i<a.length;i++){var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';if(!s||r.width<100||r.height<70||r.bottom<=0||r.top>innerHeight)continue;v.push(s+'@'+Math.round(r.top/40)+':'+Math.round(r.bottom/40));}return v.join('|');}catch(e){return '';}})();"
+            novelWv.evaluateJavascript(js) { raw ->
+                if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
+                val signature = decode(raw).trim()
+                if (signature.isNotEmpty() && signature != deepSeekVisibleSignature && webModeHandle == null) {
+                    deepSeekVisibleSignature = signature
+                    val token = navToken
+                    chatWv.onResume()
+                    chatWv.resumeTimers()
+                    startWebModeExtract(token, useSaved = true)
+                }
+                handler.postDelayed(this, 250L)
+            }
+        }
+    }
     private val prefetchKeys = mutableSetOf<String>()
     private val prefetchGeneratedKeys = mutableSetOf<String>()
     private val prefetchedTranslationIds = mutableMapOf<String, Long>()
@@ -2723,17 +2758,12 @@ class MainActivity : Activity() {
         val host = Uri.parse(url).host.orEmpty().lowercase()
         if (host.isBlank() || host.contains("deepseek.com") || host.contains("chatgpt.com") ||
             host.contains("gemini.google.com") || host.contains("claude.ai") || host.contains("grok.com")) return
-        if (deepSeekAutoStartedUrl == url) return
-        deepSeekAutoStartedUrl = url
-        val token = navToken
-        handler.postDelayed({
-            if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() ||
-                token != navToken || cleanUrl(novelWv.url.orEmpty()) != cleanUrl(url)) return@postDelayed
-            // Keep WebView JavaScript timers active while the chatbot pane is not foregrounded.
-            chatWv.onResume()
-            chatWv.resumeTimers()
-            startWebModeExtract(token, useSaved = true)
-        }, 900L)
+        if (deepSeekPollBusy) return
+        deepSeekPollBusy = true
+        deepSeekPollUrl = url
+        deepSeekVisibleSignature = ""
+        handler.removeCallbacks(deepSeekVisiblePoll)
+        handler.postDelayed(deepSeekVisiblePoll, 250L)
     }
 
     private fun extractCopy() {
