@@ -2637,6 +2637,8 @@ class MainActivity : Activity() {
         updateProgressUi()
         webModeHandle = webMode.start(WebModeRequest(
             webView = novelWv,
+            // DeepSeek real-time mode OCRs only the currently visible panel; never auto-scroll.
+            visibleOnly = DeepSeekRealtimeTranslation.isEnabled(this),
             isValid = { token == navToken },
             onProgress = { stage, pct ->
                 if (token == navToken) {
@@ -2652,14 +2654,25 @@ class MainActivity : Activity() {
                     clearWebModeProgress()
                     when (out) {
                         is WebModeOutcome.Success -> {
-                            if (out.failedPanels > 0) toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
+                            deepSeekAutoStartedUrl = novelWv.url.orEmpty()
+                            if (out.failedPanels > 0 && !DeepSeekRealtimeTranslation.isEnabled(this))
+                                toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
                             // Forced fresh translation, exactly like tapping ● on a normal chapter.
                             handleChapter(out.chapter, useSavedTranslation = useSaved)
                         }
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
-                            if (out.error != WebModeError.NAVIGATION_INVALIDATED)
+                            if (DeepSeekRealtimeTranslation.isEnabled(this) &&
+                                out.error != WebModeError.NAVIGATION_INVALIDATED) {
+                                // Images may still be loading when the reader first opens; retry without moving the page.
+                                deepSeekAutoStartedUrl = ""
+                                handler.postDelayed({
+                                    if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this))
+                                        scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
+                                }, 1800L)
+                            } else if (out.error != WebModeError.NAVIGATION_INVALIDATED) {
                                 toast("❌ " + out.message)
+                            }
                         }
                     }
                 }
