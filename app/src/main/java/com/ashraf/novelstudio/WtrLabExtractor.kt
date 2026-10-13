@@ -80,15 +80,24 @@ internal class WtrLabExtractor {
       if(txt(nested[0]).length>=Math.max(120,txt(best).length*0.35))best=nested[0];
     }
 
+    // WTR-LAB lazily renders chapter bodies (esp. in the hidden prefetch view).
+    // Until the ACTIVE chapter has real lines, "best" is only a page wrapper
+    // (header + chapter list + footer) or another preloaded chapter. Never
+    // return that as chapter text: fail so the caller retries.
+    var actT=document.querySelector('.chapter-tracker.active');
+    if(actT&&actT.querySelectorAll('.wtr-line,.chapter-body p').length<2){
+      return JSON.stringify({ok:false,text:'',count:0,why:'active-chapter-not-rendered'});
+    }
     var clone=best.cloneNode(true);
     try{clone.querySelectorAll('script,style,noscript,button,input,select,textarea,nav,.ad,.ads,.advertisement,.chapter-navigation,.next,.prev,[aria-hidden="true"]').forEach(function(e){e.remove();});}catch(x){}
     // WTR-LAB: the chapter is .chapter-body > div.wtr-line[data-line]. The
     // detached clone has no layout, so its innerText is plain textContent and
     // the lines get glued together. Read the LIVE .wtr-line blocks instead and
     // join them with \n, so [001],[002]... map 1:1 to the real DOM lines.
-    var wl=[];
-    try{wl=[].slice.call(best.querySelectorAll(':scope > .wtr-line'));}catch(x){}
-    if(wl.length<2){try{wl=[].slice.call(best.querySelectorAll('.wtr-line'));}catch(x){}}
+    var wl=[],lineRoot=best;
+    if(actT){var ab=actT.querySelector('.chapter-body');if(ab)lineRoot=ab;}
+    try{wl=[].slice.call(lineRoot.querySelectorAll(':scope > .wtr-line'));}catch(x){}
+    if(wl.length<2){try{wl=[].slice.call(lineRoot.querySelectorAll('.wtr-line'));}catch(x){}}
     var wtrLines=wl.map(function(e){return txt(e).replace(/\s+/g,' ').trim();})
       .filter(function(v){return v.length>0;});
     var text=(wtrLines.length>=2?wtrLines.join('\n'):txt(clone))
