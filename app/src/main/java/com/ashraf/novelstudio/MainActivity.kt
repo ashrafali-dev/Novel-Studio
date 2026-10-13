@@ -2709,25 +2709,54 @@ class MainActivity : Activity() {
                     when (out) {
                         is WebModeOutcome.Success -> {
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
-                            var shouldTranslate = true
+                            deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (DeepSeekRealtimeTranslation.isEnabled(this)) {
-                                val textHash = java.security.MessageDigest.getInstance("SHA-256")
-                                    .digest(out.chapter.text.trim().replace(Regex("\\s+"), " ").toByteArray(Charsets.UTF_8))
-                                    .joinToString("") { "%02x".format(it) }
-                                val duplicate = synchronized(deepSeekTranslatedTextHashes) {
-                                    deepSeekTranslatedTextHashes.contains(textHash) ||
-                                        deepSeekInFlightTextHashes.contains(textHash)
-                                }
-                                if (duplicate) {
-                                    shouldTranslate = false
+                                val scanLayout = WebModeLayoutStore.getScan(out.chapter.url)
+                                val sourceBubbles = scanLayout?.bubbles.orEmpty().filter { it.sourceText.isNotBlank() }
+                                if (scanLayout != null && sourceBubbles.isNotEmpty()) {
+                                    val selected = ArrayList<WmBubble>()
+                                    val hashes = LinkedHashSet<String>()
+                                    // Reserve new bubbles atomically. Bubbles already translated or
+                                    // currently waiting for DeepSeek are skipped even when viewports overlap.
+                                    synchronized(deepSeekInFlightTextHashes) {
+                                        for (bubble in sourceBubbles) {
+                                            val hash = WebModeLayout.fingerprint(bubble)
+                                            if (hash !in deepSeekTranslatedTextHashes &&
+                                                hash !in deepSeekInFlightTextHashes) {
+                                                selected.add(bubble)
+                                                hashes.add(hash)
+                                            }
+                                        }
+                                        deepSeekInFlightTextHashes.addAll(hashes)
+                                    }
+                                    if (selected.isNotEmpty()) {
+                                        val liveText = selected.joinToString("\\n\\n") { it.sourceText.trim() }
+                                        val liveChapter = out.chapter.copy(text = liveText, contentSel = "")
+                                        WebModeLayoutStore.setScan(
+                                            liveChapter.url, WebModeLayout(scanLayout.titleOffset, selected)
+                                        )
+                                        deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
+                                        handleChapter(liveChapter, useSavedTranslation = false)
+                                    }
                                 } else {
-                                    synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.add(textHash) }
-                                    // Associate the exact OCR text with this chapter until the job completes.
-                                    deepSeekTextHashByChapter[keyOf(out.chapter)] = textHash
+                                    // Fallback for OCR pages where geometry metadata is unavailable.
+                                    val normalized = WebModeLayout.normalizeOcrText(out.chapter.text)
+                                    if (normalized.isNotBlank()) {
+                                        val hash = java.security.MessageDigest.getInstance("SHA-256")
+                                            .digest((cleanUrl(out.chapter.url) + "|" + normalized).toByteArray(Charsets.UTF_8))
+                                            .joinToString("") { "%02x".format(it) }
+                                        val accepted = synchronized(deepSeekInFlightTextHashes) {
+                                            if (hash in deepSeekTranslatedTextHashes || hash in deepSeekInFlightTextHashes) false
+                                            else { deepSeekInFlightTextHashes.add(hash); true }
+                                        }
+                                        if (accepted) {
+                                            deepSeekTextHashByChapter[keyOf(out.chapter)] = setOf(hash)
+                                            handleChapter(out.chapter, useSavedTranslation = false)
+                                        }
+                                    }
                                 }
-                            }
-                            if (shouldTranslate) {
-                                if (out.failedPanels > 0 && !DeepSeekRealtimeTranslation.isEnabled(this))
+                            } else {
+                                if (out.failedPanels > 0)
                                     toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
                                 handleChapter(out.chapter, useSavedTranslation = useSaved)
                             }
