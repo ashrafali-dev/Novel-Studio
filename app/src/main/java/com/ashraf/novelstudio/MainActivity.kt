@@ -4715,6 +4715,21 @@ rendering of what it most likely says. Keep each translation short enough to fit
                         deepSeekVisibleSignature = ""
                         deepSeekLastOcrAtMs = 0L
                         deepSeekNoImageTriedUrl = ""
+                        // Do not let a partial real-time batch finish after the mode is disabled
+                        // and overwrite the chapter cache with a viewport-only translation.
+                        webModeHandle?.cancel()
+                        webModeHandle = null
+                        deepSeekTextHashByChapter.values.flatten().forEach { hash ->
+                            synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
+                        }
+                        deepSeekTextHashByChapter.clear()
+                        if (running != null) {
+                            runToken++
+                            running = null
+                            queue.clear()
+                            chatWv.evaluateJavascript(Js.stop(), null)
+                        }
+                        clearWebModeProgress()
                         val previousBot = DeepSeekRealtimeTranslation.disable(this)
                         openBot(previousBot)
                         if (!webModeOn()) {
