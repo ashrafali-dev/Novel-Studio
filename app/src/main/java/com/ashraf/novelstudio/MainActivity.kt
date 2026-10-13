@@ -1930,7 +1930,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) { null }
                 }
             }
-            if (Prefs.adblock(this@MainActivity) && !r.isForMainFrame && AdBlock.blocked(r.url)) {
+            if (Prefs.adblock(this@MainActivity) && !r.isForMainFrame && AdBlock.shouldBlockRequest(r.url, r.requestHeaders)) {
                 return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
             }
             return null
@@ -1978,8 +1978,14 @@ class MainActivity : Activity() {
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
-            if (Prefs.adblock(this@MainActivity) && !AdBlock.exempt(Uri.parse(url ?: "").host)) {
+            if (Prefs.adblock(this@MainActivity) && AdBlock.cosmeticEnabled && !AdBlock.exempt(Uri.parse(url ?: "").host)) {
                 view?.evaluateJavascript(AdBlock.cosmeticJs(), null)
+            }
+            if (Prefs.adblock(this@MainActivity) && view === novelWv && url != null) {
+                // Debug evidence only: what the cosmetic filter touched + how much text the page has.
+                handler.postDelayed({
+                    if (novelWv.url == url) novelWv.evaluateJavascript(AdBlock.probeJs()) { AdBlock.recordProbe(url, it) }
+                }, 2500)
             }
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
             if (url != null) {
@@ -4013,20 +4019,22 @@ markers preserved.
             "🔄 Update Ad Block Lists", "🔄 Reload Novel Page", "🔄 Reload Chatbot",
             menuGlossaryLabel(), menuFontLabel(), "🌐 Site Settings",
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
-            "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel()
+            "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
+            "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
         val icons = mapOf(
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
-            16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK
+            16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
+            27 to Ic.SHIELD, 28 to Ic.TEXT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26),
             "READER" to listOf(20, 23, 9),
-            "BROWSER" to listOf(15, 16, 21, 24)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -4070,6 +4078,13 @@ markers preserved.
                         toast(if (n > 0) "✅ Added $n hosts" else "❌ Update failed")
                     }
                 }
+                27 -> {
+                    AdBlock.nextDebugMode(this)
+                    AdBlock.clearLog()
+                    refresh(i, "🧪 AdBlock Debug: " + AdBlock.debugModeName())
+                    toast("🧪 ${AdBlock.debugModeName()} — reload the page, then copy the report")
+                }
+                28 -> { copy(AdBlock.report()); toast("📋 AdBlock report copied — paste it here") }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
