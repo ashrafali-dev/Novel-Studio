@@ -309,6 +309,11 @@ internal class WebModeExtractor(
                 c.connectTimeout = 15000
                 c.readTimeout = 25000
                 c.instanceFollowRedirects = true
+                // A CDN may reuse a panel URL while replacing its bytes in a live reader.
+                // Disable HTTP caching so same-URL OCR rechecks see current pixels.
+                c.useCaches = false
+                c.setRequestProperty("Cache-Control", "no-cache")
+                c.setRequestProperty("Pragma", "no-cache")
                 c.setRequestProperty("User-Agent", userAgent)
                 c.setRequestProperty("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
                 if (referer.isNotBlank()) c.setRequestProperty("Referer", referer)
