@@ -268,6 +268,9 @@ RULES FOR YOUR ANSWER
     fun exempt(host: String?): Boolean {
         val h = (host ?: return false).lowercase()
         if (h == "webnovel.com" || h.endsWith(".webnovel.com")) return true
+        // Tapas is a JavaScript-heavy SPA; generic ad filters can block URLs needed for episode rendering.
+        // Exempt its pages and subresources from network and cosmetic filtering to avoid reader stalls.
+        if (h == "tapas.io" || h.endsWith(".tapas.io")) return true
         for (x in extraExempt) if (h == x || h.endsWith(".$x")) return true
         if (siteRules.any { it.off && it.site != "*" && hostMatches(h, it.site) }) return true
         return false
