@@ -2706,6 +2706,7 @@ class MainActivity : Activity() {
                     when (out) {
                         is WebModeOutcome.Success -> {
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
+                            var shouldTranslate = true
                             if (DeepSeekRealtimeTranslation.isEnabled(this)) {
                                 val textHash = java.security.MessageDigest.getInstance("SHA-256")
                                     .digest(out.chapter.text.trim().replace(Regex("\\s+"), " ").toByteArray(Charsets.UTF_8))
@@ -2715,16 +2716,18 @@ class MainActivity : Activity() {
                                         deepSeekInFlightTextHashes.contains(textHash)
                                 }
                                 if (duplicate) {
-                                    // Identical OCR text has already been translated or is in the queue.
-                                    return@onDone
+                                    shouldTranslate = false
+                                } else {
+                                    synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.add(textHash) }
+                                    // Associate the exact OCR text with this chapter until the job completes.
+                                    deepSeekTextHashByChapter[keyOf(out.chapter)] = textHash
                                 }
-                                synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.add(textHash) }
-                                // Associate the exact OCR text with this chapter until the job completes.
-                                deepSeekTextHashByChapter[keyOf(out.chapter)] = textHash
                             }
-                            if (out.failedPanels > 0 && !DeepSeekRealtimeTranslation.isEnabled(this))
-                                toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
-                            handleChapter(out.chapter, useSavedTranslation = useSaved)
+                            if (shouldTranslate) {
+                                if (out.failedPanels > 0 && !DeepSeekRealtimeTranslation.isEnabled(this))
+                                    toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
+                                handleChapter(out.chapter, useSavedTranslation = useSaved)
+                            }
                         }
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
