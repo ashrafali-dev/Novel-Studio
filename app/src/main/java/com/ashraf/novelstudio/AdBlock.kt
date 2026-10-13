@@ -4,11 +4,111 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
 object AdBlock {
+    const val TAG = "NSAdBlock"
+
+    // ---- Debug instrumentation (does not change the default behaviour: mode 0 = full AdBlock) ----
+    // 0 = full (network + cosmetic), 1 = network only, 2 = cosmetic only,
+    // 3 = log only (nothing is blocked or removed, everything that WOULD be is logged)
+    @Volatile var debugMode = 0
+    val networkEnforce: Boolean get() = debugMode == 0 || debugMode == 1
+    val cosmeticEnabled: Boolean get() = debugMode != 1
+    private val cosmeticDry: Boolean get() = debugMode == 3
+    private val logLines = java.util.ArrayDeque<String>()
+
+    fun debugModeName(): String = when (debugMode) {
+        1 -> "Network only"
+        2 -> "Cosmetic only"
+        3 -> "Log only (no blocking)"
+        else -> "Full"
+    }
+
+    fun nextDebugMode(ctx: Context) {
+        debugMode = (debugMode + 1) % 4
+        Prefs.put(ctx, "adblockDebugMode", debugMode.toString())
+    }
+
+    fun logEntry(line: String) {
+        synchronized(logLines) {
+            if (logLines.size >= 400) logLines.removeFirst()
+            logLines.addLast(line)
+        }
+        Log.i(TAG, line)
+    }
+
+    fun report(): String = synchronized(logLines) {
+        "AdBlock debug mode: ${debugModeName()} (hosts=${hosts.size})\n" +
+            (if (logLines.isEmpty()) "(nothing logged yet — load the page first)" else logLines.joinToString("\n"))
+    }
+
+    fun clearLog() = synchronized(logLines) { logLines.clear() }
+
+    private fun guessType(u: Uri, h: Map<String, String>?): String {
+        val path = (u.path ?: "").lowercase()
+        val ext = path.substringAfterLast('.', "")
+        val accept = (h?.entries?.firstOrNull { it.key.equals("Accept", true) }?.value ?: "").lowercase()
+        val xhr = h?.entries?.any { it.key.equals("X-Requested-With", true) } == true
+        return when {
+            ext == "js" || ext == "mjs" -> "script"
+            ext == "css" -> "stylesheet"
+            ext in setOf("png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "avif") -> "image"
+            ext in setOf("woff", "woff2", "ttf", "otf") -> "font"
+            ext in setOf("mp4", "webm", "m3u8", "mp3") -> "media"
+            ext == "json" -> "json/xhr"
+            xhr -> "xhr"
+            accept.contains("text/html") -> "document/iframe"
+            accept.contains("application/json") -> "json/xhr"
+            accept.contains("image/") -> "image"
+            accept.contains("text/css") -> "stylesheet"
+            else -> "other"
+        }
+    }
+
+    /**
+     * Single entry point for the network side. Returns true when the request must be blocked.
+     * The decision is identical to blocked(); in addition every match is logged with the rule,
+     * the guessed resource type and the referer, so the offending filter can be proven.
+     */
+    fun shouldBlockRequest(u: Uri, headers: Map<String, String>?): Boolean {
+        val why = blockReason(u) ?: return false
+        val enforce = networkEnforce
+        val ref = headers?.entries?.firstOrNull { it.key.equals("Referer", true) }?.value ?: "-"
+        logEntry("${if (enforce) "BLOCK" else "WOULD-BLOCK"} [$why] type=${guessType(u, headers)} referer=$ref url=$u")
+        return enforce
+    }
+
+    /** JS that reads back what the cosmetic part touched, plus how much text the page really has. */
+    fun probeJs(): String = "(function(){try{" +
+        "function d(e){return {t:e.tagName,id:(e.id||'').slice(0,60),c:(typeof e.className==='string'?e.className:'').slice(0,80),n:(e.textContent||'').length};}" +
+        "var css=[];try{document.querySelectorAll(${org.json.JSONObject.quote(COSMETIC_SEL)}).forEach(function(e){css.push(d(e));});}catch(e){}" +
+        "return JSON.stringify({log:(window.__nsAdLog||[]).slice(0,80),css:css.slice(0,80),text:document.body?document.body.innerText.length:-1,html:document.documentElement.outerHTML.length});" +
+        "}catch(e){return '{}';}})()"
+
+    fun recordProbe(pageUrl: String?, raw: String?) {
+        try {
+            val str = org.json.JSONTokener(raw ?: return).nextValue() as? String ?: return
+            val o = org.json.JSONObject(str)
+            logEntry("PAGE url=$pageUrl bodyTextLen=${o.optInt("text")} htmlLen=${o.optInt("html")}")
+            val log = o.optJSONArray("log")
+            if (log != null) for (i in 0 until log.length()) {
+                val e = log.getJSONObject(i)
+                logEntry("COSMETIC-${e.optString("k")} <${e.optString("t")} id='${e.optString("id")}' class='${e.optString("c")}'> textLen=${e.optInt("n")}")
+            }
+            val css = o.optJSONArray("css")
+            if (css != null) for (i in 0 until css.length()) {
+                val e = css.getJSONObject(i)
+                logEntry("CSS-HIDDEN <${e.optString("t")} id='${e.optString("id")}' class='${e.optString("c")}'> textLen=${e.optInt("n")}")
+            }
+        } catch (e: Exception) {
+            logEntry("PAGE probe failed: ${e.message}")
+        }
+    }
+
     private val builtIn = listOf(
         "doubleclick.net", "googlesyndication.com", "googleadservices.com", "adservice.google.com",
         "google-analytics.com", "adnxs.com", "taboola.com", "outbrain.com", "popads.net", "popcash.net",
@@ -38,6 +138,7 @@ object AdBlock {
         val f = File(ctx.filesDir, "blocklist.txt")
         if (f.exists()) f.forEachLine { val t = it.trim(); if (t.isNotEmpty()) s.add(t) }
         hosts = s
+        debugMode = (Prefs.get(ctx, "adblockDebugMode", "0").toIntOrNull() ?: 0).coerceIn(0, 3)
     }
 
     fun root(h: String): String = h.split('.').takeLast(2).joinToString(".")
@@ -53,36 +154,52 @@ object AdBlock {
         return false
     }
 
-    fun blocked(u: Uri): Boolean {
-        if (exempt(u.host)) return false
+    /** Which rule matches this URL ("pattern:/ads/" or "host:example.com"), or null if none. */
+    fun blockReason(u: Uri): String? {
+        if (exempt(u.host)) return null
         val full = u.toString()
-        if (PATTERNS.any { full.contains(it) }) return true
-        var h = u.host ?: return false
+        PATTERNS.firstOrNull { full.contains(it) }?.let { return "pattern:$it" }
+        var h = u.host ?: return null
         val set = hosts
         while (h.contains('.')) {
-            if (set.contains(h)) return true
+            if (set.contains(h)) return "host:$h"
             h = h.substringAfter('.')
         }
-        return false
+        return null
     }
 
+    fun blocked(u: Uri): Boolean = blockReason(u) != null
+
+    private const val COSMETIC_SEL = ".adsbygoogle,ins.adsbygoogle,[id^=google_ads],[id*=div-gpt-ad],[id*=taboola],[id*=outbrain]," +
+        "[class*=adsbygoogle],[class*=ad-banner],[class*=ad-container],[class*=advert],[class*=advertisement]," +
+        "[class*=ads-wrapper],[class*=ad-slot],[class*=popup],[class*=popunder],[id*=ad-banner],[id*=advert]," +
+        "[id*=popup],[id*=popunder],[class*=sponsored],[class*=social-share],[class*=push-notification]," +
+        "iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=adsterra]"
+
     fun cosmeticJs(): String {
-        val css = ".adsbygoogle,ins.adsbygoogle,[id^=google_ads],[id*=div-gpt-ad],[id*=taboola],[id*=outbrain]," +
-            "[class*=adsbygoogle],[class*=ad-banner],[class*=ad-container],[class*=advert],[class*=advertisement]," +
-            "[class*=ads-wrapper],[class*=ad-slot],[class*=popup],[class*=popunder],[id*=ad-banner],[id*=advert]," +
-            "[id*=popup],[id*=popunder],[class*=sponsored],[class*=social-share],[class*=push-notification]," +
-            "iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=adsterra]" +
-            "{display:none!important;visibility:hidden!important;pointer-events:none!important}"
+        val css = COSMETIC_SEL + "{display:none!important;visibility:hidden!important;pointer-events:none!important}"
+        val dry = cosmeticDry
         return """(function(){
           try{
+            var DRY=$dry;
+            window.__nsAdLog=window.__nsAdLog||[];
+            var note=function(k,e){
+              try{
+                if(window.__nsAdLog.length<200)window.__nsAdLog.push({k:k,t:e.tagName,id:(e.id||'').slice(0,60),c:(typeof e.className==='string'?e.className:'').slice(0,80),n:(e.textContent||'').length});
+              }catch(x){}
+            };
             var css=${org.json.JSONObject.quote(css)};
             var s=document.getElementById('__nsAdStyle');
-            if(!s){s=document.createElement('style');s.id='__nsAdStyle';(document.head||document.documentElement).appendChild(s);}
-            s.textContent=css;
+            if(!DRY){
+              if(!s){s=document.createElement('style');s.id='__nsAdStyle';(document.head||document.documentElement).appendChild(s);}
+              s.textContent=css;
+            }
             var kill=function(root){
               try{
                 root.querySelectorAll('[class*="ad-"],[id*="ad-"],[class*="advert"],[id*="advert"],[class*="popup"],[id*="popup"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"]').forEach(function(e){
                   if(e.tagName==='BODY'||e.tagName==='HTML')return;
+                  if(DRY){note('would-remove',e);return;}
+                  note('removed',e);
                   e.remove();
                 });
               }catch(e){}
