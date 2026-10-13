@@ -143,16 +143,17 @@ class MainActivity : Activity() {
                 if (signature.isNotEmpty() && signature != deepSeekVisibleSignature && webModeHandle == null) {
                     deepSeekVisibleSignature = signature
                     val alreadyScanned = synchronized(deepSeekSeenPanelSignatures) {
-                        deepSeekSeenPanelSignatures.contains(signature).also {
-                            if (!it) {
-                                deepSeekSeenPanelSignatures.add(signature)
-                                while (deepSeekSeenPanelSignatures.size > 120) {
-                                    deepSeekSeenPanelSignatures.remove(deepSeekSeenPanelSignatures.first())
-                                }
-                            }
-                        }
+                        deepSeekSeenPanelSignatures.contains(signature)
                     }
                     if (!alreadyScanned) {
+                        // Reserve the visible panel signature while OCR runs. A failed OCR pass
+                        // must release this reservation so the same panel can be retried.
+                        synchronized(deepSeekSeenPanelSignatures) {
+                            deepSeekSeenPanelSignatures.add(signature)
+                            while (deepSeekSeenPanelSignatures.size > 120) {
+                                deepSeekSeenPanelSignatures.remove(deepSeekSeenPanelSignatures.first())
+                            }
+                        }
                         val token = navToken
                         chatWv.onResume()
                         chatWv.resumeTimers()
@@ -2737,9 +2738,13 @@ class MainActivity : Activity() {
                                 // stage can be diagnosed. Retry once after the reader has settled.
                                 toast("🤖 DeepSeek OCR: " + out.message)
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
+                                // Release the failed viewport signature; otherwise the poll sees
+                                // it as already scanned and never retries this exact panel.
+                                synchronized(deepSeekSeenPanelSignatures) {
+                                    deepSeekSeenPanelSignatures.remove(deepSeekVisibleSignature)
+                                }
                                 handler.postDelayed({
                                     if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this)) {
-                                        // Let the visible-panel poll retry after a short cooldown.
                                         deepSeekVisibleSignature = ""
                                     }
                                 }, 1800L)
