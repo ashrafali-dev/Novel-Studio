@@ -1962,6 +1962,19 @@ class MainActivity : Activity() {
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
+            // Qidian pulls in many slow resources, so onPageFinished can come seconds after the
+            // chapter text is already in the DOM. Start looking right at first paint; the
+            // stability check in pollExtract / the saved-translation check guards against
+            // reading a half-streamed chapter.
+            if (view === novelWv && qidianSystem.matches(url)) {
+                if (autoCopy && !polling) {
+                    polling = true
+                    val tk = navToken
+                    handler.postDelayed({ pollExtract(0, tk) }, 120)
+                } else if (!autoCopy && !url.isNullOrBlank()) {
+                    scheduleSavedTranslationCheck(url)
+                }
+            }
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
@@ -1997,28 +2010,36 @@ class MainActivity : Activity() {
                 val sourceUrl = webNovelCatalogSourceUrl
                 val oldHash = webNovelCatalogOldHash
                 webNovelCatalogPending = false
-                view.evaluateJavascript(webNovelSystem.catalogPickScript(dir, title, sourceUrl)) { raw ->
-                    if (tk != navToken) return@evaluateJavascript
-                    val target = decode(raw)
-                    if (target.startsWith("http")) {
-                        pendHash = oldHash
-                        pendUrl = cleanUrl(target)
-                        val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
-                        autoCopy = autoExtract
-                        polling = false
-                        refreshPending = false
-                        refreshToken = 0
-                        view.loadUrl(target)
-                    } else {
-                        hideNavLoading()
-                        autoCopy = false
-                        polling = false
-                        toast(
-                            if (target == "edge") "ℹ️ No more chapters"
-                            else "❌ WebNovel chapter link not found"
-                        )
+                // The catalogue list is drawn by JS AFTER onPageFinished (the prefetch path already
+                // retries for this reason). A single immediate try returned 'none' -> "link not found".
+                fun pickWn(n: Int) {
+                    if (tk != navToken) return
+                    view.evaluateJavascript(webNovelSystem.catalogPickScript(dir, title, sourceUrl)) { raw ->
+                        if (tk != navToken) return@evaluateJavascript
+                        val target = decode(raw)
+                        if (target.startsWith("http")) {
+                            pendHash = oldHash
+                            pendUrl = cleanUrl(target)
+                            val autoExtract = Prefs.bool(this@MainActivity, "autoExtractNext", true)
+                            autoCopy = autoExtract
+                            polling = false
+                            refreshPending = false
+                            refreshToken = 0
+                            view.loadUrl(target)
+                        } else if (target != "edge" && n < 16) {
+                            handler.postDelayed({ pickWn(n + 1) }, 500L)
+                        } else {
+                            hideNavLoading()
+                            autoCopy = false
+                            polling = false
+                            toast(
+                                if (target == "edge") "ℹ️ No more chapters"
+                                else "❌ WebNovel chapter link not found"
+                            )
+                        }
                     }
                 }
+                pickWn(0)
                 return
             }
 
@@ -2627,7 +2648,10 @@ class MainActivity : Activity() {
             return
         }
 
-        val numberedTarget = numberedChapterUrl(currentUrl, dir)
+        // WebNovel / Qidian URLs carry opaque chapter ids (and WebNovel titles like
+        // "Chapter-12-..."): a +1 on the number is a wrong URL. They navigate via the catalogue.
+        val numberedTarget = if (webNovelSystem.isWebNovel(currentUrl) || qidianSystem.matches(currentUrl)) null
+            else numberedChapterUrl(currentUrl, dir)
         if (numberedTarget != null && cached != null &&
             cleanUrl(cached.url) == currentUrl) {
             loadAndWait(numberedTarget, token, cached)
@@ -2805,11 +2829,19 @@ class MainActivity : Activity() {
     }
 
     // After a direct page load, accept a new body even when the URL is reused.
+    private var pollPrevHash = 0
     private fun pollExtract(n: Int, token: Int, reloaded: Boolean = false) {
         if (token != navToken) return
+        if (n == 0) pollPrevHash = 0
         extractNow { ch ->
             if (token != navToken) return@extractNow
             val wtrSpa = wtrLabSystem.matches(novelWv.url.orEmpty())
+            // Qidian is read as early as first paint, so require the same text twice in a row
+            // (cheap, ~200 ms) before trusting it: never commit a half-streamed chapter.
+            val qidianPage = qidianSystem.matches(novelWv.url)
+            val curHash = ch?.let { bodyHash(it) } ?: 0
+            val stable = !qidianPage || (ch != null && curHash == pollPrevHash)
+            pollPrevHash = curHash
             // WTR-LAB changes the chapter inside the same URL. Its visible
             // chapter counter is therefore a stronger navigation signal than
             // URL identity (and safer than waiting for an impossible URL change).
@@ -2823,12 +2855,12 @@ class MainActivity : Activity() {
                 (ch != null && cleanUrl(ch.url) == cleanUrl(novelWv.url ?: ""))
 
             if (ch != null && ch.text.length > 80 &&
-                (bodyChanged || wtrChapterChanged) && urlOk) {
+                (bodyChanged || wtrChapterChanged) && urlOk && stable) {
                 autoCopy = false
                 polling = false
                 commit(ch, token)
             } else {
-                val maxAttempts = if (wtrSpa) 40 else 8
+                val maxAttempts = if (wtrSpa || qidianPage) 40 else 8
                 if (n < maxAttempts) {
                     handler.postDelayed(
                         { pollExtract(n + 1, token, reloaded) },
@@ -2962,14 +2994,26 @@ class MainActivity : Activity() {
         val token = navToken
         // SPA readers (WebNovel, WTR-LAB...) draw the chapter AFTER the page finishes loading.
         // One try at +500 ms found nothing there, so the saved translation was never inserted.
+        val fast = qidianSystem.matches(pageUrl)      // short, cheap polling for Qidian
+        var prevHash = 0
         fun attempt(n: Int) {
             if (token != navToken || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return
             if (hasTr && lastChapter?.let { cleanUrl(it.url) == cleanUrl(pageUrl) } == true) return
             extractNow { ch ->
                 if (token != navToken || cleanUrl(novelWv.url ?: "") != cleanUrl(pageUrl)) return@extractNow
                 if (ch == null) {
-                    if (n < 14) handler.postDelayed({ attempt(n + 1) }, 800L)
+                    if (n < (if (fast) 34 else 14)) handler.postDelayed({ attempt(n + 1) }, if (fast) 300L else 800L)
                     return@extractNow
+                }
+                if (fast) {
+                    // Same text twice in a row = the chapter has finished streaming in.
+                    val h = bodyHash(ch)
+                    val settled = h == prevHash
+                    prevHash = h
+                    if (!settled) {
+                        if (n < 34) handler.postDelayed({ attempt(n + 1) }, 250L)
+                        return@extractNow
+                    }
                 }
                 val key = keyOf(ch)
                 val saved = Store.find(this, ch)
@@ -2997,7 +3041,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        handler.postDelayed({ attempt(0) }, 500L)
+        handler.postDelayed({ attempt(0) }, if (fast) 150L else 500L)
     }
 
     // Backup: double-tap ⚡ to insert a saved translation without translating again.
