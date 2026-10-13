@@ -2861,6 +2861,8 @@ class MainActivity : Activity() {
         deepSeekPollBusy = true
         deepSeekPollUrl = url
         deepSeekVisibleSignature = ""
+        deepSeekLastOcrAtMs = 0L
+        deepSeekNoImageTriedUrl = ""
         handler.removeCallbacks(deepSeekVisiblePoll)
         handler.postDelayed(deepSeekVisiblePoll, 250L)
     }
@@ -4016,7 +4018,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
             if (tok != runToken) return@evaluateJavascript
             val livePanelBatch = isDeepSeekLivePanel(ch)
             val rawTranslation = cleanReply(decode(raw))
-            if (rawTranslation.length < if (livePanelBatch) 2 else 30) {
+            if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
                 failJob(tok, ch, "Could not read the answer")
                 return@evaluateJavascript
             }
@@ -4685,6 +4687,11 @@ rendering of what it most likely says. Keep each translation short enough to fit
                         scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
                         toast("🤖 DeepSeek mode ON — chapter panels will auto-translate when ready")
                     } else {
+                        handler.removeCallbacks(deepSeekVisiblePoll)
+                        deepSeekPollBusy = false
+                        deepSeekVisibleSignature = ""
+                        deepSeekLastOcrAtMs = 0L
+                        deepSeekNoImageTriedUrl = ""
                         val previousBot = DeepSeekRealtimeTranslation.disable(this)
                         openBot(previousBot)
                         if (!webModeOn()) {
