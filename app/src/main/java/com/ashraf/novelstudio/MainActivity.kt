@@ -2705,8 +2705,8 @@ class MainActivity : Activity() {
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                                 handler.postDelayed({
                                     if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this)) {
-                                        deepSeekAutoStartedUrl = ""
-                                        scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
+                                        // Let the visible-panel poll retry after a short cooldown.
+                                        deepSeekVisibleSignature = ""
                                     }
                                 }, 1800L)
                             } else if (out.error != WebModeError.NAVIGATION_INVALIDATED) {
