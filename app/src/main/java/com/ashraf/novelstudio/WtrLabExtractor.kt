@@ -82,7 +82,16 @@ internal class WtrLabExtractor {
 
     var clone=best.cloneNode(true);
     try{clone.querySelectorAll('script,style,noscript,button,input,select,textarea,nav,.ad,.ads,.advertisement,.chapter-navigation,.next,.prev,[aria-hidden="true"]').forEach(function(e){e.remove();});}catch(x){}
-    var text=txt(clone)
+    // WTR-LAB: the chapter is .chapter-body > div.wtr-line[data-line]. The
+    // detached clone has no layout, so its innerText is plain textContent and
+    // the lines get glued together. Read the LIVE .wtr-line blocks instead and
+    // join them with \n, so [001],[002]... map 1:1 to the real DOM lines.
+    var wl=[];
+    try{wl=[].slice.call(best.querySelectorAll(':scope > .wtr-line'));}catch(x){}
+    if(wl.length<2){try{wl=[].slice.call(best.querySelectorAll('.wtr-line'));}catch(x){}}
+    var wtrLines=wl.map(function(e){return txt(e).replace(/\s+/g,' ').trim();})
+      .filter(function(v){return v.length>0;});
+    var text=(wtrLines.length>=2?wtrLines.join('\n'):txt(clone))
       .replace(/\r/g,'')
       .replace(/[\t\u00a0]+/g,' ')
       .replace(/ *\n */g,'\n')
@@ -91,6 +100,7 @@ internal class WtrLabExtractor {
     var lines=text.split(/\n+/).filter(function(s){return s.trim().length>0;});
     var count=0;
     try{count=clone.querySelectorAll('p,.wtr-line,[data-line],li,br').length;}catch(x){}
+    if(wtrLines.length>=2)count=wtrLines.length;
     if(count<1)count=lines.length;
     if(count<1&&text.length>=40)count=1;
 
