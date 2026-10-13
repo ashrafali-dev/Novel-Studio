@@ -86,7 +86,7 @@ object AdBlock {
     fun probeJs(): String = "(function(){try{" +
         "function d(e){return {t:e.tagName,id:(e.id||'').slice(0,60),c:(typeof e.className==='string'?e.className:'').slice(0,80),n:(e.textContent||'').length};}" +
         "var css=[];try{document.querySelectorAll(${org.json.JSONObject.quote(COSMETIC_SEL)}).forEach(function(e){css.push(d(e));});}catch(e){}" +
-        "return JSON.stringify({log:(window.__nsAdLog||[]).slice(0,80),css:css.slice(0,80),text:document.body?document.body.innerText.length:-1,html:document.documentElement.outerHTML.length});" +
+        "return JSON.stringify({log:(window.__nsAdLog||[]).slice(0,80),css:css.slice(0,80),text:document.body?document.body.innerText.length:-1,html:document.documentElement.outerHTML.length,snip:document.documentElement.outerHTML.slice(0,900)});" +
         "}catch(e){return '{}';}})()"
 
     fun recordProbe(pageUrl: String?, raw: String?) {
@@ -94,6 +94,7 @@ object AdBlock {
             val str = org.json.JSONTokener(raw ?: return).nextValue() as? String ?: return
             val o = org.json.JSONObject(str)
             logEntry("PAGE url=$pageUrl bodyTextLen=${o.optInt("text")} htmlLen=${o.optInt("html")}")
+            logEntry("HTML-START ${o.optString("snip").replace("\n", " ")}")
             val log = o.optJSONArray("log")
             if (log != null) for (i in 0 until log.length()) {
                 val e = log.getJSONObject(i)

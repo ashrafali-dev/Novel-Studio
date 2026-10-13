@@ -1940,11 +1940,18 @@ class MainActivity : Activity() {
             val r = request ?: return false
             val scheme = r.url.scheme ?: ""
             if (scheme != "http" && scheme != "https") return true
+            if (Prefs.adblock(this@MainActivity) && r.isForMainFrame) {
+                AdBlock.logEntry("NAV gesture=${r.hasGesture()} redirect=${r.isRedirect} url=${r.url}")
+            }
             if (Prefs.adblock(this@MainActivity) && r.isForMainFrame && !r.hasGesture()) {
-                if (AdBlock.blocked(r.url)) return true
+                val why = AdBlock.blockReason(r.url)
                 val cur = Uri.parse(view?.url ?: "").host
                 val nh = r.url.host
-                if (cur != null && nh != null && AdBlock.root(cur) != AdBlock.root(nh)) return true
+                val cross = cur != null && nh != null && AdBlock.root(cur) != AdBlock.root(nh)
+                if (why != null || cross) {
+                    AdBlock.logEntry("NAV ${if (AdBlock.networkEnforce) "CANCELLED" else "WOULD-CANCEL"} [${why ?: "cross-domain"}] from=$cur to=${r.url}")
+                    if (AdBlock.networkEnforce) return true
+                }
             }
             return false
         }
