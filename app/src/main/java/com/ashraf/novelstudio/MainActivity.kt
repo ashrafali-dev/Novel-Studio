@@ -2733,13 +2733,25 @@ class MainActivity : Activity() {
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
                             if (DeepSeekRealtimeTranslation.isEnabled(this) &&
+                                out.error == WebModeError.NO_IMAGES) {
+                                // Some chapter sites (including text editions of comics) render
+                                // readable HTML instead of image panels. Use the normal extractor
+                                // there; don't leave the user with an empty OCR result.
+                                extractNow { ch ->
+                                    if (token != navToken || !DeepSeekRealtimeTranslation.isEnabled(this)) return@extractNow
+                                    if (ch != null && ch.text.isNotBlank()) {
+                                        handleChapter(ch, useSavedTranslation = useSaved)
+                                    } else {
+                                        toast("🤖 No image panels or readable chapter text found")
+                                        deepSeekVisibleSignature = ""
+                                    }
+                                }
+                            } else if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
                                 // Do not fail silently: expose the exact OCR/extraction error so the broken
-                                // stage can be diagnosed. Retry once after the reader has settled.
+                                // stage can be diagnosed. Release the signature so the same panel can retry.
                                 toast("🤖 DeepSeek OCR: " + out.message)
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
-                                // Release the failed viewport signature; otherwise the poll sees
-                                // it as already scanned and never retries this exact panel.
                                 synchronized(deepSeekSeenPanelSignatures) {
                                     deepSeekSeenPanelSignatures.remove(deepSeekVisibleSignature)
                                 }
