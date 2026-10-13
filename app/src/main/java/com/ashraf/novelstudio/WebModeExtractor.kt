@@ -259,12 +259,17 @@ internal class WebModeExtractor(
                 }
             }
             val title = meta.title.ifBlank { hostOf(meta.url) }
-            val text = WebModeLogic.assemble(title, texts.map { it.orEmpty() })
-            // Where every paragraph of `text` sat on its image, in the same order, so the translation
-            // can be put back into the original bubbles (see WebModeWriter.bubbleScript).
+            val panelTexts = texts.map { it.orEmpty() }
+            // In live mode the title is metadata, not an OCR paragraph. Leaving it in the
+            // source stream shifts every [NNN] marker and makes the first bubble unmatchable.
+            val text = if (req.visibleOnly) WebModeLogic.assemble("", panelTexts)
+                else WebModeLogic.assemble(title, panelTexts)
+            // Keep every OCR block's exact source text beside its geometry. The main thread can then
+            // deduplicate bubbles across overlapping viewports and map each reply to its own box.
             val allBubbles = ArrayList<WmBubble>()
             for (l in layouts) if (l != null) allBubbles.addAll(l)
-            WebModeLayoutStore.put(meta.url, WebModeLayout(if (title.trim().isEmpty()) 0 else 1, allBubbles))
+            val titleOffset = if (req.visibleOnly || title.isBlank()) 0 else 1
+            WebModeLayoutStore.put(meta.url, WebModeLayout(titleOffset, allBubbles))
             val ch = Chapter(
                 title = title,
                 text = text,
@@ -429,15 +434,16 @@ internal class WebModeExtractor(
                 } else {
                     cx = (s.l + s.r) / 2f; cy = (s.t + s.b) / 2f; bw = (s.r - s.l) + 4f; bh = (s.b - s.t) + 4f
                 }
+                val text = b.text.replace(NEWLINES, " ").trim()
                 val nb = WmBubble(
                     src = src,
                     cx = cx * k / fullW, cy = (y0 + cy * k) / fullH,
                     w = bw * k / fullW, h = bh * k / fullH,
                     angle = if (rotated) tilt else 0f,
                     font = b.fontPx * k / fullW,
-                    bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft
+                    bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft,
+                    sourceText = text
                 )
-                val text = b.text.replace(NEWLINES, " ").trim()
                 // Same text seen by two overlapping slices: keep the bigger box once.
                 var dup = -1
                 for (j in out.indices) {
