@@ -3928,7 +3928,8 @@ Bengali letters. Never leave a marker in English letters, never skip a marker, a
 markers' text under one marker. If a text looks like OCR noise, still return a short Bengali
 rendering of what it most likely says. Keep each translation short enough to fit a speech bubble.
 """.trimIndent() + "\n\n" else ""
-        val full = promptWithGlossary(Prefs.prompt(this), marked) +
+        // Real-time OCR translation uses its own editable prompt.
+        val full = promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
             markerInstruction + "\n\n" + imageRules + marked
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
@@ -4051,8 +4052,28 @@ rendering of what it most likely says. Keep each translation short enough to fit
         }, pollDelayMs)
     }
 
-    private fun cleanReply(t: String): String =
-        t.replace(Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE), "").trim()
+    private fun cleanReply(t: String): String {
+        var s = t.replace(
+            Regex("^\\s*(ChatGPT|Gemini|Claude|DeepSeek|Grok)\\s+said\\s*[:：]?\\s*", RegexOption.IGNORE_CASE),
+            ""
+        )
+        // Safety filter: chatbot status labels must never reach the clipboard or reader.
+        val uiLabels = listOf(
+            Regex("Message\\s+collapsed(?:\\s+Show\\s+more)?(?:\\s+just\\s+now)?", RegexOption.IGNORE_CASE),
+            Regex("\\bShow\\s+more\\b", RegexOption.IGNORE_CASE),
+            Regex("\\bUntangling\\b", RegexOption.IGNORE_CASE),
+            Regex("\\bClaude\\s+is\\s+thinking\\b", RegexOption.IGNORE_CASE),
+            Regex("\\bClaude\\s+is\\s+responding\\b", RegexOption.IGNORE_CASE),
+            Regex("\\bClaude\\s+is\\s+AI\\s+and\\s+can\\s+make\\s+mistakes\\.?", RegexOption.IGNORE_CASE),
+            Regex("\\bWrite\\s+a\\s+message(?:\\.{3}|…)?", RegexOption.IGNORE_CASE),
+            Regex("\\bHaiku\\s+5\\.5\\s+Low\\b", RegexOption.IGNORE_CASE),
+            Regex("\\bDeepThink(?:\\s+Search)?\\b", RegexOption.IGNORE_CASE)
+        )
+        uiLabels.forEach { s = it.replace(s, " ") }
+        return s.replace(Regex("[ \\t]+"), " ")
+            .replace(Regex("\\n{3,}"), "\\n\\n")
+            .trim()
+    }
 
     private fun finishJob(tok: Int, ch: Chapter) {
         if (tok != runToken) return
@@ -4654,7 +4675,8 @@ rendering of what it most likely says. Keep each translation short enough to fit
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
-            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this)
+            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
+            "📝 Edit Real-time Prompt"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4662,11 +4684,11 @@ rendering of what it most likely says. Keep each translation short enough to fit
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 32),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 32, 33),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29)
         )
@@ -4740,6 +4762,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
                     refresh(i, menuWebModeLabel())
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
+                33 -> { dlg.dismiss(); editRealtimePrompt() }
                 32 -> {
                     if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
                         DeepSeekRealtimeTranslation.enable(this)
@@ -5268,6 +5291,28 @@ rendering of what it most likely says. Keep each translation short enough to fit
             .setTitle("Prompt")
             .setView(et)
             .setPositiveButton("Save") { _, _ -> Prefs.put(this, "prompt", et.text.toString()) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun editRealtimePrompt() {
+        val et = EditText(this).apply {
+            setText(Prefs.realtimePrompt(this@MainActivity))
+            minLines = 10
+            gravity = Gravity.TOP
+            hint = "AI Real-time Translation prompt"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("AI Real-time Translation Prompt")
+            .setView(et)
+            .setPositiveButton("Save") { _, _ ->
+                Prefs.put(this, "realtimePrompt", et.text.toString())
+                toast("✅ Real-time prompt saved")
+            }
+            .setNeutralButton("Reset") { _, _ ->
+                Prefs.put(this, "realtimePrompt", "")
+                toast("↩ Real-time prompt reset to default")
+            }
             .setNegativeButton("Cancel", null)
             .show()
     }
