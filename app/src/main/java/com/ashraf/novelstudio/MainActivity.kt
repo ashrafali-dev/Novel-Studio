@@ -2317,8 +2317,18 @@ class MainActivity : Activity() {
                     return host + "/" + book + "/" + group + ":part" + part
                 }
             }
-            cleanUrl(url)
-        } catch (_: Exception) { cleanUrl(url) }
+            // Match the saved-translation identity: mobile/desktop aliases of
+            // the same reader page must resolve to one chapter key.
+            host + u.encodedPath.orEmpty().trimEnd('/') +
+                (u.encodedQuery?.let { "?$it" } ?: "")
+        } catch (_: Exception) {
+            try {
+                val u = Uri.parse(url)
+                val host = (u.host ?: "").lowercase().removePrefix("www.").removePrefix("m.")
+                host + u.encodedPath.orEmpty().trimEnd('/') +
+                    (u.encodedQuery?.let { "?$it" } ?: "")
+            } catch (_: Exception) { cleanUrl(url) }
+        }
     }
 
     private fun chapterGroupKey(url: String): String {
