@@ -2798,7 +2798,7 @@ class MainActivity : Activity() {
                                 fallbackText(0)
                             } else if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
-                                toast("🤖 DeepSeek OCR: " + out.message)
+                                toast("🤖 AI OCR: " + out.message)
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                                 // The same panel must be eligible for another OCR attempt after failure.
                                 deepSeekVisibleSignature = ""
@@ -2846,7 +2846,7 @@ class MainActivity : Activity() {
     }
 
     /**
-     * DeepSeek experimental mode: start OCR automatically when a chapter page is ready.
+     * Real-time mode: start OCR automatically when a chapter page is ready.
      * No tap on the extract button is needed. The normal translation/cache/overlay pipeline
      * remains responsible for sending the OCR result to the chatbot and applying the reply.
      */
@@ -4717,14 +4717,13 @@ rendering of what it most likely says. Keep each translation short enough to fit
                 32 -> {
                     if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
                         DeepSeekRealtimeTranslation.enable(this)
-                        openBot(DeepSeekRealtimeTranslation.DEEPSEEK_URL)
                         chatWv.onResume()
                         chatWv.resumeTimers()
                         refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
                         refresh(31, menuWebModeLabel())
                         dlg.dismiss()
                         scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
-                        toast("🤖 DeepSeek mode ON — chapter panels will auto-translate when ready")
+                        toast("🤖 AI real-time mode ON — current chatbot will translate chapter panels")
                     } else {
                         handler.removeCallbacks(deepSeekVisiblePoll)
                         deepSeekPollBusy = false
@@ -4757,7 +4756,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
                         }
                         refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
                         refresh(31, menuWebModeLabel())
-                        toast("📖 DeepSeek Real-time Translation OFF — previous settings restored")
+                        toast("📖 AI Real-time Translation OFF — previous settings restored")
                     }
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
