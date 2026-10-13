@@ -120,6 +120,23 @@ class MainActivity : Activity() {
     private lateinit var urlBar: EditText
     private lateinit var tabCountBtn: TextView
     private lateinit var content: FrameLayout
+    private lateinit var scanDot: View
+    private var scanDotPhase = false
+    private val scanIndicatorRunnable = object : Runnable {
+        override fun run() {
+            if (::scanDot.isInitialized) {
+                val scanning = prefetchLoading || webModePrefetchBusy
+                scanDot.visibility = if (scanning) View.VISIBLE else View.GONE
+                if (scanning) {
+                    scanDotPhase = !scanDotPhase
+                    scanDot.alpha = if (scanDotPhase) 1f else 0.22f
+                } else {
+                    scanDot.alpha = 1f
+                }
+            }
+            handler.postDelayed(this, 450L)
+        }
+    }
     private lateinit var modeTransitionCover: ImageView
     private lateinit var novelBox: FrameLayout
     private lateinit var chatBox: LinearLayout
@@ -784,6 +801,18 @@ class MainActivity : Activity() {
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
+            scanDot = View(this@MainActivity).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(0xFF69F0AE.toInt())
+                }
+                elevation = dp(7).toFloat()
+                visibility = View.GONE
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
+            addView(scanDot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.TOP or Gravity.END).also {
+                it.setMargins(0, dp(10), dp(10), 0)
+            })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
         }
         val contentHolder = FrameLayout(this).apply {
@@ -860,6 +889,7 @@ class MainActivity : Activity() {
             addView(snackView, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(106) })
         }
         setContentView(root)
+        handler.post(scanIndicatorRunnable)
 
         buildStrip()
         buildSiteShortcuts()
