@@ -98,6 +98,11 @@ class MainActivity : Activity() {
     private var prefetchCatalogTitle = ""
     private var prefetchSourceUrl = ""
     private val prefetchRequestedUrls = mutableSetOf<String>()
+    // Multi-chapter prefetch: which chapter was prefetched after which (keyOf(source) -> next chapter),
+    // the chapter the running job started from, and the pause between two prefetch jobs.
+    private val prefetchNextOf = mutableMapOf<String, Chapter>()
+    private var prefetchSourceChapter: Chapter? = null
+    private val prefetchGapMs = 4000L
     private val prefetchKeys = mutableSetOf<String>()
     private val prefetchGeneratedKeys = mutableSetOf<String>()
     private val prefetchedTranslationIds = mutableMapOf<String, Long>()
@@ -498,6 +503,7 @@ class MainActivity : Activity() {
                                 return@prefetchExtractNow
                             }
                             prefetchLoading = false
+                            val srcChapter = prefetchSourceChapter
                             val requestedUrl = cleanUrl(prefetchTarget)
                             prefetchTarget = ""
                             val extractedUrl = cleanUrl(next.url)
@@ -509,12 +515,17 @@ class MainActivity : Activity() {
                             }
                             val current = lastChapter
                             if (current != null && keyOf(next) == keyOf(current)) return@prefetchExtractNow
-                            if (Store.find(this@MainActivity, next) != null) return@prefetchExtractNow
+                            srcChapter?.let { prefetchNextOf[keyOf(it)] = next }
+                            if (Store.find(this@MainActivity, next) != null) {
+                                prefetchContinue()
+                                return@prefetchExtractNow
+                            }
                             val nextKey = keyOf(next)
                             if (prefetchKeys.add(nextKey)) {
                                 prefetchGeneratedKeys.add(nextKey)
                                 enqueue(next)
                             }
+                            prefetchContinue()
                         }
                     }
                     handler.postDelayed({ readAttempt(0) }, 650L)
@@ -3092,7 +3103,33 @@ class MainActivity : Activity() {
             }
         }
     }
+    private fun prefetchAhead(): Int = (Prefs.get(this, "prefetchAhead", "1").toIntOrNull() ?: 1).coerceIn(1, 7)
+
+    /**
+     * Keeps a sliding window: the chapters after [ch] are prefetched until N (menu setting) of them
+     * are ready. Called whenever a chapter is shown, so opening chapter 2 tops the window up again.
+     */
     private fun schedulePrefetch(ch: Chapter) {
+        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        val want = prefetchAhead()
+        var cur = ch
+        var depth = 0
+        while (depth < want) {
+            val nx = prefetchNextOf[keyOf(cur)] ?: break
+            cur = nx
+            depth++
+        }
+        if (depth >= want) return
+        prefetchOne(cur)
+    }
+
+    /** After a job finishes, wait a few seconds, then top the window up from the chapter being read. */
+    private fun prefetchContinue() {
+        if (!Prefs.bool(this, "prefetchNextChapter") || prefetchAhead() <= 1) return
+        handler.postDelayed({ lastChapter?.let { schedulePrefetch(it) } }, prefetchGapMs)
+    }
+
+    private fun prefetchOne(ch: Chapter) {
         // ONLY the menu switch decides. (It used to also run when ⚡ auto was on, so the
         // switch looked like it did nothing.)
         if (!Prefs.bool(this, "prefetchNextChapter")) return
@@ -3146,6 +3183,7 @@ class MainActivity : Activity() {
         prefetchToken++
         val token = prefetchToken
         prefetchSourceUrl = ch.url
+        prefetchSourceChapter = ch
         prefetchCatalogTitle = ch.title
         prefetchCatalogPending = useCatalog
         prefetchTarget = target
@@ -3161,6 +3199,8 @@ class MainActivity : Activity() {
             }
         }, 30000L)
     }
+
+    private fun menuPrefetchDepthLabel(): String = "⚡ Prefetch how many chapters ahead: ${prefetchAhead()}"
 
     private fun menuPrefetchLabel(): String =
         (if (Prefs.bool(this, "prefetchNextChapter")) "✅" else "⬜") +
@@ -4035,7 +4075,7 @@ markers preserved.
             "🔍 Inspect Page (Copy Report)", menuSizeLabel(), "🔐 Chatbot Login",
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
-            "✏️ AdBlock Rules (paste)"
+            "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4043,11 +4083,11 @@ markers preserved.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29)
         )
@@ -4101,6 +4141,13 @@ markers preserved.
                 }
                 28 -> { copy(AdBlock.report()); toast("📋 AdBlock report copied — paste it into a chatbot") }
                 29 -> { dlg.dismiss(); adblockRulesDialog() }
+                30 -> {
+                    val steps = intArrayOf(1, 2, 3, 5, 7)
+                    val nextN = steps[(steps.indexOf(prefetchAhead()) + 1).mod(steps.size)]
+                    Prefs.put(this, "prefetchAhead", nextN.toString())
+                    refresh(i, menuPrefetchDepthLabel())
+                    if (Prefs.bool(this, "prefetchNextChapter")) lastChapter?.let { schedulePrefetch(it) }
+                }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
@@ -4127,6 +4174,7 @@ markers preserved.
                         prefetchCatalogPending = false
                         prefetchTarget = ""
                         prefetchRequestedUrls.clear()
+                        prefetchNextOf.clear()
                         prefetchKeys.clear()
                         // Chapters still waiting in the queue for prefetch are dropped too.
                         queue.removeAll { prefetchGeneratedKeys.contains(keyOf(it)) }
