@@ -62,4 +62,12 @@ dependencies {
     implementation 'org.jsoup:jsoup:1.17.2'
     implementation 'androidx.webkit:webkit:1.10.0'
     implementation 'androidx.browser:browser:1.8.0'
+
+    // Web Mode OCR: on-device ML Kit, one bundled model per script (Latin / Chinese / Japanese / Korean).
+    implementation 'com.google.mlkit:text-recognition:16.0.0'
+    implementation 'com.google.mlkit:text-recognition-chinese:16.0.0'
+    implementation 'com.google.mlkit:text-recognition-japanese:16.0.0'
+    implementation 'com.google.mlkit:text-recognition-korean:16.0.0'
+
+    testImplementation 'junit:junit:4.13.2'
 }
