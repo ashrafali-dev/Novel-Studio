@@ -113,6 +113,10 @@ class MainActivity : Activity() {
     private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
     private var deepSeekAutoStartedUrl = ""
     private var deepSeekVisibleSignature = ""
+    private val deepSeekSeenPanelSignatures = LinkedHashSet<String>()
+    private val deepSeekTranslatedTextHashes = LinkedHashSet<String>()
+    private val deepSeekInFlightTextHashes = LinkedHashSet<String>()
+    private val deepSeekTextHashByChapter = mutableMapOf<String, String>()
     private var deepSeekPollUrl = ""
     private var deepSeekPollBusy = false
     private val deepSeekVisiblePoll = object : Runnable {
@@ -132,16 +136,28 @@ class MainActivity : Activity() {
             }
             // Cheap DOM-only visibility probe every 250 ms. OCR/network work starts only when
             // the visible panel signature changes and no OCR job is already running.
-            val js = "(function(){try{var a=[].slice.call(document.images),v=[];for(var i=0;i<a.length;i++){var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';if(!s||r.width<100||r.height<70||r.bottom<=0||r.top>innerHeight)continue;v.push(s+'@'+Math.round(r.top/40)+':'+Math.round(r.bottom/40));}return v.join('|');}catch(e){return '';}})();"
+            val js = "(function(){try{var a=[].slice.call(document.images),v=[];for(var i=0;i<a.length;i++){var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';if(!s||r.width<100||r.height<70||r.bottom<=0||r.top>innerHeight)continue;v.push(s);}return v.join('|');}catch(e){return '';}})();"
             novelWv.evaluateJavascript(js) { raw ->
                 if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
                 val signature = decode(raw).trim()
                 if (signature.isNotEmpty() && signature != deepSeekVisibleSignature && webModeHandle == null) {
                     deepSeekVisibleSignature = signature
-                    val token = navToken
-                    chatWv.onResume()
-                    chatWv.resumeTimers()
-                    startWebModeExtract(token, useSaved = true)
+                    val alreadyScanned = synchronized(deepSeekSeenPanelSignatures) {
+                        deepSeekSeenPanelSignatures.contains(signature).also {
+                            if (!it) {
+                                deepSeekSeenPanelSignatures.add(signature)
+                                while (deepSeekSeenPanelSignatures.size > 120) {
+                                    deepSeekSeenPanelSignatures.remove(deepSeekSeenPanelSignatures.first())
+                                }
+                            }
+                        }
+                    }
+                    if (!alreadyScanned) {
+                        val token = navToken
+                        chatWv.onResume()
+                        chatWv.resumeTimers()
+                        startWebModeExtract(token, useSaved = true)
+                    }
                 }
                 handler.postDelayed(this, 250L)
             }
@@ -2690,9 +2706,27 @@ class MainActivity : Activity() {
                     when (out) {
                         is WebModeOutcome.Success -> {
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
+                            if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+                                val textHash = java.security.MessageDigest.getInstance("SHA-256")
+                                    .digest(out.chapter.text.trim().replace(Regex("\\s+"), " ").toByteArray(Charsets.UTF_8))
+                                    .joinToString("") { "%02x".format(it) }
+                                val duplicate = synchronized(deepSeekTranslatedTextHashes) {
+                                    deepSeekTranslatedTextHashes.contains(textHash) ||
+                                        deepSeekInFlightTextHashes.contains(textHash)
+                                }
+                                if (duplicate) {
+                                    // Identical OCR text has already been translated or is in the queue.
+                                    return@onDone
+                                }
+                                synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.add(textHash) }
+                                val originalOnChapter = lastChapter
+                                val hashKey = textHash
+                                // Mark this exact OCR text once the normal translation pipeline finishes
+                                // by associating the hash with the chapter key.
+                                deepSeekTextHashByChapter[keyOf(out.chapter)] = hashKey
+                            }
                             if (out.failedPanels > 0 && !DeepSeekRealtimeTranslation.isEnabled(this))
                                 toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
-                            // Forced fresh translation, exactly like tapping ● on a normal chapter.
                             handleChapter(out.chapter, useSavedTranslation = useSaved)
                         }
                         is WebModeOutcome.Failure -> {
