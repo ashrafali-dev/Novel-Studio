@@ -365,8 +365,14 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     p.el.textContent=p.val;
     p.el.style.setProperty('font-size',(size||18)+'px','important');
     p.el.style.setProperty('line-height','1.75','important');
-    p.el.style.setProperty('word-break','normal','important');
-    p.el.style.setProperty('overflow-wrap','break-word','important');
+    p.el.style.setProperty('display','block','important');
+    p.el.style.setProperty('white-space','normal','important');
+    p.el.style.setProperty('word-break','keep-all','important');
+    p.el.style.setProperty('overflow-wrap','normal','important');
+    p.el.style.setProperty('letter-spacing','normal','important');
+    p.el.style.setProperty('font-kerning','normal','important');
+    p.el.style.setProperty('font-feature-settings','normal','important');
+    p.el.style.setProperty('text-rendering','optimizeLegibility','important');
     if(fam)p.el.style.setProperty('font-family',fam,'important');
   });
   el.setAttribute('data-ns','1');
@@ -497,8 +503,14 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         p.textContent=String(paras[i+off]||'');
         p.style.setProperty('font-size',(size||18)+'px','important');
         p.style.setProperty('line-height','1.75','important');
-        p.style.setProperty('word-break','normal','important');
-        p.style.setProperty('overflow-wrap','break-word','important');
+        p.style.setProperty('display','block','important');
+        p.style.setProperty('white-space','normal','important');
+        p.style.setProperty('word-break','keep-all','important');
+        p.style.setProperty('overflow-wrap','normal','important');
+        p.style.setProperty('letter-spacing','normal','important');
+        p.style.setProperty('font-kerning','normal','important');
+        p.style.setProperty('font-feature-settings','normal','important');
+        p.style.setProperty('text-rendering','optimizeLegibility','important');
         if(fam)p.style.setProperty('font-family',fam,'important');
       });
       el.setAttribute('data-ns','1');
@@ -516,7 +528,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
   var padR=Math.max(0,16-Math.max(window.innerWidth-rc.right,0)-(parseFloat(cst.paddingRight)||0));
   var wrap=document.createElement('div');
   wrap.className='ns-translated-content';
-  wrap.style.cssText='box-sizing:border-box;max-width:100%;text-align:left;overflow-wrap:break-word;word-break:normal;'
+  wrap.style.cssText='box-sizing:border-box;max-width:100%;text-align:left;overflow-wrap:normal;word-break:keep-all;letter-spacing:normal;'
     +'padding:0 '+padR+'px 0 '+padL+'px;font-size:'+(size||18)+'px;'
     +(fam?'font-family:'+fam+'!important;':'');
   var frag=document.createDocumentFragment();
@@ -525,8 +537,12 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // Force true paragraph blocks: some reader stylesheets turn <p> into inline content.
     p.style.setProperty('display','block','important');
     p.style.setProperty('white-space','normal','important');
-    p.style.setProperty('overflow-wrap','break-word','important');
-    p.style.setProperty('word-break','normal','important');
+    p.style.setProperty('overflow-wrap','normal','important');
+    p.style.setProperty('word-break','keep-all','important');
+    p.style.setProperty('letter-spacing','normal','important');
+    p.style.setProperty('font-kerning','normal','important');
+    p.style.setProperty('font-feature-settings','normal','important');
+    p.style.setProperty('text-rendering','optimizeLegibility','important');
     // Reader-site !important rules can otherwise override custom fonts and paragraph spacing.
     p.style.setProperty('margin-top','0','important');
     p.style.setProperty('margin-right','0','important');
