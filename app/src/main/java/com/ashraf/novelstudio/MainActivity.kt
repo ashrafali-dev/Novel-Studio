@@ -4019,9 +4019,16 @@ rendering of what it most likely says. Keep each translation short enough to fit
                 val markerStableNeeded = RealtimeCompletionPolicy.stableThreshold(this, 4)
                 val uiStableNeeded = RealtimeCompletionPolicy.stableThreshold(this, 8)
                 val stopStableNeeded = RealtimeCompletionPolicy.stableThreshold(this, 8)
-                val noSignalStableNeeded = RealtimeCompletionPolicy.noStopSignalThreshold(
-                    this, if (livePanelBatch) 8 else 20
-                )
+                val chatHost = Uri.parse(chatWv.url.orEmpty()).host?.lowercase().orEmpty()
+                val deepSeekRealtime = realtimeFast &&
+                    (chatHost == "deepseek.com" || chatHost.endsWith(".deepseek.com"))
+                // DeepSeek often has no reliable Stop/streaming indicator. Its finished
+                // answer can be complete without every internal marker, so use a longer
+                // stable-text window instead of waiting forever for the expected length.
+                val noSignalStableNeeded = if (deepSeekRealtime) 8 else
+                    RealtimeCompletionPolicy.noStopSignalThreshold(
+                        this, if (livePanelBatch) 8 else 20
+                    )
                 val completedByMarkers = got && effLen >= minReplyLength && !streaming &&
                     allMarkers && st >= markerStableNeeded
                 val completedByUi = got && effLen >= minReplyLength && uiDone &&
@@ -4030,7 +4037,7 @@ rendering of what it most likely says. Keep each translation short enough to fit
                     streamEnded && st >= stopStableNeeded
                 val completedWithoutStopSignal = got && effLen >= minReplyLength &&
                     !sawStream && !streaming && st >= noSignalStableNeeded &&
-                    (allMarkers || effLen >= expectedFloor)
+                    (deepSeekRealtime || allMarkers || effLen >= expectedFloor)
                 val completed = completedByMarkers || completedByUi ||
                     completedAfterStop || completedWithoutStopSignal
 
