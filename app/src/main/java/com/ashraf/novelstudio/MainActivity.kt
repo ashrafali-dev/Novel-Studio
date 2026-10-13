@@ -2730,7 +2730,7 @@ class MainActivity : Activity() {
                                         deepSeekInFlightTextHashes.addAll(hashes)
                                     }
                                     if (selected.isNotEmpty()) {
-                                        val liveText = selected.joinToString("\\n\\n") { it.sourceText.trim() }
+                                        val liveText = selected.joinToString("\n\n") { it.sourceText.trim() }
                                         val liveChapter = out.chapter.copy(text = liveText, contentSel = "")
                                         WebModeLayoutStore.setScan(
                                             liveChapter.url, WebModeLayout(scanLayout.titleOffset, selected)
@@ -3977,15 +3977,19 @@ rendering of what it most likely says. Keep each translation short enough to fit
                 // UI can briefly expose Send during a pause. Never treat that alone as
                 // completion: require the reply to stay unchanged across multiple polls.
                 val streamEnded = sawStream && !streaming
-                val expectedFloor = maxOf(
+                val livePanelBatch = isDeepSeekLivePanel(ch)
+                // A one-bubble reply may be only a few Bengali characters. Normal novel jobs retain
+                // the conservative length threshold; live bubbles finish by markers + stable output.
+                val minReplyLength = if (livePanelBatch) 2 else 50
+                val expectedFloor = if (livePanelBatch) 2 else maxOf(
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val completedByMarkers = got && effLen > 50 && !streaming && allMarkers && st >= 4
-                val completedByUi = got && effLen > 50 && uiDone && !streaming && st >= 8
-                val completedAfterStop = got && effLen > 50 && streamEnded && st >= 8
-                val completedWithoutStopSignal = got && effLen > 50 && !sawStream && !streaming &&
-                    st >= 20 && (allMarkers || effLen >= expectedFloor)
+                val completedByMarkers = got && effLen >= minReplyLength && !streaming && allMarkers && st >= 4
+                val completedByUi = got && effLen >= minReplyLength && uiDone && !streaming && st >= 8
+                val completedAfterStop = got && effLen >= minReplyLength && streamEnded && st >= 8
+                val completedWithoutStopSignal = got && effLen >= minReplyLength && !sawStream && !streaming &&
+                    st >= (if (livePanelBatch) 8 else 20) && (allMarkers || effLen >= expectedFloor)
                 val completed = completedByMarkers || completedByUi ||
                     completedAfterStop || completedWithoutStopSignal
 
