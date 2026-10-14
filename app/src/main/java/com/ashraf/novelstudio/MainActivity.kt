@@ -215,27 +215,39 @@ return t.length>=40?'TXT:'+t:'';
     private val scanIndicatorRunnable = object : Runnable {
         override fun run() {
             if (::scanDot.isInitialized) {
-                // In real-time mode, blink green for the full OCR → chatbot → bubble-write job,
-                // not only while the background chapter scanner is busy.
-                val realtimeTranslating = DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) &&
+                val realtimeActive = DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) &&
                     (webModeHandle != null || running != null || queue.isNotEmpty())
-                val scanning = webModePrefetchBusy || realtimeTranslating
-                val waiting = prefetchLoading && !scanning
+                val waiting = prefetchLoading && !webModePrefetchBusy && !realtimeActive
+                val stage = webModeStage.lowercase()
+                val stageColor = when {
+                    stage.contains("loading image") || stage.contains("fetching image") -> 0xFF40C4FF.toInt() // blue: image download/read
+                    stage.contains("ocr model") || stage.contains("recognizing text") || stage.contains("reading text") -> 0xFFB388FF.toInt() // purple: OCR/model
+                    stage.contains("sending to chatbot") || stage.contains("chatbot") || stage.contains("translat") -> 0xFFFF80AB.toInt() // pink: AI translation
+                    stage.contains("writing") || stage.contains("placing") || stage.contains("bubble") -> 0xFF64FFDA.toInt() // teal: writing result
+                    else -> 0xFF69F0AE.toInt() // green: active scan / processing
+                }
+                val scanning = webModePrefetchBusy || realtimeActive
                 scanDot.visibility = View.VISIBLE
+                scanDot.contentDescription = when {
+                    waiting -> "Amber: waiting for scan"
+                    !scanning -> "Grey: idle"
+                    stage.contains("loading image") || stage.contains("fetching image") -> "Blue blinking: loading image"
+                    stage.contains("ocr model") || stage.contains("recognizing text") || stage.contains("reading text") -> "Purple blinking: OCR model and image reading"
+                    stage.contains("sending to chatbot") || stage.contains("chatbot") || stage.contains("translat") -> "Pink blinking: chatbot translation"
+                    stage.contains("writing") || stage.contains("placing") || stage.contains("bubble") -> "Teal blinking: placing translated text"
+                    else -> "Green blinking: processing"
+                }
                 when {
                     scanning -> {
-                        // Green blinking dot: the background OCR scanner is actively running.
-                        (scanDot.background as? GradientDrawable)?.setColor(0xFF69F0AE.toInt())
+                        (scanDot.background as? GradientDrawable)?.setColor(stageColor)
                         scanDotPhase = !scanDotPhase
                         scanDot.alpha = if (scanDotPhase) 1f else 0.22f
                     }
                     waiting -> {
-                        // Amber steady dot: next chapter is loading/waiting for its scan turn.
                         (scanDot.background as? GradientDrawable)?.setColor(0xFFFFC107.toInt())
                         scanDot.alpha = 1f
                     }
                     else -> {
-                        // Dark grey dot: no background scan is active or queued.
                         (scanDot.background as? GradientDrawable)?.setColor(0xFF555A64.toInt())
                         scanDot.alpha = 1f
                     }
