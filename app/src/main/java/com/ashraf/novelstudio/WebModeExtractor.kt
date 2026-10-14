@@ -669,13 +669,14 @@ internal class WebModeExtractor(
             val refinedText = arrayOfNulls<String>(blocks.size)
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
             val consumed = BooleanArray(blocks.size)
-            // In real-time mode, avoid an extra ML Kit call for every recognised bubble when the
-            // first pass already returned a dense, readable viewport. Sparse/short results still
-            // get the targeted bubble retry below, and recognize() can run its bounded fallback.
+            // In real-time mode, avoid an extra ML Kit call for every already-complete bubble.
+            // Still retry short blocks: the overall viewport can look dense even when one bubble
+            // has a missed line. recognize() also keeps its bounded fallback for sparse first passes.
             val fastPassAlreadyDense = fastMode && blocks.size >= 3 &&
                 blocks.sumOf { block -> block.text.count { it.isLetterOrDigit() } } >= 40
             for (i in blocks.indices) {
-                if (fastPassAlreadyDense) continue
+                val blockLetters = blocks[i].text.count { it.isLetterOrDigit() }
+                if (fastPassAlreadyDense && blockLetters >= 18) continue
                 // Keep the missed-line recovery pass enabled in Force OCR too.
                 // The first pass is fast; this crop retry can recover lettering inside a bubble
                 // that the screen-level recognizer only partially read.
