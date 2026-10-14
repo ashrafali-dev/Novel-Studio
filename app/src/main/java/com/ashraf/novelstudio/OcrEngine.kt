@@ -390,9 +390,6 @@ internal class MlKitOcrEngine : OcrEngine {
         }
     }
 
-    private fun comparableOcrText(text: String): String =
-        text.lowercase().filter { it.isLetterOrDigit() }
-
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult {
         try {
             val rec = recognizer(script)
