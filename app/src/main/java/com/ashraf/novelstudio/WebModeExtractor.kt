@@ -355,11 +355,18 @@ internal class WebModeExtractor(
             val pending = Pending()
             bridge.pending[rid] = pending
             try {
-                val js = "(function(id,u){try{fetch(u,{credentials:'include'}).then(function(r){" +
+                val js = "(function(id,u){" +
+                    "function viaCanvas(){try{var im=null,L=document.images;" +
+                    "for(var i=0;i<L.length;i++){if((L[i].currentSrc||L[i].src)===u){im=L[i];break;}}" +
+                    "if(!im||!im.naturalWidth)throw new Error('no loaded img');" +
+                    "var c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;" +
+                    "c.getContext('2d').drawImage(im,0,0);" +
+                    "NsWmBridge.ok(id,c.toDataURL('image/jpeg',0.92));}catch(e){NsWmBridge.fail(id,String(e));}}" +
+                    "try{fetch(u,{credentials:'include'}).then(function(r){" +
                     "if(!r.ok)throw new Error('http '+r.status);return r.blob();}).then(function(b){" +
                     "var fr=new FileReader();fr.onload=function(){NsWmBridge.ok(id,String(fr.result));};" +
-                    "fr.onerror=function(){NsWmBridge.fail(id,'reader');};fr.readAsDataURL(b);})" +
-                    ".catch(function(e){NsWmBridge.fail(id,String(e));});}catch(e){NsWmBridge.fail(id,String(e));}" +
+                    "fr.onerror=function(){viaCanvas();};fr.readAsDataURL(b);})" +
+                    ".catch(function(e){viaCanvas();});}catch(e){viaCanvas();}" +
                     "return 'started';})(" + JSONObject.quote(rid) + "," + JSONObject.quote(u) + ")"
                 onMain { wv.evaluateJavascript(js, null) }
                 if (!pending.latch.await(25, TimeUnit.SECONDS)) throw IOException("page fetch timeout")
@@ -668,7 +675,7 @@ function cands(sc){
     if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
     seen[src]=1;
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
-    out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0});
+    out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,vt:Math.round(r.top),vb:Math.round(r.bottom)});
   }
   return out;}
 """
@@ -702,7 +709,7 @@ var sc=scroller(),c=cands(sc);
 var top=sc?(sc.scrollTop||0):(window.pageYOffset||de.scrollTop||0);
 var height=sc?(sc.clientHeight||window.innerHeight||800):(window.innerHeight||800);
 var bottom=top+height;
-c=c.filter(function(p){return p.t < bottom && (p.t+p.h) > top;});
+var vpH=window.innerHeight||800;c=c.filter(function(p){return p.vb>0&&p.vt<vpH;});
 function q(s){var e=document.querySelector(s);return e?(e.textContent||'').trim():'';}
 function link(kind){
   var re=kind==='next'?/next|\\u4e0b\\u4e00|\\ub2e4\\uc74c|\\u6b21\\u306e|\\u6b21\\u3078|\\u6b21\\u7ae0/i:/prev(?!iew)|\\u4e0a\\u4e00|\\uc774\\uc804|\\u524d\\u306e|\\u524d\\u3078|\\u524d\\u7ae0/i;
