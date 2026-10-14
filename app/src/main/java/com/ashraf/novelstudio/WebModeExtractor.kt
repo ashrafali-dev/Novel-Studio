@@ -142,7 +142,20 @@ internal class WebModeExtractor(
             if (alive()) req.onProgress(stage, pct.coerceIn(0, 99))
         }
 
+        @Volatile private var fellBackToForce = false
+
         private fun fail(e: WebModeError, msg: String = e.label) {
+            // Live (real-time) OCR always tries the normal way first. Only when the images cannot be
+            // downloaded/decoded does Force Extract (screen OCR) take over, once.
+            if (req.force && req.visibleOnly && !fellBackToForce &&
+                (e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
+                fellBackToForce = true
+                diag.error = null
+                worker.execute { runCatching { processForce() }.onFailure {
+                    fail(WebModeError.DECODE_FAILED, "Force extract crashed: ${it.javaClass.simpleName}")
+                } }
+                return
+            }
             diag.error = e
             Log.w(TAG, diag.summary())
             onMain { req.onDone(WebModeOutcome.Failure(e, msg, diag)) }
@@ -151,7 +164,7 @@ internal class WebModeExtractor(
         fun begin() {
             ensureBridge(wv)
             progress("Discovering chapter panels", 1)
-            if (req.force) {
+            if (req.force && !req.visibleOnly) {
                 worker.execute { runCatching { processForce() }.onFailure {
                     Log.w(TAG, "force job $id crashed: ${it.javaClass.simpleName}")
                     fail(WebModeError.DECODE_FAILED, "Force extract crashed: ${it.javaClass.simpleName}")

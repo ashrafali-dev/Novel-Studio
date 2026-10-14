@@ -2755,6 +2755,8 @@ class MainActivity : Activity() {
      * already open, then hand the finished Chapter to the SAME handleChapter() pipeline that normal
      * extraction uses (prompt, glossary, chatbot, response handling, cache, prefetch).
      */
+    private var deepSeekLastFailToastAtMs = 0L
+
     private fun startWebModeExtract(token: Int, useSaved: Boolean = false) {
         webModeHandle?.cancel()
         webModePct = 1
@@ -2870,7 +2872,12 @@ class MainActivity : Activity() {
                                 fallbackText(0)
                             } else if (DeepSeekRealtimeTranslation.isEnabled(this) &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
-                                // Suppress repeated OCR-failure toasts in real-time mode; retry silently.
+                                // Repeated OCR-failure toasts are rate-limited (one per 15 s) so the reason is visible.
+                                val failNow = System.currentTimeMillis()
+                                if (failNow - deepSeekLastFailToastAtMs > 15000L) {
+                                    deepSeekLastFailToastAtMs = failNow
+                                    toast("⚠ OCR: " + out.message)
+                                }
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                                 // The same panel must be eligible for another OCR attempt after failure.
                                 deepSeekVisibleSignature = ""
