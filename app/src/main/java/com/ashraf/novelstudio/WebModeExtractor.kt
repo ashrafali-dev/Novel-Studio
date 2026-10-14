@@ -247,12 +247,13 @@ internal class WebModeExtractor(
             for ((i, p) in panels.withIndex()) {
                 if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
-                progress("Reading panel ${i + 1}/$total", 10 + i * 89 / total)
+                progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
                 val bytes = fetchWithRetry(p, meta.url)
                 if (bytes == null) { fetchFailed++; diag.failed++; continue }
                 if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
                 diag.downloaded++
                 try {
+                    progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
                     val po = ocrBytes(bytes, script, p.src, fastMode = req.visibleOnly)
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
