@@ -2826,6 +2826,8 @@ return t.length>=40?'TXT:'+t:'';
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+                                // OCR is complete; keep the status light pink while the chatbot handles the text.
+                                webModeStage = "Sending to chatbot"
                                 val scanLayout = WebModeLayoutStore.getScan(out.chapter.url)
                                 val sourceBubbles = scanLayout?.bubbles.orEmpty().filter { it.sourceText.isNotBlank() }
                                 if (scanLayout != null && sourceBubbles.isNotEmpty()) {
