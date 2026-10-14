@@ -86,6 +86,8 @@ internal class WebModeExtractor(
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "ns-webmode") }
     private val jobIds = AtomicInteger(0)
     private val bridge = PageBridge()
+    /** Pictures grabbed from the live page during the scroll, keyed by image URL (blob: URLs die once the reader drops them). */
+    private val captured = ConcurrentHashMap<String, ByteArray>()
     private val bridged = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
 
     /** Returns a handle; call [Handle.cancel] to stop the job. Must be called on the main thread. */
@@ -111,6 +113,19 @@ internal class WebModeExtractor(
         @JavascriptInterface
         fun ok(id: String, dataUrl: String) {
             pending[id]?.let { it.data = dataUrl; it.latch.countDown() }
+        }
+
+        /** Called by the page while the scan scrolls: the decoded picture of an image that is on screen right now. */
+        @JavascriptInterface
+        fun cap(src: String, dataUrl: String) {
+            try {
+                if (captured.values.sumOf { it.size.toLong() } > CAPTURE_MAX_BYTES) return
+                val comma = dataUrl.indexOf(',')
+                if (comma < 0) return
+                captured[src] = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
+            } catch (_: Exception) {
+            } catch (_: OutOfMemoryError) {
+            }
         }
 
         @JavascriptInterface
@@ -148,6 +163,10 @@ internal class WebModeExtractor(
 
         fun begin() {
             ensureBridge(wv)
+            if (!req.visibleOnly) {
+                captured.clear()
+                try { wv.evaluateJavascript(wrap(JS_CAPTURE_RESET + JS_CAPTURE), null) } catch (_: Exception) {}
+            }
             progress("Discovering chapter panels", 1)
             if (req.visibleOnly) finishDiscovery() else tick(0, -1, 0)
         }
@@ -158,6 +177,7 @@ internal class WebModeExtractor(
             if (elapsed() > DISCOVERY_MAX_MS || n > MAX_TICKS) { finishDiscovery(); return }
             wv.evaluateJavascript(wrap(LIB + JS_STEP)) { raw ->
                 if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
+                captureNow()
                 val o = parseJson(raw)
                 if (o == null) {
                     handler.postDelayed({ tick(n + 1, lastCount, 0) }, 500L)
@@ -176,12 +196,17 @@ internal class WebModeExtractor(
             }
         }
 
+        private fun captureNow() {
+            try { wv.evaluateJavascript(wrap(JS_CAPTURE), null) } catch (_: Exception) {}
+        }
+
         private fun restoreScroll() {
             try { wv.evaluateJavascript(wrap(LIB + JS_RESTORE), null) } catch (_: Exception) {}
         }
 
         private fun finishDiscovery() {
             val collectScript = if (req.visibleOnly) JS_COLLECT_VISIBLE else JS_COLLECT
+            if (!req.visibleOnly) captureNow()
             wv.evaluateJavascript(wrap(LIB + collectScript)) { raw ->
                 restoreScroll()
                 if (!alive()) { fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
@@ -289,6 +314,7 @@ internal class WebModeExtractor(
         private fun fetchWithRetry(p: PanelRef, pageUrl: String): ByteArray? {
             for (attempt in 1..3) {
                 if (!alive()) return null
+                captured.remove(p.src)?.let { return it }
                 try {
                     val u = p.src
                     return when {
@@ -627,6 +653,7 @@ internal class WebModeExtractor(
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 15_000L
         private const val JOB_MAX_MS = 12 * 60_000L
+        private const val CAPTURE_MAX_BYTES = 160L * 1024 * 1024
         private const val MIN_W = 120
         private const val MIN_H = 60
 
@@ -694,6 +721,23 @@ if(sc){
 bottom=(after+vh>=hh-4)||after===before;
 var c=cands(sc),p=0;for(var i=0;i<c.length;i++){if(!c[i].d)p++;}
 return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState});
+"""
+
+        private const val JS_CAPTURE_RESET = """
+window.__nsWmCap={};
+"""
+
+        // Runs on every scroll step: copies the pictures that are loaded RIGHT NOW (a few per call) to the app.
+        private const val JS_CAPTURE = """
+var cap=window.__nsWmCap||(window.__nsWmCap={});var L=document.images,n=0;
+for(var i=0;i<L.length&&n<4;i++){var im=L[i],s=im.currentSrc||im.src||'';
+  if(!s||!im.complete||!im.naturalWidth||im.naturalWidth<400||im.naturalHeight<250)continue;
+  try{s=new URL(s,document.baseURI).href;}catch(e){continue;}
+  if(cap[s])continue;
+  try{var c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;
+    c.getContext('2d').drawImage(im,0,0);var d=c.toDataURL('image/jpeg',0.92);cap[s]=1;NsWmBridge.cap(s,d);n++;}
+  catch(e){cap[s]=2;}}
+return String(n);
 """
 
         private const val JS_RESTORE = """
