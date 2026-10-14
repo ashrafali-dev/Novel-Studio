@@ -297,7 +297,8 @@ internal object WmBubbleStyle {
         val grad = colourDist(fgTop, fgBot) > 70 && contrast(fgTop, bg) >= MIN_CONTRAST && contrast(fgBot, bg) >= MIN_CONTRAST
         val fg = if (grad) fgTop else fgAll
         val fg2 = if (grad) fgBot else fgAll
-        if (expand) {
+        // Only speech-bubble-like (light) interiors are grown; on black pages the cover stays on the text itself.
+        if (expand && lum(bg) > 70) {
             val buf = IntArray(maxOf(bw, bh) + 4)
             val maxX = maxOf(12, ((r - l) * 0.8f).toInt())
             val maxY = maxOf(12, ((b - t) * 0.8f).toInt())
@@ -332,6 +333,76 @@ internal object WmBubbleStyle {
             if (gb > 6) b -= 3
         }
         return Style(l, t, r, b, bg, fg, fg2, soft)
+    }
+
+    /**
+     * Finds the whole inside of the speech bubble around [box] by flooding its fill colour (the text
+     * is just "holes" in that fill) and returns [l, t, r, b] of that inside, or null when this is not
+     * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
+     * recognised block ([allRects]) accounts for - i.e. text the OCR missed.
+     */
+    fun bubbleInterior(bmp: Bitmap, box: IntArray, allRects: List<IntArray>): IntArray? {
+        val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
+        if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
+        val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
+        val mx = maxOf(40, (bwid * 0.9f).toInt()); val my = maxOf(40, (bhei * 1.2f).toInt())
+        val x0 = (box[0] - mx).coerceAtLeast(0); val y0 = (box[1] - my).coerceAtLeast(0)
+        val x1 = (box[2] + mx).coerceAtMost(bmp.width); val y1 = (box[3] + my).coerceAtMost(bmp.height)
+        val w = x1 - x0; val h = y1 - y0
+        if (w < 8 || h < 8 || w.toLong() * h > 1_200_000L) return null
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, x0, y0, w, h)
+        val seen = BooleanArray(w * h)
+        val q = IntArray(w * h)
+        var qh = 0; var qt = 0
+        fun push(x: Int, y: Int) {
+            if (x < 0 || y < 0 || x >= w || y >= h) return
+            val i = y * w + x
+            if (seen[i] || !near(px[i], bg)) return
+            seen[i] = true; q[qt++] = i
+        }
+        // seeds: a ring just outside the text box
+        val rl = box[0] - x0 - 3; val rt = box[1] - y0 - 3; val rr = box[2] - x0 + 3; val rb = box[3] - y0 + 3
+        var sx = rl
+        while (sx <= rr) { push(sx, rt); push(sx, rb); sx += 3 }
+        var sy = rt
+        while (sy <= rb) { push(rl, sy); push(rr, sy); sy += 3 }
+        if (qt == 0) return null
+        while (qh < qt) {
+            val i = q[qh++]
+            val x = i % w; val y = i / w
+            push(x + 1, y); push(x - 1, y); push(x, y + 1); push(x, y - 1)
+        }
+        // bubbles are closed by their outline; a fill that reaches the window edges everywhere is just the page
+        var edge = 0
+        for (x in 0 until w) { if (seen[x]) edge++; if (seen[(h - 1) * w + x]) edge++ }
+        for (y in 0 until h) { if (seen[y * w]) edge++; if (seen[y * w + w - 1]) edge++ }
+        if (edge * 100 > 2 * (w + h) * 15) return null
+        // extent of the fill, ignoring thin protrusions such as the bubble tail
+        val rows = IntArray(h); val cols = IntArray(w)
+        for (i in 0 until w * h) if (seen[i]) { rows[i / w]++; cols[i % w]++ }
+        var maxRow = 0; for (v in rows) if (v > maxRow) maxRow = v
+        var maxCol = 0; for (v in cols) if (v > maxCol) maxCol = v
+        if (maxRow == 0 || maxCol == 0) return null
+        var t = 0; while (t < h && rows[t] * 10 < maxRow * 3) t++
+        var b = h - 1; while (b > t && rows[b] * 10 < maxRow * 3) b--
+        var l = 0; while (l < w && cols[l] * 10 < maxCol * 3) l++
+        var r = w - 1; while (r > l && cols[r] * 10 < maxCol * 3) r--
+        if (r - l < 12 || b - t < 12) return null
+        // leftover lettering: not background, not filled, not inside a recognised block
+        var ink = 0
+        for (y in t..b) for (x in l..r) {
+            val i = y * w + x
+            if (seen[i] || near(px[i], bg)) continue
+            val ax = x + x0; val ay = y + y0
+            var covered = false
+            for (o in allRects) {
+                if (ax >= o[0] - 4 && ax < o[2] + 4 && ay >= o[1] - 4 && ay < o[3] + 4) { covered = true; break }
+            }
+            if (!covered) ink++
+        }
+        if (ink < 40) return null
+        return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
     }
 
     private fun hits(others: List<IntArray>, x0: Int, y0: Int, x1: Int, y1: Int): Boolean {

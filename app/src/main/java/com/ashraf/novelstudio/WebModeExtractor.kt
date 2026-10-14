@@ -428,12 +428,50 @@ internal class WebModeExtractor(
             if (blocks.isEmpty()) return
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
+
+            // Bubbles that still hold lettering no block accounts for (a line the OCR missed): read the
+            // whole inside of the bubble again as one clean picture, and use that fuller text.
+            val refinedText = arrayOfNulls<String>(blocks.size)
+            val refinedBox = arrayOfNulls<IntArray>(blocks.size)
+            val consumed = BooleanArray(blocks.size)
+            for (i in blocks.indices) {
+                if (consumed[i]) continue
+                val b = blocks[i]
+                if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
+                val inter: IntArray = (try { WmBubbleStyle.bubbleInterior(bmp, rects[i], rects) } catch (_: Exception) { null }) ?: continue
+                val cw = inter[2] - inter[0]; val ch = inter[3] - inter[1]
+                if (cw < 12 || ch < 12) continue
+                var crop: Bitmap? = null
+                try {
+                    crop = Bitmap.createBitmap(bmp, inter[0], inter[1], cw, ch)
+                    val res = engine.recognizeRegion(crop, st.current)
+                    val joined = res.blocks.sortedWith(compareBy({ it.top }, { it.left }))
+                        .joinToString(" ") { it.text.replace(NEWLINES, " ").trim() }.trim()
+                    val own = b.text.replace(NEWLINES, " ").trim()
+                    if (joined.length >= own.length + maxOf(4, (own.length * 0.12f).toInt())) {
+                        refinedText[i] = joined
+                        refinedBox[i] = inter
+                        // other blocks sitting inside this bubble are now part of the fuller text
+                        for (j in blocks.indices) {
+                            if (j == i) continue
+                            val cxj = (rects[j][0] + rects[j][2]) / 2; val cyj = (rects[j][1] + rects[j][3]) / 2
+                            if (cxj in inter[0] until inter[2] && cyj in inter[1] until inter[3]) consumed[j] = true
+                        }
+                    }
+                } catch (_: Exception) {
+                } catch (_: OutOfMemoryError) {
+                } finally {
+                    if (crop != null && crop !== bmp) crop.recycle()
+                }
+            }
+
             for ((i, b) in blocks.withIndex()) {
+                if (consumed[i]) continue
                 val tilt = OcrPost.usableTilt(b.angle)          // never upside down, never sideways
                 val rotated = Math.abs(tilt) >= 6f
                 val others = rects.filterIndexed { j, _ -> j != i }
                 val s = WmBubbleStyle.analyse(bmp, rects[i], others, expand = !rotated)
-                val cx: Float; val cy: Float; val bw: Float; val bh: Float
+                var cx: Float; var cy: Float; var bw: Float; var bh: Float
                 // Wipe the old lettering COMPLETELY: OCR boxes are tight, but outlines, glow, shadows and
                 // descenders reach past them. Pad by a share of the line height (more on artwork).
                 val lineH = (if (b.fontPx > 0f) b.fontPx else minOf(b.w, b.h)).coerceAtLeast(8f)
@@ -446,7 +484,13 @@ internal class WebModeExtractor(
                     val p = if (grown) 2f else pad
                     cx = (s.l + s.r) / 2f; cy = (s.t + s.b) / 2f; bw = (s.r - s.l) + p * 2f; bh = (s.b - s.t) + p * 2f
                 }
-                val text = b.text.replace(NEWLINES, " ").trim()
+                val text = (refinedText[i] ?: b.text).replace(NEWLINES, " ").trim()
+                val rb = refinedBox[i]
+                if (rb != null) {
+                    // the bubble's whole inside (kept a little off its outline)
+                    cx = (rb[0] + rb[2]) / 2f; cy = (rb[1] + rb[3]) / 2f
+                    bw = (rb[2] - rb[0]) - 4f; bh = (rb[3] - rb[1]) - 4f
+                }
                 val nb = WmBubble(
                     src = src,
                     cx = cx * k / fullW, cy = (y0 + cy * k) / fullH,

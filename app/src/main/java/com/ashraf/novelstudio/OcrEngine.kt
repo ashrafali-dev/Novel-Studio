@@ -165,17 +165,17 @@ internal object OcrPost {
         val fb = if (b.fontPx > 0f) b.fontPx else b.h
         if (fa <= 0f || fb <= 0f) return false
         val ratio = fa / fb
-        if (ratio < 0.65f || ratio > 1.55f) return false
+        if (ratio < 0.55f || ratio > 1.8f) return false
         val f = Math.max(fa, fb)
         val top = if (a.cy <= b.cy) a else b
         val bot = if (top === a) b else a
         val gap = (bot.cy - bot.h / 2) - (top.cy + top.h / 2)
-        if (gap > f * 1.1f || gap < -f * 0.6f) return false
+        if (gap > f * 1.3f || gap < -f * 0.6f) return false
         val ox = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
         val narrow = Math.min(a.w, b.w)
-        if (narrow <= 0f || ox < narrow * 0.45f) return false
+        if (narrow <= 0f || ox < narrow * 0.3f) return false
         // centred lines of one bubble share a middle; a side-by-side caption does not
-        if (Math.abs(a.cx - b.cx) > Math.max(a.w, b.w) * 0.5f) return false
+        if (Math.abs(a.cx - b.cx) > Math.max(a.w, b.w) * 0.6f) return false
         return true
     }
 
@@ -202,6 +202,8 @@ internal object OcrPost {
 internal interface OcrEngine {
     /** Blocking. Call from a worker thread, never the main thread. */
     fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult
+    /** A small crop that holds ONE speech bubble: cheaper than [recognize] (few variants). */
+    fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = recognize(bitmap, script)
     fun close()
 }
 
@@ -244,9 +246,9 @@ internal class MlKitOcrEngine : OcrEngine {
                         val boosted = OcrPost.boostContrast(half)
                         mine.add(boosted)
                         tasks.add(rec.process(InputImage.fromBitmap(boosted, 0))); scale.add(2f)
-                        val bright = OcrPost.brightMask(half)
+                        val bright = OcrPost.brightMask(bitmap)
                         mine.add(bright)
-                        tasks.add(rec.process(InputImage.fromBitmap(bright, 0))); scale.add(2f)
+                        tasks.add(rec.process(InputImage.fromBitmap(bright, 0))); scale.add(1f)
                         if (bitmap.width >= 480 && bitmap.height >= 480) {
                             val quarter = Bitmap.createScaledBitmap(bitmap, bitmap.width / 4, bitmap.height / 4, true)
                             mine.add(quarter)
@@ -279,13 +281,64 @@ internal class MlKitOcrEngine : OcrEngine {
         }
     }
 
-    private fun toBlocks(vt: com.google.mlkit.vision.text.Text): List<OcrBlock> {
-        return vt.textBlocks
-            .mapNotNull { b ->
-                val t = b.text.trim()
-                if (t.isEmpty()) null else toBlock(t, b)
+    override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult {
+        try {
+            val rec = recognizer(script)
+            val mine = ArrayList<Bitmap>()
+            val tasks = ArrayList<com.google.android.gms.tasks.Task<com.google.mlkit.vision.text.Text>>()
+            val scale = ArrayList<Float>()
+            try {
+                tasks.add(rec.process(InputImage.fromBitmap(bitmap, 0))); scale.add(1f)
+                if (bitmap.height < 220 && bitmap.width >= 16 && bitmap.height >= 16) {
+                    try {
+                        val up = Bitmap.createScaledBitmap(bitmap, bitmap.width * 2, bitmap.height * 2, true)
+                        mine.add(up)
+                        tasks.add(rec.process(InputImage.fromBitmap(up, 0))); scale.add(0.5f)
+                    } catch (_: OutOfMemoryError) { }
+                }
+                var best: List<OcrBlock> = emptyList()
+                var bestLen = -1
+                for ((i, t) in tasks.withIndex()) {
+                    val blocks = try { toBlocks(Tasks.await(t)) }
+                        catch (e: ExecutionException) { if (i == 0) throw e else emptyList() }
+                    val scaledBlocks = if (scale[i] == 1f) blocks else blocks.map { OcrPost.scaled(it, scale[i]) }
+                    val merged = OcrPost.mergeNeighbours(scaledBlocks.filterNot { OcrPost.isNoise(it) })
+                    val len = merged.sumOf { it.text.length }
+                    if (len > bestLen) { best = merged; bestLen = len }
+                }
+                return OcrResult(best)
+            } finally {
+                for (m in mine) if (m !== bitmap) m.recycle()
             }
-            .sortedWith(compareBy({ it.top }, { it.left }))
+        } catch (e: ExecutionException) {
+            val c = e.cause
+            throw OcrUnavailableException("ML Kit ${script.name} failed: ${c?.javaClass?.simpleName}", c)
+        } catch (e: MlKitException) {
+            throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
+        }
+    }
+
+    /**
+     * ML Kit's own "blocks" split one sentence at random on glowing / stylised lettering. Take its
+     * LINES instead and let [OcrPost.mergeNeighbours] rebuild the sentences with one consistent rule.
+     * Vertical text and clearly tilted blocks (sound effects) stay whole.
+     */
+    private fun toBlocks(vt: com.google.mlkit.vision.text.Text): List<OcrBlock> {
+        val out = ArrayList<OcrBlock>()
+        for (b in vt.textBlocks) {
+            val t = b.text.trim()
+            if (t.isEmpty()) continue
+            val whole = toBlock(t, b)
+            if (whole.vertical || b.lines.size < 2 || Math.abs(whole.angle) >= 6f) { out.add(whole); continue }
+            for (l in b.lines) {
+                val lt = l.text.trim()
+                if (lt.isEmpty()) continue
+                val g = geo(l.cornerPoints, l.boundingBox) ?: continue
+                val box = l.boundingBox
+                out.add(OcrBlock(lt, box?.top ?: 0, box?.left ?: 0, g.cx, g.cy, g.w, g.h, g.angle, g.h * 0.9f, false))
+            }
+        }
+        return out.sortedWith(compareBy({ it.top }, { it.left }))
     }
 
     private class Geo(val cx: Float, val cy: Float, val w: Float, val h: Float, val angle: Float)
