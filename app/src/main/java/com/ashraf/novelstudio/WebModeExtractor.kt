@@ -839,12 +839,34 @@ internal class WebModeExtractor(
                 combineOcrResults(first, retry)
             } else first
 
-            if (result.text.length >= 2) { st.locked = true; return result }
-            if (!st.locked && st.fallbackBudget > 0) {
-                st.fallbackBudget--
-                for (s in WebModeLogic.fallbackScripts(st.current)) {
-                    val r = if (fastMode) engine.recognizeFast(bmp, s) else engine.recognize(bmp, s)
-                    if (r.text.length >= 2) { st.current = s; st.locked = true; return r }
+            val resultLetters = result.text.count { it.isLetterOrDigit() }
+            // A script locked from a previous chapter can be wrong for this comic. If the
+            // real-time first pass is sparse, try alternate models once before giving up.
+            if (result.text.length >= 2) {
+                if (fastMode && resultLetters < 18) {
+                    for (script in WebModeLogic.fallbackScripts(st.current)) {
+                        val alternate = try { engine.recognizeFast(bmp, script) } catch (_: Exception) { OcrResult(emptyList()) }
+                        if (alternate.text.count { it.isLetterOrDigit() } > resultLetters + 4) {
+                            st.current = script
+                            st.locked = true
+                            return alternate
+                        }
+                    }
+                }
+                st.locked = true
+                return result
+            }
+            if ((!st.locked || fastMode) && st.fallbackBudget > 0) {
+                if (!fastMode) st.fallbackBudget--
+                for (script in WebModeLogic.fallbackScripts(st.current)) {
+                    val alternate = try {
+                        if (fastMode) engine.recognizeFast(bmp, script) else engine.recognize(bmp, script)
+                    } catch (_: Exception) { OcrResult(emptyList()) }
+                    if (alternate.text.count { it.isLetterOrDigit() } >= 2) {
+                        st.current = script
+                        st.locked = true
+                        return alternate
+                    }
                 }
             }
             return result
