@@ -202,6 +202,11 @@ internal object OcrPost {
 internal interface OcrEngine {
     /** Blocking. Call from a worker thread, never the main thread. */
     fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult
+    /**
+     * One bounded retry for sparse/failed OCR. Implementations may upscale and boost contrast.
+     * Empty default keeps alternate/test engines from accidentally repeating expensive work.
+     */
+    fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult = OcrResult(emptyList())
     /** A small crop that holds ONE speech bubble: cheaper than [recognize] (few variants). */
     fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = recognize(bitmap, script)
     fun close()
@@ -315,6 +320,78 @@ internal class MlKitOcrEngine : OcrEngine {
             throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
         }
     }
+
+    /**
+     * Retry only when the caller detects a sparse first reading. Upscale within a bounded pixel
+     * budget and run normal + contrast-boosted inputs in parallel, then merge distinct text boxes.
+     */
+    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult {
+        val maxDim = maxOf(bitmap.width, bitmap.height).toFloat()
+        val area = bitmap.width.toDouble() * bitmap.height.toDouble()
+        val factor = minOf(
+            2f,
+            2400f / maxDim,
+            kotlin.math.sqrt(5_000_000.0 / area).toFloat()
+        ).coerceAtLeast(1f)
+
+        var enlarged: Bitmap? = null
+        var boosted: Bitmap? = null
+        try {
+            val base = if (factor > 1.01f) {
+                Bitmap.createScaledBitmap(
+                    bitmap,
+                    (bitmap.width * factor).toInt().coerceAtLeast(1),
+                    (bitmap.height * factor).toInt().coerceAtLeast(1),
+                    true
+                ).also { enlarged = it }
+            } else bitmap
+            boosted = OcrPost.boostContrast(base)
+            val rec = recognizer(script)
+            val tasks = listOf(
+                rec.process(InputImage.fromBitmap(base, 0)),
+                rec.process(InputImage.fromBitmap(boosted, 0))
+            )
+            val all = ArrayList<OcrBlock>()
+            for (task in tasks) {
+                val raw = try { toBlocks(Tasks.await(task)) }
+                    catch (_: ExecutionException) { emptyList() }
+                for (found in raw) {
+                    val candidate = OcrPost.scaled(found, 1f / factor)
+                    if (OcrPost.isNoise(candidate)) continue
+                    val key = comparableOcrText(candidate.text)
+                    if (key.isEmpty()) continue
+                    val overlaps = all.indices.filter {
+                        OcrPost.overlapOfSmaller(all[it], candidate) > 0.25f
+                    }
+                    if (overlaps.isEmpty()) {
+                        all.add(candidate)
+                    } else {
+                        val upgrade = overlaps.firstOrNull { index ->
+                            val prior = comparableOcrText(all[index].text)
+                            prior.length >= 3 &&
+                                key.length > prior.length + maxOf(2, prior.length / 10) &&
+                                key.contains(prior)
+                        }
+                        if (upgrade != null) all[upgrade] = candidate
+                    }
+                }
+            }
+            return OcrResult(OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) }))
+        } catch (_: OutOfMemoryError) {
+            return OcrResult(emptyList())
+        } catch (e: ExecutionException) {
+            val c = e.cause
+            throw OcrUnavailableException("ML Kit ${script.name} retry failed: ${c?.javaClass?.simpleName}", c)
+        } catch (e: MlKitException) {
+            throw OcrUnavailableException("ML Kit ${script.name} retry: code ${e.errorCode}", e)
+        } finally {
+            boosted?.let { if (it !== bitmap) it.recycle() }
+            enlarged?.let { if (it !== bitmap && it !== boosted) it.recycle() }
+        }
+    }
+
+    private fun comparableOcrText(text: String): String =
+        text.lowercase().filter { it.isLetterOrDigit() }
 
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult {
         try {
