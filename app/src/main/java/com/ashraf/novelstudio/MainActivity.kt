@@ -2169,20 +2169,33 @@ return t.length>=40?'TXT:'+t:'';
             if (Prefs.adblock(this@MainActivity) && r.isForMainFrame) {
                 AdBlock.logEntry("NAV gesture=${r.hasGesture()} redirect=${r.isRedirect} url=${r.url}")
             }
-            if (Prefs.adblock(this@MainActivity) && r.isForMainFrame && !r.hasGesture()) {
+            if (Prefs.adblock(this@MainActivity) && r.isForMainFrame) {
                 val cur = Uri.parse(view?.url ?: "").host
                 val why = AdBlock.blockReason(r.url, cur)
                 val nh = r.url.host
                 val cross = cur != null && nh != null && AdBlock.root(cur) != AdBlock.root(nh)
-                // Only cancel script-started navigations that go to a known ad/tracker target.
-                // A plain cross-domain redirect is NOT cancelled any more: sites such as
-                // novel543.com serve a stub page that redirects through another domain and back
-                // to the chapter, and cancelling it left the page blank.
-                if (why != null || (cross && AdBlock.navStrict(cur))) {
-                    AdBlock.logEntry("NAV ${if (AdBlock.networkEnforce) "CANCELLED" else "WOULD-CANCEL"} [${why ?: "nav: block-cross rule"}] from=$cur to=${r.url}")
-                    if (AdBlock.networkEnforce) return true
-                } else if (cross) {
-                    AdBlock.logEntry("NAV allowed (cross-domain, not a known ad target) from=$cur to=${r.url}")
+
+                // Block explicit ad/tracker HOST matches even when the user tapped:
+                // some pop-under scripts perform their redirect inside the tap handler,
+                // which makes hasGesture() true and used to bypass the navigation gate.
+                // Do not apply broad URL-substring rules to gesture navigations; paths like
+                // /ads/ can be legitimate first-party pages.
+                val knownAdHost = why?.startsWith("host:") == true ||
+                    why?.startsWith("rule:block-host:") == true
+                if (knownAdHost) {
+                    val enforce = AdBlock.networkEnforce
+                    AdBlock.logEntry("NAV ${if (enforce) "CANCELLED" else "WOULD-CANCEL"} [$why] from=$cur to=${r.url} gesture=${r.hasGesture()}")
+                    if (enforce) return true
+                } else if (!r.hasGesture()) {
+                    // A plain cross-domain redirect is NOT cancelled by default: sites such as
+                    // novel543.com use an intermediate domain before returning to the chapter.
+                    // Keep that exception; only block known URL rules or explicit site strict mode.
+                    if (why != null || (cross && AdBlock.navStrict(cur))) {
+                        AdBlock.logEntry("NAV ${if (AdBlock.networkEnforce) "CANCELLED" else "WOULD-CANCEL"} [${why ?: "nav: block-cross rule"}] from=$cur to=${r.url}")
+                        if (AdBlock.networkEnforce) return true
+                    } else if (cross) {
+                        AdBlock.logEntry("NAV allowed (cross-domain, not a known ad target) from=$cur to=${r.url}")
+                    }
                 }
             }
             return false
