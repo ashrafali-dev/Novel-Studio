@@ -861,7 +861,7 @@ internal class WebModeExtractor(
 
         // ---------------- JavaScript run inside the real page (no dollar signs: this is a Kotlin string)
         private const val LIB = """
-var BAD=/avatar|icon|logo|banner|sprite|emoji|profile|badge|pixel|tracking|advert|\\/ads?\\/|[_\\-.]ads?[_\\-.]|spinner/i;
+var BAD=/avatar|icon|logo|banner|sprite|emoji|profile|badge|pixel|tracking|advert|\/ads?\/|[_\-.]ads?[_\-.]|spinner/i;
 var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparen/i;
 var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
 var de=document.scrollingElement||document.documentElement;
@@ -876,11 +876,11 @@ function cands(sc){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
   for(var i=0;i<imgs.length;i++){
     var im=imgs[i],src=im.currentSrc||im.src||'';
-    var ph=!src||/^data:image\\/(gif|svg)/i.test(src)||PH.test(src);
+    var ph=!src||/^data:image\/(gif|svg)/i.test(src)||PH.test(src);
     if(ph){
       for(var a=0;a<LAZY.length;a++){var v=im.getAttribute(LAZY[a]);if(v&&v.length>4){src=v;ph=false;break;}}
       if(ph){var ss=im.getAttribute('data-srcset')||im.getAttribute('srcset');
-        if(ss){src=ss.split(',')[0].trim().split(/\\s+/)[0];ph=!src;}}
+        if(ss){src=ss.split(',')[0].trim().split(/\s+/)[0];ph=!src;}}
     }
     if(!src||ph)continue;
     try{src=new URL(src,document.baseURI).href;}catch(e){continue;}
@@ -895,7 +895,7 @@ function cands(sc){
     out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
   }
   // Some readers draw comic panels as CSS background images instead of <img>.
-  // Treat only large, visible-content-sized elements as panels to avoid tiny UI artwork.
+  // Treat only large elements as panels to avoid tiny UI artwork.
   var els=document.querySelectorAll('*'),limit=Math.min(els.length,5000);
   for(var j=0;j<limit;j++){
     var el=els[j],bg='';
@@ -906,10 +906,10 @@ function cands(sc){
     var meta=(el.className&&el.className.baseVal!==undefined?el.className.baseVal:el.className||'')+' '+(el.id||'')+' '+(el.getAttribute('aria-label')||'');
     if(BAD.test(meta))continue;
     if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
-    var rx=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
+    var rx=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
     while((m=rx.exec(bg))!==null){
       var s=(m[1]||'').trim();
-      if(!s||/^data:image\\/(gif|svg)/i.test(s))continue;
+      if(!s||/^data:image\/(gif|svg)/i.test(s))continue;
       try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
       if(seen[s]||BAD.test(s))continue;
       seen[s]=1;
