@@ -237,10 +237,21 @@ internal class MlKitOcrEngine : OcrEngine {
         text.lowercase().filter { it.isLetterOrDigit() }
 
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult {
-        // Accuracy-first real-time OCR: use the same parallel multi-view recognition as full scans.
-        // A single original-image pass was leaving short, outlined and stylised lettering behind.
-        // The caller limits additional crop retries to balloons where unread ink is detected.
-        return recognize(bitmap, script)
+        // Real-time mode must return quickly: one on-device pass over the original bitmap.
+        // Full multi-view/contrast recognition remains available through recognize() for chapter scans
+        // and through the bounded fallback when this first pass is genuinely sparse.
+        try {
+            val result = Tasks.await(
+                recognizer(script).process(InputImage.fromBitmap(bitmap, 0))
+            )
+            return OcrResult(toBlocks(result).filterNot { OcrPost.isNoise(it) })
+        } catch (e: ExecutionException) {
+            val c = e.cause
+            if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
+            throw OcrUnavailableException("ML Kit ${script.name} failed: ${c?.javaClass?.simpleName}", c)
+        } catch (e: MlKitException) {
+            throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
+        }
     }
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
