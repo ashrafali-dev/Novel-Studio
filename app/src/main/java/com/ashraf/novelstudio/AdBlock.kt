@@ -198,6 +198,87 @@ RULES FOR YOUR ANSWER
         return enforce
     }
 
+    /**
+     * Collect page links and already-requested resources for optional AI classification.
+     * Only URLs and short labels are returned; page text and cookies are not collected.
+     */
+    fun pageLinkScanJs(): String = """
+        (function(){
+          try {
+            var out=[], seen=new Set();
+            function add(raw,kind,label){
+              if(!raw || out.length>=220) return;
+              var u;
+              try { u=new URL(raw,location.href); } catch(e) { return; }
+              if(u.protocol!=='http:' && u.protocol!=='https:') return;
+              u.hash='';
+              var key=u.href;
+              if(seen.has(key)) return;
+              seen.add(key);
+              out.push({url:u.href,host:u.hostname.toLowerCase(),kind:kind,
+                text:String(label||'').replace(/\s+/g,' ').slice(0,60)});
+            }
+            var nodes=document.querySelectorAll('a[href],area[href],iframe[src],frame[src],script[src],link[href],form[action]');
+            for(var i=0;i<nodes.length && out.length<220;i++){
+              var e=nodes[i], tag=(e.tagName||'').toLowerCase();
+              var raw=e.href || e.src || e.action || e.getAttribute('href') || e.getAttribute('src') || e.getAttribute('action');
+              var label=(e.innerText||e.getAttribute('aria-label')||e.title||'').trim();
+              add(raw,tag,label);
+            }
+            try {
+              var entries=performance.getEntriesByType('resource')||[];
+              for(var j=0;j<entries.length && out.length<220;j++) add(entries[j].name,'resource','');
+            } catch(e) {}
+            return JSON.stringify({page:location.href,pageHost:location.hostname.toLowerCase(),total:seen.size,links:out});
+          } catch(e) { return JSON.stringify({error:String(e)}); }
+        })()
+    """.trimIndent()
+
+    private val aiNeverBlockHosts = setOf(
+        "google.com", "googleapis.com", "gstatic.com", "googleusercontent.com",
+        "cloudflare.com", "cloudflareinsights.com", "jsdelivr.net", "unpkg.com",
+        "cdnjs.cloudflare.com", "bootstrapcdn.com", "w3.org", "mozilla.org",
+        "microsoft.com", "apple.com", "github.com", "githubusercontent.com",
+        "stripe.com", "paypal.com", "auth0.com", "firebaseapp.com", "web.app",
+        "amazonaws.com", "youtube.com", "youtube-nocookie.com", "facebook.com",
+        "facebook.net", "tiktok.com", "x.com", "twitter.com", "reddit.com",
+        "wikipedia.org", "gravatar.com", "wordpress.com", "wp.com", "imgur.com",
+        "discord.com", "discordapp.com", "sentry.io", "recaptcha.net", "hcaptcha.com"
+    )
+
+    /** Persist AI suggestions only when their hosts appeared in the scan. */
+    fun addAiBlockedHosts(
+        ctx: Context,
+        suggestions: Collection<String>,
+        candidates: Set<String>,
+        pageHost: String?
+    ): Int {
+        val validHost = Regex("^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+        val ipV4 = Regex("^\\d{1,3}(?:\\.\\d{1,3}){3}$")
+        val page = (pageHost ?: "").trim('.').lowercase()
+        val pageRoot = if (page.isNotBlank() && page.contains('.')) root(page) else ""
+        val candidateHosts = candidates.map { it.trim('.').lowercase() }.filter { it.isNotBlank() }.toSet()
+        val accepted = linkedSetOf<String>()
+        for (raw in suggestions) {
+            val h = raw.trim().trim('.').lowercase()
+            if (!validHost.matches(h) || !h.contains('.') || ipV4.matches(h) || h.contains("..")) continue
+            if (candidateHosts.none { it == h || it.endsWith(".$h") }) continue
+            if (page.isNotBlank() && (h == page || h.endsWith(".$page") || page.endsWith(".$h"))) continue
+            if (pageRoot.isNotBlank() && root(h) == pageRoot) continue
+            if (aiNeverBlockHosts.any { hostMatches(h, it) }) continue
+            accepted.add(h)
+        }
+        if (accepted.isEmpty()) return 0
+        val file = File(ctx.applicationContext.filesDir, "ai-blocklist.txt")
+        val existing = if (file.exists()) file.readLines().map { it.trim().lowercase() }.filter { it.isNotBlank() }.toMutableSet() else mutableSetOf()
+        val before = existing.size
+        existing.addAll(accepted)
+        if (existing.size == before) return 0
+        file.writeText(existing.sorted().joinToString("\n"))
+        load(ctx.applicationContext)
+        return existing.size - before
+    }
+
     /** JS that reads back what the cosmetic part touched, plus how much text the page really has. */
     fun probeJs(): String = "(function(){try{" +
         "function d(e){return {t:e.tagName,id:(e.id||'').slice(0,60),c:(typeof e.className==='string'?e.className:'').slice(0,80),n:(e.textContent||'').length};}" +
@@ -253,7 +334,10 @@ RULES FOR YOUR ANSWER
     fun load(ctx: Context) {
         val s = HashSet<String>(builtIn)
         val f = File(ctx.filesDir, "blocklist.txt")
-        if (f.exists()) f.forEachLine { val t = it.trim(); if (t.isNotEmpty()) s.add(t) }
+        if (f.exists()) f.forEachLine { val t = it.trim().lowercase(); if (t.isNotEmpty()) s.add(t) }
+        // Keep AI-discovered hosts separate so a normal filter refresh cannot erase them.
+        val ai = File(ctx.filesDir, "ai-blocklist.txt")
+        if (ai.exists()) ai.forEachLine { val t = it.trim().lowercase(); if (t.isNotEmpty()) s.add(t) }
         hosts = s
         parseRules(Prefs.get(ctx, "adblockRules", ""))
         debugMode = (Prefs.get(ctx, "adblockDebugMode", "0").toIntOrNull() ?: 0).coerceIn(0, 3)
