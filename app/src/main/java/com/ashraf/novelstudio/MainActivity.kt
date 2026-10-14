@@ -4091,9 +4091,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val deepSeekRealtime = realtimeFast &&
                     (chatHost == "deepseek.com" || chatHost.endsWith(".deepseek.com"))
                 // DeepSeek often has no reliable Stop/streaming indicator. In real-time mode,
-                // confirm stability across four idle polls (~320 ms at the current 80 ms interval)
-                // instead of eight, while leaving every non-real-time path unchanged.
-                val noSignalStableNeeded = if (deepSeekRealtime) 4 else
+                // confirm stability across three quick idle polls, while leaving every non-real-time path unchanged.
+                val noSignalStableNeeded = if (deepSeekRealtime) 3 else
                     RealtimeCompletionPolicy.noStopSignalThreshold(
                         this, if (livePanelBatch) 8 else 20
                     )
