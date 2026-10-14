@@ -888,7 +888,7 @@ function cands(sc){
     var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
     if(!((r.width>=180&&r.height>=100)||(nw>=400&&nh>=250)))continue;
     var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
-    if(BAD.test(meta+' '+src))continue;
+    if(BAD.test(meta))continue; // Do not reject a real comic panel because its CDN/path contains words like 'avatar' or 'banner'.
     if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
     seen[src]=1;
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
@@ -911,7 +911,7 @@ function cands(sc){
       var s=(m[1]||'').trim();
       if(!s||/^data:image\/(gif|svg)/i.test(s))continue;
       try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
-      if(seen[s]||BAD.test(s))continue;
+      if(seen[s])continue; // URL keywords can be part of a real panel/series slug; filter UI artwork by element metadata instead.
       seen[s]=1;
       var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
       out.push({s:s,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:1,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
