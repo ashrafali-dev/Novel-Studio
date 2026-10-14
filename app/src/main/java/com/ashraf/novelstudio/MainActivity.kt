@@ -143,7 +143,35 @@ class MainActivity : Activity() {
             }
             // Probe the viewport 4x/second. Image changes trigger OCR quickly; a stable image set
             // is rechecked periodically, while text-only pages get one safe HTML-extraction fallback.
-            val js = "(function(){try{var a=[].slice.call(document.images),v=[];for(var i=0;i<a.length;i++){var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';if(!s||/^data:image\\/(gif|svg)/i.test(s))s=e.getAttribute('data-src')||e.getAttribute('data-lazy-src')||e.getAttribute('data-original')||s;if(!s||/^data:image\\/(gif|svg)/i.test(s)||r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;v.push(s+'@'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));}if(v.length)return 'IMG:'+v.join('|');var root=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;var t=String((root&&(root.innerText||root.textContent))||'').replace(/\\s+/g,' ').trim().slice(0,1200);return t.length>=40?'TXT:'+t:'';}catch(e){return '';}})();"
+            val js = """(function(){try{
+var a=[].slice.call(document.images),v=[],seen={};
+for(var i=0;i<a.length;i++){
+ var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';
+ if(!s||/^data:image\\/(gif|svg)/i.test(s))s=e.getAttribute('data-src')||e.getAttribute('data-lazy-src')||e.getAttribute('data-original')||s;
+ if(!s||/^data:image\\/(gif|svg)/i.test(s)||r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
+ seen[s]=1;v.push('IMG:'+s+'@'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
+}
+var els=document.querySelectorAll('*'),lim=Math.min(els.length,4000);
+for(var j=0;j<lim;j++){
+ var e=els[j],bg='';
+ try{bg=getComputedStyle(e).backgroundImage||'';}catch(ignore){}
+ if(!bg||bg==='none')continue;
+ var r=e.getBoundingClientRect();
+ if(r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
+ var re=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
+ while((m=re.exec(bg))!==null){
+  var s=(m[1]||'').trim();
+  if(!s||/^data:image\\/(gif|svg)/i.test(s))continue;
+  try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
+  if(seen[s])continue;
+  seen[s]=1;v.push('BG:'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height));
+ }
+}
+if(v.length)return 'IMG:'+v.join('|');
+var root=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;
+var t=String((root&&(root.innerText||root.textContent))||'').replace(/\\s+/g,' ').trim().slice(0,1200);
+return t.length>=40?'TXT:'+t:'';
+}catch(e){return '';}})();"""
             novelWv.evaluateJavascript(js) { raw ->
                 if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
                 val signature = decode(raw).trim()
