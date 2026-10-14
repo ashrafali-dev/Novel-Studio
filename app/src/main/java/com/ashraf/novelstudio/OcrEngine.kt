@@ -202,6 +202,8 @@ internal object OcrPost {
 internal interface OcrEngine {
     /** Blocking. Call from a worker thread, never the main thread. */
     fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult
+    /** Fast single-pass OCR for screen scanning; callers may request a bounded fallback when sparse. */
+    fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = recognize(bitmap, script)
     /**
      * One bounded retry for sparse/failed OCR. Implementations may upscale and boost contrast.
      * Empty default keeps alternate/test engines from accidentally repeating expensive work.
@@ -233,6 +235,20 @@ internal class MlKitOcrEngine : OcrEngine {
     // Normalize spacing and punctuation for comparing partial OCR readings from different passes.
     private fun comparableOcrText(text: String): String =
         text.lowercase().filter { it.isLetterOrDigit() }
+
+    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult {
+        try {
+            val rec = recognizer(script)
+            val result = Tasks.await(rec.process(InputImage.fromBitmap(bitmap, 0)))
+            return OcrResult(OcrPost.mergeNeighbours(toBlocks(result).filterNot { OcrPost.isNoise(it) }))
+        } catch (e: ExecutionException) {
+            val c = e.cause
+            if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
+            throw OcrUnavailableException("ML Kit ${script.name} fast pass failed: ${c?.javaClass?.simpleName}", c)
+        } catch (e: MlKitException) {
+            throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
+        }
+    }
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
         try {
