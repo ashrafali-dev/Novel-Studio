@@ -13,7 +13,7 @@ internal object RealtimeCompletionPolicy {
     private const val NORMAL_POLL_MS = 500L
     private const val REALTIME_FIRST_POLL_MS = 50L
     private const val REALTIME_STREAMING_POLL_MS = 100L
-    private const val REALTIME_IDLE_POLL_MS = 50L
+    private const val REALTIME_IDLE_POLL_MS = 40L
 
     fun enabled(context: Context): Boolean =
         DeepSeekRealtimeTranslation.isEnabled(context)
@@ -26,9 +26,9 @@ internal object RealtimeCompletionPolicy {
         return if (streaming || !replyAvailable) REALTIME_STREAMING_POLL_MS else REALTIME_IDLE_POLL_MS
     }
 
-    fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 3): Int =
+    fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 2): Int =
         if (enabled(context)) realtimeThreshold else normalThreshold
 
-    fun noStopSignalThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 4): Int =
+    fun noStopSignalThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 2): Int =
         if (enabled(context)) realtimeThreshold else normalThreshold
 }
