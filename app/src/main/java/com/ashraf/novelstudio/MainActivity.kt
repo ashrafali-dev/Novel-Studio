@@ -3539,12 +3539,27 @@ return t.length>=40?'TXT:'+t:'';
             val here = pageKey(pageUrl)
             val prefetched = prefetchNextOf.values.firstOrNull { pageKey(it.url) == here }
             if (prefetched != null) {
+                val key = keyOf(prefetched)
                 val saved = Store.find(this, prefetched)
                 val translated = saved?.let { Store.readRaw(this, it.id) }.orEmpty()
                 if (saved != null && translated.length >= 30) {
                     onChapter(prefetched)
                     markPrefetchedTranslationActive(prefetched, saved)
                     applyTranslation(prefetched, translated, true)
+                    // A page-load restore must keep the sliding prefetch window moving too.
+                    // Without this call, chapter N appears translated but chapter N+1 is never queued
+                    // until the user manually extracts it.
+                    schedulePrefetch(prefetched)
+                } else {
+                    // The page can be opened while its background translation is still running.
+                    // Adopt that chapter now and prefetch the following one while this job finishes.
+                    val r = running
+                    val inFlight = prefetchGeneratedKeys.contains(key) &&
+                        ((r != null && keyOf(r) == key) || queue.any { keyOf(it) == key })
+                    if (inFlight) {
+                        onChapter(prefetched)
+                        schedulePrefetch(prefetched)
+                    }
                 }
             }
             return
