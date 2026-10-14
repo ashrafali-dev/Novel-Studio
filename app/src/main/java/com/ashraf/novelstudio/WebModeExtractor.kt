@@ -657,9 +657,10 @@ internal class WebModeExtractor(
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
             val consumed = BooleanArray(blocks.size)
             for (i in blocks.indices) {
-                // Fast Force OCR deliberately avoids a second ML Kit call for every detected bubble.
-                // A sparse first pass still gets the whole-slice fallback in recognize().
-                if (fastMode || consumed[i]) continue
+                // Keep the missed-line recovery pass enabled in Force OCR too.
+                // The first pass is fast; this crop retry can recover lettering inside a bubble
+                // that the screen-level recognizer only partially read.
+                if (consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
                 val inter: IntArray = (try { WmBubbleStyle.bubbleInterior(bmp, rects[i], rects) } catch (_: Exception) { null }) ?: continue
