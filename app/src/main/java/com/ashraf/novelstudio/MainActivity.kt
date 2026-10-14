@@ -4090,10 +4090,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val chatHost = Uri.parse(chatWv.url.orEmpty()).host?.lowercase().orEmpty()
                 val deepSeekRealtime = realtimeFast &&
                     (chatHost == "deepseek.com" || chatHost.endsWith(".deepseek.com"))
-                // DeepSeek often has no reliable Stop/streaming indicator. Its finished
-                // answer can be complete without every internal marker, so use a longer
-                // stable-text window instead of waiting forever for the expected length.
-                val noSignalStableNeeded = if (deepSeekRealtime) 8 else
+                // DeepSeek often has no reliable Stop/streaming indicator. In real-time mode,
+                // confirm stability across four idle polls (~320 ms at the current 80 ms interval)
+                // instead of eight, while leaving every non-real-time path unchanged.
+                val noSignalStableNeeded = if (deepSeekRealtime) 4 else
                     RealtimeCompletionPolicy.noStopSignalThreshold(
                         this, if (livePanelBatch) 8 else 20
                     )
