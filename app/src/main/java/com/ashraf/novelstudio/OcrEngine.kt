@@ -225,6 +225,10 @@ internal class MlKitOcrEngine : OcrEngine {
         }
     }
 
+    // Normalize spacing and punctuation for comparing partial OCR readings from different passes.
+    private fun comparableOcrText(text: String): String =
+        text.lowercase().filter { it.isLetterOrDigit() }
+
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
         try {
             val rec = recognizer(script)
@@ -262,8 +266,39 @@ internal class MlKitOcrEngine : OcrEngine {
                         catch (e: ExecutionException) { if (i == 0) throw e else emptyList() }
                     for (b in blocks) {
                         val big = if (scale[i] == 1f) b else OcrPost.scaled(b, scale[i])
-                        if (i > 0 && big.text.trim().length < 2) continue
-                        if (i > 0 && all.any { OcrPost.overlapOfSmaller(it, big) > 0.25f }) continue
+                        val candidateText = comparableOcrText(big.text)
+                        if (i > 0 && candidateText.length < 2) continue
+
+                        if (i > 0) {
+                            val overlaps = all.indices.filter {
+                                OcrPost.overlapOfSmaller(all[it], big) > 0.25f
+                            }
+                            if (overlaps.isNotEmpty()) {
+                                // A later scale/contrast pass can read more of a line than the
+                                // original pass. Do not blindly discard it as a duplicate: keep it
+                                // when its text extends an earlier reading at the same position.
+                                val upgrade = overlaps.firstOrNull { index ->
+                                    val priorText = comparableOcrText(all[index].text)
+                                    priorText.length >= 3 &&
+                                        candidateText.length > priorText.length + maxOf(2, priorText.length / 10) &&
+                                        candidateText.contains(priorText)
+                                }
+                                if (upgrade != null) {
+                                    all[upgrade] = big
+                                    // If the fuller result also contains another overlapping
+                                    // fragment, remove that fragment so it is not translated twice.
+                                    val redundant = overlaps.filter { index ->
+                                        index != upgrade && comparableOcrText(all[index].text).let { priorText ->
+                                            priorText.length >= 3 && candidateText.contains(priorText)
+                                        }
+                                    }.sortedDescending()
+                                    for (index in redundant) all.removeAt(index)
+                                }
+                                // Keep the best existing candidate for this position unless the
+                                // new one demonstrably contains more of the same text.
+                                continue
+                            }
+                        }
                         all.add(big)
                     }
                 }
