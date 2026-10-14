@@ -253,7 +253,7 @@ internal class WebModeExtractor(
                 if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
                 diag.downloaded++
                 try {
-                    val po = ocrBytes(bytes, script, p.src)
+                    val po = ocrBytes(bytes, script, p.src, fastMode = req.visibleOnly)
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
                     val t = po.text
@@ -502,6 +502,19 @@ internal class WebModeExtractor(
 
         // ---- fetching: HTTP with the WebView's cookies; blob:/data: and refused requests go through the page itself
         private fun fetchWithRetry(p: PanelRef, pageUrl: String): ByteArray? {
+            // Real-time mode must not inherit the multi-second retry/backoff policy used by full scans.
+            // Try once with short network timeouts; if direct HTTP fails, let the page fetch its own image.
+            if (req.visibleOnly) {
+                return try {
+                    val u = p.src
+                    when {
+                        u.startsWith("data:", true) -> decodeDataUrl(u)
+                        u.startsWith("blob:", true) -> fetchViaPage(u, timeoutMs = 5000L)
+                        else -> try { httpGet(u, pageUrl, quick = true) }
+                              catch (_: IOException) { fetchViaPage(u, timeoutMs = 5000L) }
+                    }
+                } catch (_: Exception) { null }
+            }
             for (attempt in 1..3) {
                 if (!alive()) return null
                 try {
@@ -518,11 +531,11 @@ internal class WebModeExtractor(
             return null
         }
 
-        private fun httpGet(url: String, referer: String): ByteArray {
+        private fun httpGet(url: String, referer: String, quick: Boolean = false): ByteArray {
             val c = URL(url).openConnection() as HttpURLConnection
             try {
-                c.connectTimeout = 15000
-                c.readTimeout = 25000
+                c.connectTimeout = if (quick) 2500 else 15000
+                c.readTimeout = if (quick) 3500 else 25000
                 c.instanceFollowRedirects = true
                 // A CDN may reuse a panel URL while replacing its bytes in a live reader.
                 // Disable HTTP caching so same-URL OCR rechecks see current pixels.
@@ -565,7 +578,7 @@ internal class WebModeExtractor(
         }
 
         /** fetch() inside the page: works for blob: URLs and for same-origin / CORS-enabled images. */
-        private fun fetchViaPage(u: String): ByteArray {
+        private fun fetchViaPage(u: String, timeoutMs: Long = 25000L): ByteArray {
             val rid = UUID.randomUUID().toString()
             val pending = Pending()
             bridge.pending[rid] = pending
@@ -584,7 +597,7 @@ internal class WebModeExtractor(
                     ".catch(function(e){viaCanvas();});}catch(e){viaCanvas();}" +
                     "return 'started';})(" + JSONObject.quote(rid) + "," + JSONObject.quote(u) + ")"
                 onMain { wv.evaluateJavascript(js, null) }
-                if (!pending.latch.await(25, TimeUnit.SECONDS)) throw IOException("page fetch timeout")
+                if (!pending.latch.await(timeoutMs, TimeUnit.MILLISECONDS)) throw IOException("page fetch timeout")
                 val d = pending.data ?: throw IOException(pending.err ?: "page fetch failed")
                 val bytes = decodeDataUrl(d)
                 if (bytes.size > MAX_BYTES) throw IOException("too large")
@@ -595,7 +608,7 @@ internal class WebModeExtractor(
         }
 
         // ---- decode + OCR. Returns null for images too small to be a panel; no bubbles for a panel without text.
-        private fun ocrBytes(bytes: ByteArray, st: ScriptState, src: String): PanelOcr? {
+        private fun ocrBytes(bytes: ByteArray, st: ScriptState, src: String, fastMode: Boolean = false): PanelOcr? {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth
@@ -608,7 +621,7 @@ internal class WebModeExtractor(
             val bubbles = ArrayList<WmBubble>()
             if (h <= WebModeLogic.SLICE_H) {
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: throw DecodeException()
-                try { readSlice(bmp, st, 0, sample, w, h, src, texts, bubbles, true, true) } finally { bmp.recycle() }
+                try { readSlice(bmp, st, 0, sample, w, h, src, texts, bubbles, true, true, fastMode = fastMode) } finally { bmp.recycle() }
             } else {
                 @Suppress("DEPRECATION")
                 val region = (try { BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) } catch (_: Exception) { null })
@@ -621,7 +634,7 @@ internal class WebModeExtractor(
                         val bmp = region.decodeRegion(Rect(0, y0, w, y1), opts) ?: throw DecodeException()
                         try {
                             if (bmp.width >= 32 && bmp.height >= 32)
-                                readSlice(bmp, st, y0, sample, w, h, src, texts, bubbles, idx == 0, idx == sl.size - 1)
+                                readSlice(bmp, st, y0, sample, w, h, src, texts, bubbles, idx == 0, idx == sl.size - 1, fastMode = fastMode)
                         } finally { bmp.recycle() }
                     }
                 } finally { region.recycle() }
@@ -656,7 +669,13 @@ internal class WebModeExtractor(
             val refinedText = arrayOfNulls<String>(blocks.size)
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
             val consumed = BooleanArray(blocks.size)
+            // In real-time mode, avoid an extra ML Kit call for every recognised bubble when the
+            // first pass already returned a dense, readable viewport. Sparse/short results still
+            // get the targeted bubble retry below, and recognize() can run its bounded fallback.
+            val fastPassAlreadyDense = fastMode && blocks.size >= 3 &&
+                blocks.sumOf { block -> block.text.count { it.isLetterOrDigit() } } >= 40
             for (i in blocks.indices) {
+                if (fastPassAlreadyDense) continue
                 // Keep the missed-line recovery pass enabled in Force OCR too.
                 // The first pass is fast; this crop retry can recover lettering inside a bubble
                 // that the screen-level recognizer only partially read.
