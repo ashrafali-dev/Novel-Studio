@@ -151,13 +151,13 @@ for(var i=0;i<a.length;i++){
  if(!s||/^data:image\/(gif|svg)/i.test(s)||r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
  seen[s]=1;v.push('IMG:'+s+'@'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
 }
-var els=document.querySelectorAll('*'),lim=Math.min(els.length,4000);
+var els=document.querySelectorAll('div,section,article,figure,main'),lim=Math.min(els.length,2500);
 for(var j=0;j<lim;j++){
- var e=els[j],bg='';
+ var e=els[j],r=e.getBoundingClientRect();
+ if(r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
+ var bg='';
  try{bg=getComputedStyle(e).backgroundImage||'';}catch(ignore){}
  if(!bg||bg==='none')continue;
- var r=e.getBoundingClientRect();
- if(r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
  var re=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
  while((m=re.exec(bg))!==null){
   var s=(m[1]||'').trim();
