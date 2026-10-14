@@ -212,6 +212,11 @@ RULES FOR YOUR ANSWER
               try { u=new URL(raw,location.href); } catch(e) { return; }
               if(u.protocol!=='http:' && u.protocol!=='https:') return;
               u.hash='';
+              // Avoid sending authentication/session material to the chatbot.
+              try {
+                var sensitive=/(token|auth|session|password|passwd|secret|api.?key|access.?key|email|username|userid|reset|signature)/i;
+                [].slice.call(u.searchParams.keys()).forEach(function(k){if(sensitive.test(k))u.searchParams.delete(k);});
+              } catch(e) {}
               var key=u.href;
               if(seen.has(key)) return;
               seen.add(key);
@@ -266,6 +271,8 @@ RULES FOR YOUR ANSWER
             if (page.isNotBlank() && (h == page || h.endsWith(".$page") || page.endsWith(".$h"))) continue
             if (pageRoot.isNotBlank() && root(h) == pageRoot) continue
             if (aiNeverBlockHosts.any { hostMatches(h, it) }) continue
+            // The AI must not add a domain that is already covered by any active list.
+            if (hosts.any { hostMatches(h, it) }) continue
             accepted.add(h)
         }
         if (accepted.isEmpty()) return 0
