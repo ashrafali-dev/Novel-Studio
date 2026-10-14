@@ -217,21 +217,86 @@ internal object WebModeLayoutStore {
             kotlin.math.abs(a.w - b.w) < 0.018f &&
             kotlin.math.abs(a.h - b.h) < 0.018f
 
+    private fun boxOverlapOfSmaller(a: WmBubble, b: WmBubble): Float {
+        val left = maxOf(a.cx - a.w / 2f, b.cx - b.w / 2f)
+        val right = minOf(a.cx + a.w / 2f, b.cx + b.w / 2f)
+        val top = maxOf(a.cy - a.h / 2f, b.cy - b.h / 2f)
+        val bottom = minOf(a.cy + a.h / 2f, b.cy + b.h / 2f)
+        val overlap = maxOf(0f, right - left) * maxOf(0f, bottom - top)
+        val smaller = minOf(a.w * a.h, b.w * b.h)
+        return if (smaller <= 0f) 0f else overlap / smaller
+    }
+
+    /** A later OCR pass may grow a tight text box into the full speech-balloon interior. */
+    private fun sameBubbleReading(a: WmBubble, b: WmBubble): Boolean {
+        if (WebModeLogic.normalizeUrl(a.src) != WebModeLogic.normalizeUrl(b.src)) return false
+        val x = WebModeLayout.normalizeOcrText(a.sourceText)
+        val y = WebModeLayout.normalizeOcrText(b.sourceText)
+        if (x.isBlank() || y.isBlank()) return false
+        if (!(x == y || x.contains(y) || y.contains(x))) return false
+        return boxOverlapOfSmaller(a, b) >= 0.55f
+    }
+
     private fun mergeLayouts(old: WebModeLayout?, incoming: WebModeLayout): WebModeLayout {
         val result = old?.bubbles?.toMutableList() ?: mutableListOf()
         for (fresh in incoming.bubbles) {
-            val at = result.indexOfFirst { samePosition(it, fresh) }
-            if (at < 0) {
+            val freshKey = WebModeLayout.normalizeOcrText(fresh.sourceText)
+            val samePositionIndices = result.indices.filter { samePosition(result[it], fresh) }
+            val relatedIndices = result.indices.filter { sameBubbleReading(result[it], fresh) }
+            val candidates = (samePositionIndices + relatedIndices).distinct()
+            if (candidates.isEmpty()) {
                 result.add(fresh)
-            } else {
-                val prior = result[at]
-                val sameText = WebModeLayout.normalizeOcrText(prior.sourceText) ==
-                    WebModeLayout.normalizeOcrText(fresh.sourceText)
-                result[at] = fresh.copy(
-                    sourceText = fresh.sourceText.ifBlank { prior.sourceText },
-                    translatedText = if (sameText) prior.translatedText.ifBlank { fresh.translatedText } else fresh.translatedText
-                )
+                continue
             }
+
+            // If the new scan lost words that an earlier scan had already read, do not downgrade
+            // a complete bubble to a short fragment. Keep the fuller existing entry and its translation.
+            val fullerPriorIndex = candidates
+                .filter { idx ->
+                    val priorKey = WebModeLayout.normalizeOcrText(result[idx].sourceText)
+                    priorKey.length > freshKey.length + maxOf(2, freshKey.length / 10) &&
+                        priorKey.contains(freshKey)
+                }
+                .maxByOrNull { WebModeLayout.normalizeOcrText(result[it].sourceText).length }
+
+            if (fullerPriorIndex != null) {
+                val fullerKey = WebModeLayout.normalizeOcrText(result[fullerPriorIndex].sourceText)
+                val remove = candidates.filter { idx ->
+                    idx != fullerPriorIndex &&
+                        WebModeLayout.normalizeOcrText(result[idx].sourceText).let { key ->
+                            key.isNotBlank() && fullerKey.contains(key) &&
+                                sameBubbleReading(result[idx], result[fullerPriorIndex])
+                        }
+                }.sortedDescending()
+                for (idx in remove) result.removeAt(idx)
+                continue
+            }
+
+            // Prefer an exact-text entry so a previously translated bubble can keep its text,
+            // but otherwise replace the old partial box with the newly recovered full-bubble box.
+            val exactTextIndex = candidates.firstOrNull {
+                WebModeLayout.normalizeOcrText(result[it].sourceText) == freshKey
+            }
+            val chosen = exactTextIndex ?: samePositionIndices.firstOrNull() ?: candidates.maxByOrNull {
+                boxOverlapOfSmaller(result[it], fresh)
+            }!!
+            val prior = result[chosen]
+            val priorKey = WebModeLayout.normalizeOcrText(prior.sourceText)
+            val sameText = priorKey == freshKey
+            result[chosen] = fresh.copy(
+                sourceText = fresh.sourceText.ifBlank { prior.sourceText },
+                translatedText = if (sameText) prior.translatedText.ifBlank { fresh.translatedText } else fresh.translatedText
+            )
+
+            // A fuller text block can absorb several earlier partial line boxes from the same balloon.
+            // Remove only entries whose OCR text is contained in the recovered text and whose boxes overlap.
+            val remove = candidates.filter { idx ->
+                idx != chosen && WebModeLayout.normalizeOcrText(result.getOrNull(idx)?.sourceText.orEmpty()).let { key ->
+                    key.isNotBlank() && freshKey.contains(key) &&
+                        result.getOrNull(idx)?.let { sameBubbleReading(it, fresh) } == true
+                }
+            }.sortedDescending()
+            for (idx in remove) if (idx in result.indices) result.removeAt(idx)
         }
         return WebModeLayout(incoming.titleOffset, result)
     }

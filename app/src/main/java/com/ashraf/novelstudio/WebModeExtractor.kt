@@ -665,64 +665,76 @@ internal class WebModeExtractor(
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
 
-            // Bubbles that still hold lettering no block accounts for (a line the OCR missed): read the
-            // whole inside of the bubble again as one clean picture, and use that fuller text.
-            val refinedText = arrayOfNulls<String>(blocks.size)
-            val refinedBox = arrayOfNulls<IntArray>(blocks.size)
-            val consumed = BooleanArray(blocks.size)
-            // Real-time OCR retries only short/suspicious blocks. Retrying every bubble
-            // sequentially can add several seconds even when the first pass is already readable.
-            // Short blocks still get a crop retry to recover missed lines.
+            // A flat speech bubble can contain lettering that the first pass missed.
+            // Do this check for LONG blocks too: a long partial read is still partial.
+            // Cache interiors so multi-line text in the same balloon triggers only one retry.
+            val triedInteriors = HashSet<String>()
             for (i in blocks.indices) {
-                val blockLetters = blocks[i].text.count { it.isLetterOrDigit() }
-                if (fastMode && blockLetters >= 18) continue
-                // Keep the missed-line recovery pass enabled in Force OCR too.
-                // The first pass is fast; this crop retry can recover lettering inside a bubble
-                // that the screen-level recognizer only partially read.
                 if (consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
-                val inter: IntArray = (try { WmBubbleStyle.bubbleInterior(bmp, rects[i], rects) } catch (_: Exception) { null }) ?: continue
 
-                // A connected/overlapping pair of speech balloons can produce one large interior.
-                // Never OCR that whole region as a single paragraph when it already contains another
-                // recognised text block: this can combine two speakers/balloons and then paint one
-                // oversized white cover across both. Retry only isolated text regions; other blocks
-                // retain their own text and geometry.
-                val hasOtherTextBlock = blocks.indices.any { j ->
-                    if (j == i) false else {
-                        val cxj = (rects[j][0] + rects[j][2]) / 2
-                        val cyj = (rects[j][1] + rects[j][3]) / 2
-                        cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
+                val inter: IntArray = (try {
+                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects)
+                } catch (_: Exception) { null }) ?: continue
+                val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
+                if (!triedInteriors.add(regionKey)) continue
+
+                // Gather every OCR block lying inside this recovered balloon. Join only blocks
+                // that look like adjacent lines of the SAME text; if another speaker/bubble is
+                // mixed into the connected region, keep the original boxes separate.
+                val inside = blocks.indices.filter { j ->
+                    val cxj = blocks[j].cx
+                    val cyj = blocks[j].cy
+                    cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
+                }
+                if (i !in inside) continue
+
+                val group = linkedSetOf(i)
+                var grew = true
+                while (grew) {
+                    grew = false
+                    for (j in inside) {
+                        if (j !in group && group.any { prior -> likelySameBubbleLine(blocks[prior], blocks[j]) }) {
+                            group.add(j)
+                            grew = true
+                        }
                     }
                 }
-                if (hasOtherTextBlock) continue
+                if (inside.any { it !in group }) continue
 
-                val cw = inter[2] - inter[0]; val ch = inter[3] - inter[1]
+                val groupOrdered = group.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
+                val sourceKeys = groupOrdered.map {
+                    WebModeLayout.normalizeOcrText(blocks[it].text.replace(NEWLINES, " ").trim())
+                }.filter { it.isNotEmpty() }
+                val sourceKey = sourceKeys.joinToString("")
+                if (sourceKey.isBlank()) continue
+
+                val cw = inter[2] - inter[0]
+                val ch = inter[3] - inter[1]
                 if (cw < 12 || ch < 12) continue
+
                 var crop: Bitmap? = null
                 try {
                     crop = Bitmap.createBitmap(bmp, inter[0], inter[1], cw, ch)
-                    val res = engine.recognizeRegion(crop, st.current)
+                    // Use the full multi-pass engine on a bubble proven to contain unread ink.
+                    // This checks original, resized and contrast/outlined variants without retrying
+                    // every already-complete balloon.
+                    val res = engine.recognize(crop, st.current)
                     val joined = res.blocks.sortedWith(compareBy({ it.top }, { it.left }))
                         .joinToString(" ") { it.text.replace(NEWLINES, " ").trim() }.trim()
-                    val own = b.text.replace(NEWLINES, " ").trim()
-                    val ownKey = WebModeLayout.normalizeOcrText(own)
                     val joinedKey = WebModeLayout.normalizeOcrText(joined)
-                    // Accept a crop retry only when it preserves the already-read text and adds
-                    // meaningful content. A fixed +4 character threshold discarded shorter missed
-                    // words/lines; a containment check avoids replacing a good read with OCR noise.
-                    if (ownKey.length >= 3 &&
-                        joinedKey.contains(ownKey) &&
-                        joinedKey.length > ownKey.length + maxOf(2, (ownKey.length * 0.08f).toInt())) {
+                    val knownParts = sourceKeys.filter { it.length >= 2 }
+                    val preservesKnownText = knownParts.isNotEmpty() && knownParts.all { joinedKey.contains(it) }
+                    val minGain = maxOf(1, (sourceKey.length * 0.03f).toInt())
+
+                    // Only accept a retry that retains the text already found and adds characters.
+                    // Then make one overlay for the whole balloon and consume its constituent lines.
+                    if (joined.isNotBlank() && preservesKnownText &&
+                        joinedKey.length > sourceKey.length + minGain) {
                         refinedText[i] = joined
                         refinedBox[i] = inter
-                        // other blocks sitting inside this bubble are now part of the fuller text
-                        for (j in blocks.indices) {
-                            if (j == i) continue
-                            val cxj = (rects[j][0] + rects[j][2]) / 2; val cyj = (rects[j][1] + rects[j][3]) / 2
-                            if (cxj in inter[0] until inter[2] && cyj in inter[1] until inter[3]) consumed[j] = true
-                        }
+                        for (j in group) if (j != i) consumed[j] = true
                     }
                 } catch (_: Exception) {
                 } catch (_: OutOfMemoryError) {
@@ -778,6 +790,28 @@ internal class WebModeExtractor(
                 texts.add(text)
                 out.add(nb)
             }
+        }
+
+        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock): Boolean {
+            if (a.vertical || b.vertical) return false
+            if (Math.abs(OcrPost.usableTilt(a.angle)) >= 6f ||
+                Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) return false
+            val fa = if (a.fontPx > 0f) a.fontPx else a.h
+            val fb = if (b.fontPx > 0f) b.fontPx else b.h
+            if (fa <= 0f || fb <= 0f) return false
+            val ratio = fa / fb
+            if (ratio < 0.55f || ratio > 1.8f) return false
+            val scale = maxOf(fa, fb)
+            val atop = a.cy - a.h / 2f
+            val abot = a.cy + a.h / 2f
+            val btop = b.cy - b.h / 2f
+            val bbot = b.cy + b.h / 2f
+            val gap = maxOf(0f, maxOf(atop, btop) - minOf(abot, bbot))
+            if (gap > scale * 2.0f) return false
+            val al = a.cx - a.w / 2f; val ar = a.cx + a.w / 2f
+            val bl = b.cx - b.w / 2f; val br = b.cx + b.w / 2f
+            val horizontalGap = maxOf(0f, maxOf(al, bl) - minOf(ar, br))
+            return horizontalGap <= scale * 4f
         }
 
         private fun sameSpot(a: WmBubble, b: WmBubble): Boolean {
