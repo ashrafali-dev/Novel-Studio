@@ -214,8 +214,9 @@ RULES FOR YOUR ANSWER
               u.hash='';
               // Avoid sending authentication/session material to the chatbot.
               try {
-                var sensitive=/(token|auth|session|password|passwd|secret|api.?key|access.?key|email|username|userid|reset|signature)/i;
-                [].slice.call(u.searchParams.keys()).forEach(function(k){if(sensitive.test(k))u.searchParams.delete(k);});
+                var sensitive=/(token|auth|session|password|passwd|secret|api.?key|access.?key|email|username|userid|reset|signature)/i, remove=[];
+                u.searchParams.forEach(function(v,k){if(sensitive.test(k))remove.push(k);});
+                remove.forEach(function(k){u.searchParams.delete(k);});
               } catch(e) {}
               var key=u.href;
               if(seen.has(key)) return;
@@ -223,7 +224,9 @@ RULES FOR YOUR ANSWER
               out.push({url:u.href,host:u.hostname.toLowerCase(),kind:kind,
                 text:String(label||'').replace(/\s+/g,' ').slice(0,60)});
             }
-            var nodes=document.querySelectorAll('a[href],area[href],iframe[src],frame[src],script[src],link[href],form[action]');
+            var nodes=[].slice.call(document.querySelectorAll('a[href],area[href],iframe[src],frame[src],script[src],link[href],form[action]'));
+            function rank(e){var t=(e.tagName||'').toLowerCase();return (t==='iframe'||t==='frame')?0:t==='script'?1:t==='form'?2:t==='link'?3:4;}
+            nodes.sort(function(a,b){return rank(a)-rank(b);});
             for(var i=0;i<nodes.length && out.length<220;i++){
               var e=nodes[i], tag=(e.tagName||'').toLowerCase();
               var raw=e.href || e.src || e.action || e.getAttribute('href') || e.getAttribute('src') || e.getAttribute('action');
