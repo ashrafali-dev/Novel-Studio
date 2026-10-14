@@ -11,9 +11,9 @@ import android.content.Context
  */
 internal object RealtimeCompletionPolicy {
     private const val NORMAL_POLL_MS = 500L
-    private const val REALTIME_FIRST_POLL_MS = 60L
-    private const val REALTIME_STREAMING_POLL_MS = 180L
-    private const val REALTIME_IDLE_POLL_MS = 80L
+    private const val REALTIME_FIRST_POLL_MS = 50L
+    private const val REALTIME_STREAMING_POLL_MS = 100L
+    private const val REALTIME_IDLE_POLL_MS = 50L
 
     fun enabled(context: Context): Boolean =
         DeepSeekRealtimeTranslation.isEnabled(context)
