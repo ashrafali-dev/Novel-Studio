@@ -413,7 +413,7 @@ internal class WebModeExtractor(
                 if (!alive()) { forceFail(WebModeError.NAVIGATION_INVALIDATED); return }
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; forceFail(WebModeError.TIMEOUT); return }
                 if (steps > MAX_TICKS) break
-                try { Thread.sleep(if (steps == 0) 700L else 450L) } catch (_: InterruptedException) { return }
+                try { Thread.sleep(if (steps == 0) 450L else 350L) } catch (_: InterruptedException) { return }
                 val info = evalWait(wrap(LIB + JS_FORCE_INFO)) { parseJson(it) }
                 val bmp = captureView()
                 forceShots++
@@ -492,7 +492,7 @@ internal class WebModeExtractor(
                     val first = (y0 - t) <= 3f
                     val last = (t + fh) <= bmp.height + 3f
                     readSlice(crop, st, offY, 1, fw.toInt().coerceAtLeast(1), fh.toInt().coerceAtLeast(1), src,
-                        acc.texts, acc.bubbles, first, last, offX)
+                        acc.texts, acc.bubbles, first, last, offX, fastMode = true)
                 } catch (e: OcrUnavailableException) { throw e
                 } catch (_: Exception) {
                 } catch (_: OutOfMemoryError) {
@@ -636,12 +636,12 @@ internal class WebModeExtractor(
         private fun readSlice(
             bmp: Bitmap, st: ScriptState, y0: Int, sample: Int, fullW: Int, fullH: Int,
             src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
-            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0
+            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false
         ) {
             // Slices overlap. A block touching a cut edge is only part of its text; the neighbouring
             // slice sees it whole, so it is dropped here instead of being translated in halves.
             val edge = 4f
-            val blocks = recognize(bmp, st).blocks.filter { b ->
+            val blocks = recognize(bmp, st, fastMode).blocks.filter { b ->
                 if (b.text.isBlank()) return@filter false
                 val top = b.cy - b.h / 2f
                 val bot = b.cy + b.h / 2f
@@ -657,7 +657,9 @@ internal class WebModeExtractor(
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
             val consumed = BooleanArray(blocks.size)
             for (i in blocks.indices) {
-                if (consumed[i]) continue
+                // Fast Force OCR deliberately avoids a second ML Kit call for every detected bubble.
+                // A sparse first pass still gets the whole-slice fallback in recognize().
+                if (fastMode || consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
                 val inter: IntArray = (try { WmBubbleStyle.bubbleInterior(bmp, rects[i], rects) } catch (_: Exception) { null }) ?: continue
@@ -766,8 +768,8 @@ internal class WebModeExtractor(
             return small > 0f && x * y / small > 0.5f
         }
 
-        private fun recognize(bmp: Bitmap, st: ScriptState): OcrResult {
-            val first = engine.recognize(bmp, st.current)
+        private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
+            val first = if (fastMode) engine.recognizeFast(bmp, st.current) else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
             val result = if (needsOcrRetry(bmp, first)) {
@@ -781,7 +783,7 @@ internal class WebModeExtractor(
             if (!st.locked && st.fallbackBudget > 0) {
                 st.fallbackBudget--
                 for (s in WebModeLogic.fallbackScripts(st.current)) {
-                    val r = engine.recognize(bmp, s)
+                    val r = if (fastMode) engine.recognizeFast(bmp, s) else engine.recognize(bmp, s)
                     if (r.text.length >= 2) { st.current = s; st.locked = true; return r }
                 }
             }
@@ -947,11 +949,11 @@ return JSON.stringify({vw:vw,vh:vh,imgs:o});
 var sc=scroller(),vh=window.innerHeight||800,before,after,hh,bottom;
 if(sc){
   if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
-  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*0.55);after=sc.scrollTop;hh=sc.scrollHeight;
+  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*0.70);after=sc.scrollTop;hh=sc.scrollHeight;
 }else{
   before=window.pageYOffset||de.scrollTop||0;
   if(window.__nsWmY===undefined)window.__nsWmY=before;
-  window.scrollBy(0,Math.round(vh*0.55));after=window.pageYOffset||de.scrollTop||0;
+  window.scrollBy(0,Math.round(vh*0.70));after=window.pageYOffset||de.scrollTop||0;
   hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
 }
 bottom=(after+vh>=hh-4)||after===before;
