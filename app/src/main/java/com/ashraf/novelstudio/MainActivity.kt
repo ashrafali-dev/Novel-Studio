@@ -5193,11 +5193,11 @@ Only select a hostname that appears in the scanned list. Prefer the registered/b
 If nothing is clearly an ad/tracker, return no domain.
 OUTPUT FORMAT: domain names only, one per line, without bullets, markdown, explanations, confidence labels, or URLs. Always make the final line exactly END_OF_LIST_NOVELSTUDIO so the app can detect completion.
 
-SCANNED LINKS AND RESOURCES (\${rows.size} entries):
-\${rows.take(220).joinToString("\n")}
+SCANNED LINKS AND RESOURCES (${rows.size} entries):
+${rows.take(220).joinToString("\n")}
 """.trimIndent()
                 setMode(Mode.SPLIT)
-                toast("🤖 Sending \${rows.size} links to the selected chatbot…")
+                toast("🤖 Sending ${rows.size} links to the selected chatbot…")
                 chatWv.evaluateJavascript(Js.send(prompt, true)) { sentRaw ->
                     if (token != aiAdBlockScanToken) return@evaluateJavascript
                     val sent = decode(sentRaw)
