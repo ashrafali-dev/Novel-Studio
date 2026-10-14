@@ -236,7 +236,7 @@ RULES FOR YOUR ANSWER
         "bidvertiser.com", "adsafeprotected.com", "moatads.com", "adform.net", "smartadserver.com",
         "yieldmo.com", "connatix.com", "teads.tv", "sharethrough.com", "33across.com", "lijit.com",
         "sovrn.com", "zedo.com", "yllix.com", "ero-advertising.com", "tsyndicate.com", "adcash.com",
-        "pushwoosh.com", "onesignal.com", "adskeeper.com", "adspyglass.com", "dtscout.com",
+        "pushwoosh.com", "onesignal.com", "ropsumemu.com", "adskeeper.com", "adspyglass.com", "dtscout.com",
         "histats.com", "quantserve.com", "casalemedia.com", "contextweb.com", "serving-sys.com",
         "advertising.com", "adsrvr.org", "bidswitch.net", "media.net", "cpmstar.com", "adtng.com"
     )
