@@ -439,6 +439,21 @@ internal class WebModeExtractor(
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
                 val inter: IntArray = (try { WmBubbleStyle.bubbleInterior(bmp, rects[i], rects) } catch (_: Exception) { null }) ?: continue
+
+                // A connected/overlapping pair of speech balloons can produce one large interior.
+                // Never OCR that whole region as a single paragraph when it already contains another
+                // recognised text block: this can combine two speakers/balloons and then paint one
+                // oversized white cover across both. Retry only isolated text regions; other blocks
+                // retain their own text and geometry.
+                val hasOtherTextBlock = blocks.indices.any { j ->
+                    if (j == i) false else {
+                        val cxj = (rects[j][0] + rects[j][2]) / 2
+                        val cyj = (rects[j][1] + rects[j][3]) / 2
+                        cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
+                    }
+                }
+                if (hasOtherTextBlock) continue
+
                 val cw = inter[2] - inter[0]; val ch = inter[3] - inter[1]
                 if (cw < 12 || ch < 12) continue
                 var crop: Bitmap? = null
