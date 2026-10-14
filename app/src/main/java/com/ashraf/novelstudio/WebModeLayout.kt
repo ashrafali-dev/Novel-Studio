@@ -406,7 +406,7 @@ internal object WmBubbleStyle {
      * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
      * recognised block ([allRects]) accounts for - i.e. text the OCR missed.
      */
-    fun bubbleInterior(bmp: Bitmap, box: IntArray, allRects: List<IntArray>): IntArray? {
+    fun bubbleInterior(bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true): IntArray? {
         val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
         if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
         val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
@@ -454,6 +454,8 @@ internal object WmBubbleStyle {
         var l = 0; while (l < w && cols[l] * 10 < maxCol * 3) l++
         var r = w - 1; while (r > l && cols[r] * 10 < maxCol * 3) r--
         if (r - l < 12 || b - t < 12) return null
+        // Real-time grouping only needs the bubble's inside, not proof of missed lettering.
+        if (!requireLeftover) return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
         // leftover lettering: not background, not filled, not inside a recognised block
         var ink = 0
         for (y in t..b) for (x in l..r) {

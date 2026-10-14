@@ -73,7 +73,7 @@ internal object WebModeWriter {
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
       // measures both axes and shrinks the text instead of letting it spill outside.
       t.style.cssText='display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;'
-        +'text-align:center;line-height:1.55;white-space:normal;word-break:keep-all;'
+        +'text-align:center;line-height:1.5;white-space:normal;word-break:keep-all;text-wrap:balance;'
         // Bengali vowel signs (ি ী ু ৃ ে ৈ) stick out above and below the line box; room for them
         // stops them being clipped by the box edge or by the gradient's background-clip.
         +'padding:0.22em 0.1em;'
@@ -146,7 +146,7 @@ internal object WebModeWriter {
         }
         if(b.style.display!=='flex')b.style.display='flex';
         var fw=String(Math.round(r.width));
-        if(b.getAttribute('data-fw')!==fw){b.setAttribute('data-fw',fw);fit(b,g[5]*r.width);}
+        if(b.getAttribute('data-fw')!==fw){b.setAttribute('data-fw',fw);fit(b,g[5]*r.width*1.2);}
       }}
     var raf=0,lastRun=0;
     function sched(){

@@ -4074,9 +4074,12 @@ sound effect. Translate EVERY marker into Bengali script, including sound effect
 (BOOM -> ধুম!, HAH -> হাঃ, GRR -> গরররর!). If a word has no Bengali equivalent, write its sound in
 Bengali letters. Never leave a marker in English letters, never skip a marker, and never put two
 markers' text under one marker.
-The markers are in reading order and ONE sentence is often split across consecutive markers
-(for example "...THE" / "HERO'S LIFE..."). Read the neighbouring markers together for the meaning,
-then translate each marker as only the part it carries, so every part still fits its own box.
+A marker normally holds a WHOLE speech bubble (all its lines already joined): translate all of it,
+every word, and drop nothing. Only when a sentence clearly continues across consecutive markers
+(for example "...THE" / "HERO'S LIFE..."), read them together and translate each marker as only the
+part it carries.
+Website names, URLs and scan-group watermarks (anything like "something.com") are not dialogue:
+answer exactly ~ for them.
 If a marker is clearly meaningless OCR noise (random letters or symbols), answer exactly ~ for it.
 Do not invent text. Keep each translation short enough to fit a speech bubble.
 """.trimIndent() + "\n\n" else ""

@@ -115,10 +115,16 @@ internal object OcrPost {
         return out
     }
 
+    /** Scan-site watermarks ("asurascans.com", "www.xyz.net") are not dialogue and must never be translated. */
+    private val SITE = Regex(
+        "(?i)(?:https?://|www\\s?\\.)|\\b[a-z0-9][a-z0-9-]{2,}\\s?\\.(?:com|net|org|io|xyz|site|info|app)\\b"
+    )
+
     /** Drops blocks that are clearly recogniser noise: no letters, mostly symbols, or hair-thin streaks. */
     fun isNoise(b: OcrBlock): Boolean {
         val t = b.text.trim()
         if (t.isEmpty()) return true
+        if (SITE.containsMatchIn(t)) return true
         val letters = t.count { it.isLetter() }
         if (letters == 0) return true
         if (t.length >= 3 && letters * 100 < t.length * 45) return true
@@ -165,17 +171,17 @@ internal object OcrPost {
         val fb = if (b.fontPx > 0f) b.fontPx else b.h
         if (fa <= 0f || fb <= 0f) return false
         val ratio = fa / fb
-        if (ratio < 0.55f || ratio > 1.8f) return false
+        if (ratio < 0.45f || ratio > 2.2f) return false
         val f = Math.max(fa, fb)
         val top = if (a.cy <= b.cy) a else b
         val bot = if (top === a) b else a
         val gap = (bot.cy - bot.h / 2) - (top.cy + top.h / 2)
-        if (gap > f * 1.3f || gap < -f * 0.6f) return false
+        if (gap > f * 1.7f || gap < -f * 0.6f) return false
         val ox = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
         val narrow = Math.min(a.w, b.w)
         if (narrow <= 0f || ox < narrow * 0.3f) return false
         // centred lines of one bubble share a middle; a side-by-side caption does not
-        if (Math.abs(a.cx - b.cx) > Math.max(a.w, b.w) * 0.6f) return false
+        if (Math.abs(a.cx - b.cx) > Math.max(a.w, b.w) * 0.7f) return false
         return true
     }
 
@@ -244,7 +250,7 @@ internal class MlKitOcrEngine : OcrEngine {
             val result = Tasks.await(
                 recognizer(script).process(InputImage.fromBitmap(bitmap, 0))
             )
-            return OcrResult(toBlocks(result).filterNot { OcrPost.isNoise(it) })
+            return OcrResult(OcrPost.mergeNeighbours(toBlocks(result).filterNot { OcrPost.isNoise(it) }))
         } catch (e: ExecutionException) {
             val c = e.cause
             if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)

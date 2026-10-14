@@ -670,18 +670,17 @@ internal class WebModeExtractor(
             // Keep the recognised text and geometry aligned with every remaining block.
             val refinedText = arrayOfNulls<String>(blocks.size)
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
+            val refinedFont = arrayOfNulls<Float>(blocks.size)
             val consumed = BooleanArray(blocks.size)
             // Cache interiors so multi-line text in the same balloon triggers only one retry.
             val triedInteriors = HashSet<String>()
             for (i in blocks.indices) {
-                // The real-time path skips expensive per-bubble re-recognition; the main pass is enough.
-                if (fastMode) break
                 if (consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
                 val inter: IntArray = (try {
-                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects)
+                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = !fastMode)
                 } catch (_: Exception) { null }) ?: continue
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
@@ -695,6 +694,24 @@ internal class WebModeExtractor(
                     cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
                 }
                 if (i !in inside) continue
+
+                if (fastMode) {
+                    // Real-time: no second OCR. Every line inside one closed bubble is ONE unit, so the
+                    // chatbot gets the whole sentence and the overlay gets the whole bubble as its box
+                    // (bigger box = bigger Bengali text, and no half-translated fragments).
+                    val members = inside.filter { !consumed[it] }
+                    if (members.size < 2 || i !in members) continue
+                    val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
+                    val joinedText = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
+                        .replace(Regex("\\s+"), " ").trim()
+                    if (joinedText.isBlank()) continue
+                    val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
+                    refinedText[i] = joinedText
+                    refinedBox[i] = inter
+                    refinedFont[i] = if (fonts.isEmpty()) null else fonts[fonts.size / 2]
+                    for (j in members) if (j != i) consumed[j] = true
+                    continue
+                }
 
                 val group = linkedSetOf(i)
                 var grew = true
@@ -780,7 +797,7 @@ internal class WebModeExtractor(
                     cx = (x0 + cx * k) / fullW, cy = (y0 + cy * k) / fullH,
                     w = bw * k / fullW, h = bh * k / fullH,
                     angle = if (rotated) tilt else 0f,
-                    font = b.fontPx * k / fullW,
+                    font = (refinedFont[i] ?: b.fontPx) * k / fullW,
                     bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft,
                     sourceText = text
                 )
