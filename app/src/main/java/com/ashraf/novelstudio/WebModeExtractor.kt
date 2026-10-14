@@ -546,7 +546,16 @@ internal class WebModeExtractor(
 
         private fun recognize(bmp: Bitmap, st: ScriptState): OcrResult {
             val first = engine.recognize(bmp, st.current)
-            if (first.text.length >= 2) { st.locked = true; return first }
+            // A good OCR result stays on the fast path. Retry only if the first pass found no text,
+            // or returned just one/two tiny fragments where a full panel is likely still unread.
+            val result = if (needsOcrRetry(bmp, first)) {
+                val retry = try { engine.recognizeFallback(bmp, st.current) } catch (_: Exception) {
+                    OcrResult(emptyList())
+                }
+                combineOcrResults(first, retry)
+            } else first
+
+            if (result.text.length >= 2) { st.locked = true; return result }
             if (!st.locked && st.fallbackBudget > 0) {
                 st.fallbackBudget--
                 for (s in WebModeLogic.fallbackScripts(st.current)) {
@@ -554,7 +563,46 @@ internal class WebModeExtractor(
                     if (r.text.length >= 2) { st.current = s; st.locked = true; return r }
                 }
             }
-            return first
+            return result
+        }
+
+        private fun needsOcrRetry(bmp: Bitmap, result: OcrResult): Boolean {
+            if (result.blocks.isEmpty()) return true
+            val letters = result.text.count { it.isLetterOrDigit() }
+            if (letters >= 24 || result.blocks.size > 2) return false
+            val covered = result.blocks.sumOf { (it.w * it.h).toDouble().coerceAtLeast(0.0) }
+            val coverage = covered / (bmp.width.toDouble() * bmp.height.toDouble()).coerceAtLeast(1.0)
+            return coverage < 0.12
+        }
+
+        private fun combineOcrResults(first: OcrResult, retry: OcrResult): OcrResult {
+            if (retry.blocks.isEmpty()) return first
+            val all = first.blocks.toMutableList()
+            for (candidate in retry.blocks.sortedWith(compareBy({ it.top }, { it.left }))) {
+                val key = candidate.text.lowercase().filter { it.isLetterOrDigit() }
+                if (key.isEmpty()) continue
+                val overlaps = all.indices.filter {
+                    OcrPost.overlapOfSmaller(all[it], candidate) > 0.25f
+                }
+                if (overlaps.isEmpty()) {
+                    val duplicateText = all.any { prior ->
+                        val priorKey = prior.text.lowercase().filter { it.isLetterOrDigit() }
+                        priorKey.isNotEmpty() && (priorKey.contains(key) || key.contains(priorKey)) &&
+                            kotlin.math.abs(prior.cx - candidate.cx) < maxOf(prior.w, candidate.w) * 0.25f &&
+                            kotlin.math.abs(prior.cy - candidate.cy) < maxOf(prior.h, candidate.h) * 0.6f
+                    }
+                    if (!duplicateText) all.add(candidate)
+                } else {
+                    val upgrade = overlaps.firstOrNull { index ->
+                        val priorKey = all[index].text.lowercase().filter { it.isLetterOrDigit() }
+                        priorKey.length >= 3 &&
+                            key.length > priorKey.length + maxOf(2, priorKey.length / 10) &&
+                            key.contains(priorKey)
+                    }
+                    if (upgrade != null) all[upgrade] = candidate
+                }
+            }
+            return OcrResult(OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) }))
         }
     }
 
