@@ -68,6 +68,8 @@ internal class WebModeRequest(
     val visibleOnly: Boolean = false,
     /** False once the user navigated away / started another action: the job stops and reports nothing useful. */
     val isValid: () -> Boolean,
+    /** Force extract: do not download images; OCR what the WebView actually shows while it is scrolled. */
+    val force: Boolean = false,
     val onProgress: (stage: String, pct: Int) -> Unit,
     val onDone: (WebModeOutcome) -> Unit
 )
@@ -86,8 +88,6 @@ internal class WebModeExtractor(
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "ns-webmode") }
     private val jobIds = AtomicInteger(0)
     private val bridge = PageBridge()
-    /** Pictures grabbed from the live page during the scroll, keyed by image URL (blob: URLs die once the reader drops them). */
-    private val captured = ConcurrentHashMap<String, ByteArray>()
     private val bridged = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
 
     /** Returns a handle; call [Handle.cancel] to stop the job. Must be called on the main thread. */
@@ -113,19 +113,6 @@ internal class WebModeExtractor(
         @JavascriptInterface
         fun ok(id: String, dataUrl: String) {
             pending[id]?.let { it.data = dataUrl; it.latch.countDown() }
-        }
-
-        /** Called by the page while the scan scrolls: the decoded picture of an image that is on screen right now. */
-        @JavascriptInterface
-        fun cap(src: String, dataUrl: String) {
-            try {
-                if (captured.values.sumOf { it.size.toLong() } > CAPTURE_MAX_BYTES) return
-                val comma = dataUrl.indexOf(',')
-                if (comma < 0) return
-                captured[src] = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
-            } catch (_: Exception) {
-            } catch (_: OutOfMemoryError) {
-            }
         }
 
         @JavascriptInterface
@@ -163,11 +150,14 @@ internal class WebModeExtractor(
 
         fun begin() {
             ensureBridge(wv)
-            if (!req.visibleOnly) {
-                captured.clear()
-                try { wv.evaluateJavascript(wrap(JS_CAPTURE_RESET + JS_CAPTURE), null) } catch (_: Exception) {}
-            }
             progress("Discovering chapter panels", 1)
+            if (req.force) {
+                worker.execute { runCatching { processForce() }.onFailure {
+                    Log.w(TAG, "force job $id crashed: ${it.javaClass.simpleName}")
+                    fail(WebModeError.DECODE_FAILED, "Force extract crashed: ${it.javaClass.simpleName}")
+                } }
+                return
+            }
             if (req.visibleOnly) finishDiscovery() else tick(0, -1, 0)
         }
 
@@ -177,7 +167,6 @@ internal class WebModeExtractor(
             if (elapsed() > DISCOVERY_MAX_MS || n > MAX_TICKS) { finishDiscovery(); return }
             wv.evaluateJavascript(wrap(LIB + JS_STEP)) { raw ->
                 if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
-                captureNow()
                 val o = parseJson(raw)
                 if (o == null) {
                     handler.postDelayed({ tick(n + 1, lastCount, 0) }, 500L)
@@ -196,17 +185,12 @@ internal class WebModeExtractor(
             }
         }
 
-        private fun captureNow() {
-            try { wv.evaluateJavascript(wrap(JS_CAPTURE), null) } catch (_: Exception) {}
-        }
-
         private fun restoreScroll() {
             try { wv.evaluateJavascript(wrap(LIB + JS_RESTORE), null) } catch (_: Exception) {}
         }
 
         private fun finishDiscovery() {
             val collectScript = if (req.visibleOnly) JS_COLLECT_VISIBLE else JS_COLLECT
-            if (!req.visibleOnly) captureNow()
             wv.evaluateJavascript(wrap(LIB + collectScript)) { raw ->
                 restoreScroll()
                 if (!alive()) { fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
@@ -310,11 +294,154 @@ internal class WebModeExtractor(
             onMain { req.onDone(WebModeOutcome.Success(ch, diag, failedPanels)) }
         }
 
+        // ---- FORCE mode: no image is downloaded. The page is scrolled from the top and the WebView's own
+        // pixels (exactly what the user sees) are OCR'd per image. Works for blob:/encrypted/CORS/hot-link images.
+        private fun <T> evalWait(js: String, parse: (String?) -> T): T {
+            val latch = CountDownLatch(1)
+            var res: String? = null
+            handler.post {
+                try { wv.evaluateJavascript(js) { r -> res = r; latch.countDown() } }
+                catch (_: Exception) { latch.countDown() }
+            }
+            latch.await(20, TimeUnit.SECONDS)
+            return parse(res)
+        }
+
+        private fun captureView(): Bitmap? {
+            val latch = CountDownLatch(1)
+            var out: Bitmap? = null
+            handler.post {
+                try {
+                    val w = wv.width; val h = wv.height
+                    if (w > 0 && h > 0) {
+                        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        b.eraseColor(android.graphics.Color.WHITE)
+                        wv.draw(android.graphics.Canvas(b))
+                        out = b
+                    }
+                } catch (_: Throwable) {
+                } finally { latch.countDown() }
+            }
+            latch.await(20, TimeUnit.SECONDS)
+            return out
+        }
+
+        private fun forceFail(e: WebModeError, msg: String = e.label) {
+            evalWait(wrap(LIB + JS_RESTORE)) { null }
+            evalWait(wrap(JS_FORCE_SHOW)) { null }
+            fail(e, msg)
+        }
+
+        private fun processForce() {
+            val mo = evalWait(wrap(LIB + JS_COLLECT)) { parseJson(it) }
+            if (mo == null) { fail(WebModeError.NO_IMAGES); return }
+            val meta = PageMeta(
+                url = mo.optString("url", wv.url.orEmpty()),
+                lang = mo.optString("lang"),
+                title = mo.optString("title").trim().take(200),
+                novel = mo.optString("novel").trim().take(120),
+                next = mo.optString("next").takeIf { it.startsWith("http") },
+                prev = mo.optString("prev").takeIf { it.startsWith("http") }
+            )
+            val script = ScriptState(WebModeLogic.pickScript(meta.lang, meta.url))
+            val accs = LinkedHashMap<String, ForceAcc>()
+            // the old translation overlay must not be in the picture
+            evalWait(wrap(JS_FORCE_HIDE)) { null }
+            if (!req.visibleOnly) evalWait(wrap(LIB + JS_FORCE_TOP)) { null }
+            var stable = 0
+            var steps = 0
+            while (true) {
+                if (!alive()) { forceFail(WebModeError.NAVIGATION_INVALIDATED); return }
+                if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; forceFail(WebModeError.TIMEOUT); return }
+                if (steps > MAX_TICKS) break
+                try { Thread.sleep(if (steps == 0) 700L else 450L) } catch (_: InterruptedException) { return }
+                val info = evalWait(wrap(LIB + JS_FORCE_INFO)) { parseJson(it) }
+                val bmp = captureView()
+                if (info != null && bmp != null) {
+                    try { forceOcr(bmp, info, script, accs) }
+                    catch (e: OcrUnavailableException) {
+                        forceFail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label); return
+                    } finally { bmp.recycle() }
+                } else bmp?.recycle()
+                progress("Reading screen ${steps + 1} (${accs.size} images)", 5 + minOf(90, steps * 3))
+                if (req.visibleOnly) break
+                val bottom = evalWait(wrap(LIB + JS_FORCE_SCROLL)) { parseJson(it)?.optBoolean("bottom", true) ?: true }
+                stable = if (bottom) stable + 1 else 0
+                if (stable >= 2) break
+                steps++
+            }
+            evalWait(wrap(LIB + JS_RESTORE)) { null }
+            evalWait(wrap(JS_FORCE_SHOW)) { null }
+            if (!alive()) { fail(WebModeError.NAVIGATION_INVALIDATED); return }
+
+            val panels = accs.values.sortedBy { it.top }
+            diag.discovered = accs.size
+            diag.downloaded = accs.size
+            diag.decoded = accs.size
+            val panelTexts = panels.map { it.texts.joinToString("\n\n") }
+            diag.chars = panelTexts.sumOf { it.length }
+            diag.ocrOk = panelTexts.count { it.isNotBlank() }
+            diag.ocrEmpty = panelTexts.size - diag.ocrOk
+            when {
+                accs.isEmpty() -> { fail(WebModeError.NO_IMAGES); return }
+                diag.chars == 0 -> { fail(WebModeError.OCR_EMPTY, "Force extract read ${accs.size} images on screen; OCR found no text"); return }
+            }
+            val title = meta.title.ifBlank { hostOf(meta.url) }
+            val text = if (req.visibleOnly) WebModeLogic.assemble("", panelTexts) else WebModeLogic.assemble(title, panelTexts)
+            val allBubbles = ArrayList<WmBubble>()
+            for (p in panels) allBubbles.addAll(p.bubbles)
+            val titleOffset = if (req.visibleOnly || title.isBlank()) 0 else 1
+            WebModeLayoutStore.put(meta.url, WebModeLayout(titleOffset, allBubbles))
+            val ch = Chapter(
+                title = title, text = text, next = meta.next, prev = meta.prev, url = meta.url,
+                novel = meta.novel.ifBlank { hostOf(meta.url).removePrefix("www.") },
+                number = WebModeLogic.episodeNumber(title, meta.url), contentSel = ""
+            )
+            Log.i(TAG, "force " + diag.summary())
+            onMain { req.onDone(WebModeOutcome.Success(ch, diag, 0)) }
+        }
+
+        /** OCR the on-screen part of every loaded image in one screenshot of the WebView. */
+        private fun forceOcr(bmp: Bitmap, info: JSONObject, st: ScriptState, accs: MutableMap<String, ForceAcc>) {
+            val vw = info.optDouble("vw", 0.0).toFloat()
+            if (vw <= 0f) return
+            val scale = bmp.width / vw                      // device pixels per CSS pixel
+            val arr = info.optJSONArray("imgs") ?: return
+            for (i in 0 until arr.length()) {
+                if (!alive()) return
+                val p = arr.optJSONObject(i) ?: continue
+                val src = p.optString("s")
+                if (src.isBlank()) continue
+                val l = p.optDouble("vl").toFloat() * scale
+                val t = p.optDouble("vt").toFloat() * scale
+                val fw = p.optDouble("fw").toFloat() * scale
+                val fh = p.optDouble("fh").toFloat() * scale
+                if (fw < 40f || fh < 40f) continue
+                val x0 = Math.max(0, Math.round(l)); val y0 = Math.max(0, Math.round(t))
+                val x1 = Math.min(bmp.width, Math.round(l + fw)); val y1 = Math.min(bmp.height, Math.round(t + fh))
+                if (x1 - x0 < 40 || y1 - y0 < 40) continue
+                var crop: Bitmap? = null
+                try {
+                    crop = Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0)
+                    val acc = accs.getOrPut(src) { ForceAcc() }
+                    acc.top = p.optInt("t")
+                    val offX = Math.max(0f, x0 - l).toInt()
+                    val offY = Math.max(0f, y0 - t).toInt()
+                    val first = (y0 - t) <= 3f
+                    val last = (t + fh) <= bmp.height + 3f
+                    readSlice(crop, st, offY, 1, fw.toInt().coerceAtLeast(1), fh.toInt().coerceAtLeast(1), src,
+                        acc.texts, acc.bubbles, first, last, offX)
+                } catch (e: OcrUnavailableException) { throw e
+                } catch (_: Exception) {
+                } catch (_: OutOfMemoryError) {
+                } finally { if (crop != null && crop !== bmp) crop.recycle() }
+            }
+        }
+
         // ---- fetching: HTTP with the WebView's cookies; blob:/data: and refused requests go through the page itself
         private fun fetchWithRetry(p: PanelRef, pageUrl: String): ByteArray? {
             for (attempt in 1..3) {
                 if (!alive()) return null
-                captured.remove(p.src)?.let { return it }
                 try {
                     val u = p.src
                     return when {
@@ -381,18 +508,11 @@ internal class WebModeExtractor(
             val pending = Pending()
             bridge.pending[rid] = pending
             try {
-                val js = "(function(id,u){" +
-                    "function viaCanvas(){try{var im=null,L=document.images;" +
-                    "for(var i=0;i<L.length;i++){if((L[i].currentSrc||L[i].src)===u){im=L[i];break;}}" +
-                    "if(!im||!im.naturalWidth)throw new Error('no loaded img');" +
-                    "var c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;" +
-                    "c.getContext('2d').drawImage(im,0,0);" +
-                    "NsWmBridge.ok(id,c.toDataURL('image/jpeg',0.92));}catch(e){NsWmBridge.fail(id,String(e));}}" +
-                    "try{fetch(u,{credentials:'include'}).then(function(r){" +
+                val js = "(function(id,u){try{fetch(u,{credentials:'include'}).then(function(r){" +
                     "if(!r.ok)throw new Error('http '+r.status);return r.blob();}).then(function(b){" +
                     "var fr=new FileReader();fr.onload=function(){NsWmBridge.ok(id,String(fr.result));};" +
-                    "fr.onerror=function(){viaCanvas();};fr.readAsDataURL(b);})" +
-                    ".catch(function(e){viaCanvas();});}catch(e){viaCanvas();}" +
+                    "fr.onerror=function(){NsWmBridge.fail(id,'reader');};fr.readAsDataURL(b);})" +
+                    ".catch(function(e){NsWmBridge.fail(id,String(e));});}catch(e){NsWmBridge.fail(id,String(e));}" +
                     "return 'started';})(" + JSONObject.quote(rid) + "," + JSONObject.quote(u) + ")"
                 onMain { wv.evaluateJavascript(js, null) }
                 if (!pending.latch.await(25, TimeUnit.SECONDS)) throw IOException("page fetch timeout")
@@ -447,7 +567,7 @@ internal class WebModeExtractor(
         private fun readSlice(
             bmp: Bitmap, st: ScriptState, y0: Int, sample: Int, fullW: Int, fullH: Int,
             src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
-            firstSlice: Boolean, lastSlice: Boolean
+            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0
         ) {
             // Slices overlap. A block touching a cut edge is only part of its text; the neighbouring
             // slice sees it whole, so it is dropped here instead of being translated in halves.
@@ -548,7 +668,7 @@ internal class WebModeExtractor(
                 }
                 val nb = WmBubble(
                     src = src,
-                    cx = cx * k / fullW, cy = (y0 + cy * k) / fullH,
+                    cx = (x0 + cx * k) / fullW, cy = (y0 + cy * k) / fullH,
                     w = bw * k / fullW, h = bh * k / fullH,
                     angle = if (rotated) tilt else 0f,
                     font = b.fontPx * k / fullW,
@@ -641,6 +761,7 @@ internal class WebModeExtractor(
 
     private class ScriptState(var current: OcrScript) { var locked = false; var fallbackBudget = 3 }
     private class DecodeException : Exception()
+    private class ForceAcc { var top = 0; val texts = ArrayList<String>(); val bubbles = ArrayList<WmBubble>() }
     private class PanelOcr(val text: String, val bubbles: List<WmBubble>)
     private class PageMeta(val url: String, val lang: String, val title: String, val novel: String, val next: String?, val prev: String?)
 
@@ -653,7 +774,6 @@ internal class WebModeExtractor(
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 15_000L
         private const val JOB_MAX_MS = 12 * 60_000L
-        private const val CAPTURE_MAX_BYTES = 160L * 1024 * 1024
         private const val MIN_W = 120
         private const val MIN_H = 60
 
@@ -702,7 +822,7 @@ function cands(sc){
     if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
     seen[src]=1;
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
-    out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,vt:Math.round(r.top),vb:Math.round(r.bottom)});
+    out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
   }
   return out;}
 """
@@ -723,21 +843,41 @@ var c=cands(sc),p=0;for(var i=0;i<c.length;i++){if(!c[i].d)p++;}
 return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState});
 """
 
-        private const val JS_CAPTURE_RESET = """
-window.__nsWmCap={};
+        private const val JS_FORCE_INFO = """
+var sc=scroller(),c=cands(sc),vw=window.innerWidth||de.clientWidth||0,vh=window.innerHeight||0,o=[];
+for(var i=0;i<c.length;i++){var p=c[i];
+  if(p.d&&p.vb>0&&p.vt<vh&&(p.vl+p.fw)>0&&p.vl<vw)o.push(p);}
+return JSON.stringify({vw:vw,vh:vh,imgs:o});
 """
 
-        // Runs on every scroll step: copies the pictures that are loaded RIGHT NOW (a few per call) to the app.
-        private const val JS_CAPTURE = """
-var cap=window.__nsWmCap||(window.__nsWmCap={});var L=document.images,n=0;
-for(var i=0;i<L.length&&n<4;i++){var im=L[i],s=im.currentSrc||im.src||'';
-  if(!s||!im.complete||!im.naturalWidth||im.naturalWidth<400||im.naturalHeight<250)continue;
-  try{s=new URL(s,document.baseURI).href;}catch(e){continue;}
-  if(cap[s])continue;
-  try{var c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;
-    c.getContext('2d').drawImage(im,0,0);var d=c.toDataURL('image/jpeg',0.92);cap[s]=1;NsWmBridge.cap(s,d);n++;}
-  catch(e){cap[s]=2;}}
-return String(n);
+        private const val JS_FORCE_SCROLL = """
+var sc=scroller(),vh=window.innerHeight||800,before,after,hh,bottom;
+if(sc){
+  if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
+  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*0.55);after=sc.scrollTop;hh=sc.scrollHeight;
+}else{
+  before=window.pageYOffset||de.scrollTop||0;
+  if(window.__nsWmY===undefined)window.__nsWmY=before;
+  window.scrollBy(0,Math.round(vh*0.55));after=window.pageYOffset||de.scrollTop||0;
+  hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
+}
+bottom=(after+vh>=hh-4)||after===before;
+return JSON.stringify({bottom:bottom});
+"""
+
+        private const val JS_FORCE_TOP = """
+var sc=scroller();
+if(sc){if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;sc.scrollTop=0;}
+else{if(window.__nsWmY===undefined)window.__nsWmY=window.pageYOffset||de.scrollTop||0;window.scrollTo(0,0);}
+return '1';
+"""
+
+        private const val JS_FORCE_HIDE = """
+var e=document.getElementById('__ns_wm_overlay');if(e)e.style.visibility='hidden';return '1';
+"""
+
+        private const val JS_FORCE_SHOW = """
+var e=document.getElementById('__ns_wm_overlay');if(e)e.style.visibility='';return '1';
 """
 
         private const val JS_RESTORE = """
@@ -753,7 +893,7 @@ var sc=scroller(),c=cands(sc);
 var top=sc?(sc.scrollTop||0):(window.pageYOffset||de.scrollTop||0);
 var height=sc?(sc.clientHeight||window.innerHeight||800):(window.innerHeight||800);
 var bottom=top+height;
-var vpH=window.innerHeight||800;c=c.filter(function(p){return p.vb>0&&p.vt<vpH;});
+c=c.filter(function(p){return p.t < bottom && (p.t+p.h) > top;});
 function q(s){var e=document.querySelector(s);return e?(e.textContent||'').trim():'';}
 function link(kind){
   var re=kind==='next'?/next|\\u4e0b\\u4e00|\\ub2e4\\uc74c|\\u6b21\\u306e|\\u6b21\\u3078|\\u6b21\\u7ae0/i:/prev(?!iew)|\\u4e0a\\u4e00|\\uc774\\uc804|\\u524d\\u306e|\\u524d\\u3078|\\u524d\\u7ae0/i;

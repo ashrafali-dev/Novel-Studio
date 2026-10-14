@@ -2739,6 +2739,9 @@ class MainActivity : Activity() {
     // ---- Web Mode -------------------------------------------------------------------------
     private fun webModeOn(): Boolean = Prefs.bool(this, "webMode")
 
+    private fun menuForceLabel(): String =
+        (if (Prefs.bool(this, "wmForce")) "✅" else "⬜") + " 🛟 Force Extract (screen OCR, no downloads)"
+
     private fun menuWebModeLabel(): String =
         (if (webModeOn()) "✅" else "⬜") + " 🖼 Web Mode (OCR for image chapters)"
 
@@ -2761,6 +2764,7 @@ class MainActivity : Activity() {
             webView = novelWv,
             // DeepSeek real-time mode OCRs only the currently visible panel; never auto-scroll.
             visibleOnly = DeepSeekRealtimeTranslation.isEnabled(this),
+            force = Prefs.bool(this, "wmForce"),
             isValid = { token == navToken },
             onProgress = { stage, pct ->
                 if (token == navToken) {
@@ -4750,7 +4754,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
-            "📝 Edit Real-time Prompt"
+            "📝 Edit Real-time Prompt", menuForceLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4758,11 +4762,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 32, 33),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29)
         )
@@ -4837,6 +4841,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
+                34 -> {
+                    val on = !Prefs.bool(this, "wmForce")
+                    Prefs.putBool(this, "wmForce", on)
+                    refresh(i, menuForceLabel())
+                    toast(if (on) "🛟 Force Extract on — Web Mode will OCR the screen itself (no image downloads)" else "🛟 Force Extract off — normal Web Mode")
+                }
                 32 -> {
                     if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
                         DeepSeekRealtimeTranslation.enable(this)

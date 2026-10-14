@@ -80,6 +80,7 @@ internal object WebModeWriter {
         +'overflow-wrap:normal;hyphens:none;font-kerning:normal;'
         // Keep browser defaults for complex-script shaping (including Bengali conjuncts).
         +'font-variant-ligatures:normal;text-rendering:optimizeLegibility;';
+      b.style.setProperty('font-family',fam,'important'); t.style.setProperty('font-family',fam,'important');
       if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
         t.style.background='linear-gradient(to bottom,'+it.fg+','+it.g2+')';
