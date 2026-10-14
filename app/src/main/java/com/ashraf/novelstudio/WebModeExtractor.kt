@@ -307,7 +307,50 @@ internal class WebModeExtractor(
             return parse(res)
         }
 
+        private fun isBlank(b: Bitmap): Boolean {
+            val first = b.getPixel(b.width / 2, b.height / 2)
+            var differs = 0
+            for (yi in 1..12) for (xi in 1..8) {
+                if (b.getPixel(b.width * xi / 9, b.height * yi / 13) != first) differs++
+            }
+            return differs < 3
+        }
+
+        /** Second way to take the picture (API 26+): copy the WebView's rectangle from the window surface. */
+        private fun captureByPixelCopy(): Bitmap? {
+            if (android.os.Build.VERSION.SDK_INT < 26) return null
+            var act: android.app.Activity? = null
+            var c: android.content.Context? = wv.context
+            while (c is android.content.ContextWrapper) { if (c is android.app.Activity) { act = c; break }; c = c.baseContext }
+            val win = act?.window ?: return null
+            val latch = CountDownLatch(1)
+            var out: Bitmap? = null
+            handler.post {
+                try {
+                    val loc = IntArray(2); wv.getLocationInWindow(loc)
+                    if (wv.width > 0 && wv.height > 0) {
+                        val b = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
+                        android.view.PixelCopy.request(win, Rect(loc[0], loc[1], loc[0] + wv.width, loc[1] + wv.height), b,
+                            { code -> if (code == android.view.PixelCopy.SUCCESS) out = b else b.recycle(); latch.countDown() }, handler)
+                    } else latch.countDown()
+                } catch (_: Throwable) { latch.countDown() }
+            }
+            latch.await(10, TimeUnit.SECONDS)
+            return out
+        }
+
         private fun captureView(): Bitmap? {
+            val a = captureByDraw()
+            if (a != null && !isBlank(a)) return a
+            a?.recycle()
+            forceBlank++
+            val b = captureByPixelCopy()
+            if (b != null && !isBlank(b)) return b
+            b?.recycle()
+            return null
+        }
+
+        private fun captureByDraw(): Bitmap? {
             val latch = CountDownLatch(1)
             var out: Bitmap? = null
             handler.post {
@@ -325,6 +368,9 @@ internal class WebModeExtractor(
             latch.await(20, TimeUnit.SECONDS)
             return out
         }
+
+        @Volatile private var forceBlank = 0
+        @Volatile private var forceShots = 0
 
         private fun forceFail(e: WebModeError, msg: String = e.label) {
             evalWait(wrap(LIB + JS_RESTORE)) { null }
@@ -357,6 +403,7 @@ internal class WebModeExtractor(
                 try { Thread.sleep(if (steps == 0) 700L else 450L) } catch (_: InterruptedException) { return }
                 val info = evalWait(wrap(LIB + JS_FORCE_INFO)) { parseJson(it) }
                 val bmp = captureView()
+                forceShots++
                 if (info != null && bmp != null) {
                     try { forceOcr(bmp, info, script, accs) }
                     catch (e: OcrUnavailableException) {
@@ -383,8 +430,10 @@ internal class WebModeExtractor(
             diag.ocrOk = panelTexts.count { it.isNotBlank() }
             diag.ocrEmpty = panelTexts.size - diag.ocrOk
             when {
-                accs.isEmpty() -> { fail(WebModeError.NO_IMAGES); return }
-                diag.chars == 0 -> { fail(WebModeError.OCR_EMPTY, "Force extract read ${accs.size} images on screen; OCR found no text"); return }
+                forceBlank > 0 && accs.isEmpty() && forceShots == forceBlank -> {
+                    fail(WebModeError.DECODE_FAILED, "Force extract: every screen capture came back blank"); return }
+                accs.isEmpty() -> { fail(WebModeError.NO_IMAGES, "Force extract: no loaded image on screen (screens=$forceShots)"); return }
+                diag.chars == 0 -> { fail(WebModeError.OCR_EMPTY, "Force extract: ${accs.size} images, screens=$forceShots, blank=$forceBlank; OCR found no text"); return }
             }
             val title = meta.title.ifBlank { hostOf(meta.url) }
             val text = if (req.visibleOnly) WebModeLogic.assemble("", panelTexts) else WebModeLogic.assemble(title, panelTexts)
@@ -508,11 +557,18 @@ internal class WebModeExtractor(
             val pending = Pending()
             bridge.pending[rid] = pending
             try {
-                val js = "(function(id,u){try{fetch(u,{credentials:'include'}).then(function(r){" +
+                val js = "(function(id,u){" +
+                    "function viaCanvas(){try{var im=null,L=document.images;" +
+                    "for(var i=0;i<L.length;i++){if((L[i].currentSrc||L[i].src)===u){im=L[i];break;}}" +
+                    "if(!im||!im.naturalWidth)throw new Error('no loaded img');" +
+                    "var c=document.createElement('canvas');c.width=im.naturalWidth;c.height=im.naturalHeight;" +
+                    "c.getContext('2d').drawImage(im,0,0);" +
+                    "NsWmBridge.ok(id,c.toDataURL('image/jpeg',0.92));}catch(e){NsWmBridge.fail(id,String(e));}}" +
+                    "try{fetch(u,{credentials:'include'}).then(function(r){" +
                     "if(!r.ok)throw new Error('http '+r.status);return r.blob();}).then(function(b){" +
                     "var fr=new FileReader();fr.onload=function(){NsWmBridge.ok(id,String(fr.result));};" +
-                    "fr.onerror=function(){NsWmBridge.fail(id,'reader');};fr.readAsDataURL(b);})" +
-                    ".catch(function(e){NsWmBridge.fail(id,String(e));});}catch(e){NsWmBridge.fail(id,String(e));}" +
+                    "fr.onerror=function(){viaCanvas();};fr.readAsDataURL(b);})" +
+                    ".catch(function(e){viaCanvas();});}catch(e){viaCanvas();}" +
                     "return 'started';})(" + JSONObject.quote(rid) + "," + JSONObject.quote(u) + ")"
                 onMain { wv.evaluateJavascript(js, null) }
                 if (!pending.latch.await(25, TimeUnit.SECONDS)) throw IOException("page fetch timeout")
@@ -893,7 +949,7 @@ var sc=scroller(),c=cands(sc);
 var top=sc?(sc.scrollTop||0):(window.pageYOffset||de.scrollTop||0);
 var height=sc?(sc.clientHeight||window.innerHeight||800):(window.innerHeight||800);
 var bottom=top+height;
-c=c.filter(function(p){return p.t < bottom && (p.t+p.h) > top;});
+var vpH=window.innerHeight||800;c=c.filter(function(p){return p.vb>0&&p.vt<vpH;});
 function q(s){var e=document.querySelector(s);return e?(e.textContent||'').trim():'';}
 function link(kind){
   var re=kind==='next'?/next|\\u4e0b\\u4e00|\\ub2e4\\uc74c|\\u6b21\\u306e|\\u6b21\\u3078|\\u6b21\\u7ae0/i:/prev(?!iew)|\\u4e0a\\u4e00|\\uc774\\uc804|\\u524d\\u306e|\\u524d\\u3078|\\u524d\\u7ae0/i;
