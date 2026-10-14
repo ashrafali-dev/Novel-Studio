@@ -4180,7 +4180,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             Regex("\\bClaude\\s+is\\s+AI\\s+and\\s+can\\s+make\\s+mistakes\\.?", RegexOption.IGNORE_CASE),
             Regex("\\bWrite\\s+a\\s+message(?:\\.{3}|…)?", RegexOption.IGNORE_CASE),
             Regex("\\bHaiku\\s+5\\.5\\s+Low\\b", RegexOption.IGNORE_CASE),
-            Regex("\\bDeepThink(?:\\s+Search)?\\b", RegexOption.IGNORE_CASE)
+            Regex("\\bDeepThink(?:\\s+Search)?\\b", RegexOption.IGNORE_CASE),
             Regex("\\bSmart\\s+Search\\b", RegexOption.IGNORE_CASE)
         )
         uiLabels.forEach { s = it.replace(s, " ") }
