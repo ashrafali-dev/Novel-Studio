@@ -667,6 +667,10 @@ internal class WebModeExtractor(
 
             // A flat speech bubble can contain lettering that the first pass missed.
             // Do this check for LONG blocks too: a long partial read is still partial.
+            // Keep the recognised text and geometry aligned with every remaining block.
+            val refinedText = arrayOfNulls<String>(blocks.size)
+            val refinedBox = arrayOfNulls<IntArray>(blocks.size)
+            val consumed = BooleanArray(blocks.size)
             // Cache interiors so multi-line text in the same balloon triggers only one retry.
             val triedInteriors = HashSet<String>()
             for (i in blocks.indices) {
