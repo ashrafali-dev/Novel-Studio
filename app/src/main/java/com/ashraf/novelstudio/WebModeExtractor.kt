@@ -674,6 +674,8 @@ internal class WebModeExtractor(
             // Cache interiors so multi-line text in the same balloon triggers only one retry.
             val triedInteriors = HashSet<String>()
             for (i in blocks.indices) {
+                // The real-time path skips expensive per-bubble re-recognition; the main pass is enough.
+                if (fastMode) break
                 if (consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
