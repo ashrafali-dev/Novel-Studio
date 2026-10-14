@@ -5143,6 +5143,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     private fun startAiAdBlockScan() {
         if (aiAdBlockScanBusy) return toast("⏳ AI AdBlock scan already running")
+        if (running != null || DeepSeekRealtimeTranslation.isEnabled(this)) {
+            return toast("⏸️ Stop the active translation/real-time mode before using the chatbot for AdBlock scan")
+        }
         val pageUrl = novelWv.url ?: return toast("❌ Open the website page first")
         val botUrl = chatWv.url
         if (botUrl.isNullOrBlank() || !(botUrl.startsWith("http://") || botUrl.startsWith("https://"))) {
@@ -5191,7 +5194,7 @@ Do NOT label a domain as an ad merely because it is unfamiliar or external.
 Never recommend blocking the reader site's own domain, chapter/content hosts, image or script CDNs needed by the site, fonts, authentication/login, payments, or chatbot providers.
 Only select a hostname that appears in the scanned list. Prefer the registered/base domain when it is clearly the actual ad domain.
 If nothing is clearly an ad/tracker, return no domain.
-OUTPUT FORMAT: domain names only, one per line, without bullets, markdown, explanations, confidence labels, or URLs. Always make the final line exactly END_OF_LIST_NOVELSTUDIO so the app can detect completion.
+OUTPUT FORMAT: domain names only, one per line, without bullets, markdown, explanations, confidence labels, or URLs. Always make the final line exactly END_OF_LIST_NOVELSTUDIO_SCAN_COMPLETE_WITH_NO_MORE_DOMAINS so the app can detect completion.
 
 SCANNED LINKS AND RESOURCES (${rows.size} entries):
 ${rows.take(220).joinToString("\n")}
