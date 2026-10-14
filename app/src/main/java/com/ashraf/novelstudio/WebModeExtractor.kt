@@ -861,7 +861,7 @@ internal class WebModeExtractor(
 
         // ---------------- JavaScript run inside the real page (no dollar signs: this is a Kotlin string)
         private const val LIB = """
-var BAD=/avatar|icon|logo|banner|sprite|emoji|profile|badge|pixel|tracking|advert|\/ads?\/|[_\-.]ads?[_\-.]|thumb|btn|button|spinner/i;
+var BAD=/avatar|icon|logo|banner|sprite|emoji|profile|badge|pixel|tracking|advert|\\/ads?\\/|[_\\-.]ads?[_\\-.]|spinner/i;
 var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparen/i;
 var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
 var de=document.scrollingElement||document.documentElement;
@@ -876,22 +876,46 @@ function cands(sc){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
   for(var i=0;i<imgs.length;i++){
     var im=imgs[i],src=im.currentSrc||im.src||'';
-    var ph=!src||/^data:image\/(gif|svg)/i.test(src)||PH.test(src);
+    var ph=!src||/^data:image\\/(gif|svg)/i.test(src)||PH.test(src);
     if(ph){
       for(var a=0;a<LAZY.length;a++){var v=im.getAttribute(LAZY[a]);if(v&&v.length>4){src=v;ph=false;break;}}
       if(ph){var ss=im.getAttribute('data-srcset')||im.getAttribute('srcset');
-        if(ss){src=ss.split(',')[0].trim().split(/\s+/)[0];ph=!src;}}
+        if(ss){src=ss.split(',')[0].trim().split(/\\s+/)[0];ph=!src;}}
     }
     if(!src||ph)continue;
     try{src=new URL(src,document.baseURI).href;}catch(e){continue;}
     if(seen[src])continue;
     var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
     if(!((r.width>=180&&r.height>=100)||(nw>=400&&nh>=250)))continue;
-    if(BAD.test((im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'')+' '+src))continue;
+    var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
+    if(BAD.test(meta+' '+src))continue;
     if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
     seen[src]=1;
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
     out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
+  }
+  // Some readers draw comic panels as CSS background images instead of <img>.
+  // Treat only large, visible-content-sized elements as panels to avoid tiny UI artwork.
+  var els=document.querySelectorAll('*'),limit=Math.min(els.length,5000);
+  for(var j=0;j<limit;j++){
+    var el=els[j],bg='';
+    try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
+    if(!bg||bg==='none')continue;
+    var r=el.getBoundingClientRect();
+    if(r.width<180||r.height<100)continue;
+    var meta=(el.className&&el.className.baseVal!==undefined?el.className.baseVal:el.className||'')+' '+(el.id||'')+' '+(el.getAttribute('aria-label')||'');
+    if(BAD.test(meta))continue;
+    if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
+    var rx=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
+    while((m=rx.exec(bg))!==null){
+      var s=(m[1]||'').trim();
+      if(!s||/^data:image\\/(gif|svg)/i.test(s))continue;
+      try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
+      if(seen[s]||BAD.test(s))continue;
+      seen[s]=1;
+      var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
+      out.push({s:s,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:1,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
+    }
   }
   return out;}
 """
