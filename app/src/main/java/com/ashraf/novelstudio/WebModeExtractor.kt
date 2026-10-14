@@ -448,7 +448,14 @@ internal class WebModeExtractor(
                     val joined = res.blocks.sortedWith(compareBy({ it.top }, { it.left }))
                         .joinToString(" ") { it.text.replace(NEWLINES, " ").trim() }.trim()
                     val own = b.text.replace(NEWLINES, " ").trim()
-                    if (joined.length >= own.length + maxOf(4, (own.length * 0.12f).toInt())) {
+                    val ownKey = WebModeLayout.normalizeOcrText(own)
+                    val joinedKey = WebModeLayout.normalizeOcrText(joined)
+                    // Accept a crop retry only when it preserves the already-read text and adds
+                    // meaningful content. A fixed +4 character threshold discarded shorter missed
+                    // words/lines; a containment check avoids replacing a good read with OCR noise.
+                    if (ownKey.length >= 3 &&
+                        joinedKey.contains(ownKey) &&
+                        joinedKey.length > ownKey.length + maxOf(2, (ownKey.length * 0.08f).toInt())) {
                         refinedText[i] = joined
                         refinedBox[i] = inter
                         // other blocks sitting inside this bubble are now part of the fuller text
