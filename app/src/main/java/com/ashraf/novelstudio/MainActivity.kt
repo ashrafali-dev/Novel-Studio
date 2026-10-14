@@ -179,12 +179,13 @@ return t.length>=40?'TXT:'+t:'';
                 val hasImages = signature.startsWith("IMG:")
                 val textFallbackDue = signature.startsWith("TXT:") && deepSeekNoImageTriedUrl != pageKeyNow
                 val changed = signature.isNotEmpty() && signature != deepSeekVisibleSignature
-                // Per-bubble hashes below stop resubmission during these periodic same-image checks.
-                val periodicRecheck = hasImages && now - deepSeekLastOcrAtMs >= 3000L
-                // While the reader is still flicking through panels, do not start an OCR for every
-                // intermediate frame (each one would be thrown away): wait until the view rests ~300 ms.
+                // New image URLs trigger immediately; a long safety recheck only catches readers that mutate
+                // pixels without changing their image URL. Avoid re-OCRing the same panel every 3 s.
+                val periodicRecheck = hasImages && now - deepSeekLastOcrAtMs >= 10000L
+                // While the reader is still flicking through panels, let the current image settle briefly
+                // without imposing a full 300 ms pause before the real-time OCR can start.
                 if (signature != deepSeekPendingSig) { deepSeekPendingSig = signature; deepSeekPendingSince = now }
-                val settled = now - deepSeekPendingSince >= 300L
+                val settled = now - deepSeekPendingSince >= 120L
                 val idle = webModeHandle == null && running == null && queue.isEmpty()
                 if (idle && signature.isNotEmpty() &&
                     ((hasImages && ((changed && settled) || periodicRecheck)) || textFallbackDue)) {
