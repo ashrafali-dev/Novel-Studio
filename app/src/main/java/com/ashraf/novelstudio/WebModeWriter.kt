@@ -240,8 +240,16 @@ internal object WebModeWriter {
           cancel.style.cssText='position:fixed;top:12px;right:12px;pointer-events:auto;border:0;border-radius:10px;padding:9px 12px;background:#30394b;color:#fff;font:600 13px sans-serif;';
           ui.appendChild(rect);ui.appendChild(hint);ui.appendChild(cancel);
           (document.body||document.documentElement).appendChild(ui);
-          var down=false, img=null, imRect=null, startX=0, startY=0, lastX=0, lastY=0;
+          var down=false, img=null, imRect=null, imgSrc='', startX=0, startY=0, lastX=0, lastY=0;
           var btn=document.getElementById('__ns_area_btn');
+          var areaLazy=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
+          function imageSource(im){
+            var src=im.currentSrc||im.src||'';
+            if(!src||/^data:image\/(gif|svg)/i.test(src)||/placeholder|blank\.|spacer|loading|1x1|transparen/i.test(src)){
+              for(var ai=0;ai<areaLazy.length;ai++){var av=im.getAttribute(areaLazy[ai]);if(av&&av.length>4){src=av;break;}}
+            }
+            try{return src?new URL(src,document.baseURI).href:'';}catch(ignore){return '';}
+          }
           function cleanup(){
             document.removeEventListener('pointerdown',onDown,true);
             document.removeEventListener('pointermove',onMove,true);
@@ -256,9 +264,24 @@ internal object WebModeWriter {
             if(e.target===cancel||e.target===btn)return;
             var el=document.elementFromPoint(e.clientX,e.clientY);
             var im=el&&(el.tagName==='IMG'?el:(el.closest?el.closest('img'):null));
-            if(!im){hint.textContent='Start dragging on a chapter image';return;}
-            img=im;imRect=img.getBoundingClientRect();
-            if(imRect.width<12||imRect.height<12){img=null;return;}
+            var src=im?imageSource(im):'';
+            // Some readers use CSS background images instead of <img>; follow ancestors until a real panel is found.
+            if(!im||!src){
+              var node=el;
+              while(node&&node!==document.body){
+                var bg='';try{bg=getComputedStyle(node).backgroundImage||'';}catch(ignore){}
+                var match=/url\((?:"|')?([^"')]+)(?:"|')?\)/.exec(bg);
+                var nr=node.getBoundingClientRect();
+                if(match&&nr.width>=180&&nr.height>=100){
+                  try{src=new URL(match[1],document.baseURI).href;im=node;}catch(ignore){}
+                  if(im&&src)break;
+                }
+                node=node.parentElement;
+              }
+            }
+            if(!im||!src){hint.textContent='Start dragging on a chapter image';return;}
+            img=im;imgSrc=src;imRect=img.getBoundingClientRect();
+            if(imRect.width<12||imRect.height<12){img=null;imgSrc='';return;}
             startX=Math.max(imRect.left,Math.min(imRect.right,e.clientX));
             startY=Math.max(imRect.top,Math.min(imRect.bottom,e.clientY));
             lastX=startX;lastY=startY;down=true;
@@ -280,8 +303,7 @@ internal object WebModeWriter {
             if(!down||!img){cleanup();return;}
             if(e){lastX=Math.max(imRect.left,Math.min(imRect.right,e.clientX));lastY=Math.max(imRect.top,Math.min(imRect.bottom,e.clientY));}
             var l=Math.min(startX,lastX),t=Math.min(startY,lastY),rr=Math.max(startX,lastX),bb=Math.max(startY,lastY);
-            var ww=rr-l,hh=bb-t,src='';
-            try{src=(img.currentSrc||img.src||'').trim();if(src)src=new URL(src,document.baseURI).href;}catch(ignore){}
+            var ww=rr-l,hh=bb-t,src=imgSrc;
             var nx=(l-imRect.left)/imRect.width,ny=(t-imRect.top)/imRect.height;
             var nw=ww/imRect.width,nh=hh/imRect.height;
             cleanup();
