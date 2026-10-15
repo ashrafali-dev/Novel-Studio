@@ -571,7 +571,7 @@ if(v.length)return 'IMG:'+v.join('|');
 var rootEl=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;
 var t=String((rootEl&&(rootEl.innerText||rootEl.textContent))||'').replace(/\s+/g,' ').trim().slice(0,1200);
 return t.length>=40?'TXT:'+t:'';
-}catch(e){return '';}})();""""
+}catch(e){return '';}})();"""
             novelWv.evaluateJavascript(js) { raw ->
                 if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
                 val signature = decode(raw).trim()
