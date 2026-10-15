@@ -383,6 +383,14 @@ return t.length>=40?'TXT:'+t:'';
                     else -> 0xFF69F0AE.toInt() // green: active scan / processing
                 }
                 val scanning = webModePrefetchBusy || realtimeActive
+                // Keep the CPU/process alive while any scan, translation or prefetch job runs, so it
+                // continues with the screen off. Released ~25 s after the last job ends.
+                val jobBusy = scanning || webModeHandle != null || running != null || queue.isNotEmpty() ||
+                    prefetchLoading
+                ScanKeepAlive.sync(this@MainActivity, jobBusy)
+                if (jobBusy) {
+                    try { chatWv.resumeTimers() } catch (_: Exception) { }
+                }
                 scanDot.visibility = View.VISIBLE
                 scanDot.contentDescription = when {
                     waiting -> "Amber: waiting for scan"
@@ -683,6 +691,12 @@ return t.length>=40?'TXT:'+t:'';
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 13+: lets the "scanning in background" notification show (the service works without it).
+        if (Build.VERSION.SDK_INT >= 33 && !Prefs.bool(this, "askedNotifPerm") &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Prefs.putBool(this, "askedNotifPerm", true)
+            try { requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7711) } catch (_: Exception) { }
+        }
         AdBlock.load(this)
         Glossary.reload(this)
         SiteRules.sync(this)
@@ -5830,6 +5844,7 @@ ${rows.take(220).joinToString("\n")}
     }
 
     override fun onDestroy() {
+        ScanKeepAlive.stop(this)
         webModeHandle?.cancel()
         webModePrefetchHandle?.cancel()
         if (webModeLazy.isInitialized()) webModeLazy.value.shutdown()

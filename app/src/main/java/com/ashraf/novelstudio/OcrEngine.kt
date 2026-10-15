@@ -290,6 +290,27 @@ internal class MlKitOcrEngine : OcrEngine {
                             tasks.add(rec.process(InputImage.fromBitmap(quarter, 0))); scale.add(4f)
                         }
                     } catch (_: OutOfMemoryError) { }
+                    // Extra looks for the full (non-real-time) scan. The prefetch already hides the
+                    // waiting time, so quality matters more than speed here. Each one is optional:
+                    // an out-of-memory error only skips that look.
+                    val area = bitmap.width.toLong() * bitmap.height.toLong()
+                    // 2x enlarged: small / thin lettering that the 1x pass reads as noise.
+                    if (maxOf(bitmap.width, bitmap.height) <= 1400 && area * 4L <= 6_000_000L) {
+                        try {
+                            val up = Bitmap.createScaledBitmap(bitmap, bitmap.width * 2, bitmap.height * 2, true)
+                            mine.add(up)
+                            tasks.add(rec.process(InputImage.fromBitmap(up, 0))); scale.add(0.5f)
+                        } catch (_: OutOfMemoryError) { }
+                    }
+                    // Full-size contrast stretch: faint text on tinted / grey bubbles (the 1/2-size
+                    // boosted look above can lose thin strokes).
+                    if (area <= 3_200_000L) {
+                        try {
+                            val boost1 = OcrPost.boostContrast(bitmap)
+                            mine.add(boost1)
+                            tasks.add(rec.process(InputImage.fromBitmap(boost1, 0))); scale.add(1f)
+                        } catch (_: OutOfMemoryError) { }
+                    }
                 }
                 val all = ArrayList<OcrBlock>()
                 for ((i, t) in tasks.withIndex()) {

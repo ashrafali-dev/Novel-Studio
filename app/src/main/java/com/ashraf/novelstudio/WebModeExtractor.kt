@@ -616,7 +616,10 @@ internal class WebModeExtractor(
             val h = bounds.outHeight
             if (w <= 0 || h <= 0) throw DecodeException()
             if (w < MIN_W || h < MIN_H) return null
-            val sample = when { w > 3200 -> 4; w > 1600 -> 2; else -> 1 }
+            // Real-time keeps the old aggressive down-sampling (speed). Full scans run behind the
+            // prefetch, so they keep more pixels: small lettering survives and OCR reads it better.
+            val sample = if (fastMode) when { w > 3200 -> 4; w > 1600 -> 2; else -> 1 }
+                else when { w > 5000 -> 4; w > 2400 -> 2; else -> 1 }
             val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
