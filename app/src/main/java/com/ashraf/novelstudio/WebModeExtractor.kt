@@ -62,6 +62,9 @@ internal sealed class WebModeOutcome {
     class Failure(val error: WebModeError, val message: String, val diag: WebModeDiagnostics) : WebModeOutcome()
 }
 
+/** A normalized crop rectangle (fractions of the original image, not screen pixels). */
+internal data class WebModeOcrRegion(val x: Float, val y: Float, val w: Float, val h: Float)
+
 internal class WebModeRequest(
     val webView: WebView,
     /** When true, OCR only images intersecting the current viewport and never scrolls the reader. */
@@ -79,7 +82,11 @@ internal class WebModeRequest(
      * cache instead of waiting for download + OCR. [onDone] is not used for these jobs.
      */
     val ahead: Int = 0,
-    val onAheadDone: (() -> Unit)? = null
+    val onAheadDone: (() -> Unit)? = null,
+    /** When set, ignore OCR caches and re-read only this source image. */
+    val forceOcrSrc: String? = null,
+    /** Normalized rectangle to OCR within forceOcrSrc. */
+    val forceOcrRegion: WebModeOcrRegion? = null
 )
 
 /**
@@ -304,10 +311,18 @@ internal class WebModeExtractor(
                     val s = p.optString("s")
                     if (s.isNotBlank()) refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
                 }
-                val panels = WebModeLogic.dedupeAndOrder(refs)
+                val allPanels = WebModeLogic.dedupeAndOrder(refs)
+                val targetSrc = req.forceOcrSrc
+                val panels = if (targetSrc.isNullOrBlank()) allPanels else allPanels.filter {
+                    WebModeLogic.normalizeUrl(it.src) == WebModeLogic.normalizeUrl(targetSrc)
+                }
                 diag.discovered = panels.size
-                diag.duplicates = refs.size - panels.size
-                if (panels.isEmpty()) { fail(WebModeError.NO_IMAGES); return@evaluateJavascript }
+                diag.duplicates = refs.size - allPanels.size
+                if (panels.isEmpty()) {
+                    fail(WebModeError.NO_IMAGES, if (targetSrc.isNullOrBlank()) WebModeError.NO_IMAGES.label
+                        else "Selected image could not be found on the page")
+                    return@evaluateJavascript
+                }
                 val meta = PageMeta(
                     url = o.optString("url", wv.url.orEmpty()),
                     lang = o.optString("lang"),
@@ -335,7 +350,7 @@ internal class WebModeExtractor(
             for ((i, p) in panels.withIndex()) {
                 if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
-                if (req.visibleOnly) {
+                if (req.visibleOnly && req.forceOcrSrc.isNullOrBlank()) {
                     // Real-time: this panel may already have been read ahead (download + full OCR done).
                     val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
                     if (hit != null) {
@@ -354,7 +369,12 @@ internal class WebModeExtractor(
                 diag.downloaded++
                 try {
                     progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
-                    val po = ocrBytes(bytes, script, p.src, fastMode = req.visibleOnly)
+                    val targeted = !req.forceOcrSrc.isNullOrBlank()
+                    val po = ocrBytes(
+                        bytes, script, p.src,
+                        fastMode = req.visibleOnly && !targeted,
+                        crop = req.forceOcrRegion.takeIf { targeted }
+                    )
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
                     val t = po.text
@@ -392,7 +412,14 @@ internal class WebModeExtractor(
             val allBubbles = ArrayList<WmBubble>()
             for (l in layouts) if (l != null) allBubbles.addAll(l)
             val titleOffset = if (req.visibleOnly || title.isBlank()) 0 else 1
-            WebModeLayoutStore.put(meta.url, WebModeLayout(titleOffset, allBubbles))
+            val scanLayout = WebModeLayout(titleOffset, allBubbles)
+            if (!req.forceOcrSrc.isNullOrBlank() && req.forceOcrRegion != null) {
+                // Deliberate Force OCR must replace geometry in the selected region instead of
+                // letting the ordinary merge logic keep stale text/boxes from an earlier pass.
+                WebModeLayoutStore.replaceRegion(meta.url, req.forceOcrSrc, req.forceOcrRegion, scanLayout)
+            } else {
+                WebModeLayoutStore.put(meta.url, scanLayout)
+            }
             val ch = Chapter(
                 title = title,
                 text = text,
@@ -709,7 +736,10 @@ internal class WebModeExtractor(
         }
 
         // ---- decode + OCR. Returns null for images too small to be a panel; no bubbles for a panel without text.
-        private fun ocrBytes(bytes: ByteArray, st: ScriptState, src: String, fastMode: Boolean = false): PanelOcr? {
+        private fun ocrBytes(
+            bytes: ByteArray, st: ScriptState, src: String,
+            fastMode: Boolean = false, crop: WebModeOcrRegion? = null
+        ): PanelOcr? {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth
@@ -723,6 +753,26 @@ internal class WebModeExtractor(
             val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
+            if (crop != null) {
+                // Decode only the requested rectangle; keep geometry normalized to the ORIGINAL image.
+                @Suppress("DEPRECATION")
+                val region = (try { BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) } catch (_: Exception) { null })
+                    ?: throw DecodeException()
+                try {
+                    val left = (crop.x.coerceIn(0f, 0.999f) * w).toInt().coerceIn(0, w - 1)
+                    val top = (crop.y.coerceIn(0f, 0.999f) * h).toInt().coerceIn(0, h - 1)
+                    val right = ((crop.x + crop.w).coerceIn(0.001f, 1f) * w).toInt().coerceIn(left + 1, w)
+                    val bottom = ((crop.y + crop.h).coerceIn(0.001f, 1f) * h).toInt().coerceIn(top + 1, h)
+                    val rect = Rect(left, top, right, bottom)
+                    val bmp = region.decodeRegion(rect, opts) ?: throw DecodeException()
+                    try {
+                        if (bmp.width < 16 || bmp.height < 16) throw DecodeException()
+                        readSlice(bmp, st, top, sample, w, h, src, texts, bubbles,
+                            firstSlice = true, lastSlice = true, x0 = left, fastMode = false)
+                    } finally { bmp.recycle() }
+                } finally { region.recycle() }
+                return PanelOcr(texts.joinToString("\n\n"), bubbles)
+            }
             if (h <= WebModeLogic.SLICE_H) {
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: throw DecodeException()
                 try { readSlice(bmp, st, 0, sample, w, h, src, texts, bubbles, true, true, fastMode = fastMode) } finally { bmp.recycle() }

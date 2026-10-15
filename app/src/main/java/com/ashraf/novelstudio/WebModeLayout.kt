@@ -210,6 +210,45 @@ internal object WebModeLayoutStore {
         persist(ctx, url)
     }
 
+    /**
+     * Force OCR is an explicit correction, not an ordinary incremental scan:
+     * remove stale bubbles intersecting the selected crop, then install the newly measured boxes.
+     * Unrelated images and bubbles remain untouched. A blank/failed OCR result never erases prior data.
+     */
+    @Synchronized
+    fun replaceRegion(url: String, src: String, region: WebModeOcrRegion, incoming: WebModeLayout) {
+        val k = key(url)
+        val target = WebModeLogic.normalizeUrl(src)
+        val fresh = incoming.bubbles.filter {
+            WebModeLogic.normalizeUrl(it.src) == target && it.sourceText.isNotBlank()
+        }
+        if (fresh.isEmpty()) return
+
+        val old = mem[k] ?: scans[k]
+        val x0 = region.x.coerceIn(0f, 1f)
+        val y0 = region.y.coerceIn(0f, 1f)
+        val x1 = (region.x + region.w).coerceIn(x0, 1f)
+        val y1 = (region.y + region.h).coerceIn(y0, 1f)
+        val kept = old?.bubbles.orEmpty().filterNot { b ->
+            if (WebModeLogic.normalizeUrl(b.src) != target) return@filterNot false
+            val bl = b.cx - b.w / 2f
+            val br = b.cx + b.w / 2f
+            val bt = b.cy - b.h / 2f
+            val bb = b.cy + b.h / 2f
+            val iw = maxOf(0f, minOf(br, x1) - maxOf(bl, x0))
+            val ih = maxOf(0f, minOf(bb, y1) - maxOf(bt, y0))
+            val boxArea = maxOf(0f, b.w) * maxOf(0f, b.h)
+            val interArea = iw * ih
+            val centerInside = b.cx >= x0 && b.cx <= x1 && b.cy >= y0 && b.cy <= y1
+            centerInside || (boxArea > 0f && interArea / boxArea >= 0.12f)
+        }
+
+        // The latest scan is only this OCR batch, so the chatbot reply maps to the right boxes.
+        scans[k] = WebModeLayout(incoming.titleOffset, fresh)
+        // Keep every unrelated bubble in the cumulative layout for the current page.
+        mem[k] = WebModeLayout(incoming.titleOffset, kept + fresh)
+    }
+
     private fun samePosition(a: WmBubble, b: WmBubble): Boolean =
         WebModeLogic.normalizeUrl(a.src) == WebModeLogic.normalizeUrl(b.src) &&
             kotlin.math.abs(a.cx - b.cx) < 0.012f &&

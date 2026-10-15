@@ -161,6 +161,109 @@ class MainActivity : Activity() {
         fun retranslate(src: String, cx: Double, cy: Double, w: Double, h: Double) {
             handler.post { requestBubbleRetranslate(src, cx.toFloat(), cy.toFloat(), w.toFloat(), h.toFloat()) }
         }
+
+        @android.webkit.JavascriptInterface
+        fun forceOcrBubble(src: String, cx: Double, cy: Double, w: Double, h: Double) {
+            handler.post { requestForceOcrBubble(src, cx.toFloat(), cy.toFloat(), w.toFloat(), h.toFloat()) }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun forceOcrArea(src: String, x: Double, y: Double, w: Double, h: Double) {
+            handler.post { requestForceOcrArea(src, x.toFloat(), y.toFloat(), w.toFloat(), h.toFloat()) }
+        }
+    }
+
+    private fun requestForceOcrBubble(src: String, cx: Float, cy: Float, w: Float, h: Float) {
+        // Re-read a margin around the old box so OCR can recover the whole line/balloon,
+        // not just the exact glyphs that were recognized before.
+        val rw = maxOf(w * 3.0f, 0.16f).coerceAtMost(0.85f)
+        val rh = maxOf(h * 3.0f, 0.13f).coerceAtMost(0.65f)
+        val x = (cx - rw / 2f).coerceIn(0f, 1f - rw)
+        val y = (cy - rh / 2f).coerceIn(0f, 1f - rh)
+        requestForceOcrArea(src, x, y, rw, rh)
+    }
+
+    private fun requestForceOcrArea(src: String, x: Float, y: Float, w: Float, h: Float) {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
+            toast("🔎 Force OCR needs Web Mode + Real-time translation enabled")
+            return
+        }
+        if (webModeHandle != null || running != null || queue.isNotEmpty()) {
+            toast("⏳ Current OCR/translation is busy. Try again when it finishes")
+            return
+        }
+        val url = novelWv.url.orEmpty()
+        if (!url.startsWith("http", ignoreCase = true) || src.isBlank()) {
+            toast("⚠️ Could not identify the selected image")
+            return
+        }
+        // Load persisted geometry first, so a correction keeps unrelated bubbles from this page.
+        WebModeLayoutStore.get(this, url)
+        val rx = x.coerceIn(0f, 0.994f)
+        val ry = y.coerceIn(0f, 0.994f)
+        val rw = w.coerceIn(0.006f, 1f - rx)
+        val rh = h.coerceIn(0.006f, 1f - ry)
+        val region = WebModeOcrRegion(rx, ry, rw, rh)
+        val source = WebModeLogic.normalizeUrl(src)
+        val token = navToken
+
+        aheadOcrHandle?.cancel()
+        aheadOcrHandle = null
+        aheadOcrSeq++
+        aheadOcrStage = ""
+        aheadOcrPct = -1
+        webModePct = 1
+        webModeStage = "Force OCR: selected area"
+        updateProgressUi()
+        webModeHandle = webMode.start(WebModeRequest(
+            webView = novelWv,
+            visibleOnly = true,
+            isValid = { token == navToken && cleanUrl(novelWv.url.orEmpty()) == cleanUrl(url) },
+            force = false,
+            onProgress = { stage, pct ->
+                if (token == navToken) {
+                    webModeStage = "Force OCR · $stage"
+                    webModePct = pct
+                    updateProgressUi()
+                }
+            },
+            onDone = { out ->
+                if (token == navToken) {
+                    webModeHandle = null
+                    clearWebModeProgress()
+                    when (out) {
+                        is WebModeOutcome.Failure -> toast("⚠️ Force OCR failed: ${out.message}")
+                        is WebModeOutcome.Success -> {
+                            val scan = WebModeLayoutStore.getScan(out.chapter.url)
+                            val selected = scan?.bubbles.orEmpty().filter { it.sourceText.isNotBlank() }
+                            if (selected.isEmpty()) {
+                                toast("⚠️ Selected area: no text found; previous bubbles were kept")
+                            } else {
+                                // Force OCR always translates the fresh scan, even if its hash already
+                                // existed in the real-time dedup set. The stale geometry was replaced above.
+                                val chapter = out.chapter.copy(
+                                    text = selected.joinToString("\n\n") { it.sourceText.trim() },
+                                    contentSel = ""
+                                )
+                                WebModeLayoutStore.setScan(chapter.url, WebModeLayout(0, selected))
+                                val hashes = selected.map { WebModeLayout.fingerprint(it) }.toSet()
+                                synchronized(deepSeekInFlightTextHashes) {
+                                    deepSeekInFlightTextHashes.removeAll(hashes)
+                                    deepSeekInFlightTextHashes.addAll(hashes)
+                                }
+                                deepSeekTextHashByChapter[keyOf(chapter)] = hashes
+                                deepSeekLastOcrAtMs = System.currentTimeMillis()
+                                deepSeekVisibleSignature = ""
+                                toast("🔎 OCR refreshed · sending ${selected.size} bubble(s) to translate…")
+                                handleChapter(chapter, useSavedTranslation = false)
+                            }
+                        }
+                    }
+                }
+            },
+            forceOcrSrc = source,
+            forceOcrRegion = region
+        ))
     }
 
     private fun requestBubbleRetranslate(src: String, cx: Float, cy: Float, w: Float, h: Float) {

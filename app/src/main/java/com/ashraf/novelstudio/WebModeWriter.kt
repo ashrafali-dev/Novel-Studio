@@ -224,7 +224,92 @@ internal object WebModeWriter {
     w.setAttribute('data-ns','1'); w.setAttribute('data-ns-page-id',pid||''); window.__nsPageId=pid||'';
     lastRun=0; layout();
 
-    // Long-press a translated bubble -> small "Re-translate" button (Kotlin bridge: NsRetr).
+    // Manual region OCR is available beside the translated overlay, including for a missed bubble.
+    try{
+      if(!window.__nsAreaSelectInit){
+        window.__nsAreaSelectInit=1;
+        window.__nsStartAreaSelect=function(){
+          if(window.__nsAreaCancel){try{window.__nsAreaCancel();}catch(e){}}
+          var ui=document.createElement('div'); ui.id='__ns_area_select_ui';
+          ui.style.cssText='position:fixed;inset:0;z-index:2147483647;pointer-events:none;';
+          var rect=document.createElement('div');
+          rect.style.cssText='position:fixed;display:none;border:2px solid #36d7ff;background:rgba(54,215,255,.16);box-sizing:border-box;pointer-events:none;';
+          var hint=document.createElement('div'); hint.textContent='Drag over the text area · OCR';
+          hint.style.cssText='position:fixed;top:12px;left:50%;transform:translateX(-50%);padding:9px 13px;border-radius:10px;background:rgba(22,27,40,.96);color:#fff;font:600 13px sans-serif;box-shadow:0 2px 12px #0008;white-space:nowrap;';
+          var cancel=document.createElement('button'); cancel.textContent='Cancel';
+          cancel.style.cssText='position:fixed;top:12px;right:12px;pointer-events:auto;border:0;border-radius:10px;padding:9px 12px;background:#30394b;color:#fff;font:600 13px sans-serif;';
+          ui.appendChild(rect);ui.appendChild(hint);ui.appendChild(cancel);
+          (document.body||document.documentElement).appendChild(ui);
+          var down=false, img=null, imRect=null, startX=0, startY=0, lastX=0, lastY=0;
+          var btn=document.getElementById('__ns_area_btn');
+          function cleanup(){
+            document.removeEventListener('pointerdown',onDown,true);
+            document.removeEventListener('pointermove',onMove,true);
+            document.removeEventListener('pointerup',onUp,true);
+            document.removeEventListener('pointercancel',onCancel,true);
+            if(ui.parentNode)ui.parentNode.removeChild(ui);
+            window.__nsAreaCancel=null;
+            if(btn)btn.textContent='▧ OCR Area';
+          }
+          function onCancel(){cleanup();}
+          function onDown(e){
+            if(e.target===cancel||e.target===btn)return;
+            var el=document.elementFromPoint(e.clientX,e.clientY);
+            var im=el&&(el.tagName==='IMG'?el:(el.closest?el.closest('img'):null));
+            if(!im){hint.textContent='Start dragging on a chapter image';return;}
+            img=im;imRect=img.getBoundingClientRect();
+            if(imRect.width<12||imRect.height<12){img=null;return;}
+            startX=Math.max(imRect.left,Math.min(imRect.right,e.clientX));
+            startY=Math.max(imRect.top,Math.min(imRect.bottom,e.clientY));
+            lastX=startX;lastY=startY;down=true;
+            rect.style.display='block';rect.style.left=startX+'px';rect.style.top=startY+'px';rect.style.width='1px';rect.style.height='1px';
+            hint.textContent='Release to Force OCR';
+            e.preventDefault();e.stopImmediatePropagation();
+          }
+          function onMove(e){
+            if(!down||!img)return;
+            lastX=Math.max(imRect.left,Math.min(imRect.right,e.clientX));
+            lastY=Math.max(imRect.top,Math.min(imRect.bottom,e.clientY));
+            var l=Math.min(startX,lastX),t=Math.min(startY,lastY);
+            rect.style.left=l+'px';rect.style.top=t+'px';
+            rect.style.width=Math.max(1,Math.abs(lastX-startX))+'px';
+            rect.style.height=Math.max(1,Math.abs(lastY-startY))+'px';
+            e.preventDefault();e.stopImmediatePropagation();
+          }
+          function onUp(e){
+            if(!down||!img){cleanup();return;}
+            if(e){lastX=Math.max(imRect.left,Math.min(imRect.right,e.clientX));lastY=Math.max(imRect.top,Math.min(imRect.bottom,e.clientY));}
+            var l=Math.min(startX,lastX),t=Math.min(startY,lastY),rr=Math.max(startX,lastX),bb=Math.max(startY,lastY);
+            var ww=rr-l,hh=bb-t,src='';
+            try{src=(img.currentSrc||img.src||'').trim();if(src)src=new URL(src,document.baseURI).href;}catch(ignore){}
+            var nx=(l-imRect.left)/imRect.width,ny=(t-imRect.top)/imRect.height;
+            var nw=ww/imRect.width,nh=hh/imRect.height;
+            cleanup();
+            if(ww<12||hh<12||!src)return;
+            try{window.NsRetr.forceOcrArea(src,nx,ny,nw,nh);}catch(err){}
+            e.preventDefault();e.stopImmediatePropagation();
+          }
+          cancel.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();cleanup();});
+          document.addEventListener('pointerdown',onDown,true);
+          document.addEventListener('pointermove',onMove,true);
+          document.addEventListener('pointerup',onUp,true);
+          document.addEventListener('pointercancel',onCancel,true);
+          window.__nsAreaCancel=cleanup;
+          if(btn)btn.textContent='✕ Cancel OCR Area';
+        };
+      }
+      if(!document.getElementById('__ns_area_btn')){
+        var areaBtn=document.createElement('button');areaBtn.id='__ns_area_btn';areaBtn.textContent='▧ OCR Area';
+        areaBtn.style.cssText='position:fixed;right:10px;bottom:80px;z-index:2147483647;pointer-events:auto;border:1px solid #ffffff55;border-radius:12px;padding:10px 12px;background:rgba(26,34,50,.94);color:#fff;font:600 13px sans-serif;box-shadow:0 3px 12px #0007;';
+        areaBtn.addEventListener('click',function(e){
+          e.preventDefault();e.stopPropagation();
+          if(window.__nsAreaCancel)window.__nsAreaCancel();else if(window.__nsStartAreaSelect)window.__nsStartAreaSelect();
+        });
+        (document.body||document.documentElement).appendChild(areaBtn);
+      }
+    }catch(e){}
+
+    // Long-press a translated bubble to open correction actions (Kotlin bridge: NsRetr).
     try{
       if(!window.__nsLp){
         window.__nsLp=1;
@@ -241,22 +326,35 @@ internal object WebModeWriter {
           lpHide();
           var g=bb.getAttribute('data-g').split(','),s=bb.getAttribute('data-s');
           var m=document.createElement('div'); m.id='__ns_lp_menu';
-          m.textContent='\uD83D\uDD01 Re-translate';
-          m.style.cssText='position:fixed;z-index:2147483647;pointer-events:auto;padding:11px 18px;border-radius:12px;'
-            +'font:600 15px sans-serif;color:#fff;background:rgba(36,40,58,.97);border:1px solid rgba(255,255,255,.2);'
-            +'box-shadow:0 4px 18px rgba(0,0,0,.5);-webkit-user-select:none;user-select:none;white-space:nowrap;';
+          m.style.cssText='position:fixed;z-index:2147483647;pointer-events:auto;width:224px;padding:5px;border-radius:13px;'
+            +'font:600 14px sans-serif;color:#fff;background:rgba(26,31,46,.98);border:1px solid rgba(255,255,255,.2);'
+            +'box-shadow:0 4px 18px rgba(0,0,0,.5);-webkit-user-select:none;user-select:none;';
           var vw=window.innerWidth||360;
-          m.style.left=Math.max(8,Math.min(vw-190,x-80))+'px';
-          m.style.top=Math.max(8,y-70)+'px';
+          m.style.left=Math.max(8,Math.min(vw-240,x-100))+'px';
+          m.style.top=Math.max(8,y-112)+'px';
           var shownAt=Date.now();
-          m.addEventListener('click',function(ev){
-            ev.preventDefault();ev.stopPropagation();
-            if(Date.now()-shownAt<350)return;
-            lpHide();
-            try{window.NsRetr.retranslate(s,parseFloat(g[0]),parseFloat(g[1]),parseFloat(g[2]),parseFloat(g[3]));}catch(e){}
+          function item(label,action){
+            var b=document.createElement('button');b.type='button';b.textContent=label;
+            b.style.cssText='display:block;width:100%;box-sizing:border-box;margin:3px 0;padding:11px 10px;text-align:left;'
+              +'border:0;border-radius:8px;background:#30394b;color:#fff;font:600 14px sans-serif;';
+            b.addEventListener('click',function(ev){
+              ev.preventDefault();ev.stopPropagation();
+              if(Date.now()-shownAt<250)return;
+              lpHide();try{action();}catch(ignore){}
+            });
+            m.appendChild(b);
+          }
+          item('🔁 Re-translate',function(){
+            window.NsRetr.retranslate(s,parseFloat(g[0]),parseFloat(g[1]),parseFloat(g[2]),parseFloat(g[3]));
+          });
+          item('🔎 Force OCR + translate',function(){
+            window.NsRetr.forceOcrBubble(s,parseFloat(g[0]),parseFloat(g[1]),parseFloat(g[2]),parseFloat(g[3]));
+          });
+          item('▧ Select Area',function(){
+            if(window.__nsStartAreaSelect)window.__nsStartAreaSelect();
           });
           (document.body||document.documentElement).appendChild(m); lpMenu=m;
-          setTimeout(function(){if(lpMenu===m)lpHide();},5000);
+          setTimeout(function(){if(lpMenu===m)lpHide();},7000);
         };
         document.addEventListener('touchstart',function(e){
           if(lpMenu&&!lpMenu.contains(e.target))lpHide();
