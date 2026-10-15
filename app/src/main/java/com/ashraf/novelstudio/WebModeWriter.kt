@@ -347,12 +347,69 @@ internal object WebModeWriter {
         };
       }
       if(!document.getElementById('__ns_area_btn')){
-        var areaBtn=document.createElement('button');areaBtn.id='__ns_area_btn';areaBtn.textContent='▧ OCR Area';
-        areaBtn.style.cssText='position:fixed;right:10px;bottom:80px;z-index:2147483647;pointer-events:auto;border:1px solid #ffffff55;border-radius:12px;padding:10px 12px;background:rgba(26,34,50,.94);color:#fff;font:600 13px sans-serif;box-shadow:0 3px 12px #0007;';
+        // Keep one discoverable icon on screen in real-time bubble mode; reveal actions on tap.
+        var areaBtn=document.createElement('button');areaBtn.id='__ns_area_btn';areaBtn.type='button';
+        areaBtn.textContent='▧';
+        areaBtn.setAttribute('aria-label','OCR tools');
+        areaBtn.title='OCR tools';
+        areaBtn.style.cssText='position:fixed;right:10px;bottom:80px;z-index:2147483647;pointer-events:auto;'
+          +'width:44px;height:44px;padding:0;display:flex;align-items:center;justify-content:center;'
+          +'border:1px solid #ffffff55;border-radius:14px;background:rgba(26,34,50,.94);color:#fff;'
+          +'font:600 23px sans-serif;box-shadow:0 3px 12px #0007;-webkit-tap-highlight-color:transparent;';
+        var ocrMenu=null;
+        function hideOcrMenu(){if(ocrMenu&&ocrMenu.parentNode)ocrMenu.parentNode.removeChild(ocrMenu);ocrMenu=null;}
+        function visibleImageSource(){
+          function srcOf(im){
+            if(!im)return '';
+            var s=im.currentSrc||im.src||im.getAttribute('data-src')||im.getAttribute('data-lazy-src')||im.getAttribute('data-original')||'';
+            try{return s?new URL(s,document.baseURI).href:'';}catch(e){return s||'';}
+          }
+          var imgs=document.images||[],best='',bestArea=0,ww=window.innerWidth||360,hh=window.innerHeight||640;
+          for(var i=0;i<imgs.length;i++){
+            var im=imgs[i],r=im.getBoundingClientRect(),s=srcOf(im);
+            if(!s||r.width<80||r.height<60||r.right<=0||r.bottom<=0||r.left>=ww||r.top>=hh)continue;
+            var area=Math.max(0,Math.min(r.right,ww)-Math.max(r.left,0))
+              *Math.max(0,Math.min(r.bottom,hh)-Math.max(r.top,0));
+            if(area>bestArea){bestArea=area;best=s;}
+          }
+          return best;
+        }
+        function showOcrMenu(){
+          hideOcrMenu();
+          var m=document.createElement('div');ocrMenu=m;m.id='__ns_ocr_menu';
+          m.style.cssText='position:fixed;right:10px;bottom:132px;z-index:2147483647;pointer-events:auto;'
+            +'min-width:172px;padding:5px;border-radius:13px;background:rgba(26,31,46,.98);'
+            +'border:1px solid rgba(255,255,255,.2);box-shadow:0 4px 18px #0008;'
+            +'font:600 14px sans-serif;color:#fff;-webkit-user-select:none;user-select:none;';
+          function item(label,action){
+            var b=document.createElement('button');b.type='button';b.textContent=label;
+            b.style.cssText='display:block;width:100%;box-sizing:border-box;margin:3px 0;padding:11px 10px;'
+              +'text-align:left;border:0;border-radius:8px;background:#30394b;color:#fff;font:600 14px sans-serif;';
+            b.addEventListener('click',function(ev){
+              ev.preventDefault();ev.stopPropagation();hideOcrMenu();
+              try{action();}catch(ignore){}
+            });
+            m.appendChild(b);
+          }
+          item('↻  Force OCR',function(){
+            var src=visibleImageSource();
+            if(!src){try{if(window.NsRetr&&window.NsRetr.forceOcrArea)window.NsRetr.forceOcrArea('',0,0,1,1);}catch(ignore){}return;}
+            try{window.NsRetr.forceOcrArea(src,0,0,1,1);}catch(ignore){}
+          });
+          item('▧  OCR Area',function(){
+            if(window.__nsStartAreaSelect)window.__nsStartAreaSelect();
+          });
+          (document.body||document.documentElement).appendChild(m);
+          setTimeout(function(){if(ocrMenu===m)hideOcrMenu();},7000);
+        }
         areaBtn.addEventListener('click',function(e){
           e.preventDefault();e.stopPropagation();
-          if(window.__nsAreaCancel)window.__nsAreaCancel();else if(window.__nsStartAreaSelect)window.__nsStartAreaSelect();
+          if(window.__nsAreaCancel)window.__nsAreaCancel();
+          showOcrMenu();
         });
+        document.addEventListener('pointerdown',function(e){
+          if(ocrMenu&&!ocrMenu.contains(e.target)&&e.target!==areaBtn)hideOcrMenu();
+        },true);
         (document.body||document.documentElement).appendChild(areaBtn);
       }
     }catch(e){}
