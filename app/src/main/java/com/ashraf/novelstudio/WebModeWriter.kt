@@ -261,9 +261,10 @@ internal object WebModeWriter {
             return absUrl(src);
           }
           function bgSrc(el){try{var bg=getComputedStyle(el).backgroundImage||'';var m=/url\((?:"|')?([^"')]+)(?:"|')?\)/.exec(bg);return m?absUrl(m[1]):'';}catch(e){return '';}}
-          function visible(r){return r.width>=40&&r.height>=40&&r.right>0&&r.bottom>0&&r.left<innerWidth&&r.top<innerHeight;}
+          function visible(r){return r.width>=140&&r.height>=80&&r.right>0&&r.bottom>0&&r.left<innerWidth&&r.top<innerHeight;}
           var px=innerWidth*.5,py=innerHeight*.5,hit=document.elementFromPoint(px,py);
           var img=hit&&(hit.tagName==='IMG'?hit:(hit.closest?hit.closest('img'):null)),src=img?imageSrc(img):'';
+          if(img&&src&&!visible(img.getBoundingClientRect())){img=null;src='';}
           var node=hit;
           while((!img||!src)&&node&&node!==document.body){
             var cs=bgSrc(node),nr=node.getBoundingClientRect();

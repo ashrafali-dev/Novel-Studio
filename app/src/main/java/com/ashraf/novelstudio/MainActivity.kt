@@ -155,14 +155,24 @@ class MainActivity : Activity() {
     // Single-bubble/area jobs temporarily pass partial source text through the existing chatbot pipeline.
     // Keep the chapter that was open before that temporary job, then restore it after page placement.
     private var chapterAfterBubbleJob: Chapter? = null
+    private var chapterAfterBubbleJobNavToken: Int? = null
+
+    private fun rememberChapterAfterBubbleJob(chapter: Chapter?) {
+        chapterAfterBubbleJob = chapter
+        chapterAfterBubbleJobNavToken = if (chapter != null) navToken else null
+    }
 
     private fun restoreChapterAfterBubbleJob(expectedUrl: String? = null) {
         val original = chapterAfterBubbleJob ?: return
-        if (expectedUrl != null && cleanUrl(original.url) != cleanUrl(expectedUrl)) return
-        chapterAfterBubbleJob = null
+        if (expectedUrl != null && cleanUrl(original.url) != cleanUrl(expectedUrl)) {
+            rememberChapterAfterBubbleJob(null)
+            return
+        }
+        val expectedToken = chapterAfterBubbleJobNavToken
+        rememberChapterAfterBubbleJob(null)
         // An SPA can replace a chapter without changing the page URL. Never restore stale chapter
         // state after the user moved away while the chatbot was translating a selected bubble.
-        if (cleanUrl(novelWv.url.orEmpty()) == cleanUrl(original.url)) {
+        if (expectedToken == navToken && cleanUrl(novelWv.url.orEmpty()) == cleanUrl(original.url)) {
             lastChapter = original
             updateProgressUi()
         }
@@ -280,7 +290,7 @@ class MainActivity : Activity() {
                                 deepSeekLastOcrAtMs = System.currentTimeMillis()
                                 deepSeekVisibleSignature = ""
                                 toast("🔎 OCR refreshed · sending ${selected.size} bubble(s) to translate…")
-                                chapterAfterBubbleJob = lastChapter?.takeIf { cleanUrl(it.url) == cleanUrl(chapter.url) }
+                                rememberChapterAfterBubbleJob(lastChapter?.takeIf { cleanUrl(it.url) == cleanUrl(chapter.url) })
                                 handleChapter(chapter, useSavedTranslation = false)
                             }
                         }
@@ -345,7 +355,7 @@ class MainActivity : Activity() {
         val liveChapter = base.copy(text = bubble.sourceText.trim(), contentSel = "")
         WebModeLayoutStore.setScan(liveChapter.url, WebModeLayout(layout.titleOffset, listOf(bubble)))
         deepSeekTextHashByChapter[keyOf(liveChapter)] = setOf(hash)
-        chapterAfterBubbleJob = base
+        rememberChapterAfterBubbleJob(base)
         handleChapter(liveChapter, useSavedTranslation = false)
     }
 
