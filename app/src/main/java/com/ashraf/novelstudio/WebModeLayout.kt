@@ -222,7 +222,12 @@ internal object WebModeLayoutStore {
         val fresh = incoming.bubbles.filter {
             WebModeLogic.normalizeUrl(it.src) == target && it.sourceText.isNotBlank()
         }
-        if (fresh.isEmpty()) return
+        // Even an empty batch must replace the latest scan view, otherwise a caller could
+        // accidentally reuse a previous chapter's stale scan. The cumulative layout is untouched.
+        if (fresh.isEmpty()) {
+            scans[k] = WebModeLayout(incoming.titleOffset, emptyList())
+            return
+        }
 
         val old = mem[k] ?: scans[k]
         val x0 = region.x.coerceIn(0f, 1f)
