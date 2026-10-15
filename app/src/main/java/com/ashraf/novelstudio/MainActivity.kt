@@ -617,7 +617,7 @@ class MainActivity : Activity() {
             cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
             val retryLayout = WebModeLayout(0, missing)
             queueRtAheadTask(task.copy(
-                id = rtAheadTaskId(task.pageUrl, retryLayout),
+                id = rtAheadTaskId(task.pageUrl, retryLayout) + "-r",
                 layout = retryLayout,
                 attempts = task.attempts + 1
             ))
