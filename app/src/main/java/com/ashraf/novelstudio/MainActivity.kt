@@ -858,16 +858,25 @@ return t.length>=40?'TXT:'+t:'';
 
         val activeRun = running
         if (activeRun != null) {
-            val prefetched = prefetchGeneratedKeys.contains(keyOf(activeRun))
+            val runKey = keyOf(activeRun)
+            val aheadTranslation = rtAheadTranslationTasksByJobKey.containsKey(runKey)
+            val prefetched = prefetchGeneratedKeys.contains(runKey)
             val livePanel = isDeepSeekLivePanel(activeRun)
             statuses.add(
-                if (prefetched) ActivityDotStatus(
-                    "prefetch-translation", 0xFFFFAB40.toInt(),
-                    "Chatbot translating a prefetched chapter"
-                ) else ActivityDotStatus(
-                    "chatbot-translation", 0xFFFF80AB.toInt(),
-                    if (livePanel) "Chatbot translating visible panels" else "Chatbot translating chapter"
-                )
+                when {
+                    aheadTranslation -> ActivityDotStatus(
+                        "ahead-translation", 0xFFFFAB40.toInt(),
+                        "Pre-translating upcoming panels"
+                    )
+                    prefetched -> ActivityDotStatus(
+                        "prefetch-translation", 0xFFFFAB40.toInt(),
+                        "Chatbot translating a prefetched chapter"
+                    )
+                    else -> ActivityDotStatus(
+                        "chatbot-translation", 0xFFFF80AB.toInt(),
+                        if (livePanel) "Chatbot translating visible panels" else "Chatbot translating chapter"
+                    )
+                }
             )
         }
 
