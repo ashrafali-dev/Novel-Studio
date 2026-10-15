@@ -216,7 +216,7 @@ internal object WebModeLayoutStore {
      * Unrelated images and bubbles remain untouched. A blank/failed OCR result never erases prior data.
      */
     @Synchronized
-    fun replaceRegion(url: String, src: String, region: WebModeOcrRegion, incoming: WebModeLayout) {
+    fun replaceRegion(ctx: Context, url: String, src: String, region: WebModeOcrRegion, incoming: WebModeLayout) {
         val k = key(url)
         val target = WebModeLogic.normalizeUrl(src)
         val fresh = incoming.bubbles.filter {
@@ -254,6 +254,7 @@ internal object WebModeLayoutStore {
         scans[k] = WebModeLayout(incoming.titleOffset, fresh)
         // Keep every unrelated bubble in the cumulative layout for the current page.
         mem[k] = WebModeLayout(incoming.titleOffset, kept + fresh)
+        persist(ctx, url)
     }
 
     private fun samePosition(a: WmBubble, b: WmBubble): Boolean =

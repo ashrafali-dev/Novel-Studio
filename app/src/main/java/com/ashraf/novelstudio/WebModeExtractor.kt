@@ -416,7 +416,7 @@ internal class WebModeExtractor(
             if (!req.forceOcrSrc.isNullOrBlank() && req.forceOcrRegion != null) {
                 // Deliberate Force OCR must replace geometry in the selected region instead of
                 // letting the ordinary merge logic keep stale text/boxes from an earlier pass.
-                WebModeLayoutStore.replaceRegion(meta.url, req.forceOcrSrc, req.forceOcrRegion, scanLayout)
+                WebModeLayoutStore.replaceRegion(wv.context, meta.url, req.forceOcrSrc, req.forceOcrRegion, scanLayout)
             } else {
                 WebModeLayoutStore.put(meta.url, scanLayout)
             }
