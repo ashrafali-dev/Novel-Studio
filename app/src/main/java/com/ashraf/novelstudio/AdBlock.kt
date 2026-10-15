@@ -251,7 +251,18 @@ RULES FOR YOUR ANSWER
         "amazonaws.com", "youtube.com", "youtube-nocookie.com", "facebook.com",
         "facebook.net", "tiktok.com", "x.com", "twitter.com", "reddit.com",
         "wikipedia.org", "gravatar.com", "wordpress.com", "wp.com", "imgur.com",
-        "discord.com", "discordapp.com", "sentry.io", "recaptcha.net", "hcaptcha.com"
+        "discord.com", "discordapp.com", "sentry.io", "recaptcha.net", "hcaptcha.com",
+        // Tag Manager is often a site dependency; do not let AI page scans accidentally block it.
+        "googletagmanager.com", "tagmanager.google.com"
+    )
+    // Public suffixes can appear if a model guesses a naive two-label root (e.g. co.uk).
+    // Reject these exact values, but do not exempt every real subdomain under them.
+    private val publicSuffixGuards = setOf(
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "edu.au",
+        "co.nz", "com.br", "com.cn", "com.hk", "com.sg", "com.my", "co.in", "firm.in",
+        "net.in", "org.in", "co.jp", "co.kr", "com.mx", "com.tr", "com.tw", "com.ar",
+        "com.pl", "com.ua", "com.es", "com.fr", "co.za", "com.sa", "com.eg", "com.bd",
+        "com.pk", "co.id", "com.ph", "com.vn", "com.ng"
     )
 
     /** Persist AI suggestions only when their hosts appeared in the scan. */
@@ -270,6 +281,7 @@ RULES FOR YOUR ANSWER
         for (raw in suggestions) {
             val h = raw.trim().trim('.').lowercase()
             if (!validHost.matches(h) || !h.contains('.') || ipV4.matches(h) || h.contains("..")) continue
+            if (h in publicSuffixGuards) continue
             if (candidateHosts.none { it == h || it.endsWith(".$h") }) continue
             if (page.isNotBlank() && (h == page || h.endsWith(".$page") || page.endsWith(".$h"))) continue
             if (pageRoot.isNotBlank() && root(h) == pageRoot) continue
@@ -287,6 +299,14 @@ RULES FOR YOUR ANSWER
         file.writeText(existing.sorted().joinToString("\n"))
         load(ctx.applicationContext)
         return existing.size - before
+    }
+
+    /** Current persisted AI additions, used to report exactly what changed after a scan. */
+    fun aiBlockedHosts(ctx: Context): Set<String> {
+        val file = File(ctx.applicationContext.filesDir, "ai-blocklist.txt")
+        if (!file.exists()) return emptySet()
+        return try { file.readLines().map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet() }
+        catch (_: Exception) { emptySet() }
     }
 
     /** JS that reads back what the cosmetic part touched, plus how much text the page really has. */
