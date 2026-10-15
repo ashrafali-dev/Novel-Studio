@@ -589,7 +589,7 @@ class MainActivity : Activity() {
         try { chatWv.evaluateJavascript(Js.stop(), null) } catch (_: Exception) {}
         running = null
         if (requeue && cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
-            queueRtAheadTask(task)
+            queueRtAheadTask(task, front = true)
         } else {
             rtAheadTranslationSuppressedIds.add(task.id)
         }
