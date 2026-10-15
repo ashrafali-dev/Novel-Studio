@@ -5065,6 +5065,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 failJob(tok, ch, "Could not read the translation")
                 return@evaluateJavascript
             }
+            val aheadTaskKey = keyOf(ch)
+            val aheadTask = rtAheadTranslationTasksByJobKey[aheadTaskKey]
+            if (aheadTask != null) {
+                // This chatbot answer belongs to future panels. Cache the marker-aligned result only;
+                // never save it as a chapter or try to put it on the screen early.
+                deferNextChatbotRequest()
+                finishRealtimeAheadTranslation(aheadTaskKey, aheadTask, rawTranslation)
+                return@evaluateJavascript
+            }
             deferNextChatbotRequest()
             copy(t)
             // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
@@ -5104,6 +5113,24 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
+        val aheadTaskKey = keyOf(ch)
+        val aheadTask = rtAheadTranslationTasksByJobKey.remove(aheadTaskKey)
+        if (aheadTask != null) {
+            // A failed background pretranslation must not clear the foreground queue or show a scary
+            // failure toast. Retry this panel once; then leave it for the normal visible translation.
+            deferNextChatbotRequest()
+            rtAheadTranslationQueuedIds.remove(aheadTask.id)
+            running = null
+            if (aheadTask.attempts < 1 && cleanUrl(aheadTask.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+                queueRtAheadTask(aheadTask.copy(id = aheadTask.id + "-r", attempts = aheadTask.attempts + 1))
+            } else {
+                rtAheadTranslationSuppressedIds.add(aheadTask.id)
+            }
+            updateProgressUi()
+            startNext()
+            handler.postDelayed({ pumpRealtimeAheadTranslation() }, 500L)
+            return
+        }
         deferNextChatbotRequest()
         releaseDeepSeekHashBatch(ch)
         deepSeekLastOcrAtMs = System.currentTimeMillis()
