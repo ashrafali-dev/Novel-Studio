@@ -6112,6 +6112,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         webModeHandle?.cancel(); webModeHandle = null
                         webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
                         webModePrefetchBusy = false
+                        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+                        aheadOcrStage = ""
+                        aheadOcrPct = -1
+                        clearRealtimeAheadStateForNavigation()
                         clearWebModeProgress()
                         updateProgressUi()
                     }
