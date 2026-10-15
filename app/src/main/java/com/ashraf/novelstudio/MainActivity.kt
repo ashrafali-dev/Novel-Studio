@@ -1123,6 +1123,13 @@ return t.length>=40?'TXT:'+t:'';
             ))
         }
 
+        if (rtAheadWorkerBusy) {
+            statuses.add(ActivityDotStatus(
+                "ahead-translation", 0xFFFFAB40.toInt(),
+                "Pre-translating upcoming panels"
+            ))
+        }
+
         if (activePlacementIds.isNotEmpty()) {
             statuses.add(ActivityDotStatus(
                 "placement", 0xFF64FFDA.toInt(), "Placing translated text on the novel page"
@@ -3050,6 +3057,9 @@ return t.length>=40?'TXT:'+t:'';
     private fun openBot(u: String) {
         val key = botKey(u)
         if (key == currentBotKey) return
+        clearRealtimeAheadStateForNavigation()
+        aheadChatBaseUrl = ""
+        aheadChatReady = false
         val target = botWebViews[key] ?: newBotWebView().also { wv ->
             botWebViews[key] = wv
             wv.loadUrl(u)
@@ -5453,6 +5463,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     private fun cancelAll() {
         aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+        cancelRealtimeAheadWorker(requeue = false)
         rtAheadTranslationQueue.clear()
         rtAheadTranslationQueuedIds.clear()
         rtAheadTranslationTasksByJobKey.clear()
