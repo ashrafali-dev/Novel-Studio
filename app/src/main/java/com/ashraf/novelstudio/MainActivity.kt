@@ -432,6 +432,7 @@ class MainActivity : Activity() {
         val id: String,
         val pageUrl: String,
         val layout: WebModeLayout,
+        val top: Int = 0,
         val attempts: Int = 0
     )
 
