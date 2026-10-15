@@ -5819,8 +5819,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val url = item.optString("url").take(350)
                     val host = item.optString("host").lowercase()
                     if (url.isBlank() || host.isBlank()) continue
+                    // Keep only hosts actually observed in page resources. Adding a naive last-two-label
+                    // root here can accidentally include public suffixes such as co.uk and over-block sites.
                     candidates.add(host)
-                    if (host.contains('.')) candidates.add(AdBlock.root(host))
                     val kind = item.optString("kind", "link").take(16)
                     val label = item.optString("text").replace(Regex("\\s+"), " ").take(45)
                     rows.add("[$kind] $host | $url" + if (label.isNotBlank()) " | label=$label" else "")
@@ -5838,8 +5839,8 @@ Identify ONLY high-confidence (90%+) domains used for ads, deceptive popup/popun
 Do NOT label a domain as an ad merely because it is unfamiliar or external.
 Never recommend blocking the reader site's own domain, chapter/content hosts, image or script CDNs needed by the site, fonts, authentication/login, payments, or chatbot providers.
 Only select a hostname that appears in the scanned list. Prefer the registered/base domain when it is clearly the actual ad domain.
-If nothing is clearly an ad/tracker, return no domain.
-OUTPUT FORMAT: domain names only, one per line, without bullets, markdown, explanations, confidence labels, or URLs. Always make the final line exactly END_OF_LIST_NOVELSTUDIO_SCAN_COMPLETE_WITH_NO_MORE_DOMAINS so the app can detect completion.
+If nothing is clearly an ad/tracker, return exactly NONE.
+OUTPUT FORMAT: domain names only, one per line, without bullets, markdown, explanations, confidence labels, or URLs. Do not include a completion marker or repeat the current reader domain.
 
 SCANNED LINKS AND RESOURCES (${rows.size} entries):
 ${rows.take(220).joinToString("\n")}
@@ -5869,7 +5870,9 @@ ${rows.take(220).joinToString("\n")}
         token: Int,
         attempt: Int,
         candidates: Set<String>,
-        pageHost: String
+        pageHost: String,
+        stableReads: Int = 0,
+        previousLen: Int = -1
     ) {
         if (token != aiAdBlockScanToken || !aiAdBlockScanBusy) return
         if (attempt >= 100) {
@@ -5881,36 +5884,63 @@ ${rows.take(220).joinToString("\n")}
         chatWv.evaluateJavascript(Js.readLen()) { raw ->
             if (token != aiAdBlockScanToken || !aiAdBlockScanBusy) return@evaluateJavascript
             val fields = decode(raw).split('|')
-            if (fields.lastOrNull() == "1") {
+            val streaming = fields.getOrNull(1) == "1"
+            val replyLen = fields.getOrNull(2)?.toIntOrNull() ?: 0
+            val hasReply = fields.getOrNull(4) == "1"
+            val stableNow = if (!streaming && replyLen > 0 && replyLen == previousLen) stableReads + 1 else 0
+            // Js.readLen's fast "done" flag requires 50+ characters. AdBlock replies can be much
+            // shorter (including NONE), so also accept a short reply after it is stable across polls.
+            val replyFinished = fields.lastOrNull() == "1" ||
+                (!streaming && hasReply && replyLen > 0 && stableNow >= 2)
+            if (replyFinished) {
                 chatWv.evaluateJavascript(Js.readText()) { answerRaw ->
                     if (token != aiAdBlockScanToken || !aiAdBlockScanBusy) return@evaluateJavascript
                     deferNextChatbotRequest()
                     aiAdBlockScanBusy = false
                     val answer = decode(answerRaw)
                     val domains = linkedSetOf<String>()
-                    val hostPattern = Regex("(?i)^(?:https?://)?([a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)(?::\\d+)?(?:/.*)?$")
+                    // Be tolerant of numbered/bulleted lists, BLOCK_HOST labels, markdown links,
+                    // code fences, and trailing explanations; only observed candidate hosts can pass.
+                    val hostPattern = Regex("(?i)(?:https?://)?([a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)(?::\\d+)?(?:/[^\\s]*)?")
+                    val tick = 96.toChar().toString()
                     for (rawLine in answer.lines()) {
-                        val line = rawLine.trim().trimStart('-', '*', '•').trim()
+                        var line = rawLine.trim()
+                            .removePrefix(tick.repeat(3)).removeSuffix(tick.repeat(3)).trim()
                             .replace(Regex("(?i)^BLOCK_HOST\\s*:\\s*"), "")
-                            .trim().trimEnd('.', ',', ';')
+                            .replace(Regex("^\\s*\\d+\\s*[.)]\\s*"), "")
+                            .trim().trimStart('-', '*', '•').trim()
+                        val markdownLink = Regex("^\\[([^\\]]+)]\\([^)]+\\)$").matchEntire(line)
+                        if (markdownLink != null) line = markdownLink.groupValues[1].trim()
+                        line = line.removeSurrounding(tick).trim().trimEnd('.', ',', ';', ':')
                         if (line.isBlank() || line.equals("NONE", true) ||
                             line.contains("END_OF_LIST_NOVELSTUDIO", true) ||
                             line.contains("no domain", true) || line.contains("no ad", true)) continue
-                        val match = hostPattern.matchEntire(line) ?: continue
-                        val host = match.groupValues[1].lowercase().trimEnd('.')
+                        val match = hostPattern.find(line) ?: continue
+                        val host = match.groupValues[1].lowercase().trimEnd('.').removePrefix("www.")
                         if (host.contains('.') && !host.contains("..")) domains.add(host)
                     }
+
+                    val before = AdBlock.aiBlockedHosts(this)
                     val added = AdBlock.addAiBlockedHosts(this, domains, candidates, pageHost)
+                    val newlySaved = (AdBlock.aiBlockedHosts(this) - before).sorted()
+                    AdBlock.logEntry(
+                        "AI page-link scan: reply=${answer.length} chars, candidates=${candidates.size}, " +
+                            "suggested=${domains.size}, added=$added, saved=${newlySaved.joinToString(",")}"
+                    )
                     if (added > 0) {
-                        AdBlock.logEntry("AI page-link scan: added $added host(s): " + domains.joinToString(","))
-                        toast("✅ AI review added $added ad domain(s). Reload page to apply.")
+                        val preview = newlySaved.take(4).joinToString(", ")
+                        val more = if (newlySaved.size > 4) " +${newlySaved.size - 4} more" else ""
+                        toast("✅ Saved $added new ad domain(s): $preview$more. Reload this page to apply.")
                     } else {
-                        toast("ℹ️ No new safe ad domains to add (none found, already known, or rejected by safeguards).")
+                        toast(
+                            "ℹ️ Scan finished: ${domains.size} domain(s) suggested, none newly saved. " +
+                                "They may already be blocked, absent from scanned resources, or rejected as unsafe."
+                        )
                     }
                 }
             } else {
                 handler.postDelayed({
-                    pollAiAdBlockResult(token, attempt + 1, candidates, pageHost)
+                    pollAiAdBlockResult(token, attempt + 1, candidates, pageHost, stableNow, replyLen)
                 }, 1200L)
             }
         }
