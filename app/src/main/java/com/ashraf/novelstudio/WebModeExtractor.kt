@@ -165,13 +165,33 @@ internal class WebModeExtractor(
          * refreshed on the main thread; on the main thread the real check runs directly.
          */
         @Volatile private var validCache = true
+        @Volatile private var lastValidityCheckAtMs = SystemClock.elapsedRealtime()
+        private val validityCheckQueued = AtomicBoolean(false)
         private fun alive(): Boolean {
             if (cancelled.get()) return false
             if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
                 validCache = req.isValid()
+                lastValidityCheckAtMs = SystemClock.elapsedRealtime()
                 return validCache
             }
-            handler.post { if (!cancelled.get()) validCache = req.isValid() }
+            // Never queue a UI/WebView validity check on every OCR loop. Large panel scans can
+            // call alive() many times, and flooding the main thread delays visible-page work.
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastValidityCheckAtMs >= VALIDITY_CHECK_INTERVAL_MS &&
+                validityCheckQueued.compareAndSet(false, true)) {
+                handler.post {
+                    try {
+                        if (!cancelled.get()) {
+                            validCache = req.isValid()
+                            lastValidityCheckAtMs = SystemClock.elapsedRealtime()
+                        }
+                    } catch (_: Throwable) {
+                        validCache = false
+                    } finally {
+                        validityCheckQueued.set(false)
+                    }
+                }
+            }
             return validCache
         }
         private fun elapsed() = SystemClock.elapsedRealtime() - startedAt
@@ -1105,12 +1125,17 @@ internal class WebModeExtractor(
             } else first
 
             val resultLetters = result.text.count { it.isLetterOrDigit() }
-            // A script locked from a previous chapter can be wrong for this comic. If the
-            // real-time first pass is sparse, try alternate models once before giving up.
-            if (result.text.length >= 2) {
-                if (fastMode && resultLetters < 18) {
-                    for (script in WebModeLogic.fallbackScripts(st.current)) {
-                        val alternate = try { engine.recognizeFast(bmp, script) } catch (_: Exception) { OcrResult(emptyList()) }
+            // Real-time is latency-sensitive. A short but readable result should not trigger three
+            // extra language models on every slice; this caused multi-second pauses on English
+            // scanlation sites with short dialogue and sound effects.
+            if (resultLetters >= 2) {
+                if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN &&
+                    !st.fastFallbackTried) {
+                    st.fastFallbackTried = true
+                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
+                    if (script != null) {
+                        val alternate = try { engine.recognizeFast(bmp, script) }
+                            catch (_: Exception) { OcrResult(emptyList()) }
                         if (alternate.text.count { it.isLetterOrDigit() } > resultLetters + 4) {
                             st.current = script
                             st.locked = true
@@ -1121,12 +1146,28 @@ internal class WebModeExtractor(
                 st.locked = true
                 return result
             }
-            if ((!st.locked || fastMode) && st.fallbackBudget > 0) {
-                if (!fastMode) st.fallbackBudget--
+            if (fastMode) {
+                // At most one alternate recognizer for an entirely unreadable realtime scan.
+                if (!st.fastFallbackTried) {
+                    st.fastFallbackTried = true
+                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
+                    if (script != null) {
+                        val alternate = try { engine.recognizeFast(bmp, script) }
+                            catch (_: Exception) { OcrResult(emptyList()) }
+                        if (alternate.text.count { it.isLetterOrDigit() } >= 2) {
+                            st.current = script
+                            st.locked = true
+                            return alternate
+                        }
+                    }
+                }
+                return result
+            }
+            if (!st.locked && st.fallbackBudget > 0) {
+                st.fallbackBudget--
                 for (script in WebModeLogic.fallbackScripts(st.current)) {
-                    val alternate = try {
-                        if (fastMode) engine.recognizeFast(bmp, script) else engine.recognize(bmp, script)
-                    } catch (_: Exception) { OcrResult(emptyList()) }
+                    val alternate = try { engine.recognize(bmp, script) }
+                        catch (_: Exception) { OcrResult(emptyList()) }
                     if (alternate.text.count { it.isLetterOrDigit() } >= 2) {
                         st.current = script
                         st.locked = true
@@ -1177,7 +1218,11 @@ internal class WebModeExtractor(
         }
     }
 
-    private class ScriptState(var current: OcrScript) { var locked = false; var fallbackBudget = 3 }
+    private class ScriptState(var current: OcrScript) {
+        var locked = false
+        var fallbackBudget = 3
+        var fastFallbackTried = false
+    }
     private class DecodeException : Exception()
     private class ForceAcc { var top = 0; val texts = ArrayList<String>(); val bubbles = ArrayList<WmBubble>() }
     private class PanelOcr(val text: String, val bubbles: List<WmBubble>)
@@ -1192,6 +1237,7 @@ internal class WebModeExtractor(
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 15_000L
         private const val JOB_MAX_MS = 12 * 60_000L
+        private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120
         private const val MIN_H = 60
 
