@@ -656,6 +656,11 @@ class MainActivity : Activity() {
             }
             val pageKeyNow = cleanUrl(url)
             if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
+                aheadOcrHandle?.cancel()
+                aheadOcrHandle = null
+                aheadOcrSeq++
+                aheadOcrStage = ""
+                aheadOcrPct = -1
                 clearRealtimeAheadStateForNavigation()
                 deepSeekPollUrl = url
                 deepSeekVisibleSignature = ""
@@ -5163,6 +5168,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun cancelAll() {
+        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+        rtAheadTranslationQueue.clear()
+        rtAheadTranslationQueuedIds.clear()
+        rtAheadTranslationTasksByJobKey.clear()
+        rtAheadTranslationCache.clear()
+        rtAheadTranslationSuppressedIds.clear()
         webModeHandle?.cancel(); webModeHandle = null
         webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
         webModePrefetchBusy = false
@@ -5827,6 +5838,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     } else {
                         handler.removeCallbacks(deepSeekVisiblePoll)
                         handler.removeCallbacks(overlayGuard)
+                        aheadOcrHandle?.cancel()
+                        aheadOcrHandle = null
+                        aheadOcrSeq++
+                        aheadOcrStage = ""
+                        aheadOcrPct = -1
+                        clearRealtimeAheadStateForNavigation()
                         deepSeekPollBusy = false
                         deepSeekVisibleSignature = ""
                         deepSeekLastOcrAtMs = 0L
