@@ -549,12 +549,27 @@ class MainActivity : Activity() {
 
     private fun selectedBotBaseUrl(): String {
         val list = bots()
+        var configured = ""
         for (i in 0 until list.length()) {
             val item = list.optJSONObject(i) ?: continue
             val url = item.optString("u")
-            if (url.isNotBlank() && botKey(url) == currentBotKey) return url
+            if (url.isNotBlank() && botKey(url) == currentBotKey) {
+                configured = url
+                break
+            }
         }
-        return Prefs.get(this, "botUrl", chatWv.url.orEmpty()).ifBlank { chatWv.url.orEmpty() }
+        if (configured.isBlank()) configured = Prefs.get(this, "botUrl", chatWv.url.orEmpty()).ifBlank { chatWv.url.orEmpty() }
+        val host = Uri.parse(configured).host.orEmpty().lowercase()
+        // Always use a fresh conversation in the hidden worker. Reusing the visible conversation URL
+        // can make two WebViews submit into the same thread on some providers.
+        return when {
+            host == "claude.ai" || host.endsWith(".claude.ai") -> "https://claude.ai/new"
+            host == "chatgpt.com" || host.endsWith(".chatgpt.com") -> "https://chatgpt.com/"
+            host == "gemini.google.com" -> "https://gemini.google.com/app"
+            host == "chat.deepseek.com" || host.endsWith(".deepseek.com") -> "https://chat.deepseek.com/"
+            host == "grok.com" || host.endsWith(".grok.com") -> "https://grok.com/"
+            else -> configured
+        }
     }
 
     private fun ensureRealtimeAheadChatWebView(): WebView? {
