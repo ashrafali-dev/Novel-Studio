@@ -548,7 +548,10 @@ class MainActivity : Activity() {
                 continue
             }
             val layout = WebModeLayout(0, remaining)
-            val id = rtAheadTaskId(queued.pageUrl, layout)
+            val baseId = rtAheadTaskId(queued.pageUrl, layout)
+            // Preserve retry identity so an interrupted retry is not rejected by the original's
+            // suppression entry.
+            val id = if (queued.attempts > 0 || queued.id.endsWith("-r")) "$baseId-r" else baseId
             val task = queued.copy(id = id, layout = layout)
             val base = lastChapter?.takeIf { cleanUrl(it.url) == currentUrl }
             if (base == null) {
@@ -5139,9 +5142,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             // failure toast. Retry this panel once; then leave it for the normal visible translation.
             deferNextChatbotRequest()
             rtAheadTranslationQueuedIds.remove(aheadTask.id)
+            rtAheadTranslationSuppressedIds.add(aheadTask.id)
             running = null
             if (aheadTask.attempts < 1 && cleanUrl(aheadTask.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
-                queueRtAheadTask(aheadTask.copy(id = aheadTask.id + "-r", attempts = aheadTask.attempts + 1))
+                queueRtAheadTask(aheadTask.copy(
+                    id = rtAheadTaskId(aheadTask.pageUrl, aheadTask.layout) + "-r",
+                    attempts = aheadTask.attempts + 1
+                ))
             } else {
                 rtAheadTranslationSuppressedIds.add(aheadTask.id)
             }
