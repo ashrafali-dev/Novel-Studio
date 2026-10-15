@@ -489,22 +489,31 @@ for(var i=0;i<a.length;i++){
  if(!s||/^data:image\/(gif|svg)/i.test(s)||r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
  seen[s]=1;v.push('IMG:'+s+'@'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
 }
-var els=document.querySelectorAll('div,section,article,figure,main'),lim=Math.min(els.length,2500);
-for(var j=0;j<lim;j++){
- var e=els[j],r=e.getBoundingClientRect();
- if(r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
- var bg='';
- try{bg=getComputedStyle(e).backgroundImage||'';}catch(ignore){}
- if(!bg||bg==='none')continue;
- var re=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
- while((m=re.exec(bg))!==null){
-  var s=(m[1]||'').trim();
-  if(!s||/^data:image\/(gif|svg)/i.test(s))continue;
-  try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
-  if(seen[s])continue;
-  seen[s]=1;v.push('BG:'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height));
+// CSS-background discovery is expensive on large readers. Probe it once per second instead
+// of walking thousands of DOM nodes on every 150 ms image poll. IMG discovery stays realtime.
+var bgNow=Date.now(),bgSig=window.__nsRtBgSignature||'';
+if(bgNow-(window.__nsRtBgProbeAt||0)>=1000){
+ window.__nsRtBgProbeAt=bgNow;
+ var bgv=[],els=document.querySelectorAll('div,section,article,figure,main'),lim=Math.min(els.length,1000);
+ for(var j=0;j<lim;j++){
+  var e=els[j],r=e.getBoundingClientRect();
+  if(r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
+  var bg='';
+  try{bg=getComputedStyle(e).backgroundImage||'';}catch(ignore){}
+  if(!bg||bg==='none')continue;
+  var re=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
+  while((m=re.exec(bg))!==null){
+   var s=(m[1]||'').trim();
+   if(!s||/^data:image\/(gif|svg)/i.test(s))continue;
+   try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
+   if(seen[s])continue;
+   seen[s]=1;bgv.push('BG:'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height));
+  }
  }
+ window.__nsRtBgSignature=bgv.join('|');
 }
+bgSig=window.__nsRtBgSignature||'';
+if(bgSig)v.push(bgSig);
 if(v.length)return 'IMG:'+v.join('|');
 var root=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;
 var t=String((root&&(root.innerText||root.textContent))||'').replace(/\s+/g,' ').trim().slice(0,1200);

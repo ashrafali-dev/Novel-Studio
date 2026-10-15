@@ -1293,11 +1293,12 @@ function cands(sc){
   // Treat only large elements as panels to avoid tiny UI artwork.
   var els=document.querySelectorAll('*'),limit=Math.min(els.length,5000);
   for(var j=0;j<limit;j++){
-    var el=els[j],bg='';
+    var el=els[j],r=el.getBoundingClientRect();
+    // Most DOM nodes are tiny wrappers; avoid a computed-style lookup for those.
+    if(r.width<180||r.height<100)continue;
+    var bg='';
     try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
     if(!bg||bg==='none')continue;
-    var r=el.getBoundingClientRect();
-    if(r.width<180||r.height<100)continue;
     var meta=(el.className&&el.className.baseVal!==undefined?el.className.baseVal:el.className||'')+' '+(el.id||'')+' '+(el.getAttribute('aria-label')||'');
     if(BAD.test(meta))continue;
     if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
