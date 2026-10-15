@@ -499,6 +499,15 @@ class MainActivity : Activity() {
             .joinToString("") { "%02x".format(it) }.take(24)
     }
 
+    /** Stable cross-quality identity: OCR models can shift bubble geometry by a few pixels. */
+    private fun rtAheadBubbleCacheKey(bubble: WmBubble): String {
+        val src = WebModeLogic.normalizeUrl(bubble.src)
+        val x = Math.round(bubble.cx * 100f).toInt()
+        val y = Math.round(bubble.cy * 100f).toInt()
+        val text = WebModeLayout.normalizeOcrText(bubble.sourceText)
+        return "$src|$x,$y|$text"
+    }
+
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         val page = cleanUrl(pageUrl)
@@ -877,7 +886,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         val missing = task.layout.bubbles.filter { bubble ->
             !rtAheadTranslationCache.containsKey(WebModeLayout.fingerprint(bubble)) &&
                 !synchronized(deepSeekInFlightTextHashes) {
-                    WebModeLayout.fingerprint(bubble) in deepSeekTranslatedTextHashes
+                    WebModeLayout.fingerprint(bubble) !in deepSeekTranslatedTextHashes
                 }
         }
         if (missing.isNotEmpty() && task.attempts < 1 &&
