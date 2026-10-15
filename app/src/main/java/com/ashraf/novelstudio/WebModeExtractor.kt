@@ -332,7 +332,8 @@ internal class WebModeExtractor(
         private fun tick(n: Int, lastCount: Int, stable: Int) {
             if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return }
             if (elapsed() > DISCOVERY_MAX_MS || n > MAX_TICKS) { finishDiscovery(); return }
-            wv.evaluateJavascript(wrap(LIB + JS_STEP)) { raw ->
+            val stepSize = if (lastCount >= 8) "1.15" else "0.85"
+            wv.evaluateJavascript(wrap(LIB + JS_STEP.replace("__STEP__", stepSize))) { raw ->
                 if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
                 val o = parseJson(raw)
                 if (o == null) {
@@ -346,9 +347,19 @@ internal class WebModeExtractor(
                 var st = if (bottom && ready && count == lastCount) stable + 1 else 0
                 // A reader that has not drawn anything yet gets a longer grace period.
                 if (count == 0 && elapsed() < EMPTY_GRACE_MS) st = 0
-                progress("Discovering chapter panels", 1 + minOf(8, n / 4))
+                progress("Discovering panels: $count found · $pending loading", 1 + minOf(8, n / 4))
                 if (st >= 3 && (pending == 0 || st >= 8)) finishDiscovery()
-                else handler.postDelayed({ tick(n + 1, count, st) }, if (bottom) 500L else 350L)
+                else {
+                    // Many ordinary IMG-based readers can scroll faster once the image list is visible.
+                    // Keep a slower cadence for unknown/virtualized readers so their lazy loaders can react.
+                    val waitMs = when {
+                        bottom -> 350L
+                        count >= 8 -> 140L
+                        count >= 3 -> 190L
+                        else -> 350L
+                    }
+                    handler.postDelayed({ tick(n + 1, count, st) }, waitMs)
+                }
             }
         }
 
@@ -440,6 +451,11 @@ internal class WebModeExtractor(
                 try {
                     progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
                     val targeted = !req.forceOcrSrc.isNullOrBlank()
+                    // For large chapters, use the same low-latency OCR path that works well in
+                    // real-time mode. Full-quality OCR is retained for selected regions and is used
+                    // as a fallback only when the fast pass finds no text in a panel.
+                    val fastChapterMode = !targeted && total >= FAST_CHAPTER_PANELS
+                    val fastPass = !targeted && (req.visibleOnly || fastChapterMode)
                     val po = if (targeted && req.forceOcrRegion != null) {
                         // Some Android codecs throw while decoding a selected region. Retry with a
                         // bounded downsampled bitmap rather than aborting manual OCR.
@@ -450,7 +466,11 @@ internal class WebModeExtractor(
                             ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion, cropFallback = true)
                         }
                     } else {
-                        ocrBytes(bytes, script, p.src, fastMode = req.visibleOnly && !targeted)
+                        val firstPass = ocrBytes(bytes, script, p.src, fastMode = fastPass)
+                        if (fastChapterMode && firstPass != null && firstPass.text.isBlank() && alive()) {
+                            progress("Detailed OCR retry ${i + 1}/$total", 10 + i * 89 / total)
+                            ocrBytes(bytes, script, p.src, fastMode = false)
+                        } else firstPass
                     }
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
@@ -717,33 +737,34 @@ internal class WebModeExtractor(
 
         // ---- fetching: HTTP with the WebView's cookies; blob:/data: and refused requests go through the page itself
         private fun fetchWithRetry(p: PanelRef, pageUrl: String): ByteArray? {
-            // Real-time mode must not inherit the multi-second retry/backoff policy used by full scans.
-            // Try once with short network timeouts; if direct HTTP fails, let the page fetch its own image.
-            if (req.visibleOnly) {
-                return try {
-                    val u = p.src
-                    when {
-                        u.startsWith("data:", true) -> decodeDataUrl(u)
-                        u.startsWith("blob:", true) -> fetchViaPage(u, timeoutMs = 5000L)
-                        else -> try { httpGet(u, pageUrl, quick = true) }
-                              catch (_: IOException) { fetchViaPage(u, timeoutMs = 5000L) }
-                    }
-                } catch (_: Exception) { null }
-            }
-            for (attempt in 1..3) {
+            if (!alive()) return null
+            val u = p.src
+            // Local / page-owned sources never need HTTP retry loops.
+            if (u.startsWith("data:", true)) return try { decodeDataUrl(u) } catch (_: Exception) { null }
+            if (u.startsWith("blob:", true)) return try { fetchViaPage(u, timeoutMs = 7000L) } catch (_: Exception) { null }
+
+            // A failed image used to spend up to three rounds of 15–25 s HTTP timeouts plus
+            // a 25 s page-fetch timeout per round. One bad panel could therefore stall a
+            // 97-panel chapter for over a minute before OCR even began. Keep each attempt bounded.
+            return try {
+                httpGet(u, pageUrl, quick = true)
+            } catch (directError: IOException) {
                 if (!alive()) return null
                 try {
-                    val u = p.src
-                    return when {
-                        u.startsWith("data:", true) -> decodeDataUrl(u)
-                        u.startsWith("blob:", true) -> fetchViaPage(u)
-                        else -> try { httpGet(u, pageUrl) } catch (e: IOException) { fetchViaPage(u) }
-                    }
+                    // The loaded page can often fetch a CDN image with its own cookies/session.
+                    fetchViaPage(u, timeoutMs = 6500L)
                 } catch (_: Exception) {
-                    if (attempt < 3) try { Thread.sleep(600L * attempt) } catch (_: InterruptedException) { return null }
+                    if (!alive()) return null
+                    val msg = directError.message.orEmpty()
+                    val definitiveHttpFailure = Regex("http\\s+(401|403|404|410|451)").containsMatchIn(msg)
+                    // Only retry a transient network failure once; retrying denied/missing URLs
+                    // cannot help and used to dominate chapter scan time.
+                    if (definitiveHttpFailure) null
+                    else try { httpGet(u, pageUrl, quick = true) } catch (_: Exception) { null }
                 }
+            } catch (_: Exception) {
+                null
             }
-            return null
         }
 
         private fun httpGet(url: String, referer: String, quick: Boolean = false): ByteArray {
@@ -1255,6 +1276,7 @@ internal class WebModeExtractor(
         private const val TAG = "NsWebMode"
         private val NEWLINES = Regex("\\s*\\n\\s*")
         private const val MAX_PANELS = 400
+        private const val FAST_CHAPTER_PANELS = 12
         private const val MAX_TICKS = 400
         private const val MAX_BYTES = 25 * 1024 * 1024
         private const val DISCOVERY_MAX_MS = 120_000L
@@ -1335,7 +1357,7 @@ function cands(sc){
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
     out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
   }
-  // Some pages use SVG <image>, videos with posters, or CSS/data-* lazy backgrounds.
+  // Some pages use SVG <image> or videos with posters.
   var extra=document.querySelectorAll('svg image,video[poster]');
   for(var ei=0;ei<extra.length;ei++){
     var xe=extra[ei],xr=xe.getBoundingClientRect(),xs='';
@@ -1349,6 +1371,10 @@ function cands(sc){
     var xt=sc?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
     out.push({s:xs,t:Math.round(xt),l:Math.round(xr.left),w:Math.round(xr.width),h:Math.round(xr.height),d:1,fw:xr.width,fh:xr.height,vl:xr.left,vt:xr.top,vb:xr.bottom});
   }
+  // If the reader exposes several normal IMG panels, do not walk thousands of DOM nodes
+  // and call getComputedStyle() on every wrapper. This expensive fallback is only needed
+  // for canvas/CSS-background readers which do not expose their panels as IMG elements.
+  if(out.length>=3)return out;
   // CSS backgrounds and lazy-background attributes. Inspect larger nodes throughout the DOM,
   // not just the first 5,000 nodes; also enter open shadow roots used by some custom readers.
   var els=allNodes(16000);
@@ -1381,14 +1407,14 @@ function cands(sc){
 """
 
         private const val JS_STEP = """
-var sc=scroller(),vh=window.innerHeight||800,before,after,hh,bottom;
+var sc=scroller(),vh=window.innerHeight||800,before,after,hh,bottom,step=__STEP__;
 if(sc){
   if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
-  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*0.85);after=sc.scrollTop;hh=sc.scrollHeight;
+  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*step);after=sc.scrollTop;hh=sc.scrollHeight;
 }else{
   before=window.pageYOffset||de.scrollTop||0;
   if(window.__nsWmY===undefined)window.__nsWmY=before;
-  window.scrollBy(0,Math.round(vh*0.85));after=window.pageYOffset||de.scrollTop||0;
+  window.scrollBy(0,Math.round(vh*step));after=window.pageYOffset||de.scrollTop||0;
   hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
 }
 bottom=(after+vh>=hh-4)||after===before;
