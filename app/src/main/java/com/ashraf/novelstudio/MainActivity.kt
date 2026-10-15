@@ -455,6 +455,8 @@ class MainActivity : Activity() {
     private var rtAheadWorkerJobKey = ""
     private var rtAheadWorkerMarkerCount = 0
     private var rtAheadWorkerSourceLength = 0
+    private var rtAheadPumpScheduled = false
+    private var rtAheadNextSendAtMs = 0L
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "9").toIntOrNull() ?: 9).coerceIn(0, 12)
@@ -636,12 +638,27 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         return full to markerCount
     }
 
+    private fun scheduleRealtimeAheadPump(delayMs: Long) {
+        if (rtAheadPumpScheduled) return
+        rtAheadPumpScheduled = true
+        handler.postDelayed({
+            rtAheadPumpScheduled = false
+            pumpRealtimeAheadTranslation()
+        }, delayMs.coerceAtLeast(60L))
+    }
+
     private fun pumpRealtimeAheadTranslation() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         if (rtAheadWorkerBusy || running != null || queue.isNotEmpty() ||
             webModeHandle != null || webModePrefetchBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
+        val now = System.currentTimeMillis()
+        val earliestSend = maxOf(rtAheadNextSendAtMs, nextChatbotRequestAtMs)
+        if (now < earliestSend) {
+            scheduleRealtimeAheadPump(earliestSend - now)
+            return
+        }
         while (rtAheadTranslationQueue.isNotEmpty()) {
             val queued = rtAheadTranslationQueue.removeAt(0)
             rtAheadTranslationQueuedIds.remove(queued.id)
@@ -694,7 +711,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val worker = ensureRealtimeAheadChatWebView()
             if (worker == null) {
                 queueRtAheadTask(task, front = true)
-                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 900L)
+                scheduleRealtimeAheadPump(900L)
                 return
             }
             rtAheadTranslationTasksByJobKey[jobKey] = task
@@ -705,6 +722,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val (prompt, markerCount) = buildRealtimeAheadPrompt(task)
             rtAheadWorkerMarkerCount = markerCount
             rtAheadWorkerSourceLength = task.layout.bubbles.sumOf { it.sourceText.length }
+            rtAheadNextSendAtMs = System.currentTimeMillis() + chatbotRequestGapMs
             webModeStage = "Pre-translating upcoming panel"
             webModePct = 1
             updateProgressUi()
