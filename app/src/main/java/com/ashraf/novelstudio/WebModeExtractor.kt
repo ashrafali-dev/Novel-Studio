@@ -305,6 +305,12 @@ internal class WebModeExtractor(
                     // Full-quality OCR (not the fast one-pass reading): this runs in the background.
                     progress("Read-ahead OCR: reading text ${index + 1}/$total", index * 99 / total)
                     val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
+                    // Do not poison the read-ahead cache with an empty OCR result; the visible scan
+                    // gets another attempt when the panel reaches the viewport.
+                    if (po.text.isBlank()) {
+                        progress("Read-ahead OCR: no text yet; leave panel eligible for visible retry", index * 99 / total)
+                        continue
+                    }
                     synchronized(aheadCache) { aheadCache[key] = po }
                     aheadDone.add(key)
                     emitReady(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
