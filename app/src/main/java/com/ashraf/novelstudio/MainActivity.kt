@@ -956,6 +956,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
     private var deepSeekPollBusy = false
+    // If WebView drops a JS callback during reload/navigation, a watchdog restarts the probe.
+    private var deepSeekPollEvalSeq = 0
     private val deepSeekVisiblePoll = object : Runnable {
         override fun run() {
             if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
@@ -985,7 +987,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             // Probe the viewport 4x/second. Image changes trigger OCR quickly; a stable image set
             // is rechecked periodically, while text-only pages get one safe HTML-extraction fallback.
             val js = """(function(){try{
-var v=[],seen={},now=Date.now(),vw=window.innerWidth||0,vh=window.innerHeight||0;
+var v=[],seen={},now=Date.now(),vw=window.innerWidth||0,vh=window.innerHeight||0,hasLargeImage=false;
 var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-url','data-ks-lazyload','data-cfsrc'];
 var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparen|pixel\.gif/i;
 function absolute(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
@@ -1019,6 +1021,7 @@ for(var i=0;i<imgs.length;i++){
  var e=imgs[i],r=e.getBoundingClientRect(),s=imageSrc(e);
  if(!s||r.width<60||r.height<45||r.right<=0||r.bottom<=0||r.left>=vw||r.top>=vh)continue;
  if(r.width*r.height<3500)continue;
+ if(r.width*r.height>=Math.max(18000,vw*vh*0.12))hasLargeImage=true;
  add('IMG',s,r,'#'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
 }
 // SVG images, video posters and canvas readers do not always expose a normal <img>.
@@ -1030,11 +1033,15 @@ for(var si=0;si<svgs.length;si++){
 var vids=document.querySelectorAll('video[poster]');
 for(var vi=0;vi<vids.length;vi++){var ve=vids[vi],vr=ve.getBoundingClientRect();if(vr.width>=80&&vr.height>=60&&vr.right>0&&vr.bottom>0&&vr.left<vw&&vr.top<vh)add('POSTER',ve.getAttribute('poster'),vr,'');}
 var cvs=document.querySelectorAll('canvas');
-for(var ci=0;ci<cvs.length;ci++){var ce=cvs[ci],cr=ce.getBoundingClientRect();if(cr.width>=100&&cr.height>=70&&cr.right>0&&cr.bottom>0&&cr.left<vw&&cr.top<vh&&cr.width*cr.height>12000)add('CANVAS','canvas:'+location.hostname+':'+Math.round(cr.width)+'x'+Math.round(cr.height),cr,'#'+(ce.width||0)+'x'+(ce.height||0));}
-// CSS background/lazy-background images are slower to inspect; do this once a second,
-// and sweep past deeply nested wrappers instead of checking only the first 1,000 nodes.
+for(var ci=0;ci<cvs.length;ci++){var ce=cvs[ci],cr=ce.getBoundingClientRect();if(cr.width>=100&&cr.height>=70&&cr.right>0&&cr.bottom>0&&cr.left<vw&&cr.top<vh&&cr.width*cr.height>12000){if(cr.width*cr.height>=Math.max(18000,vw*vh*0.12))hasLargeImage=true;add('CANVAS','canvas:'+location.hostname+':'+Math.round(cr.width)+'x'+Math.round(cr.height),cr,'#'+(ce.width||0)+'x'+(ce.height||0));}}
+// CSS-background scanning is a slow fallback, not the normal path. In particular,
+// never let an empty cached result force a 7,000-node sweep on every 150 ms poll.
 var bgSig=window.__nsRtBgSignature||'';
-if(now-(window.__nsRtBgProbeAt||0)>=1000||!bgSig){
+if(hasLargeImage){
+ window.__nsRtBgSignature='';
+ window.__nsRtBgProbeAt=now;
+ bgSig='';
+}else if(now-(window.__nsRtBgProbeAt||0)>=1500){
  window.__nsRtBgProbeAt=now;
  var nodes=[],roots=[document],seenRoots=[];
  while(roots.length&&nodes.length<7000){
@@ -1067,7 +1074,7 @@ if(now-(window.__nsRtBgProbeAt||0)>=1000||!bgSig){
  window.__nsRtBgSignature=bgv.join('|');
 }
 bgSig=window.__nsRtBgSignature||'';
-if(bgSig)v.push(bgSig);
+if(!hasLargeImage&&bgSig)v.push(bgSig);
 // Keep deterministic order so polling doesn't re-run OCR because DOM order jittered.
 v.sort();
 if(v.length)return 'IMG:'+v.join('|');
@@ -1075,8 +1082,23 @@ var rootEl=document.querySelector('[class*=chapter-content],[class*=chapter-body
 var t=String((rootEl&&(rootEl.innerText||rootEl.textContent))||'').replace(/\s+/g,' ').trim().slice(0,1200);
 return t.length>=40?'TXT:'+t:'';
 }catch(e){return '';}})();"""
+            val probeSeq = ++deepSeekPollEvalSeq
+            handler.removeCallbacks(this)
+            // A JS result normally returns almost immediately. If WebView drops its callback while
+            // navigating/reloading, this watchdog starts another probe instead of leaving OCR stuck
+            // until the user force-closes the app.
+            handler.postDelayed(this, 1200L)
             novelWv.evaluateJavascript(js) { raw ->
-                if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
+                if (probeSeq != deepSeekPollEvalSeq) return@evaluateJavascript
+                handler.removeCallbacks(this)
+                if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
+                    deepSeekPollBusy = false
+                    return@evaluateJavascript
+                }
+                if (novelWv.url.orEmpty() != url) {
+                    handler.postDelayed(this, 150L)
+                    return@evaluateJavascript
+                }
                 val signature = decode(raw).trim()
                 val now = System.currentTimeMillis()
                 val hasImages = signature.startsWith("IMG:")
@@ -6180,6 +6202,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
                         toast("🤖 AI real-time mode ON — current chatbot will translate chapter panels")
                     } else {
+                        deepSeekPollEvalSeq++
                         handler.removeCallbacks(deepSeekVisiblePoll)
                         handler.removeCallbacks(overlayGuard)
                         aheadOcrHandle?.cancel()
