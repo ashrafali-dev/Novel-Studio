@@ -2885,6 +2885,14 @@ return t.length>=40?'TXT:'+t:'';
         }
         override fun onPageFinished(view: WebView?, url: String?) {
             CookieManager.getInstance().flush()
+            if (view === aheadChatWv) {
+                val finished = url.orEmpty()
+                if (finished.startsWith("http", true) &&
+                    botKey(finished) == botKey(aheadChatBaseUrl)) {
+                    aheadChatReady = true
+                    handler.postDelayed({ pumpRealtimeAheadTranslation() }, 450L)
+                }
+            }
         }
     }
 
