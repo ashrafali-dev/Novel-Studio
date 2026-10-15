@@ -199,10 +199,19 @@ class MainActivity : Activity() {
         }
         // Load persisted geometry first, so a correction keeps unrelated bubbles from this page.
         WebModeLayoutStore.get(this, url)
-        val rx = x.coerceIn(0f, 0.994f)
-        val ry = y.coerceIn(0f, 0.994f)
-        val rw = w.coerceIn(0.006f, 1f - rx)
-        val rh = h.coerceIn(0.006f, 1f - ry)
+        val rawX = x.coerceIn(0f, 0.994f)
+        val rawY = y.coerceIn(0f, 0.994f)
+        val rawW = w.coerceIn(0.006f, 1f - rawX)
+        val rawH = h.coerceIn(0.006f, 1f - rawY)
+        // A little context around the user's selection helps preserve bubble borders and neighbouring glyphs.
+        val padX = maxOf(rawW * 0.06f, 0.006f)
+        val padY = maxOf(rawH * 0.06f, 0.006f)
+        val rx = (rawX - padX).coerceIn(0f, 0.994f)
+        val ry = (rawY - padY).coerceIn(0f, 0.994f)
+        val right = (rawX + rawW + padX).coerceAtMost(1f)
+        val bottom = (rawY + rawH + padY).coerceAtMost(1f)
+        val rw = (right - rx).coerceIn(0.006f, 1f - rx)
+        val rh = (bottom - ry).coerceIn(0.006f, 1f - ry)
         val region = WebModeOcrRegion(rx, ry, rw, rh)
         val source = WebModeLogic.normalizeUrl(src)
         val token = navToken

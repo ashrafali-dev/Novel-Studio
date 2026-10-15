@@ -245,7 +245,9 @@ internal object WebModeLayoutStore {
             val boxArea = maxOf(0f, b.w) * maxOf(0f, b.h)
             val interArea = iw * ih
             val centerInside = b.cx >= x0 && b.cx <= x1 && b.cy >= y0 && b.cy <= y1
-            centerInside || (boxArea > 0f && interArea / boxArea >= 0.12f)
+            // Any old box touched by the selected crop is eligible for replacement: the fresh OCR
+            // may have shifted the glyphs enough that an overlap-percentage threshold would miss it.
+            centerInside || interArea > 0f
         }
 
         // The latest scan is only this OCR batch, so the chatbot reply maps to the right boxes.
