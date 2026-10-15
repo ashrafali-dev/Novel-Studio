@@ -782,7 +782,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val sendAtMs = System.currentTimeMillis()
             rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, sendAtMs + chatbotRequestGapMs)
             nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, sendAtMs + chatbotRequestGapMs)
-            webModeStage = "Pre-translating upcoming panels (one batch)"
+            webModeStage = "Pre-translating upcoming panel"
             webModePct = 1
             updateProgressUi()
             worker.evaluateJavascript(Js.send(prompt, true)) { raw ->
