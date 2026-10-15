@@ -1257,7 +1257,7 @@ internal class WebModeExtractor(
         // ---------------- JavaScript run inside the real page (no dollar signs: this is a Kotlin string)
         private const val LIB = """
 var BAD=/avatar|logo|sprite|emoji|profile|badge|pixel|tracking|advert|\/ads?|[_\-.]ads?[_\-.]|spinner/i;
-var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\.gif/i;
+var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparen|pixel\.gif/i;
 var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-ks-lazyload','data-cfsrc','data-defer-src'];
 var de=document.scrollingElement||document.documentElement;
 function absUrl(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
