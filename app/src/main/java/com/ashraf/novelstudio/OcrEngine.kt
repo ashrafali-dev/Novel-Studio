@@ -115,6 +115,8 @@ internal object OcrPost {
         return out
     }
 
+    private const val NEUTRAL_PUNCT = ".,!?…·'\"‘’“”-–—:;()[]「」『』?!。、"
+
     /** Scan-site watermarks ("asurascans.com", "www.xyz.net") are not dialogue and must never be translated. */
     private val SITE = Regex(
         "(?i)(?:https?://|www\\s?\\.)|\\b[a-z0-9][a-z0-9-]{2,}\\s?\\.(?:com|net|org|io|xyz|site|info|app)\\b"
@@ -127,7 +129,10 @@ internal object OcrPost {
         if (SITE.containsMatchIn(t)) return true
         val letters = t.count { it.isLetter() }
         if (letters == 0) return true
-        if (t.length >= 3 && letters * 100 < t.length * 45) return true
+        // Punctuation and spaces are neutral: "네, 네?!" is 2 letters + punctuation, and is real speech.
+        // Only text that is mostly OTHER symbols (|, /, ~~~, box-drawing...) is recogniser noise.
+        val core = t.count { !it.isWhitespace() && it !in NEUTRAL_PUNCT }
+        if (core >= 3 && letters * 100 < core * 45) return true
         if (b.h < 9f || b.w < 9f) return true
         if (b.h > b.w * 6f && t.length <= 4) return true    // vertical smear of a few "letters"
         return false

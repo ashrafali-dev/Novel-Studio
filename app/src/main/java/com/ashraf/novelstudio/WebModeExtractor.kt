@@ -332,10 +332,20 @@ internal class WebModeExtractor(
                     prev = o.optString("prev").takeIf { it.startsWith("http") }
                 )
                 worker.execute { runCatching { process(panels, meta) }.onFailure {
-                    Log.w(TAG, "job $id crashed: ${it.javaClass.simpleName}")
-                    fail(WebModeError.DECODE_FAILED, "Web Mode crashed: ${it.javaClass.simpleName}")
+                    Log.w(TAG, "job $id crashed: ${crashInfo(it)}", it)
+                    fail(WebModeError.DECODE_FAILED, "Web Mode crashed: ${crashInfo(it)}")
                 } }
             }
+        }
+
+        /** "RuntimeException: message @File.kt:123" - enough to find the failing line from a screenshot. */
+        private fun crashInfo(t: Throwable): String {
+            val root = generateSequence(t) { it.cause }.last()
+            val frame = root.stackTrace.firstOrNull { it.className.startsWith("com.ashraf") }
+                ?: root.stackTrace.firstOrNull()
+            val msg = (root.message ?: t.message).orEmpty().replace('\n', ' ').take(90)
+            return root.javaClass.simpleName + (if (msg.isNotBlank()) ": $msg" else "") +
+                (frame?.let { " @${it.fileName}:${it.lineNumber}" } ?: "")
         }
 
         // ---- phase 2 (worker thread): fetch -> decode -> OCR, one panel at a time (bounded memory)
@@ -347,6 +357,7 @@ internal class WebModeExtractor(
             val script = ScriptState(WebModeLogic.pickScript(meta.lang, meta.url))
             var fetchFailed = 0
             var decodeFailed = 0
+            var lastCrash: String? = null
             for ((i, p) in panels.withIndex()) {
                 if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
@@ -395,13 +406,23 @@ internal class WebModeExtractor(
                     decodeFailed++; diag.failed++
                 } catch (e: OutOfMemoryError) {
                     decodeFailed++; diag.failed++
+                    lastCrash = "OutOfMemoryError"
+                } catch (e: RuntimeException) {
+                    // One unreadable panel must not abort the whole scan; remember why for the message.
+                    decodeFailed++; diag.failed++
+                    lastCrash = crashInfo(e)
+                    Log.w(TAG, "panel OCR crashed: $lastCrash", e)
                 }
             }
             if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
             progress("Collecting recognized text", 99)
             when {
                 diag.downloaded == 0 -> { fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded"); return }
-                diag.decoded == 0 -> { fail(WebModeError.DECODE_FAILED, "Downloaded ${diag.downloaded} images but none could be decoded"); return }
+                diag.decoded == 0 -> {
+                    fail(WebModeError.DECODE_FAILED, "Downloaded ${diag.downloaded} images but none could be decoded" +
+                        (lastCrash?.let { " ($it)" } ?: ""))
+                    return
+                }
                 diag.chars == 0 -> { fail(WebModeError.OCR_EMPTY, "Scanned ${diag.decoded} images; OCR found no text"); return }
                 WebModeLogic.tooManyFailures(total, diag.failed) -> {
                     fail(WebModeError.IMAGES_NOT_LOADED, "${diag.failed} of $total panels failed; the chapter would be incomplete")
