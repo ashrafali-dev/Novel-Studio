@@ -720,6 +720,129 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         }
     }
 
+    private fun pollRealtimeAheadTranslation(
+        seq: Int,
+        task: RtAheadTranslationTask,
+        jobKey: String,
+        worker: WebView,
+        n0: Int,
+        baseLen: Int,
+        started: Long,
+        lastLen: Int,
+        stable: Int,
+        sawStream: Boolean,
+        firstLen: Int,
+        pollDelayMs: Long = RealtimeCompletionPolicy.nextPollDelayMs(this, false, true)
+    ) {
+        handler.postDelayed({
+            if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy ||
+                rtAheadWorkerJobKey != jobKey) return@postDelayed
+            worker.onResume()
+            worker.resumeTimers()
+            worker.evaluateJavascript(Js.readLen()) { raw ->
+                if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy ||
+                    rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
+                val fields = decode(raw).split("|")
+                val count = fields.getOrNull(0)?.toIntOrNull() ?: 0
+                val streaming = fields.getOrNull(1) == "1"
+                val len = fields.getOrNull(2)?.toIntOrNull() ?: 0
+                val found = fields.getOrNull(3)?.toIntOrNull() ?: 0
+                val sendFailed = fields.getOrNull(5) == "failed"
+                val uiDone = fields.getOrNull(6) == "1"
+                val got = fields.getOrNull(4) == "1" || count > n0
+                val effectiveLen = if (got) len else 0
+                val baseLen0 = if (firstLen >= 0) firstLen else if (got) effectiveLen else -1
+                val grown = if (baseLen0 >= 0) (effectiveLen - baseLen0).coerceAtLeast(0) else 0
+                val markerCount = rtAheadWorkerMarkerCount
+                val allMarkers = got && markerCount > 0 && found >= markerCount
+                val stableNow = if (got && effectiveLen == lastLen && !streaming) stable + 1 else 0
+                val elapsed = System.currentTimeMillis() - started
+                val streamEnded = sawStream && !streaming
+                val minReplyLength = 2
+                val expectedFloor = maxOf(2, minOf(120, (rtAheadWorkerSourceLength * 0.55).toInt()))
+                val markerStable = RealtimeCompletionPolicy.stableThreshold(this, 4)
+                val uiStable = RealtimeCompletionPolicy.stableThreshold(this, 8)
+                val stopStable = RealtimeCompletionPolicy.stableThreshold(this, 8)
+                val host = Uri.parse(worker.url.orEmpty()).host?.lowercase().orEmpty()
+                val realtimeFast = RealtimeCompletionPolicy.enabled(this)
+                val deepSeek = realtimeFast && (host == "deepseek.com" || host.endsWith(".deepseek.com"))
+                val noSignalStable = if (deepSeek) 3 else RealtimeCompletionPolicy.noStopSignalThreshold(this, 8)
+                val completedByMarkers = got && effectiveLen >= minReplyLength &&
+                    !streaming && allMarkers && stableNow >= markerStable
+                val completedByUi = got && effectiveLen >= minReplyLength &&
+                    uiDone && !streaming && stableNow >= uiStable
+                val completedAfterStop = got && effectiveLen >= minReplyLength &&
+                    streamEnded && stableNow >= stopStable
+                val completedWithoutStop = got && effectiveLen >= maxOf(minReplyLength, expectedFloor) &&
+                    !streaming && stableNow >= noSignalStable &&
+                    (deepSeek || allMarkers || effectiveLen >= expectedFloor)
+                val completed = completedByMarkers || completedByUi || completedAfterStop || completedWithoutStop
+
+                if (completed) {
+                    worker.evaluateJavascript(Js.readText()) { answerRaw ->
+                        if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy ||
+                            rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
+                        val answer = cleanReply(decode(answerRaw))
+                        if (answer.length < minReplyLength) {
+                            failRealtimeAheadTranslation(seq, task, jobKey)
+                        } else {
+                            finishRealtimeAheadTranslation(jobKey, task, answer)
+                        }
+                    }
+                } else if ((sendFailed && !got) || (elapsed > 60_000L && !got) ||
+                    elapsed > 6 * 60_000L) {
+                    failRealtimeAheadTranslation(seq, task, jobKey)
+                } else {
+                    pollRealtimeAheadTranslation(
+                        seq, task, jobKey, worker, n0, baseLen, started,
+                        effectiveLen, stableNow, sawStream || streaming, baseLen0,
+                        RealtimeCompletionPolicy.nextPollDelayMs(this, streaming, got)
+                    )
+                }
+            }
+        }, pollDelayMs)
+    }
+
+    private fun failRealtimeAheadTranslation(seq: Int, task: RtAheadTranslationTask, jobKey: String) {
+        if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy || rtAheadWorkerJobKey != jobKey) return
+        rtAheadTranslationTasksByJobKey.remove(jobKey)
+        rtAheadTranslationQueuedIds.remove(task.id)
+        rtAheadTranslationSuppressedIds.add(task.id)
+        rtAheadWorkerBusy = false
+        rtAheadWorkerTask = null
+        rtAheadWorkerJobKey = ""
+        if (task.attempts < 1 && cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+            queueRtAheadTask(task.copy(
+                id = rtAheadTaskId(task.pageUrl, task.layout) + "-r",
+                attempts = task.attempts + 1
+            ), front = true)
+        }
+        if (webModeStage == "Pre-translating upcoming panel") clearWebModeProgress()
+        updateProgressUi()
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 600L)
+    }
+
+    private fun cancelRealtimeAheadWorker(requeue: Boolean) {
+        val task = rtAheadWorkerTask
+        val jobKey = rtAheadWorkerJobKey
+        rtAheadWorkerSeq++
+        try { aheadChatWv?.evaluateJavascript(Js.stop(), null) } catch (_: Exception) {}
+        rtAheadWorkerBusy = false
+        rtAheadWorkerTask = null
+        rtAheadWorkerJobKey = ""
+        if (jobKey.isNotBlank()) rtAheadTranslationTasksByJobKey.remove(jobKey)
+        if (task != null) {
+            rtAheadTranslationQueuedIds.remove(task.id)
+            if (requeue && cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+                queueRtAheadTask(task, front = true)
+            } else {
+                rtAheadTranslationSuppressedIds.add(task.id)
+            }
+        }
+        if (webModeStage == "Pre-translating upcoming panel") clearWebModeProgress()
+        updateProgressUi()
+    }
+
     /** Interrupt only background ahead-translation work when a new visible panel needs priority. */
     private fun interruptRealtimeAheadForVisiblePanel(requeue: Boolean = true) {
         val current = running ?: return
