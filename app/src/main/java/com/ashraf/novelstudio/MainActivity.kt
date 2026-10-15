@@ -460,6 +460,11 @@ class MainActivity : Activity() {
             },
             onDone = { },
             ahead = n,
+            onAheadPanelsReady = { panels ->
+                if (seq == aheadOcrSeq && token == navToken) {
+                    queueRealtimeAheadTranslations(novelWv.url.orEmpty(), panels)
+                }
+            },
             onAheadDone = {
                 if (seq == aheadOcrSeq) {
                     aheadOcrHandle = null
@@ -467,6 +472,7 @@ class MainActivity : Activity() {
                     aheadOcrPct = -1
                 }
                 deepSeekAheadAtMs = System.currentTimeMillis()
+                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 180L)
             }
         ))
     }
