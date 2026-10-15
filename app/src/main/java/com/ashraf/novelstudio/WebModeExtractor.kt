@@ -1256,64 +1256,105 @@ internal class WebModeExtractor(
 
         // ---------------- JavaScript run inside the real page (no dollar signs: this is a Kotlin string)
         private const val LIB = """
-var BAD=/avatar|icon|logo|banner|sprite|emoji|profile|badge|pixel|tracking|advert|\/ads?\/|[_\-.]ads?[_\-.]|spinner/i;
-var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparen/i;
-var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
+var BAD=/avatar|logo|sprite|emoji|profile|badge|pixel|tracking|advert|\\/ads?|[_\\-.]ads?[_\\-.]|spinner/i;
+var PH=/placeholder|blank\\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\\.gif/i;
+var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-ks-lazyload','data-cfsrc','data-defer-src'];
 var de=document.scrollingElement||document.documentElement;
+function absUrl(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
+function goodUrl(s){s=String(s||'').trim();return !!s&&!/^data:image\\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
+function pickSrcset(ss){
+  if(!ss)return '';
+  var best='',bestScore=-1,parts=String(ss).split(',');
+  for(var i=0;i<parts.length;i++){
+    var p=parts[i].trim().split(/\\s+/),u=p[0]||'',d=p[1]||'1x',n=parseFloat(d)||1;
+    var score=/w$/i.test(d)?n:n*10000;
+    if(goodUrl(u)&&score>bestScore){best=u;bestScore=score;}
+  }
+  return best;
+}
+function imageSrc(im){
+  var primary=im.currentSrc||im.getAttribute('src')||im.src||'';
+  var lazy='';
+  for(var i=0;i<LAZY.length;i++){var v=im.getAttribute&&im.getAttribute(LAZY[i]);if(goodUrl(v)){lazy=v;break;}}
+  var set=pickSrcset((im.getAttribute&&im.getAttribute('data-srcset'))||(im.getAttribute&&im.getAttribute('srcset'))||'');
+  if(lazy&&(!goodUrl(primary)||PH.test(primary)||((im.naturalWidth||0)>0&&(im.naturalWidth||0)<8)))primary=lazy;
+  if(!goodUrl(primary))primary=set||lazy;
+  return absUrl(primary);
+}
+function allNodes(limit){
+  var out=[],roots=[document],seenRoots=[];
+  while(roots.length&&out.length<limit){
+    var root=roots.shift();if(!root||seenRoots.indexOf(root)>=0)continue;seenRoots.push(root);
+    var list=root.querySelectorAll?root.querySelectorAll('*'):[];
+    for(var i=0;i<list.length&&out.length<limit;i++){var el=list[i];out.push(el);if(el.shadowRoot)roots.push(el.shadowRoot);}
+  }
+  return out;
+}
 function scroller(){
   if((de.scrollHeight||0)>(window.innerHeight||0)+80)return null;
   var best=null,bs=0,els=document.querySelectorAll('div,main,section,article');
   for(var i=0;i<els.length&&i<3000;i++){var e=els[i];var d=e.scrollHeight-e.clientHeight;
     if(d>200&&e.scrollHeight>bs){var o=getComputedStyle(e).overflowY;
       if(o==='auto'||o==='scroll'||o==='overlay'){bs=e.scrollHeight;best=e;}}}
-  return best;}
+  return best;
+}
 function cands(sc){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
   for(var i=0;i<imgs.length;i++){
-    var im=imgs[i],src=im.currentSrc||im.src||'';
-    var ph=!src||/^data:image\/(gif|svg)/i.test(src)||PH.test(src);
-    if(ph){
-      for(var a=0;a<LAZY.length;a++){var v=im.getAttribute(LAZY[a]);if(v&&v.length>4){src=v;ph=false;break;}}
-      if(ph){var ss=im.getAttribute('data-srcset')||im.getAttribute('srcset');
-        if(ss){src=ss.split(',')[0].trim().split(/\s+/)[0];ph=!src;}}
-    }
-    if(!src||ph)continue;
-    try{src=new URL(src,document.baseURI).href;}catch(e){continue;}
-    if(seen[src])continue;
+    var im=imgs[i],src=imageSrc(im);
+    if(!src)continue;
     var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
-    if(!((r.width>=180&&r.height>=100)||(nw>=400&&nh>=250)))continue;
+    if(!((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120)))continue;
     var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
-    if(BAD.test(meta))continue; // Do not reject a real comic panel because its CDN/path contains words like 'avatar' or 'banner'.
-    if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
-    seen[src]=1;
+    if(BAD.test(meta))continue;
+    if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]'))continue;
+    if(seen[src])continue;seen[src]=1;
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
     out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
   }
-  // Some readers draw comic panels as CSS background images instead of <img>.
-  // Treat only large elements as panels to avoid tiny UI artwork.
-  var els=document.querySelectorAll('*'),limit=Math.min(els.length,5000);
-  for(var j=0;j<limit;j++){
+  // Some pages use SVG <image>, videos with posters, or CSS/data-* lazy backgrounds.
+  var extra=document.querySelectorAll('svg image,video[poster]');
+  for(var ei=0;ei<extra.length;ei++){
+    var xe=extra[ei],xr=xe.getBoundingClientRect(),xs='';
+    if(xr.width<100||xr.height<60)continue;
+    if(String(xe.tagName).toLowerCase()==='video')xs=xe.getAttribute('poster')||'';
+    else xs=(xe.href&&xe.href.baseVal)||xe.getAttribute('href')||xe.getAttribute('xlink:href')||'';
+    xs=absUrl(xs);if(!xs||seen[xs])continue;
+    var xmeta=(xe.className&&xe.className.baseVal!==undefined?xe.className.baseVal:xe.className||'')+' '+(xe.id||'');
+    if(BAD.test(xmeta))continue;
+    seen[xs]=1;
+    var xt=sc?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
+    out.push({s:xs,t:Math.round(xt),l:Math.round(xr.left),w:Math.round(xr.width),h:Math.round(xr.height),d:1,fw:xr.width,fh:xr.height,vl:xr.left,vt:xr.top,vb:xr.bottom});
+  }
+  // CSS backgrounds and lazy-background attributes. Inspect larger nodes throughout the DOM,
+  // not just the first 5,000 nodes; also enter open shadow roots used by some custom readers.
+  var els=allNodes(16000);
+  for(var j=0;j<els.length;j++){
     var el=els[j],r=el.getBoundingClientRect();
-    // Most DOM nodes are tiny wrappers; avoid a computed-style lookup for those.
-    if(r.width<180||r.height<100)continue;
-    var bg='';
-    try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
-    if(!bg||bg==='none')continue;
+    if(r.width<80||r.height<50)continue;
     var meta=(el.className&&el.className.baseVal!==undefined?el.className.baseVal:el.className||'')+' '+(el.id||'')+' '+(el.getAttribute('aria-label')||'');
     if(BAD.test(meta))continue;
-    if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[class*=banner],[id*=comment]'))continue;
-    var rx=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
+    if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]'))continue;
+    var bg='';try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
+    if(!bg||bg==='none'){
+      for(var a=0;a<LAZY.length;a++){var av=el.getAttribute&&el.getAttribute(LAZY[a]);if(goodUrl(av)){bg='url("'+av+'")';break;}}
+      if(!bg||bg==='none'){
+        var ds=el.getAttribute&&el.getAttribute('data-srcset');
+        if(ds){var dss=pickSrcset(ds);if(dss)bg='url("'+dss+'")';}
+      }
+    }
+    if(!bg||bg==='none')continue;
+    var rx=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
     while((m=rx.exec(bg))!==null){
-      var s=(m[1]||'').trim();
-      if(!s||/^data:image\/(gif|svg)/i.test(s))continue;
-      try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
-      if(seen[s])continue; // URL keywords can be part of a real panel/series slug; filter UI artwork by element metadata instead.
+      var s=absUrl((m[1]||'').trim());
+      if(!s||!goodUrl(s)||seen[s])continue;
       seen[s]=1;
       var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
       out.push({s:s,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:1,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
     }
   }
-  return out;}
+  return out;
+}
 """
 
         private const val JS_STEP = """
