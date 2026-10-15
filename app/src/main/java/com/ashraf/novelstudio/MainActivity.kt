@@ -3632,11 +3632,26 @@ return t.length>=40?'TXT:'+t:'';
                                     if (selected.isNotEmpty()) {
                                         val liveText = selected.joinToString("\n\n") { it.sourceText.trim() }
                                         val liveChapter = out.chapter.copy(text = liveText, contentSel = "")
-                                        WebModeLayoutStore.setScan(
-                                            liveChapter.url, WebModeLayout(scanLayout.titleOffset, selected)
-                                        )
+                                        val liveLayout = WebModeLayout(scanLayout.titleOffset, selected)
+                                        WebModeLayoutStore.setScan(liveChapter.url, liveLayout)
                                         deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
-                                        handleChapter(liveChapter, useSavedTranslation = false)
+                                        val cachedTranslations = selected.map {
+                                            rtAheadTranslationCache[WebModeLayout.fingerprint(it)]
+                                        }
+                                        if (cachedTranslations.all { !it.isNullOrBlank() }) {
+                                            // Every bubble in this visible batch has already been translated ahead.
+                                            // Apply the saved marker-aligned answer without another chatbot request.
+                                            onChapter(liveChapter)
+                                            val cachedMarked = cachedTranslations.mapIndexed { index, value ->
+                                                "[${(index + 1).toString().padStart(3, '0')}] ${value.orEmpty()}"
+                                            }.joinToString("\n\n")
+                                            copy(stripInternalMarkers(cachedMarked))
+                                            webModeStage = "Applying cached ahead translation"
+                                            applyTranslation(liveChapter, cachedMarked, false)
+                                            handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
+                                        } else {
+                                            handleChapter(liveChapter, useSavedTranslation = false)
+                                        }
                                     }
                                 } else {
                                     // Fallback for OCR pages where geometry metadata is unavailable.
