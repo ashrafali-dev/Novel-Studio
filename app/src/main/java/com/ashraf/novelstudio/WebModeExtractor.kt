@@ -280,18 +280,21 @@ internal class WebModeExtractor(
             if (aheadDone.size > 400) aheadDone.clear()
             val total = refs.size.coerceAtLeast(1)
             var cachedCount = 0
+            val ready = ArrayList<WebModeAheadPanel>()
             progress("Read-ahead OCR: preparing ${refs.size} upcoming panels", 0)
             for ((index, p) in refs.withIndex()) {
                 if (!alive()) return
                 val key = WebModeLogic.normalizeUrl(p.src)
-                // A panel is "done" only after a usable OCR result is cached. Previously the URL
-                // was marked done before downloading/OCR, so a transient fetch/decode miss could
-                // permanently prevent that panel from being retried when it approached the screen.
-                if (aheadDone.contains(key) || synchronized(aheadCache) { aheadCache.containsKey(key) }) {
+                // Deliver cached OCR too. A previous successful OCR must not be invisible to the translation cache.
+                val cached = synchronized(aheadCache) { aheadCache[key] }
+                if (cached != null) {
+                    ready.add(WebModeAheadPanel(p.src, p.top, cached.text, cached.bubbles))
                     cachedCount++
                     progress("Read-ahead OCR: cache ready $cachedCount/$total", cachedCount * 99 / total)
                     continue
                 }
+                // A previous cache eviction must not leave a URL permanently marked as done.
+                aheadDone.remove(key)
                 try {
                     progress("Read-ahead OCR: loading image ${index + 1}/$total", index * 99 / total)
                     val bytes = fetchWithRetry(p, pageUrl) ?: continue
@@ -300,21 +303,27 @@ internal class WebModeExtractor(
                     val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
                     synchronized(aheadCache) { aheadCache[key] = po }
                     aheadDone.add(key)
+                    ready.add(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
                     cachedCount++
                     progress("Read-ahead OCR: cached panel $cachedCount/$total", cachedCount * 99 / total)
                 } catch (_: OcrUnavailableException) {
                     progress("Read-ahead OCR: OCR engine unavailable", index * 99 / total)
-                    return
+                    break
                 } catch (_: Exception) {
                     progress("Read-ahead OCR: panel ${index + 1} failed; continuing", index * 99 / total)
                 } catch (_: OutOfMemoryError) {
                     progress("Read-ahead OCR: memory limit hit; stopping safely", index * 99 / total)
-                    return
+                    break
                 }
             }
-            if (alive()) progress("Read-ahead OCR complete: $cachedCount/$total panels cached", 99)
+            if (alive()) {
+                if (ready.isNotEmpty()) {
+                    val result = ready.toList()
+                    onMain { if (alive()) req.onAheadPanelsReady?.invoke(result) }
+                }
+                progress("Read-ahead OCR complete: $cachedCount/$total panels cached", 99)
+            }
         }
-
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
         private fun tick(n: Int, lastCount: Int, stable: Int) {
             if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return }
