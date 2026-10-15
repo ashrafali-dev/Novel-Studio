@@ -280,7 +280,11 @@ internal class WebModeExtractor(
             if (aheadDone.size > 400) aheadDone.clear()
             val total = refs.size.coerceAtLeast(1)
             var cachedCount = 0
-            val ready = ArrayList<WebModeAheadPanel>()
+            fun emitReady(panel: WebModeAheadPanel) {
+                // Emit each completed OCR result immediately so translation can overlap the
+                // remaining image downloads/OCR instead of waiting for all nine panels.
+                onMain { if (alive()) req.onAheadPanelsReady?.invoke(listOf(panel)) }
+            }
             progress("Read-ahead OCR: preparing ${refs.size} upcoming panels", 0)
             for ((index, p) in refs.withIndex()) {
                 if (!alive()) return
@@ -288,7 +292,7 @@ internal class WebModeExtractor(
                 // Deliver cached OCR too. A previous successful OCR must not be invisible to the translation cache.
                 val cached = synchronized(aheadCache) { aheadCache[key] }
                 if (cached != null) {
-                    ready.add(WebModeAheadPanel(p.src, p.top, cached.text, cached.bubbles))
+                    emitReady(WebModeAheadPanel(p.src, p.top, cached.text, cached.bubbles))
                     cachedCount++
                     progress("Read-ahead OCR: cache ready $cachedCount/$total", cachedCount * 99 / total)
                     continue
@@ -303,7 +307,7 @@ internal class WebModeExtractor(
                     val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
                     synchronized(aheadCache) { aheadCache[key] = po }
                     aheadDone.add(key)
-                    ready.add(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
+                    emitReady(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
                     cachedCount++
                     progress("Read-ahead OCR: cached panel $cachedCount/$total", cachedCount * 99 / total)
                 } catch (_: OcrUnavailableException) {
