@@ -281,7 +281,7 @@ class MainActivity : Activity() {
     private var deepSeekAheadAtMs = 0L
 
     private fun startAheadOcr() {
-        val n = (Prefs.get(this, "rtAheadOcr", "4").toIntOrNull() ?: 4).coerceIn(0, 12)
+        val n = (Prefs.get(this, "rtAheadOcr", "9").toIntOrNull() ?: 9).coerceIn(0, 12)
         deepSeekAheadAtMs = System.currentTimeMillis()
         if (n == 0) return
         val token = navToken
@@ -525,11 +525,45 @@ return t.length>=40?'TXT:'+t:'';
     private val qidianSystem by lazy { QidianSystem(this) }
     private val novel543System by lazy { Novel543System(this) }
 
-    // background translation queue
+    // Background translation queue. All chatbot sites share the same request cooldown.
     private val queue = mutableListOf<Chapter>()
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
+    private val chatbotRequestGapMs = 4_000L
+    private var nextChatbotRequestAtMs = 0L
+
+    /** Send through the shared rate gate so every selected chatbot follows the same spacing. */
+    private fun sendChatRequest(
+        text: String,
+        doSend: Boolean,
+        isValid: () -> Boolean,
+        onResult: (String?) -> Unit
+    ) {
+        if (!isValid()) return
+        // Pasting without pressing Send is not a chatbot request.
+        if (!doSend) {
+            chatWv.evaluateJavascript(Js.send(text, false)) { raw -> onResult(raw) }
+            return
+        }
+        val now = System.currentTimeMillis()
+        val waitMs = nextChatbotRequestAtMs - now
+        if (waitMs > 0L) {
+            // Re-check at dispatch time; another send or a completed response may extend the cooldown.
+            handler.postDelayed({ sendChatRequest(text, true, isValid, onResult) }, waitMs)
+            return
+        }
+        nextChatbotRequestAtMs = now + chatbotRequestGapMs
+        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
+    }
+
+    /** Leave a full four-second pause after a response ends (or is interrupted). */
+    private fun deferNextChatbotRequest() {
+        nextChatbotRequestAtMs = maxOf(
+            nextChatbotRequestAtMs,
+            System.currentTimeMillis() + chatbotRequestGapMs
+        )
+    }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -4209,7 +4243,7 @@ return t.length>=40?'TXT:'+t:'';
             val token = navToken
             handler.postDelayed({
                 if (token != navToken) return@postDelayed
-                chatWv.evaluateJavascript(Js.send(full, send)) { r ->
+                sendChatRequest(full, send, { token == navToken }) { r ->
                     if (decode(r).startsWith("nobox")) toast("⚠️ Chat input not found. Text is copied; paste it manually.")
                 }
             }, 400)
@@ -4316,8 +4350,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
                 markerInstruction + "\n\n" + imageRules + marked
         }
-        chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
-            if (tok != runToken) return@evaluateJavascript
+        sendChatRequest(full, true, { tok == runToken }) { raw ->
+            if (tok != runToken) return@sendChatRequest
             val r = decode(raw)
             if (r.startsWith("ok:")) {
                 val parts = r.substring(3).split(":")
@@ -4485,6 +4519,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 failJob(tok, ch, "Could not read the translation")
                 return@evaluateJavascript
             }
+            deferNextChatbotRequest()
             copy(t)
             // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
             // would overwrite the library entry with a partial translation.
@@ -4523,6 +4558,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
+        deferNextChatbotRequest()
         releaseDeepSeekHashBatch(ch)
         deepSeekLastOcrAtMs = System.currentTimeMillis()
         // Scanning mode: keep the failed chapter (and prefetched chapters still waiting) for a retry.
@@ -5453,8 +5489,8 @@ ${rows.take(220).joinToString("\n")}
 """.trimIndent()
                 setMode(Mode.SPLIT)
                 toast("🤖 Sending ${rows.size} links to the selected chatbot…")
-                chatWv.evaluateJavascript(Js.send(prompt, true)) { sentRaw ->
-                    if (token != aiAdBlockScanToken) return@evaluateJavascript
+                sendChatRequest(prompt, true, { token == aiAdBlockScanToken && aiAdBlockScanBusy }) { sentRaw ->
+                    if (token != aiAdBlockScanToken) return@sendChatRequest
                     val sent = decode(sentRaw)
                     if (!sent.startsWith("ok:")) {
                         aiAdBlockScanBusy = false
@@ -5480,6 +5516,7 @@ ${rows.take(220).joinToString("\n")}
     ) {
         if (token != aiAdBlockScanToken || !aiAdBlockScanBusy) return
         if (attempt >= 100) {
+            deferNextChatbotRequest()
             aiAdBlockScanBusy = false
             toast("⏱️ Chatbot scan timed out. Check the bot and retry.")
             return
@@ -5490,6 +5527,7 @@ ${rows.take(220).joinToString("\n")}
             if (fields.lastOrNull() == "1") {
                 chatWv.evaluateJavascript(Js.readText()) { answerRaw ->
                     if (token != aiAdBlockScanToken || !aiAdBlockScanBusy) return@evaluateJavascript
+                    deferNextChatbotRequest()
                     aiAdBlockScanBusy = false
                     val answer = decode(answerRaw)
                     val domains = linkedSetOf<String>()
