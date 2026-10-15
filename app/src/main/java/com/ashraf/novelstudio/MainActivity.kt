@@ -464,6 +464,10 @@ class MainActivity : Activity() {
         if (n == 0) return
         val token = navToken
         val seq = ++aheadOcrSeq
+        // OCR callbacks arrive one panel at a time. Hold them until the scan finishes so the
+        // chatbot receives one ordered request for the whole read-ahead batch, not one request
+        // per panel.
+        val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
         aheadOcrHandle = webMode.start(WebModeRequest(
             webView = novelWv,
             visibleOnly = true,
@@ -478,7 +482,10 @@ class MainActivity : Activity() {
             ahead = n,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
-                    queueRealtimeAheadTranslations(novelWv.url.orEmpty(), panels)
+                    for (panel in panels) {
+                        val key = WebModeLogic.normalizeUrl(panel.src)
+                        if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
+                    }
                 }
             },
             onAheadDone = {
@@ -486,6 +493,13 @@ class MainActivity : Activity() {
                     aheadOcrHandle = null
                     aheadOcrStage = ""
                     aheadOcrPct = -1
+                    if (token == navToken) {
+                        queueRealtimeAheadTranslations(
+                            novelWv.url.orEmpty(),
+                            collectedPanels.values.toList()
+                        )
+                    }
+                    collectedPanels.clear()
                 }
                 deepSeekAheadAtMs = System.currentTimeMillis()
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 180L)
@@ -513,30 +527,54 @@ class MainActivity : Activity() {
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         val page = cleanUrl(pageUrl)
-        if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty())) return
-        for (panel in panels.sortedBy { it.top }) {
-            val bubbles = panel.bubbles.filter { it.sourceText.isNotBlank() }
-            if (bubbles.isEmpty()) continue
-            val layout = WebModeLayout(0, bubbles)
-            val id = rtAheadTaskId(page, layout)
-            if (id in rtAheadTranslationQueuedIds || id in rtAheadTranslationSuppressedIds ||
-                rtAheadTranslationTasksByJobKey.values.any { it.id == id }) continue
-            val alreadyDone = bubbles.all { bubble ->
-                val fp = WebModeLayout.fingerprint(bubble)
-                rtAheadTranslationCache.containsKey(rtAheadBubbleCacheKey(bubble)) || synchronized(deepSeekInFlightTextHashes) {
-                    fp in deepSeekTranslatedTextHashes
-                }
+        if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty()) || panels.isEmpty()) return
+
+        // Do not queue a bubble that is already cached, already queued, being translated, or
+        // already completed. This also prevents overlapping read-ahead windows from resending
+        // the same dialogue when the user scrolls slowly.
+        val pendingBubbleKeys = HashSet<String>()
+        for (task in rtAheadTranslationQueue) {
+            if (cleanUrl(task.pageUrl) == page) {
+                task.layout.bubbles.forEach { pendingBubbleKeys.add(rtAheadBubbleCacheKey(it)) }
             }
-            if (alreadyDone) continue
-            rtAheadTranslationQueuedIds.add(id)
-            rtAheadTranslationQueue.add(RtAheadTranslationTask(id, page, layout, panel.top))
         }
-        // Bound memory if a reader exposes many more candidates than the requested read-ahead count.
-        while (rtAheadTranslationQueue.size > 30) {
-            val dropped = rtAheadTranslationQueue.removeAt(rtAheadTranslationQueue.lastIndex)
-            rtAheadTranslationQueuedIds.remove(dropped.id)
-            rtAheadTranslationSuppressedIds.add(dropped.id)
+        for (task in rtAheadTranslationTasksByJobKey.values) {
+            if (cleanUrl(task.pageUrl) == page) {
+                task.layout.bubbles.forEach { pendingBubbleKeys.add(rtAheadBubbleCacheKey(it)) }
+            }
         }
+
+        val seenInBatch = HashSet<String>()
+        val batch = ArrayList<WmBubble>()
+        for (panel in panels.sortedBy { it.top }) {
+            val ordered = panel.bubbles
+                .filter { it.sourceText.isNotBlank() }
+                .sortedWith(compareBy<WmBubble>({ it.cy }, { it.cx }))
+            for (bubble in ordered) {
+                val cacheKey = rtAheadBubbleCacheKey(bubble)
+                if (!seenInBatch.add(cacheKey)) continue
+                val fp = WebModeLayout.fingerprint(bubble)
+                val isTextReserved = synchronized(deepSeekInFlightTextHashes) {
+                    fp in deepSeekInFlightTextHashes || fp in deepSeekTranslatedTextHashes
+                }
+                if (cacheKey in rtAheadTranslationCache ||
+                    cacheKey in pendingBubbleKeys || isTextReserved) continue
+                batch.add(bubble)
+                pendingBubbleKeys.add(cacheKey)
+            }
+        }
+        if (batch.isEmpty()) return
+
+        val layout = WebModeLayout(0, batch)
+        val id = rtAheadTaskId(page, layout)
+        if (id in rtAheadTranslationQueuedIds || id in rtAheadTranslationSuppressedIds ||
+            rtAheadTranslationTasksByJobKey.values.any { it.id == id }) return
+
+        rtAheadTranslationQueuedIds.add(id)
+        rtAheadTranslationQueue.add(
+            RtAheadTranslationTask(id, page, layout, panels.minOfOrNull { it.top } ?: 0)
+        )
+        // This is intentionally one chatbot call for the complete OCR batch.
         pumpRealtimeAheadTranslation()
     }
 
@@ -739,8 +777,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val (prompt, markerCount) = buildRealtimeAheadPrompt(task)
             rtAheadWorkerMarkerCount = markerCount
             rtAheadWorkerSourceLength = task.layout.bubbles.sumOf { it.sourceText.length }
-            rtAheadNextSendAtMs = System.currentTimeMillis() + chatbotRequestGapMs
-            webModeStage = "Pre-translating upcoming panel"
+            val sendAtMs = System.currentTimeMillis()
+            rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, sendAtMs + chatbotRequestGapMs)
+            nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, sendAtMs + chatbotRequestGapMs)
+            webModeStage = "Pre-translating upcoming panels (one batch)"
             webModePct = 1
             updateProgressUi()
             worker.evaluateJavascript(Js.send(prompt, true)) { raw ->
@@ -852,6 +892,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         rtAheadTranslationTasksByJobKey.remove(jobKey)
         rtAheadTranslationQueuedIds.remove(task.id)
         rtAheadTranslationSuppressedIds.add(task.id)
+        val cooldownUntil = System.currentTimeMillis() + chatbotRequestGapMs
+        nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, cooldownUntil)
+        rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, cooldownUntil)
         rtAheadWorkerBusy = false
         rtAheadWorkerTask = null
         rtAheadWorkerJobKey = ""
@@ -934,6 +977,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 attempts = task.attempts + 1
             ), front = true)
         }
+        val cooldownUntil = System.currentTimeMillis() + chatbotRequestGapMs
+        nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, cooldownUntil)
+        rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, cooldownUntil)
         rtAheadWorkerBusy = false
         rtAheadWorkerTask = null
         rtAheadWorkerJobKey = ""
@@ -1401,7 +1447,7 @@ return t.length>=40?'TXT:'+t:'';
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
-    private val chatbotRequestGapMs = 2_500L
+    private val chatbotRequestGapMs = 3_000L
     private var nextChatbotRequestAtMs = 0L
 
     /** Send through the shared rate gate so every selected chatbot follows the same spacing. */
@@ -1425,15 +1471,15 @@ return t.length>=40?'TXT:'+t:'';
             return
         }
         nextChatbotRequestAtMs = now + chatbotRequestGapMs
+        rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + chatbotRequestGapMs)
         chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
     }
 
-    /** Leave a 2.5-second pause after a response ends (or is interrupted). */
+    /** Leave a 3-second pause after a response ends (or is interrupted). */
     private fun deferNextChatbotRequest() {
-        nextChatbotRequestAtMs = maxOf(
-            nextChatbotRequestAtMs,
-            System.currentTimeMillis() + chatbotRequestGapMs
-        )
+        val cooldownUntil = System.currentTimeMillis() + chatbotRequestGapMs
+        nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, cooldownUntil)
+        rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, cooldownUntil)
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
