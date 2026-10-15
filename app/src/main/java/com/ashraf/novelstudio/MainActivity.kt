@@ -521,7 +521,7 @@ class MainActivity : Activity() {
                 rtAheadTranslationTasksByJobKey.values.any { it.id == id }) continue
             val alreadyDone = bubbles.all { bubble ->
                 val fp = WebModeLayout.fingerprint(bubble)
-                rtAheadTranslationCache.containsKey(fp) || synchronized(deepSeekInFlightTextHashes) {
+                rtAheadTranslationCache.containsKey(rtAheadBubbleCacheKey(bubble)) || synchronized(deepSeekInFlightTextHashes) {
                     fp in deepSeekTranslatedTextHashes
                 }
             }
@@ -651,7 +651,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             }
             val remaining = queued.layout.bubbles.filter { bubble ->
                 val fp = WebModeLayout.fingerprint(bubble)
-                !rtAheadTranslationCache.containsKey(fp) &&
+                !rtAheadTranslationCache.containsKey(rtAheadBubbleCacheKey(bubble)) &&
                     synchronized(deepSeekInFlightTextHashes) {
                         fp !in deepSeekTranslatedTextHashes && fp !in deepSeekInFlightTextHashes
                     }
@@ -660,7 +660,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val waitingForPlacement = queued.layout.bubbles.any { bubble ->
                     val fp = WebModeLayout.fingerprint(bubble)
                     val inFlight = synchronized(deepSeekInFlightTextHashes) { fp in deepSeekInFlightTextHashes }
-                    inFlight && !rtAheadTranslationCache.containsKey(fp) &&
+                    inFlight && !rtAheadTranslationCache.containsKey(rtAheadBubbleCacheKey(bubble)) &&
                         !synchronized(deepSeekInFlightTextHashes) { fp in deepSeekTranslatedTextHashes }
                 }
                 if (waitingForPlacement) {
@@ -876,7 +876,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             for (i in task.layout.bubbles.indices) {
                 val value = aligned.getOrNull(i)?.trim().orEmpty()
                 if (value.isNotBlank()) {
-                    rtAheadTranslationCache[WebModeLayout.fingerprint(task.layout.bubbles[i])] = value
+                    rtAheadTranslationCache[rtAheadBubbleCacheKey(task.layout.bubbles[i])] = value
                 }
             }
         }
@@ -884,7 +884,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         rtAheadTranslationQueuedIds.remove(task.id)
         rtAheadTranslationSuppressedIds.add(task.id)
         val missing = task.layout.bubbles.filter { bubble ->
-            !rtAheadTranslationCache.containsKey(WebModeLayout.fingerprint(bubble)) &&
+            !rtAheadTranslationCache.containsKey(rtAheadBubbleCacheKey(bubble)) &&
                 !synchronized(deepSeekInFlightTextHashes) {
                     WebModeLayout.fingerprint(bubble) !in deepSeekTranslatedTextHashes
                 }
@@ -3945,7 +3945,7 @@ return t.length>=40?'TXT:'+t:'';
                                         WebModeLayoutStore.setScan(liveChapter.url, liveLayout)
                                         deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
                                         val cachedTranslations = selected.map {
-                                            rtAheadTranslationCache[WebModeLayout.fingerprint(it)]
+                                            rtAheadTranslationCache[rtAheadBubbleCacheKey(it)]
                                         }
                                         if (cachedTranslations.all { !it.isNullOrBlank() }) {
                                             // Every bubble in this visible batch has already been translated ahead.
