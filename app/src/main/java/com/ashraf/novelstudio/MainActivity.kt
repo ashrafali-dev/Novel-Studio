@@ -113,6 +113,8 @@ class MainActivity : Activity() {
     private var webModePrefetchPct = -1
     private var webModeStage = ""
     private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
+    private var webModeLastProgressAtMs = 0L
+    private var webModeJobSerial = 0
     private var deepSeekAutoStartedUrl = ""
     private var deepSeekVisibleSignature = ""
     private var deepSeekLastOcrAtMs = 0L
@@ -1002,6 +1004,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
     private var deepSeekPollBusy = false
+    private var activityPausedAtMs = 0L
     // If WebView drops a JS callback during reload/navigation, a watchdog restarts the probe.
     private var deepSeekPollEvalSeq = 0
     private val deepSeekVisiblePoll = object : Runnable {
@@ -3988,7 +3991,9 @@ return t.length>=40?'TXT:'+t:'';
             aheadOcrStage = ""
             aheadOcrPct = -1
         }
+        val jobSeq = ++webModeJobSerial
         webModeHandle?.cancel()
+        webModeLastProgressAtMs = android.os.SystemClock.elapsedRealtime()
         webModePct = 1
         webModeStage = "Discovering chapter panels"
         updateProgressUi()
@@ -3997,9 +4002,10 @@ return t.length>=40?'TXT:'+t:'';
             // DeepSeek real-time mode OCRs only the currently visible panel; never auto-scroll.
             visibleOnly = DeepSeekRealtimeTranslation.isEnabled(this),
             force = Prefs.bool(this, "wmForce"),
-            isValid = { token == navToken },
+            isValid = { token == navToken && jobSeq == webModeJobSerial },
             onProgress = { stage, pct ->
-                if (token == navToken) {
+                if (token == navToken && jobSeq == webModeJobSerial) {
+                    webModeLastProgressAtMs = android.os.SystemClock.elapsedRealtime()
                     webModeStage = stage
                     webModePct = pct
                     updateProgressUi()
@@ -4009,6 +4015,7 @@ return t.length>=40?'TXT:'+t:'';
                 // A newer tap or a navigation owns the progress UI now; never touch it from a stale job.
                 if (token == navToken) {
                     webModeHandle = null
+                    webModeLastProgressAtMs = 0L
                     clearWebModeProgress()
                     when (out) {
                         is WebModeOutcome.Success -> {
@@ -6975,6 +6982,7 @@ ${rows.take(220).joinToString("\n")}
     }
 
     override fun onPause() {
+        activityPausedAtMs = android.os.SystemClock.elapsedRealtime()
         if (!isFinishing) saveCurrentTabState()
         persistBrowserTabs()
         CookieManager.getInstance().flush()
@@ -6986,11 +6994,27 @@ ${rows.take(220).joinToString("\n")}
         // Explicitly resume WebView timers after returning from another app / a long background
         // pause. Some reader sites stop delivering animation, lazy-load and observer callbacks
         // until the WebView is resumed.
+        val resumedAt = android.os.SystemClock.elapsedRealtime()
+        val pauseDuration = if (activityPausedAtMs > 0L) resumedAt - activityPausedAtMs else 0L
+        activityPausedAtMs = 0L
         if (::novelWv.isInitialized) {
             try { novelWv.onResume(); novelWv.resumeTimers() } catch (_: Exception) {}
         }
         if (::chatWv.isInitialized) {
             try { chatWv.onResume(); chatWv.resumeTimers() } catch (_: Exception) {}
+        }
+        // A WebView job can remain referenced after the page pauses and its callback is lost.
+        // Recover only after a real background pause and only when progress has also stopped;
+        // ordinary slow OCR while the app is visible is not interrupted.
+        if (pauseDuration >= 10_000L &&
+            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() &&
+            webModeHandle != null && webModeLastProgressAtMs > 0L &&
+            resumedAt - webModeLastProgressAtMs >= 15_000L) {
+            webModeJobSerial++
+            webModeHandle?.cancel()
+            webModeHandle = null
+            webModeLastProgressAtMs = 0L
+            clearWebModeProgress()
         }
         // Always re-arm the real-time probe after Activity resume. A JS callback may have been
         // lost while the page was backgrounded; do not require force-closing the app to recover.
