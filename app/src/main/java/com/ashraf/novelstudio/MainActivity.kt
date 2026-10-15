@@ -530,7 +530,7 @@ return t.length>=40?'TXT:'+t:'';
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
-    private val chatbotRequestGapMs = 4_000L
+    private val chatbotRequestGapMs = 2_500L
     private var nextChatbotRequestAtMs = 0L
 
     /** Send through the shared rate gate so every selected chatbot follows the same spacing. */
@@ -557,7 +557,7 @@ return t.length>=40?'TXT:'+t:'';
         chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
     }
 
-    /** Leave a full four-second pause after a response ends (or is interrupted). */
+    /** Leave a 2.5-second pause after a response ends (or is interrupted). */
     private fun deferNextChatbotRequest() {
         nextChatbotRequestAtMs = maxOf(
             nextChatbotRequestAtMs,
