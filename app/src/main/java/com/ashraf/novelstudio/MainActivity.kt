@@ -152,6 +152,22 @@ class MainActivity : Activity() {
         if (sent > 0) toast("🔁 Translation failed earlier — sending to the chatbot again")
     }
 
+    // Single-bubble/area jobs temporarily pass partial source text through the existing chatbot pipeline.
+    // Keep the chapter that was open before that temporary job, then restore it after page placement.
+    private var chapterAfterBubbleJob: Chapter? = null
+
+    private fun restoreChapterAfterBubbleJob(expectedUrl: String? = null) {
+        val original = chapterAfterBubbleJob ?: return
+        if (expectedUrl != null && cleanUrl(original.url) != cleanUrl(expectedUrl)) return
+        chapterAfterBubbleJob = null
+        // An SPA can replace a chapter without changing the page URL. Never restore stale chapter
+        // state after the user moved away while the chatbot was translating a selected bubble.
+        if (cleanUrl(novelWv.url.orEmpty()) == cleanUrl(original.url)) {
+            lastChapter = original
+            updateProgressUi()
+        }
+    }
+
     // Long-press "Re-translate": bubbles the reader asked to translate again, matched by image + position.
     private class RetrTarget(val src: String, val cx: Float, val cy: Float, val w: Float, val h: Float, val at: Long)
     private val retranslateTargets = ArrayList<RetrTarget>()
@@ -264,6 +280,7 @@ class MainActivity : Activity() {
                                 deepSeekLastOcrAtMs = System.currentTimeMillis()
                                 deepSeekVisibleSignature = ""
                                 toast("🔎 OCR refreshed · sending ${selected.size} bubble(s) to translate…")
+                                chapterAfterBubbleJob = lastChapter?.takeIf { cleanUrl(it.url) == cleanUrl(chapter.url) }
                                 handleChapter(chapter, useSavedTranslation = false)
                             }
                         }
@@ -328,6 +345,7 @@ class MainActivity : Activity() {
         val liveChapter = base.copy(text = bubble.sourceText.trim(), contentSel = "")
         WebModeLayoutStore.setScan(liveChapter.url, WebModeLayout(layout.titleOffset, listOf(bubble)))
         deepSeekTextHashByChapter[keyOf(liveChapter)] = setOf(hash)
+        chapterAfterBubbleJob = base
         handleChapter(liveChapter, useSavedTranslation = false)
     }
 
@@ -4814,6 +4832,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             if (willRetry) "\n🔁 Retrying automatically in 15 s…" else "")
         if (retryList.isNotEmpty()) scheduleFailedRetry(retryList)
         updateProgressUi()
+        restoreChapterAfterBubbleJob()
     }
 
     private fun cancelAll() {
@@ -4869,6 +4888,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 if (wmLayout == null || wmPlaced == null) {
                     releaseDeepSeekHashBatch(ch)
                     toast("⚠️ এই ব্যাচের অনুবাদ বাবলের সঙ্গে মেলেনি; ভুল জায়গায় বসানো হয়নি")
+                    restoreChapterAfterBubbleJob(ch.url)
                     return
                 }
                 val cumulative = WebModeLayoutStore.mergeTranslated(this, ch.url, wmLayout, wmPlaced)
@@ -4907,6 +4927,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     if (livePanelBatch) releaseDeepSeekHashBatch(ch)
                     toast("⚠️ Could not show the translation on this page; it is saved in the library")
                 }
+                if (livePanelBatch) restoreChapterAfterBubbleJob(ch.url)
             }
             return
         }
