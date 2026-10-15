@@ -1350,7 +1350,7 @@ function scroller(){
       if(o==='auto'||o==='scroll'||o==='overlay'){bs=e.scrollHeight;best=e;}}}
   return best;
 }
-function cands(sc){
+function cands(sc, includeBackgrounds){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
   for(var i=0;i<imgs.length;i++){
     var im=imgs[i],src=imageSrc(im);
@@ -1382,32 +1382,35 @@ function cands(sc){
   // and call getComputedStyle() on every wrapper. This expensive fallback is only needed
   // for canvas/CSS-background readers which do not expose their panels as IMG elements.
   if(out.length>=3)return out;
-  // CSS backgrounds and lazy-background attributes. Inspect larger nodes throughout the DOM,
-  // not just the first 5,000 nodes; also enter open shadow roots used by some custom readers.
-  var els=allNodes(16000);
-  for(var j=0;j<els.length;j++){
-    var el=els[j],r=el.getBoundingClientRect();
-    if(r.width<80||r.height<50)continue;
-    var meta=(el.className&&el.className.baseVal!==undefined?el.className.baseVal:el.className||'')+' '+(el.id||'')+' '+(el.getAttribute('aria-label')||'');
-    if(BAD.test(meta))continue;
-    if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]'))continue;
-    var bg='';try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
-    if(!bg||bg==='none'){
-      for(var a=0;a<LAZY.length;a++){var av=el.getAttribute&&el.getAttribute(LAZY[a]);if(goodUrl(av)){bg='url("'+av+'")';break;}}
+  if(includeBackgrounds!==false){
+    // CSS backgrounds and lazy-background attributes. Inspect larger nodes throughout the DOM,
+    // not just the first 5,000 nodes; also enter open shadow roots used by some custom readers.
+    var els=allNodes(16000);
+    for(var j=0;j<els.length;j++){
+      var el=els[j],r=el.getBoundingClientRect();
+      if(r.width<80||r.height<50)continue;
+      var meta=(el.className&&el.className.baseVal!==undefined?el.className.baseVal:el.className||'')+' '+(el.id||'')+' '+(el.getAttribute('aria-label')||'');
+      if(BAD.test(meta))continue;
+      if(el.closest&&el.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]'))continue;
+      var bg='';try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
       if(!bg||bg==='none'){
-        var ds=el.getAttribute&&el.getAttribute('data-srcset');
-        if(ds){var dss=pickSrcset(ds);if(dss)bg='url("'+dss+'")';}
+        for(var a=0;a<LAZY.length;a++){var av=el.getAttribute&&el.getAttribute(LAZY[a]);if(goodUrl(av)){bg='url("'+av+'")';break;}}
+        if(!bg||bg==='none'){
+          var ds=el.getAttribute&&el.getAttribute('data-srcset');
+          if(ds){var dss=pickSrcset(ds);if(dss)bg='url("'+dss+'")';}
+        }
+      }
+      if(!bg||bg==='none')continue;
+      var rx=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
+      while((m=rx.exec(bg))!==null){
+        var s=absUrl((m[1]||'').trim());
+        if(!s||!goodUrl(s)||seen[s])continue;
+        seen[s]=1;
+        var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
+        out.push({s:s,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:1,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
       }
     }
-    if(!bg||bg==='none')continue;
-    var rx=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
-    while((m=rx.exec(bg))!==null){
-      var s=absUrl((m[1]||'').trim());
-      if(!s||!goodUrl(s)||seen[s])continue;
-      seen[s]=1;
-      var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
-      out.push({s:s,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:1,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
-    }
+  
   }
   return out;
 }
@@ -1425,7 +1428,9 @@ if(sc){
   hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
 }
 bottom=(after+vh>=hh-4)||after===before;
-var c=cands(sc),p=0,fastUrls=c.length>=20;
+var now=Date.now(),probeBg=now-(window.__nsWmStepBgProbeAt||0)>=1200;
+if(probeBg)window.__nsWmStepBgProbeAt=now;
+var c=cands(sc,probeBg),p=0,fastUrls=c.length>=20;
 for(var i=0;i<c.length;i++){
   if(!c[i].d)p++;
   if(!/^https?:\/\//i.test(c[i].s))fastUrls=false;
