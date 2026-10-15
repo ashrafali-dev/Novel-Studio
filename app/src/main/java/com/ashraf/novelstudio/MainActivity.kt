@@ -536,9 +536,101 @@ class MainActivity : Activity() {
         if (front) rtAheadTranslationQueue.add(0, task) else rtAheadTranslationQueue.add(task)
     }
 
+    private fun selectedBotBaseUrl(): String {
+        val list = bots()
+        for (i in 0 until list.length()) {
+            val item = list.optJSONObject(i) ?: continue
+            val url = item.optString("u")
+            if (url.isNotBlank() && botKey(url) == currentBotKey) return url
+        }
+        return Prefs.get(this, "botUrl", chatWv.url.orEmpty()).ifBlank { chatWv.url.orEmpty() }
+    }
+
+    private fun ensureRealtimeAheadChatWebView(): WebView? {
+        if (!::content.isInitialized) return null
+        val baseUrl = selectedBotBaseUrl()
+        if (!baseUrl.startsWith("http", true)) return null
+        val targetBot = botKey(baseUrl)
+        if (targetBot.isBlank()) return null
+
+        var wv = aheadChatWv
+        if (wv == null) {
+            wv = WebView(this)
+            setup(wv)
+            wv.webViewClient = ChatClient()
+            wv.settings.setSupportMultipleWindows(true)
+            wv.settings.javaScriptCanOpenWindowsAutomatically = true
+            wv.webChromeClient = ChatChrome()
+            wv.setOnTouchListener { _, _ -> true }
+            wv.isClickable = false
+            wv.isFocusable = false
+            wv.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            // Full-size and attached so the composer/DOM lays out normally; tiny alpha and index 0
+            // keep it behind the visible browser/chat panes without stealing touch input.
+            wv.alpha = 0.01f
+            content.addView(wv, 0, FrameLayout.LayoutParams(MP, MP))
+            aheadChatWv = wv
+            aheadChatBaseUrl = baseUrl
+            aheadChatReady = false
+            wv.loadUrl(baseUrl)
+            wv.onResume()
+            wv.resumeTimers()
+            return null
+        }
+
+        if (aheadChatBaseUrl != baseUrl || botKey(aheadChatBaseUrl) != targetBot) {
+            aheadChatBaseUrl = baseUrl
+            aheadChatReady = false
+            wv.stopLoading()
+            wv.loadUrl(baseUrl)
+            wv.onResume()
+            wv.resumeTimers()
+            return null
+        }
+        if (!aheadChatReady || botKey(wv.url.orEmpty()) != targetBot) return null
+        wv.onResume()
+        wv.resumeTimers()
+        return wv
+    }
+
+    private fun buildRealtimeAheadPrompt(task: RtAheadTranslationTask): Pair<String, Int> {
+        val source = task.layout.bubbles.joinToString("\n\n") { it.sourceText.trim() }
+        val marked = addInternalMarkers(source)
+        val markerCount = Regex("(?m)^\\[\\d{3,}] ").findAll(marked).count()
+        val markerInstruction = """
+[Internal paragraph markers]
+Each paragraph starts with a marker such as [001], [002], [003].
+Keep every marker exactly once, in the same order. Do not translate, remove,
+merge, split, or reorder the markers. Return only the translation with the
+markers preserved.
+""".trimIndent()
+        val imageRules = """
+[Comic / webtoon page]
+Every marker is one piece of text read from a comic image: speech, narration, a system window or a
+sound effect. Translate EVERY marker into Bengali script, including sound effects and exclamations
+(BOOM -> ধুম!, HAH -> হাঃ, GRR -> গরররর!). If a word has no Bengali equivalent, write its sound in
+Bengali letters. Never leave a marker in English letters, never skip a marker, and never put two
+markers' text under one marker.
+A marker normally holds a WHOLE speech bubble (all its lines already joined): translate all of it,
+every word, and drop nothing. Only when a sentence clearly continues across consecutive markers
+(for example "...THE" / "HERO'S LIFE..."), read them together and translate each marker as only the
+part it carries.
+Website names, URLs and scan-group watermarks (anything like "something.com") are not dialogue:
+answer exactly ~ for them.
+If a marker is clearly meaningless OCR noise (random letters or symbols), answer exactly ~ for it.
+Do not invent text. Keep each translation short enough to fit a speech bubble.
+""".trimIndent()
+        // This is a separate chatbot page with no prior prompt in its conversation, so always include
+        // the full active translation prompt, even if the visible-chat option normally sends it once.
+        val full = promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
+            markerInstruction + "\n\n" + imageRules + "\n\n" + marked
+        return full to markerCount
+    }
+
     private fun pumpRealtimeAheadTranslation() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
-        if (running != null || queue.isNotEmpty() || webModeHandle != null || webModePrefetchBusy) return
+        if (rtAheadWorkerBusy || running != null || queue.isNotEmpty() ||
+            webModeHandle != null || webModePrefetchBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
         while (rtAheadTranslationQueue.isNotEmpty()) {
@@ -556,8 +648,6 @@ class MainActivity : Activity() {
                     }
             }
             if (remaining.isEmpty()) {
-                // A foreground reply may have finished while its overlay placement callback is still
-                // pending. Keep the task alive until those hashes are either marked translated or released.
                 val waitingForPlacement = queued.layout.bubbles.any { bubble ->
                     val fp = WebModeLayout.fingerprint(bubble)
                     val inFlight = synchronized(deepSeekInFlightTextHashes) { fp in deepSeekInFlightTextHashes }
@@ -574,8 +664,6 @@ class MainActivity : Activity() {
             }
             val layout = WebModeLayout(0, remaining)
             val baseId = rtAheadTaskId(queued.pageUrl, layout)
-            // Preserve retry identity so an interrupted retry is not rejected by the original's
-            // suppression entry.
             val id = if (queued.attempts > 0 || queued.id.endsWith("-r")) "$baseId-r" else baseId
             val task = queued.copy(id = id, layout = layout)
             val base = lastChapter?.takeIf { cleanUrl(it.url) == currentUrl }
@@ -594,12 +682,40 @@ class MainActivity : Activity() {
                 contentSel = ""
             )
             val jobKey = keyOf(aheadChapter)
+            val worker = ensureRealtimeAheadChatWebView()
+            if (worker == null) {
+                queueRtAheadTask(task, front = true)
+                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 900L)
+                return
+            }
             rtAheadTranslationTasksByJobKey[jobKey] = task
+            rtAheadWorkerBusy = true
+            rtAheadWorkerTask = task
+            rtAheadWorkerJobKey = jobKey
+            val seq = ++rtAheadWorkerSeq
+            val (prompt, markerCount) = buildRealtimeAheadPrompt(task)
+            rtAheadWorkerMarkerCount = markerCount
+            rtAheadWorkerSourceLength = task.layout.bubbles.sumOf { it.sourceText.length }
             webModeStage = "Pre-translating upcoming panel"
             webModePct = 1
             updateProgressUi()
-            // Do not call handleChapter(): ahead work must never replace lastChapter or touch the page.
-            enqueue(aheadChapter)
+            worker.evaluateJavascript(Js.send(prompt, true)) { raw ->
+                if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy) return@evaluateJavascript
+                val sent = decode(raw)
+                if (!sent.startsWith("ok:")) {
+                    failRealtimeAheadTranslation(seq, task, jobKey)
+                    return@evaluateJavascript
+                }
+                val parts = sent.substring(3).split(":")
+                val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                handler.postDelayed({
+                    pollRealtimeAheadTranslation(
+                        seq, task, jobKey, worker, n0, baseLen,
+                        System.currentTimeMillis(), 0, 0, false, -1
+                    )
+                }, RealtimeCompletionPolicy.firstPollDelayMs(this))
+            }
             return
         }
     }
