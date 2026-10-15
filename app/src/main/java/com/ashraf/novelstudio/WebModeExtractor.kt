@@ -1428,7 +1428,7 @@ bottom=(after+vh>=hh-4)||after===before;
 var c=cands(sc),p=0,fastUrls=c.length>=20;
 for(var i=0;i<c.length;i++){
   if(!c[i].d)p++;
-  if(!/^https?:\\/\\//i.test(c[i].s))fastUrls=false;
+  if(!/^https?:\/\//i.test(c[i].s))fastUrls=false;
 }
 return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,fastUrls:fastUrls});
 """
