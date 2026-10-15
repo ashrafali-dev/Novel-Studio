@@ -1256,17 +1256,17 @@ internal class WebModeExtractor(
 
         // ---------------- JavaScript run inside the real page (no dollar signs: this is a Kotlin string)
         private const val LIB = """
-var BAD=/avatar|logo|sprite|emoji|profile|badge|pixel|tracking|advert|\\/ads?|[_\\-.]ads?[_\\-.]|spinner/i;
-var PH=/placeholder|blank\\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\\.gif/i;
+var BAD=/avatar|logo|sprite|emoji|profile|badge|pixel|tracking|advert|\/ads?|[_\-.]ads?[_\-.]|spinner/i;
+var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\.gif/i;
 var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-ks-lazyload','data-cfsrc','data-defer-src'];
 var de=document.scrollingElement||document.documentElement;
 function absUrl(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
-function goodUrl(s){s=String(s||'').trim();return !!s&&!/^data:image\\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
+function goodUrl(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
 function pickSrcset(ss){
   if(!ss)return '';
   var best='',bestScore=-1,parts=String(ss).split(',');
   for(var i=0;i<parts.length;i++){
-    var p=parts[i].trim().split(/\\s+/),u=p[0]||'',d=p[1]||'1x',n=parseFloat(d)||1;
+    var p=parts[i].trim().split(/\s+/),u=p[0]||'',d=p[1]||'1x',n=parseFloat(d)||1;
     var score=/w$/i.test(d)?n:n*10000;
     if(goodUrl(u)&&score>bestScore){best=u;bestScore=score;}
   }
@@ -1344,7 +1344,7 @@ function cands(sc){
       }
     }
     if(!bg||bg==='none')continue;
-    var rx=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
+    var rx=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
     while((m=rx.exec(bg))!==null){
       var s=absUrl((m[1]||'').trim());
       if(!s||!goodUrl(s)||seen[s])continue;
