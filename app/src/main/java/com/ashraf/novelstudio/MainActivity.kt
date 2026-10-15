@@ -862,7 +862,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun finishRealtimeAheadTranslation(jobKey: String, task: RtAheadTranslationTask, raw: String) {
-        val aligned = WebModeLayout.align(raw, task.layout)
+        val aligned = WebModeLayout.align(cleanReply(raw), task.layout)
         if (aligned != null) {
             for (i in task.layout.bubbles.indices) {
                 val value = aligned.getOrNull(i)?.trim().orEmpty()
@@ -887,19 +887,19 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 id = rtAheadTaskId(task.pageUrl, retryLayout) + "-r",
                 layout = retryLayout,
                 attempts = task.attempts + 1
-            ))
+            ), front = true)
         }
+        rtAheadWorkerBusy = false
+        rtAheadWorkerTask = null
+        rtAheadWorkerJobKey = ""
         deepSeekLastOcrAtMs = System.currentTimeMillis()
-        clearWebModeProgress()
-        progress = 100
-        running = null
+        if (webModeStage == "Pre-translating upcoming panel") clearWebModeProgress()
         updateProgressUi()
-        startNext()
-        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 300L)
     }
 
     private fun clearRealtimeAheadStateForNavigation() {
-        interruptRealtimeAheadForVisiblePanel(requeue = false)
+        cancelRealtimeAheadWorker(requeue = false)
         rtAheadTranslationQueue.clear()
         rtAheadTranslationQueuedIds.clear()
         rtAheadTranslationTasksByJobKey.clear()
