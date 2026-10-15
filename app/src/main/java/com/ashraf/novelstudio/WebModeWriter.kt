@@ -359,18 +359,44 @@ internal object WebModeWriter {
         var ocrMenu=null;
         function hideOcrMenu(){if(ocrMenu&&ocrMenu.parentNode)ocrMenu.parentNode.removeChild(ocrMenu);ocrMenu=null;}
         function visibleImageSource(){
-          function srcOf(im){
-            if(!im)return '';
-            var s=im.currentSrc||im.src||im.getAttribute('data-src')||im.getAttribute('data-lazy-src')||im.getAttribute('data-original')||'';
-            try{return s?new URL(s,document.baseURI).href:'';}catch(e){return s||'';}
+          var ww=window.innerWidth||360,hh=window.innerHeight||640,best='',bestArea=0;
+          var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-srcset','data-bg','data-background','data-background-image','data-url'];
+          function good(s){s=String(s||'').trim();return !!s&&!/^data:image\\/(gif|svg)/i.test(s)&&!/placeholder|blank\\.|spacer|loading|1x1|transparent/i.test(s);}
+          function abs(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
+          function choose(el){
+            var s=el.currentSrc||el.getAttribute('src')||el.src||'';
+            if(!good(s)||((el.naturalWidth||0)>0&&(el.naturalWidth||0)<8)){
+              for(var k=0;k<LAZY.length;k++){var v=el.getAttribute&&el.getAttribute(LAZY[k]);if(good(v)){s=v;break;}}
+            }
+            if(!good(s)){var ss=(el.getAttribute&&el.getAttribute('data-srcset'))||(el.getAttribute&&el.getAttribute('srcset'))||'';
+              if(ss){var a=ss.split(',');s=(a[a.length-1]||'').trim().split(/\\s+/)[0]||'';}}
+            return abs(s);
           }
-          var imgs=document.images||[],best='',bestArea=0,ww=window.innerWidth||360,hh=window.innerHeight||640;
-          for(var i=0;i<imgs.length;i++){
-            var im=imgs[i],r=im.getBoundingClientRect(),s=srcOf(im);
-            if(!s||r.width<80||r.height<60||r.right<=0||r.bottom<=0||r.left>=ww||r.top>=hh)continue;
+          function consider(src,r){
+            src=abs(src);if(!src||r.width<60||r.height<45||r.right<=0||r.bottom<=0||r.left>=ww||r.top>=hh)return;
             var area=Math.max(0,Math.min(r.right,ww)-Math.max(r.left,0))
               *Math.max(0,Math.min(r.bottom,hh)-Math.max(r.top,0));
-            if(area>bestArea){bestArea=area;best=s;}
+            if(area>bestArea){bestArea=area;best=src;}
+          }
+          var imgs=document.images||[];
+          for(var i=0;i<imgs.length;i++){
+            var im=imgs[i],r=im.getBoundingClientRect();
+            if(r.width*r.height>=3500)consider(choose(im),r);
+          }
+          var svg=document.querySelectorAll('svg image');
+          for(var si=0;si<svg.length;si++){var se=svg[si],sr=se.getBoundingClientRect();consider((se.href&&se.href.baseVal)||se.getAttribute('href')||se.getAttribute('xlink:href')||'',sr);}
+          if(best)return best;
+          // Manual-only fallback: CSS and lazy backgrounds are searched on tap, never every poll.
+          var nodes=document.querySelectorAll('*'),limit=Math.min(nodes.length,12000);
+          for(var j=0;j<limit;j++){
+            var el=nodes[j],r=el.getBoundingClientRect();
+            if(r.width<80||r.height<50||r.right<=0||r.bottom<=0||r.left>=ww||r.top>=hh)continue;
+            var bg='';try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
+            var m=bg&&bg!=='none'?/url\\((?:"|')?([^"')]+)(?:"|')?\\)/.exec(bg):null;
+            if(m&&good(m[1]))consider(m[1],r);
+            if(!best&&typeof el.getAttribute==='function'){
+              for(var a2=0;a2<LAZY.length;a2++){var val=el.getAttribute(LAZY[a2]);if(good(val)){consider(val,r);break;}}
+            }
           }
           return best;
         }
