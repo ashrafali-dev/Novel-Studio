@@ -623,6 +623,7 @@ class MainActivity : Activity() {
             ))
         }
         deepSeekLastOcrAtMs = System.currentTimeMillis()
+        clearWebModeProgress()
         progress = 100
         running = null
         updateProgressUi()
@@ -5141,6 +5142,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             } else {
                 rtAheadTranslationSuppressedIds.add(aheadTask.id)
             }
+            clearWebModeProgress()
             updateProgressUi()
             startNext()
             handler.postDelayed({ pumpRealtimeAheadTranslation() }, 500L)
