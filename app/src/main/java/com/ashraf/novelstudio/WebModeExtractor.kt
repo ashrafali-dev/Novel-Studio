@@ -370,11 +370,18 @@ internal class WebModeExtractor(
                 try {
                     progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
                     val targeted = !req.forceOcrSrc.isNullOrBlank()
-                    val po = ocrBytes(
-                        bytes, script, p.src,
-                        fastMode = req.visibleOnly && !targeted,
-                        crop = req.forceOcrRegion.takeIf { targeted }
-                    )
+                    val po = if (targeted && req.forceOcrRegion != null) {
+                        // Some Android codecs throw while decoding a selected region. Retry with a
+                        // bounded downsampled bitmap rather than aborting manual OCR.
+                        try {
+                            ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion)
+                        } catch (cropError: RuntimeException) {
+                            Log.w(TAG, "Force OCR crop failed; retrying bitmap crop: ${cropError.javaClass.simpleName}: ${cropError.message}")
+                            ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion, cropFallback = true)
+                        }
+                    } else {
+                        ocrBytes(bytes, script, p.src, fastMode = req.visibleOnly && !targeted)
+                    }
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
                     val t = po.text
@@ -738,7 +745,8 @@ internal class WebModeExtractor(
         // ---- decode + OCR. Returns null for images too small to be a panel; no bubbles for a panel without text.
         private fun ocrBytes(
             bytes: ByteArray, st: ScriptState, src: String,
-            fastMode: Boolean = false, crop: WebModeOcrRegion? = null
+            fastMode: Boolean = false, crop: WebModeOcrRegion? = null,
+            cropFallback: Boolean = false
         ): PanelOcr? {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -754,23 +762,45 @@ internal class WebModeExtractor(
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
             if (crop != null) {
-                // Decode only the requested rectangle; keep geometry normalized to the ORIGINAL image.
-                @Suppress("DEPRECATION")
-                val region = (try { BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) } catch (_: Exception) { null })
-                    ?: throw DecodeException()
-                try {
-                    val left = (crop.x.coerceIn(0f, 0.999f) * w).toInt().coerceIn(0, w - 1)
-                    val top = (crop.y.coerceIn(0f, 0.999f) * h).toInt().coerceIn(0, h - 1)
-                    val right = ((crop.x + crop.w).coerceIn(0.001f, 1f) * w).toInt().coerceIn(left + 1, w)
-                    val bottom = ((crop.y + crop.h).coerceIn(0.001f, 1f) * h).toInt().coerceIn(top + 1, h)
-                    val rect = Rect(left, top, right, bottom)
-                    val bmp = region.decodeRegion(rect, opts) ?: throw DecodeException()
+                // Decode the requested rectangle. If the region decoder is unsupported or throws,
+                // use a bounded downsampled bitmap and crop that instead.
+                val left = (crop.x.coerceIn(0f, 0.999f) * w).toInt().coerceIn(0, w - 1)
+                val top = (crop.y.coerceIn(0f, 0.999f) * h).toInt().coerceIn(0, h - 1)
+                val right = ((crop.x + crop.w).coerceIn(0.001f, 1f) * w).toInt().coerceIn(left + 1, w)
+                val bottom = ((crop.y + crop.h).coerceIn(0.001f, 1f) * h).toInt().coerceIn(top + 1, h)
+                var bmp: Bitmap? = null
+                if (!cropFallback) {
+                    @Suppress("DEPRECATION")
+                    val region = try { BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) } catch (_: Exception) { null }
+                    if (region != null) {
+                        try { bmp = try { region.decodeRegion(Rect(left, top, right, bottom), opts) } catch (_: RuntimeException) { null } }
+                        finally { region.recycle() }
+                    }
+                }
+                var originX = left
+                var originY = top
+                if (bmp == null) {
+                    val full = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: throw DecodeException()
+                    var cropSharesFull = false
                     try {
-                        if (bmp.width < 16 || bmp.height < 16) throw DecodeException()
-                        readSlice(bmp, st, top, sample, w, h, src, texts, bubbles,
-                            firstSlice = true, lastSlice = true, x0 = left, fastMode = false)
-                    } finally { bmp.recycle() }
-                } finally { region.recycle() }
+                        val scaledLeft = (left.toFloat() / sample).toInt().coerceIn(0, full.width - 1)
+                        val scaledTop = (top.toFloat() / sample).toInt().coerceIn(0, full.height - 1)
+                        val scaledRight = (right.toFloat() / sample).toInt().coerceIn(scaledLeft + 1, full.width)
+                        val scaledBottom = (bottom.toFloat() / sample).toInt().coerceIn(scaledTop + 1, full.height)
+                        bmp = Bitmap.createBitmap(full, scaledLeft, scaledTop, scaledRight - scaledLeft, scaledBottom - scaledTop)
+                        cropSharesFull = bmp === full
+                        originX = scaledLeft * sample
+                        originY = scaledTop * sample
+                    } catch (_: RuntimeException) {
+                        throw DecodeException()
+                    } finally { if (!cropSharesFull) full.recycle() }
+                }
+                val cropped = bmp ?: throw DecodeException()
+                try {
+                    if (cropped.width < 16 || cropped.height < 16) throw DecodeException()
+                    readSlice(cropped, st, originY, sample, w, h, src, texts, bubbles,
+                        firstSlice = true, lastSlice = true, x0 = originX, fastMode = false)
+                } finally { cropped.recycle() }
                 return PanelOcr(texts.joinToString("\n\n"), bubbles)
             }
             if (h <= WebModeLogic.SLICE_H) {
