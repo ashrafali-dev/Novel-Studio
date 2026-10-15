@@ -360,7 +360,7 @@ internal object WebModeWriter {
         function hideOcrMenu(){if(ocrMenu&&ocrMenu.parentNode)ocrMenu.parentNode.removeChild(ocrMenu);ocrMenu=null;}
         function visibleImageSource(){
           var ww=window.innerWidth||360,hh=window.innerHeight||640,best='',bestArea=0;
-          var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-srcset','data-bg','data-background','data-background-image','data-url'];
+          var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-bg','data-background','data-background-image','data-url'];
                     function good(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!/placeholder|blank\.|spacer|loading|1x1|transparen/i.test(s);}
           function abs(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
           function choose(el){
