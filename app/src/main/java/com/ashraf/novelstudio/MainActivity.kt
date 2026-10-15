@@ -444,6 +444,18 @@ class MainActivity : Activity() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 1800
     }
 
+    // The ahead translator uses its own invisible WebView so it never overwrites the visible chat
+    // conversation or blocks the foreground panel's send/poll callbacks.
+    private var aheadChatWv: WebView? = null
+    private var aheadChatBaseUrl = ""
+    private var aheadChatReady = false
+    private var rtAheadWorkerBusy = false
+    private var rtAheadWorkerSeq = 0
+    private var rtAheadWorkerTask: RtAheadTranslationTask? = null
+    private var rtAheadWorkerJobKey = ""
+    private var rtAheadWorkerMarkerCount = 0
+    private var rtAheadWorkerSourceLength = 0
+
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "9").toIntOrNull() ?: 9).coerceIn(0, 12)
         deepSeekAheadAtMs = System.currentTimeMillis()
