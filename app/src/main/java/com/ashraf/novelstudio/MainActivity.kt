@@ -484,14 +484,14 @@ class MainActivity : Activity() {
             val js = """(function(){try{
 var v=[],seen={},now=Date.now(),vw=window.innerWidth||0,vh=window.innerHeight||0;
 var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-url','data-ks-lazyload','data-cfsrc'];
-var PH=/placeholder|blank\\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\\.gif/i;
+var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\.gif/i;
 function absolute(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
-function good(s){s=String(s||'').trim();return !!s&&!/^data:image\\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
+function good(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
 function srcset(ss){
  if(!ss)return '';
  var best='',score=-1,parts=String(ss).split(',');
  for(var i=0;i<parts.length;i++){
-  var p=parts[i].trim().split(/\\s+/),u=p[0]||'',d=p[1]||'1x',n=parseFloat(d)||1;
+  var p=parts[i].trim().split(/\s+/),u=p[0]||'',d=p[1]||'1x',n=parseFloat(d)||1;
   var sc=/w$/i.test(d)?n:n*10000;
   if(good(u)&&sc>score){best=u;score=sc;}
  }
@@ -554,7 +554,7 @@ if(now-(window.__nsRtBgProbeAt||0)>=1000||!bgSig){
    for(var ba=0;ba<LAZY.length;ba++){var bv=be.getAttribute&&be.getAttribute(LAZY[ba]);if(good(bv)){bg='url("'+bv+'")';break;}}
   }
   if(!bg||bg==='none')continue;
-  var re=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
+  var re=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
   while((m=re.exec(bg))!==null){
    var u=absolute(m[1]);if(!u||!good(u)||bgSeen[u])continue;
    bgSeen[u]=1;
@@ -569,7 +569,7 @@ if(bgSig)v.push(bgSig);
 v.sort();
 if(v.length)return 'IMG:'+v.join('|');
 var rootEl=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;
-var t=String((rootEl&&(rootEl.innerText||rootEl.textContent))||'').replace(/\\s+/g,' ').trim().slice(0,1200);
+var t=String((rootEl&&(rootEl.innerText||rootEl.textContent))||'').replace(/\s+/g,' ').trim().slice(0,1200);
 return t.length>=40?'TXT:'+t:'';
 }catch(e){return '';}})();""""
             novelWv.evaluateJavascript(js) { raw ->
