@@ -361,7 +361,7 @@ internal object WebModeWriter {
         function visibleImageSource(){
           var ww=window.innerWidth||360,hh=window.innerHeight||640,best='',bestArea=0;
           var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-srcset','data-bg','data-background','data-background-image','data-url'];
-          function good(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!/placeholder|blank\.|spacer|loading|1x1|transparen/i.test(s);}return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!/placeholder|blank\.|spacer|loading|1x1|transparent/i.test(s);}
+                    function good(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!/placeholder|blank\.|spacer|loading|1x1|transparen/i.test(s);}
           function abs(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
           function choose(el){
             var s=el.currentSrc||el.getAttribute('src')||el.src||'';
