@@ -344,6 +344,13 @@ internal class WebModeExtractor(
                 val pending = o.optInt("p", 0)
                 val bottom = o.optBoolean("bottom", false)
                 val ready = o.optString("ready") == "complete"
+                // A large, non-virtualized image gallery already exposes every panel URL and
+                // its layout boxes. There is no need to scroll through all panels just to trigger
+                // lazy loading; the bounded downloader reads those URLs directly in the worker.
+                if (o.optBoolean("fastUrls", false)) {
+                    finishDiscovery()
+                    return@evaluateJavascript
+                }
                 var st = if (bottom && ready && count == lastCount) stable + 1 else 0
                 // A reader that has not drawn anything yet gets a longer grace period.
                 if (count == 0 && elapsed() < EMPTY_GRACE_MS) st = 0
@@ -1418,8 +1425,12 @@ if(sc){
   hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
 }
 bottom=(after+vh>=hh-4)||after===before;
-var c=cands(sc),p=0;for(var i=0;i<c.length;i++){if(!c[i].d)p++;}
-return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState});
+var c=cands(sc),p=0,fastUrls=c.length>=20;
+for(var i=0;i<c.length;i++){
+  if(!c[i].d)p++;
+  if(!/^https?:\\/\\//i.test(c[i].s))fastUrls=false;
+}
+return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,fastUrls:fastUrls});
 """
 
         private const val JS_FORCE_INFO = """
