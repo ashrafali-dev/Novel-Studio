@@ -656,8 +656,11 @@ class MainActivity : Activity() {
             }
             val pageKeyNow = cleanUrl(url)
             if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
+                clearRealtimeAheadStateForNavigation()
                 deepSeekPollUrl = url
                 deepSeekVisibleSignature = ""
+                deepSeekPendingSig = ""
+                deepSeekPendingSince = 0L
                 deepSeekLastOcrAtMs = 0L
                 deepSeekNoImageTriedUrl = ""
             }
@@ -763,14 +766,20 @@ return t.length>=40?'TXT:'+t:'';
                 val changed = signature.isNotEmpty() && signature != deepSeekVisibleSignature
                 // New image URLs trigger immediately; a long safety recheck only catches readers that mutate
                 // pixels without changing their image URL. Avoid re-OCRing the same panel every 3 s.
-                val periodicRecheck = hasImages && now - deepSeekLastOcrAtMs >= 10000L
+                val runningAhead = running?.let { rtAheadTranslationTasksByJobKey.containsKey(keyOf(it)) } == true
+                val periodicRecheck = hasImages && !runningAhead && now - deepSeekLastOcrAtMs >= 10000L
                 // While the reader is still flicking through panels, let the current image settle briefly
                 // without imposing a full 300 ms pause before the real-time OCR can start.
                 if (signature != deepSeekPendingSig) { deepSeekPendingSig = signature; deepSeekPendingSince = now }
                 val settled = now - deepSeekPendingSince >= 120L
-                val idle = webModeHandle == null && running == null && queue.isEmpty()
+                // Foreground OCR may pre-empt only an ahead-translation job; it must never interrupt
+                // a visible-panel translation or a user-initiated extraction.
+                val idle = webModeHandle == null &&
+                    (running == null || runningAhead) &&
+                    (queue.isEmpty() || runningAhead)
                 if (idle && signature.isNotEmpty() &&
                     ((hasImages && ((changed && settled) || periodicRecheck)) || textFallbackDue)) {
+                    if (runningAhead && changed && settled) interruptRealtimeAheadForVisiblePanel()
                     deepSeekVisibleSignature = signature
                     deepSeekLastOcrAtMs = now
                     if (!hasImages) deepSeekNoImageTriedUrl = pageKeyNow
