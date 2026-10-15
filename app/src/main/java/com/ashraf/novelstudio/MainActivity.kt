@@ -5107,6 +5107,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             }
             running = null
             startNext()
+            handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
         }
     }
 
@@ -5149,6 +5150,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (retryList.isNotEmpty()) scheduleFailedRetry(retryList)
         updateProgressUi()
         restoreChapterAfterBubbleJob()
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 600L)
     }
 
     private fun cancelAll() {
