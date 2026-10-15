@@ -119,6 +119,47 @@ class MainActivity : Activity() {
     private val deepSeekTranslatedTextHashes = LinkedHashSet<String>()
     private val deepSeekInFlightTextHashes = LinkedHashSet<String>()
     private val deepSeekTextHashByChapter = mutableMapOf<String, Set<String>>()
+
+    // Long-press "Re-translate": bubbles the reader asked to translate again, matched by image + position.
+    private class RetrTarget(val src: String, val cx: Float, val cy: Float, val w: Float, val h: Float, val at: Long)
+    private val retranslateTargets = ArrayList<RetrTarget>()
+
+    private inner class RetranslateBridge {
+        @android.webkit.JavascriptInterface
+        fun retranslate(src: String, cx: Double, cy: Double, w: Double, h: Double) {
+            handler.post { requestBubbleRetranslate(src, cx.toFloat(), cy.toFloat(), w.toFloat(), h.toFloat()) }
+        }
+    }
+
+    private fun requestBubbleRetranslate(src: String, cx: Float, cy: Float, w: Float, h: Float) {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
+            toast("🔁 Re-translate works in Real-time mode")
+            return
+        }
+        synchronized(retranslateTargets) {
+            val now = System.currentTimeMillis()
+            retranslateTargets.removeAll { now - it.at > 90_000L }
+            retranslateTargets.add(RetrTarget(WebModeLogic.normalizeUrl(src), cx, cy, w, h, now))
+        }
+        // The visible-panel poll rescans as soon as it is idle; clearing this makes that happen now.
+        deepSeekLastOcrAtMs = 0L
+        toast("⏳ Re-translating this bubble…")
+    }
+
+    /** The pending re-translate request that points at this scanned bubble, if any. */
+    private fun retranslateTargetFor(b: WmBubble): RetrTarget? = synchronized(retranslateTargets) {
+        val bs = WebModeLogic.normalizeUrl(b.src)
+        retranslateTargets.firstOrNull { t ->
+            if (t.src != bs) return@firstOrNull false
+            val l = maxOf(t.cx - t.w / 2f, b.cx - b.w / 2f)
+            val r = minOf(t.cx + t.w / 2f, b.cx + b.w / 2f)
+            val tp = maxOf(t.cy - t.h / 2f, b.cy - b.h / 2f)
+            val bt = minOf(t.cy + t.h / 2f, b.cy + b.h / 2f)
+            val overlap = maxOf(0f, r - l) * maxOf(0f, bt - tp)
+            val smaller = minOf(t.w * t.h, b.w * b.h)
+            smaller > 0f && overlap / smaller >= 0.5f
+        }
+    }
     private var deepSeekPendingSig = ""
     private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
@@ -536,6 +577,7 @@ return t.length>=40?'TXT:'+t:'';
         chatWv = WebView(this)
         setup(novelWv)
         setup(chatWv)
+        novelWv.addJavascriptInterface(RetranslateBridge(), "NsRetr")
         // Reader sites commonly mark chapter/title links as target="_blank".
         // With multiple windows enabled, NovelChrome rejects onCreateWindow(), so those
         // taps appear to do nothing. Route user-opened links into this same reader WebView.
@@ -2850,16 +2892,23 @@ return t.length>=40?'TXT:'+t:'';
                                     val hashes = LinkedHashSet<String>()
                                     // Reserve new bubbles atomically. Bubbles already translated or
                                     // currently waiting for DeepSeek are skipped even when viewports overlap.
+                                    val usedTargets = ArrayList<RetrTarget>()
                                     synchronized(deepSeekInFlightTextHashes) {
                                         for (bubble in sourceBubbles) {
                                             val hash = WebModeLayout.fingerprint(bubble)
-                                            if (hash !in deepSeekTranslatedTextHashes &&
-                                                hash !in deepSeekInFlightTextHashes) {
+                                            if (hash in deepSeekInFlightTextHashes) continue
+                                            // A bubble the reader long-pressed is sent again even though it was translated.
+                                            val forced = retranslateTargetFor(bubble)
+                                            if (hash !in deepSeekTranslatedTextHashes || forced != null) {
                                                 selected.add(bubble)
                                                 hashes.add(hash)
+                                                if (forced != null) usedTargets.add(forced)
                                             }
                                         }
                                         deepSeekInFlightTextHashes.addAll(hashes)
+                                    }
+                                    if (usedTargets.isNotEmpty()) synchronized(retranslateTargets) {
+                                        retranslateTargets.removeAll(usedTargets.toSet())
                                     }
                                     if (selected.isNotEmpty()) {
                                         val liveText = selected.joinToString("\n\n") { it.sourceText.trim() }

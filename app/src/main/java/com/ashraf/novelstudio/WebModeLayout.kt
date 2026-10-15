@@ -285,7 +285,7 @@ internal object WebModeLayoutStore {
             val sameText = priorKey == freshKey
             result[chosen] = fresh.copy(
                 sourceText = fresh.sourceText.ifBlank { prior.sourceText },
-                translatedText = if (sameText) prior.translatedText.ifBlank { fresh.translatedText } else fresh.translatedText
+                translatedText = if (sameText) fresh.translatedText.ifBlank { prior.translatedText } else fresh.translatedText
             )
 
             // A fuller text block can absorb several earlier partial line boxes from the same balloon.

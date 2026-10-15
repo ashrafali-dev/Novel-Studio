@@ -164,6 +164,59 @@ internal object WebModeWriter {
     window.__nsEl=w; window.__nsOrig=''; window.__nsTr=w.innerHTML; window.__nsShown=1;
     w.setAttribute('data-ns','1'); w.setAttribute('data-ns-page-id',pid||''); window.__nsPageId=pid||'';
     lastRun=0; layout();
+
+    // Long-press a translated bubble -> small "Re-translate" button (Kotlin bridge: NsRetr).
+    try{
+      if(!window.__nsLp){
+        window.__nsLp=1;
+        var lpT=0,lpX=0,lpY=0,lpMenu=null,lpSwallow=0;
+        var lpHide=function(){if(lpMenu&&lpMenu.parentNode)lpMenu.parentNode.removeChild(lpMenu);lpMenu=null;};
+        var lpHit=function(x,y){
+          var ov=document.getElementById('__ns_wm_overlay'); if(!ov)return null;
+          var bs=ov.querySelectorAll('.__ns_b'),best=null;
+          for(var i=0;i<bs.length;i++){var bb=bs[i]; if(bb.style.display==='none')continue;
+            var r=bb.getBoundingClientRect();
+            if(x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom)best=bb;}
+          return best;};
+        var lpShow=function(bb,x,y){
+          lpHide();
+          var g=bb.getAttribute('data-g').split(','),s=bb.getAttribute('data-s');
+          var m=document.createElement('div'); m.id='__ns_lp_menu';
+          m.textContent='\uD83D\uDD01 Re-translate';
+          m.style.cssText='position:fixed;z-index:2147483647;pointer-events:auto;padding:11px 18px;border-radius:12px;'
+            +'font:600 15px sans-serif;color:#fff;background:rgba(36,40,58,.97);border:1px solid rgba(255,255,255,.2);'
+            +'box-shadow:0 4px 18px rgba(0,0,0,.5);-webkit-user-select:none;user-select:none;white-space:nowrap;';
+          var vw=window.innerWidth||360;
+          m.style.left=Math.max(8,Math.min(vw-190,x-80))+'px';
+          m.style.top=Math.max(8,y-70)+'px';
+          var shownAt=Date.now();
+          m.addEventListener('click',function(ev){
+            ev.preventDefault();ev.stopPropagation();
+            if(Date.now()-shownAt<350)return;
+            lpHide();
+            try{window.NsRetr.retranslate(s,parseFloat(g[0]),parseFloat(g[1]),parseFloat(g[2]),parseFloat(g[3]));}catch(e){}
+          });
+          (document.body||document.documentElement).appendChild(m); lpMenu=m;
+          setTimeout(function(){if(lpMenu===m)lpHide();},5000);
+        };
+        document.addEventListener('touchstart',function(e){
+          if(lpMenu&&!lpMenu.contains(e.target))lpHide();
+          clearTimeout(lpT);
+          if(!e.touches||e.touches.length!==1)return;
+          var t=e.touches[0]; lpX=t.clientX; lpY=t.clientY;
+          lpT=setTimeout(function(){var bb=lpHit(lpX,lpY); if(!bb)return; lpSwallow=Date.now(); lpShow(bb,lpX,lpY);},600);
+        },{capture:true,passive:true});
+        document.addEventListener('touchmove',function(e){
+          var t=e.touches&&e.touches[0]; if(!t)return;
+          if(Math.abs(t.clientX-lpX)>10||Math.abs(t.clientY-lpY)>10)clearTimeout(lpT);
+        },{capture:true,passive:true});
+        document.addEventListener('touchend',function(){clearTimeout(lpT);},{capture:true,passive:true});
+        document.addEventListener('touchcancel',function(){clearTimeout(lpT);},{capture:true,passive:true});
+        document.addEventListener('contextmenu',function(e){
+          if(Date.now()-lpSwallow<1500){e.preventDefault();e.stopPropagation();}
+        },true);
+      }
+    }catch(e){}
     // First layout may measure a fallback font while the bundled Bengali font is still loading.
     // Re-fit every bubble after font readiness so conjuncts and long Bengali words stay intact.
     try{
