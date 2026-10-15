@@ -3954,7 +3954,7 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuPrefetchDepthLabel(): String = "⚡ Prefetch how many chapters ahead: ${prefetchAhead()}"
 
     private fun menuRtPromptLabel(): String =
-        (if (Prefs.bool(this, "rtSendPrompt", true)) "✅" else "⬜") + " 📝 Real-time: Send Prompt With Text"
+        (if (Prefs.bool(this, "rtSendPrompt", true)) "✅" else "⬜") + " 📝 Send Prompt With Text (scan & real-time)"
 
     private fun menuPrefetchLabel(): String =
         (if (Prefs.bool(this, "prefetchNextChapter")) "✅" else "⬜") +
@@ -4274,9 +4274,16 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         // Real-time OCR translation uses its own editable prompt.
         // Real-time menu switch: send the editable prompt (+ glossary) with every batch, or only the
         // text with the marker/page rules (when the prompt already lives in the chat).
-        val skipPrompt = isDeepSeekLivePanel(ch) && !Prefs.bool(this, "rtSendPrompt", true)
-        val full = (if (skipPrompt) "" else promptWithGlossary(Prefs.activeTranslationPrompt(this), marked)) +
-            markerInstruction + "\n\n" + imageRules + marked
+        // The switch applies to every image-chapter translation (Web Mode scan, prefetch and real-time).
+        val skipPrompt = webModeOn() && ch.contentSel.isBlank() && !Prefs.bool(this, "rtSendPrompt", true)
+        val full = if (skipPrompt) {
+            // Prompt OFF: only the text goes to the chatbot (the prompt already lives in the chat).
+            // One short line keeps the [001] markers, because the reply is matched to bubbles by them.
+            "Keep every [NNN] marker exactly once, in order.\n\n" + marked
+        } else {
+            promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
+                markerInstruction + "\n\n" + imageRules + marked
+        }
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val r = decode(raw)
@@ -5188,8 +5195,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val on = !Prefs.bool(this, "rtSendPrompt", true)
                     Prefs.putBool(this, "rtSendPrompt", on)
                     refresh(i, menuRtPromptLabel())
-                    toast(if (on) "📝 Real-time: prompt is sent with every batch"
-                          else "📝 Real-time: only the text is sent (no prompt)")
+                    toast(if (on) "📝 Prompt is sent with every batch (scan & real-time)"
+                          else "📝 Only the text is sent (no prompt) — scan & real-time")
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {

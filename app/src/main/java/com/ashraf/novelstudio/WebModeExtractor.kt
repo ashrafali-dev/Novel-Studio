@@ -810,12 +810,40 @@ internal class WebModeExtractor(
                     if (out[j].src == src && sameSpot(out[j], nb)) { dup = j; break }
                 }
                 if (dup >= 0) {
-                    if (nb.w * nb.h > out[dup].w * out[dup].h * 1.15f) { out[dup] = nb; texts[dup] = text }
+                    if (sameOcrText(texts[dup], text)) {
+                        if (nb.w * nb.h > out[dup].w * out[dup].h * 1.15f) { out[dup] = nb; texts[dup] = text }
+                    } else {
+                        // DIFFERENT text on the same spot: two lines of one speech bubble that OCR did not
+                        // join (both boxes grew to the same bubble interior). Dropping one lost a whole
+                        // line (e.g. the first line stayed untranslated). Keep both, top to bottom: blocks
+                        // arrive in reading order, so the new one is the lower line.
+                        val merged = (texts[dup] + " " + text).replace(Regex("\\s+"), " ").trim()
+                        val base = if (nb.w * nb.h > out[dup].w * out[dup].h) nb else out[dup]
+                        out[dup] = base.copy(sourceText = merged)
+                        texts[dup] = merged
+                    }
                     continue
                 }
                 texts.add(text)
                 out.add(nb)
             }
+        }
+
+        /** True when two OCR readings are (nearly) the same text; false when they are different lines. */
+        private fun sameOcrText(a: String, b: String): Boolean {
+            val x = WebModeLayout.normalizeOcrText(a)
+            val y = WebModeLayout.normalizeOcrText(b)
+            if (x.isEmpty() || y.isEmpty() || x == y || x.contains(y) || y.contains(x)) return true
+            val small = if (x.length <= y.length) x else y
+            val large = if (small === x) y else x
+            if (small.length < 2) return false
+            val grams = HashSet<String>()
+            for (i in 0 until large.length - 1) grams.add(large.substring(i, i + 2))
+            var hit = 0
+            val n = small.length - 1
+            for (i in 0 until n) if (grams.contains(small.substring(i, i + 2))) hit++
+            // Re-reads of one text share most of their letter pairs; separate lines share almost none.
+            return hit * 100 >= n * 60
         }
 
         private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock): Boolean {

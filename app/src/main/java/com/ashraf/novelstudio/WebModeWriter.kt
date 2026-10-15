@@ -127,6 +127,43 @@ internal object WebModeWriter {
       t.style.overflow='visible';
     }
     var MARGIN=1400;
+    // Two bubbles whose boxes overlap partly (joined / burst bubbles): the later one used to paint its
+    // background over the first one's text. Cut the overlap away so both stay fully readable.
+    function resolve(L){
+      for(var i=0;i<L.length;i++)for(var j=i+1;j<L.length;j++){
+        var A=L[i],B=L[j];
+        if(A.s!==B.s||A.rot||B.rot)continue;
+        var ox=Math.min(A.x1,B.x1)-Math.max(A.x0,B.x0),oy=Math.min(A.y1,B.y1)-Math.max(A.y0,B.y0);
+        if(ox<=2||oy<=2)continue;
+        var aA=(A.x1-A.x0)*(A.y1-A.y0),aB=(B.x1-B.x0)*(B.y1-B.y0);
+        if(ox*oy>0.6*Math.min(aA,aB)){ // one sits inside the other: the smaller one is drawn on top
+          if(aA<=aB){A.z=2;B.z=1;}else{B.z=2;A.z=1;}
+          continue;
+        }
+        var vOk=(A.y0<B.y0&&A.y1<B.y1)||(B.y0<A.y0&&B.y1<A.y1);
+        var hOk=(A.x0<B.x0&&A.x1<B.x1)||(B.x0<A.x0&&B.x1<A.x1);
+        var useV=vOk&&(!hOk||oy<=ox);
+        if(!useV&&!hOk)continue;
+        var P,Q;
+        if(useV){P=(A.y0<B.y0)?A:B;}else{P=(A.x0<B.x0)?A:B;}
+        Q=(P===A)?B:A;
+        var k0=useV?'y0':'x0',k1=useV?'y1':'x1';
+        var pA=(P.x1-P.x0)*(P.y1-P.y0),qA=(Q.x1-Q.x0)*(Q.y1-Q.y0);
+        var cutP=pA>=qA;                                  // cut the bigger box: it has the room
+        var gap=1.5;
+        if(cutP){
+          var n1=Q[k0]-gap,m1=Math.max(14,(useV?P.oh:P.ow)*0.4);
+          if(n1-P[k0]>=m1){P[k1]=n1;continue;}
+        }else{
+          var n0=P[k1]+gap,m0=Math.max(14,(useV?Q.oh:Q.ow)*0.4);
+          if(Q[k1]-n0>=m0){Q[k0]=n0;continue;}
+        }
+        // the bigger box would become too small: share the overlap between both
+        var mid=(Q[k0]+P[k1])/2;
+        P[k1]=Math.max(P[k0]+4,mid-gap);
+        Q[k0]=Math.min(Q[k1]-4,mid+gap);
+      }
+    }
     function layout(){
       if(!document.contains(w)){
         // Another overlay replaced this one -> stop. Otherwise the page (a re-render, a lazy-load swap)
@@ -137,6 +174,7 @@ internal object WebModeWriter {
       }
       var bs=w.querySelectorAll('.__ns_b'),vh=window.innerHeight;
       var o=ABS?w.getBoundingClientRect():null;
+      var L=[];
       for(var i=0;i<bs.length;i++){
         var b=bs[i],im=findImg(b.getAttribute('data-s'));
         if(!im){if(b.style.display!=='none')b.style.display='none';continue;}
@@ -148,15 +186,26 @@ internal object WebModeWriter {
         var near=!(vy+bh/2<-MARGIN||vy-bh/2>vh+MARGIN);
         if(!near){if(b.style.display!=='none')b.style.display='none';continue;}
         var px=ABS?(vx-o.left):vx,py=ABS?(vy-o.top):vy;          // centre in the overlay's own space
-        var key=Math.round(px)+','+Math.round(py)+','+Math.round(bw)+','+Math.round(bh);
-        if(b.getAttribute('data-k')!==key){
-          b.setAttribute('data-k',key);
-          b.style.width=bw+'px'; b.style.height=bh+'px';
-          b.style.transform='translate3d('+(px-bw/2)+'px,'+(py-bh/2)+'px,0)'+((g[4]*1)?' rotate('+g[4]+'deg)':'');
+        L.push({b:b,s:b.getAttribute('data-s'),g:g,rw:r.width,ow:bw,oh:bh,
+          x0:px-bw/2,x1:px+bw/2,y0:py-bh/2,y1:py+bh/2,rot:((g[4]*1)!==0),z:0});
+      }
+      resolve(L);
+      for(var n=0;n<L.length;n++){
+        var R=L[n],bb=R.b,gg=R.g;
+        var cw=R.x1-R.x0,ch=R.y1-R.y0,cx=(R.x0+R.x1)/2,cy=(R.y0+R.y1)/2;
+        var key=Math.round(cx)+','+Math.round(cy)+','+Math.round(cw)+','+Math.round(ch);
+        var sz=Math.round(cw)+','+Math.round(ch);
+        var szChanged=bb.getAttribute('data-sz')!==sz;
+        if(bb.getAttribute('data-k')!==key){
+          bb.setAttribute('data-k',key);
+          bb.style.width=cw+'px'; bb.style.height=ch+'px';
+          bb.style.transform='translate3d('+(cx-cw/2)+'px,'+(cy-ch/2)+'px,0)'+((gg[4]*1)?' rotate('+gg[4]+'deg)':'');
         }
-        if(b.style.display!=='flex')b.style.display='flex';
-        var fw=String(Math.round(r.width));
-        if(b.getAttribute('data-fw')!==fw){b.setAttribute('data-fw',fw);fit(b,g[5]*r.width*1.2);}
+        var zz=R.z?String(R.z):'';
+        if(bb.style.zIndex!==zz)bb.style.zIndex=zz;
+        if(bb.style.display!=='flex')bb.style.display='flex';
+        var fw=String(Math.round(R.rw));
+        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,gg[5]*R.rw*1.2);}
       }}
     var raf=0,lastRun=0;
     function sched(){
