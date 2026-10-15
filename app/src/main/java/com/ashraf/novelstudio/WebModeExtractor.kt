@@ -228,12 +228,16 @@ internal class WebModeExtractor(
             for (p in refs) {
                 if (!alive()) return
                 val key = WebModeLogic.normalizeUrl(p.src)
-                if (!aheadDone.add(key)) continue
+                // A panel is "done" only after a usable OCR result is cached. Previously the URL
+                // was marked done before downloading/OCR, so a transient fetch/decode miss could
+                // permanently prevent that panel from being retried when it approached the screen.
+                if (aheadDone.contains(key) || synchronized(aheadCache) { aheadCache.containsKey(key) }) continue
                 try {
                     val bytes = fetchWithRetry(p, pageUrl) ?: continue
                     // Full-quality OCR (not the fast one-pass reading): this runs in the background.
                     val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
                     synchronized(aheadCache) { aheadCache[key] = po }
+                    aheadDone.add(key)
                 } catch (_: OcrUnavailableException) {
                     return
                 } catch (_: Exception) {
