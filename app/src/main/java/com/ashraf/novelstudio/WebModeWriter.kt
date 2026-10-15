@@ -361,7 +361,7 @@ internal object WebModeWriter {
         function visibleImageSource(){
           var ww=window.innerWidth||360,hh=window.innerHeight||640,best='',bestArea=0;
           var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-srcset','data-bg','data-background','data-background-image','data-url'];
-          function good(s){s=String(s||'').trim();return !!s&&!/^data:image\\/(gif|svg)/i.test(s)&&!/placeholder|blank\\.|spacer|loading|1x1|transparent/i.test(s);}
+          function good(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!/placeholder|blank\.|spacer|loading|1x1|transparent/i.test(s);}
           function abs(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
           function choose(el){
             var s=el.currentSrc||el.getAttribute('src')||el.src||'';
@@ -369,7 +369,7 @@ internal object WebModeWriter {
               for(var k=0;k<LAZY.length;k++){var v=el.getAttribute&&el.getAttribute(LAZY[k]);if(good(v)){s=v;break;}}
             }
             if(!good(s)){var ss=(el.getAttribute&&el.getAttribute('data-srcset'))||(el.getAttribute&&el.getAttribute('srcset'))||'';
-              if(ss){var a=ss.split(',');s=(a[a.length-1]||'').trim().split(/\\s+/)[0]||'';}}
+              if(ss){var a=ss.split(',');s=(a[a.length-1]||'').trim().split(/\s+/)[0]||'';}}
             return abs(s);
           }
           function consider(src,r){
@@ -392,7 +392,7 @@ internal object WebModeWriter {
             var el=nodes[j],r=el.getBoundingClientRect();
             if(r.width<80||r.height<50||r.right<=0||r.bottom<=0||r.left>=ww||r.top>=hh)continue;
             var bg='';try{bg=getComputedStyle(el).backgroundImage||'';}catch(ignore){}
-            var m=bg&&bg!=='none'?/url\\((?:"|')?([^"')]+)(?:"|')?\\)/.exec(bg):null;
+            var m=bg&&bg!=='none'?/url\((?:"|')?([^"')]+)(?:"|')?\)/.exec(bg):null;
             if(m&&good(m[1]))consider(m[1],r);
             if(!best&&typeof el.getAttribute==='function'){
               for(var a2=0;a2<LAZY.length;a2++){var val=el.getAttribute(LAZY[a2]);if(good(val)){consider(val,r);break;}}
