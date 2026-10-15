@@ -482,43 +482,96 @@ class MainActivity : Activity() {
             // Probe the viewport 4x/second. Image changes trigger OCR quickly; a stable image set
             // is rechecked periodically, while text-only pages get one safe HTML-extraction fallback.
             val js = """(function(){try{
-var a=[].slice.call(document.images),v=[],seen={};
-for(var i=0;i<a.length;i++){
- var e=a[i],r=e.getBoundingClientRect(),s=e.currentSrc||e.src||'';
- if(!s||/^data:image\/(gif|svg)/i.test(s))s=e.getAttribute('data-src')||e.getAttribute('data-lazy-src')||e.getAttribute('data-original')||s;
- if(!s||/^data:image\/(gif|svg)/i.test(s)||r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
- seen[s]=1;v.push('IMG:'+s+'@'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
+var v=[],seen={},now=Date.now(),vw=window.innerWidth||0,vh=window.innerHeight||0;
+var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-url','data-ks-lazyload','data-cfsrc'];
+var PH=/placeholder|blank\\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\\.gif/i;
+function absolute(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
+function good(s){s=String(s||'').trim();return !!s&&!/^data:image\\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
+function srcset(ss){
+ if(!ss)return '';
+ var best='',score=-1,parts=String(ss).split(',');
+ for(var i=0;i<parts.length;i++){
+  var p=parts[i].trim().split(/\\s+/),u=p[0]||'',d=p[1]||'1x',n=parseFloat(d)||1;
+  var sc=/w$/i.test(d)?n:n*10000;
+  if(good(u)&&sc>score){best=u;score=sc;}
+ }
+ return best;
 }
-// CSS-background discovery is expensive on large readers. Probe it once per second instead
-// of walking thousands of DOM nodes on every 150 ms image poll. IMG discovery stays realtime.
-var bgNow=Date.now(),bgSig=window.__nsRtBgSignature||'';
-if(bgNow-(window.__nsRtBgProbeAt||0)>=1000){
- window.__nsRtBgProbeAt=bgNow;
- var bgv=[],els=document.querySelectorAll('div,section,article,figure,main'),lim=Math.min(els.length,1000);
- for(var j=0;j<lim;j++){
-  var e=els[j],r=e.getBoundingClientRect();
-  if(r.width<100||r.height<70||r.bottom<=0||r.top>=innerHeight)continue;
-  var bg='';
-  try{bg=getComputedStyle(e).backgroundImage||'';}catch(ignore){}
+function imageSrc(e){
+ var primary=e.currentSrc||e.getAttribute('src')||e.src||'';
+ var lazy='';
+ for(var i=0;i<LAZY.length;i++){var a=e.getAttribute&&e.getAttribute(LAZY[i]);if(good(a)){lazy=a;break;}}
+ var set=srcset((e.getAttribute&&e.getAttribute('data-srcset'))||(e.getAttribute&&e.getAttribute('srcset'))||'');
+ if(lazy&&(!good(primary)||PH.test(primary)||((e.naturalWidth||0)>0&&(e.naturalWidth||0)<8)))primary=lazy;
+ if(!good(primary))primary=set||lazy;
+ return absolute(primary);
+}
+function add(kind,s,r,extra){
+ s=absolute(s);if(!s||seen[kind+':'+s])return;
+ seen[kind+':'+s]=1;
+ v.push(kind+':'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height)+'@'+Math.round(r.left/50)+','+Math.round(r.top/50)+(extra||''));
+}
+var imgs=document.images||[];
+for(var i=0;i<imgs.length;i++){
+ var e=imgs[i],r=e.getBoundingClientRect(),s=imageSrc(e);
+ if(!s||r.width<60||r.height<45||r.right<=0||r.bottom<=0||r.left>=vw||r.top>=vh)continue;
+ if(r.width*r.height<3500)continue;
+ add('IMG',s,r,'#'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
+}
+// SVG images, video posters and canvas readers do not always expose a normal <img>.
+var svgs=document.querySelectorAll('svg image');
+for(var si=0;si<svgs.length;si++){
+ var se=svgs[si],sr=se.getBoundingClientRect(),ss=se.href&&se.href.baseVal||se.getAttribute('href')||se.getAttribute('xlink:href')||'';
+ if(sr.width>=60&&sr.height>=45&&sr.right>0&&sr.bottom>0&&sr.left<vw&&sr.top<vh)add('SVG',ss,sr,'');
+}
+var vids=document.querySelectorAll('video[poster]');
+for(var vi=0;vi<vids.length;vi++){var ve=vids[vi],vr=ve.getBoundingClientRect();if(vr.width>=80&&vr.height>=60&&vr.right>0&&vr.bottom>0&&vr.left<vw&&vr.top<vh)add('POSTER',ve.getAttribute('poster'),vr,'');}
+var cvs=document.querySelectorAll('canvas');
+for(var ci=0;ci<cvs.length;ci++){var ce=cvs[ci],cr=ce.getBoundingClientRect();if(cr.width>=100&&cr.height>=70&&cr.right>0&&cr.bottom>0&&cr.left<vw&&cr.top<vh&&cr.width*cr.height>12000)add('CANVAS','canvas:'+location.hostname+':'+Math.round(cr.width)+'x'+Math.round(cr.height),cr,'#'+(ce.width||0)+'x'+(ce.height||0));}
+// CSS background/lazy-background images are slower to inspect; do this once a second,
+// and sweep past deeply nested wrappers instead of checking only the first 1,000 nodes.
+var bgSig=window.__nsRtBgSignature||'';
+if(now-(window.__nsRtBgProbeAt||0)>=1000||!bgSig){
+ window.__nsRtBgProbeAt=now;
+ var nodes=[],roots=[document],seenRoots=[];
+ while(roots.length&&nodes.length<7000){
+  var root=roots.shift();if(!root||seenRoots.indexOf(root)>=0)continue;seenRoots.push(root);
+  var list=root.querySelectorAll?root.querySelectorAll('*'):[];
+  for(var ni=0;ni<list.length&&nodes.length<7000;ni++){var ne=list[ni];nodes.push(ne);if(ne.shadowRoot)roots.push(ne.shadowRoot);}
+ }
+ var eligible=[];
+ for(var nj=0;nj<nodes.length;nj++){
+  var el=nodes[nj],er=el.getBoundingClientRect();
+  if(er.width<80||er.height<50||er.width*er.height<7000||er.right<=0||er.bottom<=0||er.left>=vw||er.top>=vh)continue;
+  eligible.push({el:el,r:er,area:Math.min(vw,er.right)-Math.max(0,er.left)>0?(Math.min(vw,er.right)-Math.max(0,er.left))*(Math.min(vh,er.bottom)-Math.max(0,er.top)):0});
+ }
+ eligible.sort(function(a,b){return b.area-a.area;});
+ var bgv=[],bgSeen={},checks=Math.min(eligible.length,1400);
+ for(var bj=0;bj<checks;bj++){
+  var be=eligible[bj].el,br=eligible[bj].r,bg='';
+  try{bg=getComputedStyle(be).backgroundImage||'';}catch(ignore){}
+  if(!bg||bg==='none'){
+   for(var ba=0;ba<LAZY.length;ba++){var bv=be.getAttribute&&be.getAttribute(LAZY[ba]);if(good(bv)){bg='url("'+bv+'")';break;}}
+  }
   if(!bg||bg==='none')continue;
-  var re=/url\((?:"|')?([^"')]+)(?:"|')?\)/g,m;
+  var re=/url\\((?:"|')?([^"')]+)(?:"|')?\\)/g,m;
   while((m=re.exec(bg))!==null){
-   var s=(m[1]||'').trim();
-   if(!s||/^data:image\/(gif|svg)/i.test(s))continue;
-   try{s=new URL(s,document.baseURI).href;}catch(ignore){continue;}
-   if(seen[s])continue;
-   seen[s]=1;bgv.push('BG:'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height));
+   var u=absolute(m[1]);if(!u||!good(u)||bgSeen[u])continue;
+   bgSeen[u]=1;
+   bgv.push('BG:'+u+'@'+Math.round(br.width)+'x'+Math.round(br.height)+'@'+Math.round(br.left/50)+','+Math.round(br.top/50));
   }
  }
  window.__nsRtBgSignature=bgv.join('|');
 }
 bgSig=window.__nsRtBgSignature||'';
 if(bgSig)v.push(bgSig);
+// Keep deterministic order so polling doesn't re-run OCR because DOM order jittered.
+v.sort();
 if(v.length)return 'IMG:'+v.join('|');
-var root=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;
-var t=String((root&&(root.innerText||root.textContent))||'').replace(/\s+/g,' ').trim().slice(0,1200);
+var rootEl=document.querySelector('[class*=chapter-content],[class*=chapter-body],[id*=chapter],article,main')||document.body;
+var t=String((rootEl&&(rootEl.innerText||rootEl.textContent))||'').replace(/\\s+/g,' ').trim().slice(0,1200);
 return t.length>=40?'TXT:'+t:'';
-}catch(e){return '';}})();"""
+}catch(e){return '';}})();""""
             novelWv.evaluateJavascript(js) { raw ->
                 if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) return@evaluateJavascript
                 val signature = decode(raw).trim()
