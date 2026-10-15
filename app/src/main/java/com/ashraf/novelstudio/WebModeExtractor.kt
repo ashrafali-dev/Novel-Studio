@@ -320,13 +320,7 @@ internal class WebModeExtractor(
                     break
                 }
             }
-            if (alive()) {
-                if (ready.isNotEmpty()) {
-                    val result = ready.toList()
-                    onMain { if (alive()) req.onAheadPanelsReady?.invoke(result) }
-                }
-                progress("Read-ahead OCR complete: $cachedCount/$total panels cached", 99)
-            }
+            if (alive()) progress("Read-ahead OCR complete: ${cachedCount}/$total panels cached", 99)
         }
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
         private fun tick(n: Int, lastCount: Int, stable: Int) {
