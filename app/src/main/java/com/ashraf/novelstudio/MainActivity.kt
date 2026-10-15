@@ -484,7 +484,7 @@ class MainActivity : Activity() {
             val js = """(function(){try{
 var v=[],seen={},now=Date.now(),vw=window.innerWidth||0,vh=window.innerHeight||0;
 var LAZY=['data-src','data-lazy-src','data-original','data-original-src','data-src-original','data-image','data-img','data-bg','data-background','data-background-image','data-url','data-ks-lazyload','data-cfsrc'];
-var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparent|pixel\.gif/i;
+var PH=/placeholder|blank\.|spacer|loading|lazy[-_.]?(img|load)|1x1|transparen|pixel\.gif/i;
 function absolute(s){try{return s?new URL(String(s).trim(),document.baseURI).href:'';}catch(e){return '';}}
 function good(s){s=String(s||'').trim();return !!s&&!/^data:image\/(gif|svg)/i.test(s)&&!PH.test(s)&&!/^about:blank/i.test(s);}
 function srcset(ss){
