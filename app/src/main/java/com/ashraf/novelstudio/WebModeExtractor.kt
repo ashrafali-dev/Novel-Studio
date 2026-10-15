@@ -225,25 +225,41 @@ internal class WebModeExtractor(
         private fun processAhead(refs: List<PanelRef>, pageUrl: String, lang: String) {
             val script = ScriptState(WebModeLogic.pickScript(lang, pageUrl))
             if (aheadDone.size > 400) aheadDone.clear()
-            for (p in refs) {
+            val total = refs.size.coerceAtLeast(1)
+            var cachedCount = 0
+            progress("Read-ahead OCR: preparing ${refs.size} upcoming panels", 0)
+            for ((index, p) in refs.withIndex()) {
                 if (!alive()) return
                 val key = WebModeLogic.normalizeUrl(p.src)
                 // A panel is "done" only after a usable OCR result is cached. Previously the URL
                 // was marked done before downloading/OCR, so a transient fetch/decode miss could
                 // permanently prevent that panel from being retried when it approached the screen.
-                if (aheadDone.contains(key) || synchronized(aheadCache) { aheadCache.containsKey(key) }) continue
+                if (aheadDone.contains(key) || synchronized(aheadCache) { aheadCache.containsKey(key) }) {
+                    cachedCount++
+                    progress("Read-ahead OCR: cache ready $cachedCount/$total", cachedCount * 99 / total)
+                    continue
+                }
                 try {
+                    progress("Read-ahead OCR: loading image ${index + 1}/$total", index * 99 / total)
                     val bytes = fetchWithRetry(p, pageUrl) ?: continue
                     // Full-quality OCR (not the fast one-pass reading): this runs in the background.
+                    progress("Read-ahead OCR: reading text ${index + 1}/$total", index * 99 / total)
                     val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
                     synchronized(aheadCache) { aheadCache[key] = po }
                     aheadDone.add(key)
+                    cachedCount++
+                    progress("Read-ahead OCR: cached panel $cachedCount/$total", cachedCount * 99 / total)
                 } catch (_: OcrUnavailableException) {
+                    progress("Read-ahead OCR: OCR engine unavailable", index * 99 / total)
                     return
                 } catch (_: Exception) {
+                    progress("Read-ahead OCR: panel ${index + 1} failed; continuing", index * 99 / total)
                 } catch (_: OutOfMemoryError) {
+                    progress("Read-ahead OCR: memory limit hit; stopping safely", index * 99 / total)
+                    return
                 }
             }
+            if (alive()) progress("Read-ahead OCR complete: $cachedCount/$total panels cached", 99)
         }
 
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
