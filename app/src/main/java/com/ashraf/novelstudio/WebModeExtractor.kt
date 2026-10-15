@@ -65,6 +65,14 @@ internal sealed class WebModeOutcome {
 /** A normalized crop rectangle (fractions of the original image, not screen pixels). */
 internal data class WebModeOcrRegion(val x: Float, val y: Float, val w: Float, val h: Float)
 
+/** Full-quality OCR result for one upcoming image panel, including stable bubble geometry. */
+internal data class WebModeAheadPanel(
+    val src: String,
+    val top: Int,
+    val text: String,
+    val bubbles: List<WmBubble>
+)
+
 internal class WebModeRequest(
     val webView: WebView,
     /** When true, OCR only images intersecting the current viewport and never scrolls the reader. */
@@ -82,6 +90,8 @@ internal class WebModeRequest(
      * cache instead of waiting for download + OCR. [onDone] is not used for these jobs.
      */
     val ahead: Int = 0,
+    /** Called on the main thread with successfully OCRed upcoming panels, for translation prefetch. */
+    val onAheadPanelsReady: ((List<WebModeAheadPanel>) -> Unit)? = null,
     val onAheadDone: (() -> Unit)? = null,
     /** When set, ignore OCR caches and re-read only this source image. */
     val forceOcrSrc: String? = null,
