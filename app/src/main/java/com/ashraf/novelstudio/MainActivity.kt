@@ -120,6 +120,36 @@ class MainActivity : Activity() {
     private val deepSeekInFlightTextHashes = LinkedHashSet<String>()
     private val deepSeekTextHashByChapter = mutableMapOf<String, Set<String>>()
 
+    // Scanning (Web Mode) chapters whose chatbot job failed: they are sent again automatically (twice at most).
+    // The OCR text is still in memory, so nothing is scanned again.
+    private val failedChapters = LinkedHashMap<String, Chapter>()
+    private val failedRetryTries = HashMap<String, Int>()
+    private val failedRetryRunnable = Runnable { retryFailedChapters() }
+
+    private fun scheduleFailedRetry(list: List<Chapter>, delayMs: Long = 15_000L) {
+        if (list.isEmpty()) return
+        for (c in list) failedChapters[keyOf(c)] = c
+        handler.removeCallbacks(failedRetryRunnable)
+        handler.postDelayed(failedRetryRunnable, delayMs)
+    }
+
+    private fun retryFailedChapters() {
+        if (failedChapters.isEmpty() || !webModeOn()) { failedChapters.clear(); return }
+        if (running != null) { handler.postDelayed(failedRetryRunnable, 5_000L); return }
+        val todo = ArrayList(failedChapters.entries)
+        failedChapters.clear()
+        var sent = 0
+        for ((k, c) in todo) {
+            val tries = failedRetryTries[k] ?: 0
+            if (tries >= 2) continue                      // gave up: the text is on the clipboard
+            if (Store.find(this, c) != null) continue     // already saved meanwhile
+            failedRetryTries[k] = tries + 1
+            enqueue(c)
+            sent++
+        }
+        if (sent > 0) toast("🔁 Translation failed earlier — sending to the chatbot again")
+    }
+
     // Long-press "Re-translate": bubbles the reader asked to translate again, matched by image + position.
     private class RetrTarget(val src: String, val cx: Float, val cy: Float, val w: Float, val h: Float, val at: Long)
     private val retranslateTargets = ArrayList<RetrTarget>()
@@ -3702,6 +3732,11 @@ return t.length>=40?'TXT:'+t:'';
                     // until the user manually extracts it.
                     schedulePrefetch(prefetched)
                 } else {
+                    // The chatbot failed on this chapter earlier: send the saved OCR text again right now.
+                    if (failedChapters.containsKey(key)) {
+                        handler.removeCallbacks(failedRetryRunnable)
+                        retryFailedChapters()
+                    }
                     // The page can be opened while its background translation is still running.
                     // Adopt that chapter now and prefetch the following one while this job finishes.
                     val r = running
@@ -3903,6 +3938,9 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun menuPrefetchDepthLabel(): String = "⚡ Prefetch how many chapters ahead: ${prefetchAhead()}"
+
+    private fun menuRtPromptLabel(): String =
+        (if (Prefs.bool(this, "rtSendPrompt", true)) "✅" else "⬜") + " 📝 Real-time: Send Prompt With Text"
 
     private fun menuPrefetchLabel(): String =
         (if (Prefs.bool(this, "prefetchNextChapter")) "✅" else "⬜") +
@@ -4220,7 +4258,10 @@ If a marker is clearly meaningless OCR noise (random letters or symbols), answer
 Do not invent text. Keep each translation short enough to fit a speech bubble.
 """.trimIndent() + "\n\n" else ""
         // Real-time OCR translation uses its own editable prompt.
-        val full = promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
+        // Real-time menu switch: send the editable prompt (+ glossary) with every batch, or only the
+        // text with the marker/page rules (when the prompt already lives in the chat).
+        val skipPrompt = isDeepSeekLivePanel(ch) && !Prefs.bool(this, "rtSendPrompt", true)
+        val full = (if (skipPrompt) "" else promptWithGlossary(Prefs.activeTranslationPrompt(this), marked)) +
             markerInstruction + "\n\n" + imageRules + marked
         chatWv.evaluateJavascript(Js.send(full, true)) { raw ->
             if (tok != runToken) return@evaluateJavascript
@@ -4401,6 +4442,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             }
             deepSeekLastOcrAtMs = System.currentTimeMillis()
             val savedKey = keyOf(ch)
+            failedRetryTries.remove(savedKey)
+            failedChapters.remove(savedKey)
             if (prefetchGeneratedKeys.contains(savedKey) && savedTranslation != null) {
                 prefetchedTranslationIds[savedKey] = savedTranslation.id
             }
@@ -4429,10 +4472,19 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (tok != runToken) return
         releaseDeepSeekHashBatch(ch)
         deepSeekLastOcrAtMs = System.currentTimeMillis()
+        // Scanning mode: keep the failed chapter (and prefetched chapters still waiting) for a retry.
+        val retryList = ArrayList<Chapter>()
+        if (webModeOn() && !isDeepSeekLivePanel(ch)) {
+            retryList.add(ch)
+            for (q in queue) if (prefetchGeneratedKeys.contains(keyOf(q)) && !isDeepSeekLivePanel(q)) retryList.add(q)
+        }
         queue.clear()
         running = null
         copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
-        toast("❌ $msg\n📋 Chapter copied. Paste it into the chatbot and tap Copy → 💾.")
+        val willRetry = retryList.isNotEmpty() && (failedRetryTries[keyOf(ch)] ?: 0) < 2
+        toast("❌ $msg\n📋 Chapter copied. Paste it into the chatbot and tap Copy → 💾." +
+            if (willRetry) "\n🔁 Retrying automatically in 15 s…" else "")
+        if (retryList.isNotEmpty()) scheduleFailedRetry(retryList)
         updateProgressUi()
     }
 
@@ -4975,7 +5027,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Real-time Prompt", menuForceLabel(),
-            "🤖 AI Scan Page Links & Update AdBlock"
+            "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -4983,11 +5035,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36),
             "READER" to listOf(20, 23, 9),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35)
         )
@@ -5117,6 +5169,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         refresh(31, menuWebModeLabel())
                         toast("📖 AI Real-time Translation OFF — previous settings restored")
                     }
+                }
+                36 -> {
+                    val on = !Prefs.bool(this, "rtSendPrompt", true)
+                    Prefs.putBool(this, "rtSendPrompt", on)
+                    refresh(i, menuRtPromptLabel())
+                    toast(if (on) "📝 Real-time: prompt is sent with every batch"
+                          else "📝 Real-time: only the text is sent (no prompt)")
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
