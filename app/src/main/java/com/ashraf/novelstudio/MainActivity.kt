@@ -437,6 +437,7 @@ class MainActivity : Activity() {
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
+    private val rtAheadTranslationSuppressedIds = mutableSetOf<String>()
     private val rtAheadTranslationTasksByJobKey = mutableMapOf<String, RtAheadTranslationTask>()
     private val rtAheadTranslationCache = object : LinkedHashMap<String, String>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 1800
@@ -475,6 +476,166 @@ class MainActivity : Activity() {
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 180L)
             }
         ))
+    }
+
+    private fun rtAheadTaskId(pageUrl: String, layout: WebModeLayout): String {
+        val material = WebModeLogic.normalizeUrl(pageUrl) + "|" +
+            layout.bubbles.map { WebModeLayout.fingerprint(it) }.sorted().joinToString("|")
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }.take(24)
+    }
+
+    private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>) {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
+        val page = cleanUrl(pageUrl)
+        if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty())) return
+        for (panel in panels.sortedBy { it.top }) {
+            val bubbles = panel.bubbles.filter { it.sourceText.isNotBlank() }
+            if (bubbles.isEmpty()) continue
+            val layout = WebModeLayout(0, bubbles)
+            val id = rtAheadTaskId(page, layout)
+            if (id in rtAheadTranslationQueuedIds || id in rtAheadTranslationSuppressedIds ||
+                rtAheadTranslationTasksByJobKey.values.any { it.id == id }) continue
+            val alreadyDone = bubbles.all { bubble ->
+                val fp = WebModeLayout.fingerprint(bubble)
+                rtAheadTranslationCache.containsKey(fp) || synchronized(deepSeekInFlightTextHashes) {
+                    fp in deepSeekTranslatedTextHashes
+                }
+            }
+            if (alreadyDone) continue
+            rtAheadTranslationQueuedIds.add(id)
+            rtAheadTranslationQueue.add(RtAheadTranslationTask(id, page, layout, panel.top))
+        }
+        // Bound memory if a reader exposes many more candidates than the requested read-ahead count.
+        while (rtAheadTranslationQueue.size > 30) {
+            val dropped = rtAheadTranslationQueue.removeAt(rtAheadTranslationQueue.lastIndex)
+            rtAheadTranslationQueuedIds.remove(dropped.id)
+            rtAheadTranslationSuppressedIds.add(dropped.id)
+        }
+        pumpRealtimeAheadTranslation()
+    }
+
+    private fun queueRtAheadTask(task: RtAheadTranslationTask, front: Boolean = false) {
+        if (task.id in rtAheadTranslationQueuedIds || task.id in rtAheadTranslationSuppressedIds ||
+            rtAheadTranslationTasksByJobKey.values.any { it.id == task.id }) return
+        rtAheadTranslationQueuedIds.add(task.id)
+        if (front) rtAheadTranslationQueue.add(0, task) else rtAheadTranslationQueue.add(task)
+    }
+
+    private fun pumpRealtimeAheadTranslation() {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
+        if (running != null || queue.isNotEmpty() || webModeHandle != null || webModePrefetchBusy) return
+        val currentUrl = cleanUrl(novelWv.url.orEmpty())
+        if (currentUrl.isBlank()) return
+        while (rtAheadTranslationQueue.isNotEmpty()) {
+            val queued = rtAheadTranslationQueue.removeAt(0)
+            rtAheadTranslationQueuedIds.remove(queued.id)
+            if (queued.pageUrl != currentUrl) {
+                rtAheadTranslationSuppressedIds.add(queued.id)
+                continue
+            }
+            val remaining = queued.layout.bubbles.filter { bubble ->
+                val fp = WebModeLayout.fingerprint(bubble)
+                !rtAheadTranslationCache.containsKey(fp) &&
+                    synchronized(deepSeekInFlightTextHashes) {
+                        fp !in deepSeekTranslatedTextHashes && fp !in deepSeekInFlightTextHashes
+                    }
+            }
+            if (remaining.isEmpty()) {
+                rtAheadTranslationSuppressedIds.add(queued.id)
+                continue
+            }
+            val layout = WebModeLayout(0, remaining)
+            val id = rtAheadTaskId(queued.pageUrl, layout)
+            val task = queued.copy(id = id, layout = layout)
+            val base = lastChapter?.takeIf { cleanUrl(it.url) == currentUrl }
+            if (base == null) {
+                queueRtAheadTask(task, front = true)
+                return
+            }
+            val syntheticUrl = Uri.parse(queued.pageUrl).buildUpon()
+                .appendQueryParameter("__ns_rt_ahead", id)
+                .build().toString()
+            val aheadChapter = base.copy(
+                title = base.title.ifBlank { "Upcoming panels" },
+                number = "rtAhead-${id.take(16)}",
+                url = syntheticUrl,
+                text = remaining.joinToString("\n\n") { it.sourceText.trim() },
+                contentSel = ""
+            )
+            val jobKey = keyOf(aheadChapter)
+            rtAheadTranslationTasksByJobKey[jobKey] = task
+            webModeStage = "Pre-translating upcoming panel"
+            webModePct = 1
+            updateProgressUi()
+            // Do not call handleChapter(): ahead work must never replace lastChapter or touch the page.
+            enqueue(aheadChapter)
+            return
+        }
+    }
+
+    /** Interrupt only background ahead-translation work when a new visible panel needs priority. */
+    private fun interruptRealtimeAheadForVisiblePanel(requeue: Boolean = true) {
+        val current = running ?: return
+        val jobKey = keyOf(current)
+        val task = rtAheadTranslationTasksByJobKey.remove(jobKey) ?: return
+        rtAheadTranslationQueuedIds.remove(task.id)
+        runToken++
+        try { chatWv.evaluateJavascript(Js.stop(), null) } catch (_: Exception) {}
+        running = null
+        if (requeue && cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+            queueRtAheadTask(task)
+        } else {
+            rtAheadTranslationSuppressedIds.add(task.id)
+        }
+        clearWebModeProgress()
+        updateProgressUi()
+    }
+
+    private fun finishRealtimeAheadTranslation(jobKey: String, task: RtAheadTranslationTask, raw: String) {
+        val aligned = WebModeLayout.align(raw, task.layout)
+        if (aligned != null) {
+            for (i in task.layout.bubbles.indices) {
+                val value = aligned.getOrNull(i)?.trim().orEmpty()
+                if (value.isNotBlank()) {
+                    rtAheadTranslationCache[WebModeLayout.fingerprint(task.layout.bubbles[i])] = value
+                }
+            }
+        }
+        rtAheadTranslationTasksByJobKey.remove(jobKey)
+        rtAheadTranslationQueuedIds.remove(task.id)
+        rtAheadTranslationSuppressedIds.add(task.id)
+        val missing = task.layout.bubbles.filter { bubble ->
+            !rtAheadTranslationCache.containsKey(WebModeLayout.fingerprint(bubble)) &&
+                !synchronized(deepSeekInFlightTextHashes) {
+                    WebModeLayout.fingerprint(bubble) in deepSeekTranslatedTextHashes
+                }
+        }
+        if (missing.isNotEmpty() && task.attempts < 1 &&
+            cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+            val retryLayout = WebModeLayout(0, missing)
+            queueRtAheadTask(task.copy(
+                id = rtAheadTaskId(task.pageUrl, retryLayout),
+                layout = retryLayout,
+                attempts = task.attempts + 1
+            ))
+        }
+        deepSeekLastOcrAtMs = System.currentTimeMillis()
+        progress = 100
+        running = null
+        updateProgressUi()
+        startNext()
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
+    }
+
+    private fun clearRealtimeAheadStateForNavigation() {
+        interruptRealtimeAheadForVisiblePanel(requeue = false)
+        rtAheadTranslationQueue.clear()
+        rtAheadTranslationQueuedIds.clear()
+        rtAheadTranslationTasksByJobKey.clear()
+        rtAheadTranslationCache.clear()
+        rtAheadTranslationSuppressedIds.clear()
     }
 
     private var deepSeekPendingSig = ""
