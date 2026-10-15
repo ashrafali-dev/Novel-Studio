@@ -71,7 +71,15 @@ internal class WebModeRequest(
     /** Force extract: do not download images; OCR what the WebView actually shows while it is scrolled. */
     val force: Boolean = false,
     val onProgress: (stage: String, pct: Int) -> Unit,
-    val onDone: (WebModeOutcome) -> Unit
+    val onDone: (WebModeOutcome) -> Unit,
+    /**
+     * > 0: "read ahead" job for real-time mode. It looks at the next [ahead] images BELOW the screen,
+     * downloads and OCRs them quietly (full-quality OCR, no scrolling) and keeps the result in a small
+     * cache. When such a panel later reaches the screen, the real-time job takes the text from the
+     * cache instead of waiting for download + OCR. [onDone] is not used for these jobs.
+     */
+    val ahead: Int = 0,
+    val onAheadDone: (() -> Unit)? = null
 )
 
 /**
@@ -86,6 +94,15 @@ internal class WebModeExtractor(
     private val engine: OcrEngine = MlKitOcrEngine()
 ) {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "ns-webmode") }
+    // Read-ahead (real-time mode): its own low-priority thread, so it never queues in front of the job
+    // for the panel the reader is looking at.
+    private val aheadWorker: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ns-webmode-ahead").apply { priority = Thread.MIN_PRIORITY }
+    }
+    private val aheadCache = object : LinkedHashMap<String, PanelOcr>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PanelOcr>?): Boolean = size > 60
+    }
+    private val aheadDone: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val jobIds = AtomicInteger(0)
     private val bridge = PageBridge()
     private val bridged = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
@@ -93,7 +110,7 @@ internal class WebModeExtractor(
     /** Returns a handle; call [Handle.cancel] to stop the job. Must be called on the main thread. */
     fun start(req: WebModeRequest): Handle {
         val job = Job(req, jobIds.incrementAndGet())
-        job.begin()
+        if (req.ahead > 0) job.beginAhead() else job.begin()
         return job
     }
 
@@ -101,6 +118,7 @@ internal class WebModeExtractor(
 
     fun shutdown() {
         worker.shutdownNow()
+        aheadWorker.shutdownNow()
         engine.close()
     }
 
@@ -172,6 +190,56 @@ internal class WebModeExtractor(
                 return
             }
             if (req.visibleOnly) finishDiscovery() else tick(0, -1, 0)
+        }
+
+        // ---- read-ahead (real-time): OCR the next images below the screen, without scrolling anything
+        fun beginAhead() {
+            try {
+                ensureBridge(wv)
+                val js = wrap(LIB + JS_COLLECT_AHEAD.replace("__N__", req.ahead.coerceIn(1, 12).toString()))
+                wv.evaluateJavascript(js) { raw ->
+                    if (!alive()) { aheadFinished(); return@evaluateJavascript }
+                    val o = parseJson(raw)
+                    val arr = o?.optJSONArray("imgs")
+                    if (o == null || arr == null || arr.length() == 0) { aheadFinished(); return@evaluateJavascript }
+                    val pageUrl = o.optString("url", wv.url.orEmpty())
+                    val lang = o.optString("lang")
+                    val refs = ArrayList<PanelRef>()
+                    for (i in 0 until arr.length()) {
+                        val p = arr.optJSONObject(i) ?: continue
+                        val s = p.optString("s")
+                        if (s.isBlank()) continue
+                        if (aheadDone.contains(WebModeLogic.normalizeUrl(s))) continue
+                        refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
+                    }
+                    if (refs.isEmpty()) { aheadFinished(); return@evaluateJavascript }
+                    aheadWorker.execute {
+                        try { runCatching { processAhead(refs, pageUrl, lang) } } finally { aheadFinished() }
+                    }
+                }
+            } catch (_: Throwable) { aheadFinished() }
+        }
+
+        private fun aheadFinished() { onMain { req.onAheadDone?.invoke() } }
+
+        private fun processAhead(refs: List<PanelRef>, pageUrl: String, lang: String) {
+            val script = ScriptState(WebModeLogic.pickScript(lang, pageUrl))
+            if (aheadDone.size > 400) aheadDone.clear()
+            for (p in refs) {
+                if (!alive()) return
+                val key = WebModeLogic.normalizeUrl(p.src)
+                if (!aheadDone.add(key)) continue
+                try {
+                    val bytes = fetchWithRetry(p, pageUrl) ?: continue
+                    // Full-quality OCR (not the fast one-pass reading): this runs in the background.
+                    val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
+                    synchronized(aheadCache) { aheadCache[key] = po }
+                } catch (_: OcrUnavailableException) {
+                    return
+                } catch (_: Exception) {
+                } catch (_: OutOfMemoryError) {
+                }
+            }
         }
 
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
@@ -247,6 +315,18 @@ internal class WebModeExtractor(
             for ((i, p) in panels.withIndex()) {
                 if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
+                if (req.visibleOnly) {
+                    // Real-time: this panel may already have been read ahead (download + full OCR done).
+                    val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
+                    if (hit != null) {
+                        diag.downloaded++; diag.decoded++
+                        val ct = hit.text
+                        if (ct.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += ct.length }
+                        texts[i] = ct
+                        layouts[i] = hit.bubbles
+                        continue
+                    }
+                }
                 progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
                 val bytes = fetchWithRetry(p, meta.url)
                 if (bytes == null) { fetchFailed++; diag.failed++; continue }
@@ -1134,6 +1214,15 @@ var og=document.querySelector('meta[property="og:title"]');
 var title=q('.subj_episode')||q('h1')||(og&&og.content)||document.title||'';
 var novel=q('.detail_header .subj')||q('a.subj')||q('.series-title')||q('.comic-title')||'';
 return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,title:title,novel:novel,next:link('next'),prev:link('prev'),imgs:c.slice(0,600)});
+"""
+
+        // Real-time read-ahead: the next images that are completely below the screen (nothing is scrolled).
+        private const val JS_COLLECT_AHEAD = """
+var sc=scroller(),c=cands(sc);
+var vpH=window.innerHeight||800;
+c=c.filter(function(p){return p.vt>=vpH-2;});
+c.sort(function(a,b){return a.vt-b.vt;});
+return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:c.slice(0,__N__)});
 """
 
         private const val JS_COLLECT = """

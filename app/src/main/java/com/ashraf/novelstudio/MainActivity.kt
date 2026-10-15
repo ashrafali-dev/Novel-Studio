@@ -275,6 +275,31 @@ class MainActivity : Activity() {
         }
     }
 
+    // Real-time read-ahead OCR (next images below the screen are read in the background).
+    private var aheadOcrHandle: WebModeExtractor.Handle? = null
+    private var aheadOcrSeq = 0
+    private var deepSeekAheadAtMs = 0L
+
+    private fun startAheadOcr() {
+        val n = (Prefs.get(this, "rtAheadOcr", "4").toIntOrNull() ?: 4).coerceIn(0, 12)
+        deepSeekAheadAtMs = System.currentTimeMillis()
+        if (n == 0) return
+        val token = navToken
+        val seq = ++aheadOcrSeq
+        aheadOcrHandle = webMode.start(WebModeRequest(
+            webView = novelWv,
+            visibleOnly = true,
+            isValid = { token == navToken && DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() },
+            onProgress = { _, _ -> },
+            onDone = { },
+            ahead = n,
+            onAheadDone = {
+                if (seq == aheadOcrSeq) aheadOcrHandle = null
+                deepSeekAheadAtMs = System.currentTimeMillis()
+            }
+        ))
+    }
+
     private var deepSeekPendingSig = ""
     private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
@@ -352,6 +377,11 @@ return t.length>=40?'TXT:'+t:'';
                     chatWv.onResume()
                     chatWv.resumeTimers()
                     startWebModeExtract(token, useSaved = false)
+                }
+                // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
+                if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
+                    System.currentTimeMillis() - deepSeekAheadAtMs >= 1200L) {
+                    startAheadOcr()
                 }
                 handler.postDelayed(this, 150L)
             }
@@ -2985,6 +3015,8 @@ return t.length>=40?'TXT:'+t:'';
     private var deepSeekLastFailToastAtMs = 0L
 
     private fun startWebModeExtract(token: Int, useSaved: Boolean = false) {
+        // The panel on screen comes first: stop reading ahead (it keeps what it already finished).
+        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
         webModeHandle?.cancel()
         webModePct = 1
         webModeStage = "Discovering chapter panels"
@@ -5852,6 +5884,7 @@ ${rows.take(220).joinToString("\n")}
 
     override fun onDestroy() {
         ScanKeepAlive.stop(this)
+        aheadOcrHandle?.cancel()
         webModeHandle?.cancel()
         webModePrefetchHandle?.cancel()
         if (webModeLazy.isInitialized()) webModeLazy.value.shutdown()
