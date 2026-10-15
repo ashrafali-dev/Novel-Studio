@@ -459,7 +459,7 @@ class MainActivity : Activity() {
     private var rtAheadNextSendAtMs = 0L
 
     private fun startAheadOcr() {
-        val n = (Prefs.get(this, "rtAheadOcr", "9").toIntOrNull() ?: 9).coerceIn(0, 12)
+        val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
         deepSeekAheadAtMs = System.currentTimeMillis()
         if (n == 0) return
         val token = navToken
