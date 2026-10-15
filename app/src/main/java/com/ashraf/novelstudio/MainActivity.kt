@@ -886,7 +886,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         val missing = task.layout.bubbles.filter { bubble ->
             !rtAheadTranslationCache.containsKey(rtAheadBubbleCacheKey(bubble)) &&
                 !synchronized(deepSeekInFlightTextHashes) {
-                    WebModeLayout.fingerprint(bubble) !in deepSeekTranslatedTextHashes
+                    val fp = WebModeLayout.fingerprint(bubble)
+                    fp !in deepSeekTranslatedTextHashes && fp !in deepSeekInFlightTextHashes
                 }
         }
         if (missing.isNotEmpty() && task.attempts < 1 &&
