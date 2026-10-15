@@ -544,6 +544,19 @@ class MainActivity : Activity() {
                     }
             }
             if (remaining.isEmpty()) {
+                // A foreground reply may have finished while its overlay placement callback is still
+                // pending. Keep the task alive until those hashes are either marked translated or released.
+                val waitingForPlacement = queued.layout.bubbles.any { bubble ->
+                    val fp = WebModeLayout.fingerprint(bubble)
+                    val inFlight = synchronized(deepSeekInFlightTextHashes) { fp in deepSeekInFlightTextHashes }
+                    inFlight && !rtAheadTranslationCache.containsKey(fp) &&
+                        !synchronized(deepSeekInFlightTextHashes) { fp in deepSeekTranslatedTextHashes }
+                }
+                if (waitingForPlacement) {
+                    queueRtAheadTask(queued, front = true)
+                    handler.postDelayed({ pumpRealtimeAheadTranslation() }, 500L)
+                    return
+                }
                 rtAheadTranslationSuppressedIds.add(queued.id)
                 continue
             }
