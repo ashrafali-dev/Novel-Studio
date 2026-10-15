@@ -394,11 +394,52 @@ class ExtractButton(ctx: Context) : View(ctx) {
     private val bolt = IconDrawable(Ic.BOLT, Color.WHITE)
     private val oval = RectF()
     private var rot = 0f
+
+    // The little badge is also the live activity light. MainActivity feeds it real task state.
+    // A solid green/grey dot means idle; active OCR/translation stages pulse in their own colours.
+    private var activityIndicatorColor: Int? = null
+    private var activityIndicatorBlinking = false
+    private var activityIndicatorAlpha = 1f
+    private var activityIndicatorLabel = ""
+    private val activityIndicatorPulse = ValueAnimator.ofFloat(1f, 0.18f).apply {
+        duration = 520L
+        repeatMode = ValueAnimator.REVERSE
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = DecelerateInterpolator()
+        addUpdateListener {
+            activityIndicatorAlpha = it.animatedValue as Float
+            invalidate()
+        }
+    }
+
     private val spin = ValueAnimator.ofFloat(0f, 360f).apply {
         duration = 1000
         repeatCount = ValueAnimator.INFINITE
         interpolator = LinearInterpolator()
         addUpdateListener { rot = it.animatedValue as Float; invalidate() }
+    }
+
+    /** Set the live status of the small badge without changing the bolt or progress ring. */
+    fun setActivityIndicator(color: Int, blinking: Boolean, label: String) {
+        val changed = activityIndicatorColor != color ||
+            activityIndicatorBlinking != blinking ||
+            activityIndicatorLabel != label
+        activityIndicatorColor = color
+        activityIndicatorBlinking = blinking
+        activityIndicatorLabel = label
+        if (changed) {
+            contentDescription = "Extract chapter. $label"
+            invalidate()
+        }
+        if (blinking) {
+            if (!activityIndicatorPulse.isStarted) activityIndicatorPulse.start()
+        } else {
+            if (activityIndicatorPulse.isStarted) activityIndicatorPulse.cancel()
+            if (activityIndicatorAlpha != 1f) {
+                activityIndicatorAlpha = 1f
+                invalidate()
+            }
+        }
     }
 
     init {
@@ -417,7 +458,17 @@ class ExtractButton(ctx: Context) : View(ctx) {
         animate().scaleX(if (pressed) 0.92f else 1f).scaleY(if (pressed) 0.92f else 1f).setDuration(110).start()
     }
 
-    override fun onDetachedFromWindow() { spin.cancel(); super.onDetachedFromWindow() }
+    override fun onDetachedFromWindow() {
+        spin.cancel()
+        activityIndicatorPulse.cancel()
+        activityIndicatorAlpha = 1f
+        super.onDetachedFromWindow()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (activityIndicatorBlinking && !activityIndicatorPulse.isStarted) activityIndicatorPulse.start()
+    }
 
     override fun onDraw(c: Canvas) {
         val busy = ringProgress >= 0
@@ -449,10 +500,13 @@ class ExtractButton(ctx: Context) : View(ctx) {
         // auto-translate indicator
         val bx = cx + br * 0.80f
         val by = cy - br * 0.80f
+        badge.alpha = 255
         badge.color = UiTheme.bg
         c.drawCircle(bx, by, 6.5f * dens, badge)
-        badge.color = if (autoOn) UiTheme.ok else UiTheme.faint
+        badge.color = activityIndicatorColor ?: if (autoOn) UiTheme.ok else UiTheme.faint
+        badge.alpha = (255f * if (activityIndicatorBlinking) activityIndicatorAlpha else 1f).toInt().coerceIn(0, 255)
         c.drawCircle(bx, by, 4.5f * dens, badge)
+        badge.alpha = 255
     }
 }
 
