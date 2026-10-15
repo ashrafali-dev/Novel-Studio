@@ -3373,10 +3373,17 @@ return t.length>=40?'TXT:'+t:'';
     private var deepSeekLastFailToastAtMs = 0L
 
     private fun startWebModeExtract(token: Int, useSaved: Boolean = false) {
-        // The panel on screen comes first: stop reading ahead (it keeps what it already finished).
-        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
-        aheadOcrStage = ""
-        aheadOcrPct = -1
+        // In real-time mode the ahead worker has its own low-priority executor and does not scroll
+        // the page. Let it finish caching upcoming panels while the visible panel is scanned and
+        // translated; cancelling it on every viewport change made the 9-panel read-ahead starve.
+        // For a manual/full-chapter extraction, stop read-ahead so foreground extraction gets priority.
+        if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
+            aheadOcrHandle?.cancel()
+            aheadOcrHandle = null
+            aheadOcrSeq++
+            aheadOcrStage = ""
+            aheadOcrPct = -1
+        }
         webModeHandle?.cancel()
         webModePct = 1
         webModeStage = "Discovering chapter panels"
