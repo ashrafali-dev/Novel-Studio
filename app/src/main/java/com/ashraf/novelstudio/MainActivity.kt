@@ -6878,6 +6878,12 @@ ${rows.take(220).joinToString("\n")}
         webModeHandle?.cancel()
         webModePrefetchHandle?.cancel()
         if (webModeLazy.isInitialized()) webModeLazy.value.shutdown()
+        rtAheadWorkerSeq++
+        rtAheadWorkerBusy = false
+        rtAheadWorkerTask = null
+        rtAheadWorkerJobKey = ""
+        try { aheadChatWv?.stopLoading(); aheadChatWv?.destroy() } catch (_: Exception) {}
+        aheadChatWv = null
         runToken++
         navToken++
         handler.removeCallbacksAndMessages(null)
