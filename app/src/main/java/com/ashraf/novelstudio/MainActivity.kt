@@ -421,12 +421,26 @@ class MainActivity : Activity() {
         }
     }
 
-    // Real-time read-ahead OCR (next images below the screen are read in the background).
+    // Real-time read-ahead: OCR first, then opportunistically translate panels before they enter view.
     private var aheadOcrHandle: WebModeExtractor.Handle? = null
     private var aheadOcrSeq = 0
     private var aheadOcrStage = ""
     private var aheadOcrPct = -1
     private var deepSeekAheadAtMs = 0L
+
+    private data class RtAheadTranslationTask(
+        val id: String,
+        val pageUrl: String,
+        val layout: WebModeLayout,
+        val attempts: Int = 0
+    )
+
+    private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
+    private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
+    private val rtAheadTranslationTasksByJobKey = mutableMapOf<String, RtAheadTranslationTask>()
+    private val rtAheadTranslationCache = object : LinkedHashMap<String, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 1800
+    }
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "9").toIntOrNull() ?: 9).coerceIn(0, 12)
