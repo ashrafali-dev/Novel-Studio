@@ -252,7 +252,7 @@ class MainActivity : Activity() {
         aheadOcrStage = ""
         aheadOcrPct = -1
         webModePct = 1
-        webModeStage = "Force OCR: selected area"
+        webModeStage = "Force OCR [b3]: selected area"
         updateProgressUi()
         webModeHandle = webMode.start(WebModeRequest(
             webView = novelWv,

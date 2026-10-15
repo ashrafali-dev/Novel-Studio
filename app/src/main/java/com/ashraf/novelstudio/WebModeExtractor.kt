@@ -155,9 +155,25 @@ internal class WebModeExtractor(
         private val cancelled = AtomicBoolean(false)
         private val startedAt = SystemClock.elapsedRealtime()
         private val wv = req.webView
-        val diag = WebModeDiagnostics(id, hostOf(wv.url.orEmpty()))
+        // Read on the main thread (the job is created there); the worker thread must never ask the WebView.
+        private val startUrl = wv.url.orEmpty()
+        val diag = WebModeDiagnostics(id, hostOf(startUrl))
 
-        private fun alive() = !cancelled.get() && req.isValid()
+        /**
+         * req.isValid() may read WebView state (e.g. the current URL), and a WebView may only be touched on
+         * the main thread. The worker thread calls alive() constantly, so it reads a cached answer that is
+         * refreshed on the main thread; on the main thread the real check runs directly.
+         */
+        @Volatile private var validCache = true
+        private fun alive(): Boolean {
+            if (cancelled.get()) return false
+            if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                validCache = req.isValid()
+                return validCache
+            }
+            handler.post { if (!cancelled.get()) validCache = req.isValid() }
+            return validCache
+        }
         private fun elapsed() = SystemClock.elapsedRealtime() - startedAt
         private fun onMain(block: () -> Unit) { handler.post(block) }
 
@@ -551,7 +567,7 @@ internal class WebModeExtractor(
             val mo = evalWait(wrap(LIB + JS_COLLECT)) { parseJson(it) }
             if (mo == null) { fail(WebModeError.NO_IMAGES); return }
             val meta = PageMeta(
-                url = mo.optString("url", wv.url.orEmpty()),
+                url = mo.optString("url", startUrl),
                 lang = mo.optString("lang"),
                 title = mo.optString("title").trim().take(200),
                 novel = mo.optString("novel").trim().take(120),
