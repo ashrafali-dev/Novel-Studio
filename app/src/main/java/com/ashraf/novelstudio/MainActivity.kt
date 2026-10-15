@@ -136,14 +136,55 @@ class MainActivity : Activity() {
             toast("🔁 Re-translate works in Real-time mode")
             return
         }
+        val url = novelWv.url.orEmpty()
+        val srcN = WebModeLogic.normalizeUrl(src)
+
+        // Fast path: the original text and position of this bubble are already saved, so send them to the
+        // chatbot right away. No new OCR scan is needed (and none can fail to find the bubble again).
+        val layout = WebModeLayoutStore.get(this, url)
+        val stored = layout?.bubbles
+            ?.filter { WebModeLogic.normalizeUrl(it.src) == srcN && it.sourceText.isNotBlank() }
+            ?.minByOrNull { Math.abs(it.cx - cx) + Math.abs(it.cy - cy) + Math.abs(it.w - w) + Math.abs(it.h - h) }
+        val base = lastChapter
+        if (layout != null && stored != null &&
+            Math.abs(stored.cx - cx) + Math.abs(stored.cy - cy) < 0.04f &&
+            base != null && cleanUrl(base.url) == cleanUrl(url)) {
+            toast("🔁 Sending this bubble to the chatbot…")
+            sendStoredBubble(url, layout, stored, 0)
+            return
+        }
+
+        // Fallback: remember the bubble and let the next real-time scan pick it up again.
         synchronized(retranslateTargets) {
             val now = System.currentTimeMillis()
             retranslateTargets.removeAll { now - it.at > 90_000L }
-            retranslateTargets.add(RetrTarget(WebModeLogic.normalizeUrl(src), cx, cy, w, h, now))
+            retranslateTargets.add(RetrTarget(srcN, cx, cy, w, h, now))
         }
-        // The visible-panel poll rescans as soon as it is idle; clearing this makes that happen now.
         deepSeekLastOcrAtMs = 0L
-        toast("⏳ Re-translating this bubble…")
+        toast("⏳ Re-translating this bubble… (rescanning)")
+    }
+
+    private fun sendStoredBubble(url: String, layout: WebModeLayout, bubble: WmBubble, attempt: Int) {
+        if (cleanUrl(novelWv.url.orEmpty()) != cleanUrl(url)) return          // the reader left this page
+        val idle = running == null && queue.isEmpty() && webModeHandle == null
+        if (!idle) {
+            // A batch is still with the chatbot (or a scan is running): wait for it, up to ~1 minute.
+            if (attempt < 150) handler.postDelayed({ sendStoredBubble(url, layout, bubble, attempt + 1) }, 400L)
+            else toast("⚠️ Chatbot is busy. Long-press the bubble and try again")
+            return
+        }
+        val base = lastChapter
+        if (base == null) { toast("⚠️ Nothing to send yet. Scroll a little and try again"); return }
+        val hash = WebModeLayout.fingerprint(bubble)
+        val accepted = synchronized(deepSeekInFlightTextHashes) {
+            if (hash in deepSeekInFlightTextHashes) false
+            else { deepSeekInFlightTextHashes.add(hash); true }
+        }
+        if (!accepted) { toast("⏳ This bubble is already being translated"); return }
+        val liveChapter = base.copy(text = bubble.sourceText.trim(), contentSel = "")
+        WebModeLayoutStore.setScan(liveChapter.url, WebModeLayout(layout.titleOffset, listOf(bubble)))
+        deepSeekTextHashByChapter[keyOf(liveChapter)] = setOf(hash)
+        handleChapter(liveChapter, useSavedTranslation = false)
     }
 
     /** The pending re-translate request that points at this scanned bubble, if any. */
