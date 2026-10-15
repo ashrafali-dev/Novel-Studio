@@ -6935,6 +6935,28 @@ ${rows.take(220).joinToString("\n")}
         super.onPause()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Explicitly resume WebView timers after returning from another app / a long background
+        // pause. Some reader sites stop delivering animation, lazy-load and observer callbacks
+        // until the WebView is resumed.
+        if (::novelWv.isInitialized) {
+            try { novelWv.onResume(); novelWv.resumeTimers() } catch (_: Exception) {}
+        }
+        if (::chatWv.isInitialized) {
+            try { chatWv.onResume(); chatWv.resumeTimers() } catch (_: Exception) {}
+        }
+        // Always re-arm the real-time probe after Activity resume. A JS callback may have been
+        // lost while the page was backgrounded; do not require force-closing the app to recover.
+        if (::novelWv.isInitialized &&
+            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
+            deepSeekPollEvalSeq++
+            handler.removeCallbacks(deepSeekVisiblePoll)
+            deepSeekPollBusy = false
+            scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
+        }
+    }
+
     override fun onDestroy() {
         ScanKeepAlive.stop(this)
         aheadOcrHandle?.cancel()
