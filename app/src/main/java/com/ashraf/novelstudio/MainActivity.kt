@@ -4013,7 +4013,7 @@ return t.length>=40?'TXT:'+t:'';
             },
             onDone = { out ->
                 // A newer tap or a navigation owns the progress UI now; never touch it from a stale job.
-                if (token == navToken) {
+                if (token == navToken && jobSeq == webModeJobSerial) {
                     webModeHandle = null
                     webModeLastProgressAtMs = 0L
                     clearWebModeProgress()
