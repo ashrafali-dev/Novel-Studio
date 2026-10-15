@@ -160,6 +160,50 @@ class MainActivity : Activity() {
             smaller > 0f && overlap / smaller >= 0.5f
         }
     }
+    // Overlay guard: the translation is saved, so if the page lost the drawn bubbles, draw them again.
+    private var overlayFixAtMs = 0L
+    private var overlayFixCount = 0
+    private var overlayFixUrl = ""
+    private val overlayGuard = object : Runnable {
+        override fun run() {
+            try { checkOverlay() } catch (_: Exception) { }
+            if (deepSeekPollBusy) handler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun checkOverlay() {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !shownTranslated) return
+        val url = novelWv.url.orEmpty()
+        if (!url.startsWith("http", ignoreCase = true)) return
+        val layout = WebModeLayoutStore.get(this, url) ?: return
+        val expected = layout.bubbles.count { WmSfx.fix(it.translatedText.trim()).isNotEmpty() }
+        if (expected == 0) return
+        novelWv.evaluateJavascript(
+            "(function(){var w=document.getElementById('__ns_wm_overlay');" +
+            "return (window.__nsShown?1:0)+'|'+(w&&document.contains(w)?1:0)+'|'+(w?w.querySelectorAll('.__ns_b').length:0);})()"
+        ) { raw ->
+            val p = decode(raw).trim().split("|")
+            if (p.size < 3) return@evaluateJavascript
+            val shownJs = p[0] == "1"
+            val inDom = p[1] == "1"
+            val n = p[2].toIntOrNull() ?: 0
+            if (overlayFixUrl != url) { overlayFixUrl = url; overlayFixCount = 0 }
+            val healthy = inDom && (!shownJs || n >= expected)
+            if (healthy) { overlayFixCount = 0; return@evaluateJavascript }
+            val now = System.currentTimeMillis()
+            // Re-draw at most every 2.5 s and give up after 6 tries so a hostile page cannot cause a loop.
+            if (now - overlayFixAtMs < 2500L || overlayFixCount >= 6) return@evaluateJavascript
+            overlayFixAtMs = now
+            overlayFixCount++
+            val script = WebModeWriter.bubbleScript(
+                layout,
+                layout.bubbles.map { it.translatedText.takeIf { v -> v.isNotBlank() } },
+                Prefs.fontFile(this), pageKey(url)
+            )
+            novelWv.evaluateJavascript(script, null)
+        }
+    }
+
     private var deepSeekPendingSig = ""
     private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
@@ -3051,6 +3095,8 @@ return t.length>=40?'TXT:'+t:'';
         deepSeekNoImageTriedUrl = ""
         handler.removeCallbacks(deepSeekVisiblePoll)
         handler.postDelayed(deepSeekVisiblePoll, 250L)
+        handler.removeCallbacks(overlayGuard)
+        handler.postDelayed(overlayGuard, 1500L)
     }
 
     private fun extractCopy() {
@@ -4997,6 +5043,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         toast("🤖 AI real-time mode ON — current chatbot will translate chapter panels")
                     } else {
                         handler.removeCallbacks(deepSeekVisiblePoll)
+                        handler.removeCallbacks(overlayGuard)
                         deepSeekPollBusy = false
                         deepSeekVisibleSignature = ""
                         deepSeekLastOcrAtMs = 0L

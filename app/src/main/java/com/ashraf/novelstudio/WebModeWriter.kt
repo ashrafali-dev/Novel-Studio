@@ -67,7 +67,7 @@ internal object WebModeWriter {
       b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:hidden;'
         +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
         +'background:'+it.bg+';color:'+it.fg+';font-family:'+fam+';font-weight:600;'
-        +(it.sf?'border-radius:12px;box-shadow:0 0 7px 5px '+it.bg+';':'border-radius:6px;');
+        +(it.sf?'border-radius:12px;box-shadow:0 0 7px 5px '+it.bg+';':'border-radius:4px;box-shadow:0 0 0 3px '+it.bg+';');
       var t=document.createElement('div'); t.textContent=it.t;
       // Preserve Bengali grapheme clusters/ conjuncts and use a shaping-friendly text layout.
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
@@ -92,6 +92,7 @@ internal object WebModeWriter {
     var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
     var cache={},miss={};
     function norm(u){return (u||'').split('#')[0];}
+    function base(u){var x=norm(u),q=x.indexOf('?');return q>0?x.slice(0,q):x;}
     function srcsOf(im){
       var o=[],c=im.currentSrc||im.src; if(c)o.push(norm(c));
       for(var a=0;a<LAZY.length;a++){var v=im.getAttribute(LAZY[a]);
@@ -105,6 +106,9 @@ internal object WebModeWriter {
       var imgs=document.images;
       for(var i=0;i<imgs.length;i++){var l=srcsOf(imgs[i]);
         for(var k=0;k<l.length;k++){if(l[k]===s){cache[s]=imgs[i];return imgs[i];}}}
+      var bs0=base(s);
+      for(var i2=0;i2<imgs.length;i2++){var l2=srcsOf(imgs[i2]);
+        for(var k2=0;k2<l2.length;k2++){if(base(l2[k2])===bs0){cache[s]=imgs[i2];return imgs[i2];}}}
       miss[s]=now; return null;}
     // Largest font (up to maxPx) at which the text still fits inside its box.
     function fit(b,maxPx){
@@ -124,7 +128,13 @@ internal object WebModeWriter {
     }
     var MARGIN=1400;
     function layout(){
-      if(!document.contains(w)){stop();return;}
+      if(!document.contains(w)){
+        // Another overlay replaced this one -> stop. Otherwise the page (a re-render, a lazy-load swap)
+        // threw our overlay away: put it back instead of silently giving up.
+        if(window.__nsEl!==w){stop();return;}
+        if(window.__nsShown){try{(document.body||document.documentElement).appendChild(w);}catch(e){}}
+        if(!document.contains(w))return;
+      }
       var bs=w.querySelectorAll('.__ns_b'),vh=window.innerHeight;
       var o=ABS?w.getBoundingClientRect():null;
       for(var i=0;i<bs.length;i++){
