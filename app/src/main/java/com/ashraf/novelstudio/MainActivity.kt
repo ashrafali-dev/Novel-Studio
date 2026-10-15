@@ -155,11 +155,13 @@ class MainActivity : Activity() {
     // Single-bubble/area jobs temporarily pass partial source text through the existing chatbot pipeline.
     // Keep the chapter that was open before that temporary job, then restore it after page placement.
     private var chapterAfterBubbleJob: Chapter? = null
+    private var activeBubbleJobChapter: Chapter? = null
     private var chapterAfterBubbleJobNavToken: Int? = null
 
-    private fun rememberChapterAfterBubbleJob(chapter: Chapter?) {
+    private fun rememberChapterAfterBubbleJob(chapter: Chapter?, active: Chapter? = null) {
         chapterAfterBubbleJob = chapter
-        chapterAfterBubbleJobNavToken = if (chapter != null) navToken else null
+        activeBubbleJobChapter = active
+        chapterAfterBubbleJobNavToken = if (chapter != null && active != null) navToken else null
     }
 
     private fun restoreChapterAfterBubbleJob(expectedUrl: String? = null) {
@@ -169,10 +171,12 @@ class MainActivity : Activity() {
             return
         }
         val expectedToken = chapterAfterBubbleJobNavToken
+        val expectedActive = activeBubbleJobChapter
         rememberChapterAfterBubbleJob(null)
-        // An SPA can replace a chapter without changing the page URL. Never restore stale chapter
-        // state after the user moved away while the chatbot was translating a selected bubble.
-        if (expectedToken == navToken && cleanUrl(novelWv.url.orEmpty()) == cleanUrl(original.url)) {
+        // An SPA can replace a chapter without changing the page URL. Restore only if this exact
+        // temporary bubble chapter is still active, not merely because the URL stayed the same.
+        if (expectedToken == navToken && lastChapter === expectedActive &&
+            cleanUrl(novelWv.url.orEmpty()) == cleanUrl(original.url)) {
             lastChapter = original
             updateProgressUi()
         }
@@ -290,7 +294,7 @@ class MainActivity : Activity() {
                                 deepSeekLastOcrAtMs = System.currentTimeMillis()
                                 deepSeekVisibleSignature = ""
                                 toast("🔎 OCR refreshed · sending ${selected.size} bubble(s) to translate…")
-                                rememberChapterAfterBubbleJob(lastChapter?.takeIf { cleanUrl(it.url) == cleanUrl(chapter.url) })
+                                rememberChapterAfterBubbleJob(lastChapter?.takeIf { cleanUrl(it.url) == cleanUrl(chapter.url) }, chapter)
                                 handleChapter(chapter, useSavedTranslation = false)
                             }
                         }
@@ -355,7 +359,7 @@ class MainActivity : Activity() {
         val liveChapter = base.copy(text = bubble.sourceText.trim(), contentSel = "")
         WebModeLayoutStore.setScan(liveChapter.url, WebModeLayout(layout.titleOffset, listOf(bubble)))
         deepSeekTextHashByChapter[keyOf(liveChapter)] = setOf(hash)
-        rememberChapterAfterBubbleJob(base)
+        rememberChapterAfterBubbleJob(base, liveChapter)
         handleChapter(liveChapter, useSavedTranslation = false)
     }
 
