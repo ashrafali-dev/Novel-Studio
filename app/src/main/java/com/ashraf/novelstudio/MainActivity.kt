@@ -441,6 +441,18 @@ return t.length>=40?'TXT:'+t:'';
         val prefetchStage = webModePrefetchStage.lowercase()
         val aheadStage = aheadOcrStage.lowercase()
 
+        if (aheadOcrHandle != null) {
+            val color = when {
+                aheadStage.contains("loading image") || aheadStage.contains("fetching image") -> 0xFF40C4FF.toInt()
+                aheadStage.contains("cached") -> 0xFF64FFDA.toInt()
+                else -> 0xFF42A5F5.toInt()
+            }
+            statuses.add(ActivityDotStatus(
+                "read-ahead-ocr", color,
+                "Read-ahead OCR for upcoming panels: " + aheadOcrStage.ifBlank { "finding panels" }
+            ))
+        }
+
         if (activePlacementIds.isNotEmpty()) {
             statuses.add(ActivityDotStatus(
                 "placement", 0xFF64FFDA.toInt(), "Placing translated text on the novel page"
@@ -484,18 +496,6 @@ return t.length>=40?'TXT:'+t:'';
             ))
         }
 
-        if (aheadOcrHandle != null) {
-            val color = when {
-                aheadStage.contains("loading image") || aheadStage.contains("fetching image") -> 0xFF40C4FF.toInt()
-                aheadStage.contains("cached") -> 0xFF64FFDA.toInt()
-                else -> 0xFF42A5F5.toInt()
-            }
-            statuses.add(ActivityDotStatus(
-                "read-ahead-ocr", color,
-                "Read-ahead OCR for upcoming panels: " + aheadOcrStage.ifBlank { "finding panels" }
-            ))
-        }
-
         if (prefetchLoading && !webModePrefetchBusy) {
             statuses.add(ActivityDotStatus(
                 "next-chapter-load", 0xFF40C4FF.toInt(),
@@ -534,7 +534,10 @@ return t.length>=40?'TXT:'+t:'';
                 val now = System.currentTimeMillis()
                 if (statusKeys != indicatorCycleKey) {
                     indicatorCycleKey = statusKeys
-                    indicatorCycleIndex = 0
+                    // Prefer read-ahead OCR immediately when it starts; frequent visible-panel
+                    // changes must not keep resetting the cycle before its blue state appears.
+                    indicatorCycleIndex = statuses.indexOfFirst { it.key == "read-ahead-ocr" }
+                        .takeIf { it >= 0 } ?: 0
                     indicatorCycleAtMs = now
                 } else if (statuses.size > 1 && now - indicatorCycleAtMs >= 1400L) {
                     indicatorCycleIndex = (indicatorCycleIndex + 1) % statuses.size
