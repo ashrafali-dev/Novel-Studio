@@ -109,6 +109,8 @@ class MainActivity : Activity() {
     private var webModeHandle: WebModeExtractor.Handle? = null
     private var webModePrefetchHandle: WebModeExtractor.Handle? = null
     private var webModePrefetchBusy = false
+    private var webModePrefetchStage = ""
+    private var webModePrefetchPct = -1
     private var webModeStage = ""
     private var webModePct = -1            // -1 = no OCR pass is running for the visible chapter
     private var deepSeekAutoStartedUrl = ""
@@ -278,6 +280,8 @@ class MainActivity : Activity() {
     // Real-time read-ahead OCR (next images below the screen are read in the background).
     private var aheadOcrHandle: WebModeExtractor.Handle? = null
     private var aheadOcrSeq = 0
+    private var aheadOcrStage = ""
+    private var aheadOcrPct = -1
     private var deepSeekAheadAtMs = 0L
 
     private fun startAheadOcr() {
@@ -290,11 +294,20 @@ class MainActivity : Activity() {
             webView = novelWv,
             visibleOnly = true,
             isValid = { token == navToken && DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() },
-            onProgress = { _, _ -> },
+            onProgress = { stage, pct ->
+                if (seq == aheadOcrSeq) {
+                    aheadOcrStage = stage
+                    aheadOcrPct = pct
+                }
+            },
             onDone = { },
             ahead = n,
             onAheadDone = {
-                if (seq == aheadOcrSeq) aheadOcrHandle = null
+                if (seq == aheadOcrSeq) {
+                    aheadOcrHandle = null
+                    aheadOcrStage = ""
+                    aheadOcrPct = -1
+                }
                 deepSeekAheadAtMs = System.currentTimeMillis()
             }
         ))
@@ -398,53 +411,155 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var content: FrameLayout
     private lateinit var scanDot: View
     private var scanDotPhase = false
+
+    private data class ActivityDotStatus(
+        val key: String,
+        val color: Int,
+        val label: String,
+        val blinking: Boolean = true
+    )
+    private var indicatorCycleKey = ""
+    private var indicatorCycleIndex = 0
+    private var indicatorCycleAtMs = 0L
+
+    // Tracks asynchronous page writes so the badge can distinguish "placing translation"
+    // from merely waiting for a chatbot reply.
+    private var placementSerial = 0L
+    private val activePlacementIds = mutableSetOf<Long>()
+    private fun beginTranslationPlacement(): Long {
+        val id = ++placementSerial
+        activePlacementIds.add(id)
+        return id
+    }
+    private fun finishTranslationPlacement(id: Long) {
+        activePlacementIds.remove(id)
+    }
+
+    private fun activityDotStatuses(): List<ActivityDotStatus> {
+        val statuses = ArrayList<ActivityDotStatus>()
+        val stage = webModeStage.lowercase()
+        val prefetchStage = webModePrefetchStage.lowercase()
+        val aheadStage = aheadOcrStage.lowercase()
+
+        if (activePlacementIds.isNotEmpty()) {
+            statuses.add(ActivityDotStatus(
+                "placement", 0xFF64FFDA.toInt(), "Placing translated text on the novel page"
+            ))
+        }
+
+        val activeRun = running
+        if (activeRun != null) {
+            val prefetched = prefetchGeneratedKeys.contains(keyOf(activeRun))
+            val livePanel = isDeepSeekLivePanel(activeRun)
+            statuses.add(
+                if (prefetched) ActivityDotStatus(
+                    "prefetch-translation", 0xFFFFAB40.toInt(),
+                    "Chatbot translating a prefetched chapter"
+                ) else ActivityDotStatus(
+                    "chatbot-translation", 0xFFFF80AB.toInt(),
+                    if (livePanel) "Chatbot translating visible panels" else "Chatbot translating chapter"
+                )
+            )
+        }
+
+        if (webModeHandle != null || (webModePct >= 0 && !stage.contains("sending to chatbot"))) {
+            val color = when {
+                stage.contains("loading image") || stage.contains("fetching image") -> 0xFF40C4FF.toInt()
+                stage.contains("writing") || stage.contains("placing") || stage.contains("bubble") -> 0xFF64FFDA.toInt()
+                else -> 0xFFB388FF.toInt()
+            }
+            statuses.add(ActivityDotStatus("visible-ocr", color, "Current panel/chapter OCR: " +
+                webModeStage.ifBlank { "reading visible panels" }))
+        }
+
+        if (webModePrefetchBusy) {
+            val color = when {
+                prefetchStage.contains("loading image") || prefetchStage.contains("fetching image") -> 0xFF40C4FF.toInt()
+                prefetchStage.contains("writing") || prefetchStage.contains("placing") -> 0xFF64FFDA.toInt()
+                else -> 0xFF7E57C2.toInt()
+            }
+            statuses.add(ActivityDotStatus(
+                "next-chapter-ocr", color,
+                "Next-chapter prefetch OCR: " + webModePrefetchStage.ifBlank { "reading panels" }
+            ))
+        }
+
+        if (aheadOcrHandle != null) {
+            val color = when {
+                aheadStage.contains("loading image") || aheadStage.contains("fetching image") -> 0xFF40C4FF.toInt()
+                aheadStage.contains("cached") -> 0xFF64FFDA.toInt()
+                else -> 0xFF42A5F5.toInt()
+            }
+            statuses.add(ActivityDotStatus(
+                "read-ahead-ocr", color,
+                "Read-ahead OCR for upcoming panels: " + aheadOcrStage.ifBlank { "finding panels" }
+            ))
+        }
+
+        if (prefetchLoading && !webModePrefetchBusy) {
+            statuses.add(ActivityDotStatus(
+                "next-chapter-load", 0xFF40C4FF.toInt(),
+                "Loading/extracting the next chapter for prefetch"
+            ))
+        }
+
+        if (queue.isNotEmpty()) {
+            val prefetchedQueued = queue.any { prefetchGeneratedKeys.contains(keyOf(it)) }
+            statuses.add(ActivityDotStatus(
+                if (prefetchedQueued) "prefetch-queued" else "chatbot-queued",
+                0xFFFFC107.toInt(),
+                if (prefetchedQueued) "Prefetched chapter waiting in the chatbot queue"
+                else "Translation waiting in the chatbot queue",
+                blinking = false
+            ))
+        }
+
+        if (statuses.isEmpty()) {
+            statuses.add(ActivityDotStatus(
+                "idle",
+                if (Prefs.auto(this)) 0xFF69F0AE.toInt() else 0xFF555A64.toInt(),
+                if (Prefs.auto(this)) "Idle — automatic translation is enabled"
+                else "Idle — automatic translation is off",
+                blinking = false
+            ))
+        }
+        return statuses
+    }
+
     private val scanIndicatorRunnable = object : Runnable {
         override fun run() {
             if (::scanDot.isInitialized) {
-                val realtimeActive = DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) &&
-                    (webModeHandle != null || running != null || queue.isNotEmpty())
-                val waiting = prefetchLoading && !webModePrefetchBusy && !realtimeActive
-                val stage = webModeStage.lowercase()
-                val stageColor = when {
-                    stage.contains("loading image") || stage.contains("fetching image") -> 0xFF40C4FF.toInt() // blue: image download/read
-                    stage.contains("ocr model") || stage.contains("recognizing text") || stage.contains("reading text") -> 0xFFB388FF.toInt() // purple: OCR/model
-                    stage.contains("sending to chatbot") || stage.contains("chatbot") || stage.contains("translat") -> 0xFFFF80AB.toInt() // pink: AI translation
-                    stage.contains("writing") || stage.contains("placing") || stage.contains("bubble") -> 0xFF64FFDA.toInt() // teal: writing result
-                    else -> 0xFF69F0AE.toInt() // green: active scan / processing
+                val statuses = activityDotStatuses()
+                val statusKeys = statuses.joinToString("|") { it.key }
+                val now = System.currentTimeMillis()
+                if (statusKeys != indicatorCycleKey) {
+                    indicatorCycleKey = statusKeys
+                    indicatorCycleIndex = 0
+                    indicatorCycleAtMs = now
+                } else if (statuses.size > 1 && now - indicatorCycleAtMs >= 1400L) {
+                    indicatorCycleIndex = (indicatorCycleIndex + 1) % statuses.size
+                    indicatorCycleAtMs = now
                 }
-                val scanning = webModePrefetchBusy || realtimeActive
-                // Keep the CPU/process alive while any scan, translation or prefetch job runs, so it
-                // continues with the screen off. Released ~25 s after the last job ends.
-                val jobBusy = scanning || webModeHandle != null || running != null || queue.isNotEmpty() ||
-                    prefetchLoading
+                val status = statuses[indicatorCycleIndex.coerceIn(0, statuses.lastIndex)]
+                val jobBusy = statuses.any { it.key != "idle" }
+                // Keep chatbot timers alive while any OCR, queue, translation, placement or prefetch work exists.
                 ScanKeepAlive.sync(this@MainActivity, jobBusy)
                 if (jobBusy) {
                     try { chatWv.resumeTimers() } catch (_: Exception) { }
                 }
-                scanDot.visibility = View.VISIBLE
-                scanDot.contentDescription = when {
-                    waiting -> "Amber: waiting for scan"
-                    !scanning -> "Grey: idle"
-                    stage.contains("loading image") || stage.contains("fetching image") -> "Blue blinking: loading image"
-                    stage.contains("ocr model") || stage.contains("recognizing text") || stage.contains("reading text") -> "Purple blinking: OCR model and image reading"
-                    stage.contains("sending to chatbot") || stage.contains("chatbot") || stage.contains("translat") -> "Pink blinking: chatbot translation"
-                    stage.contains("writing") || stage.contains("placing") || stage.contains("bubble") -> "Teal blinking: placing translated text"
-                    else -> "Green blinking: processing"
+
+                // The large button badge and the older tiny in-content dot mirror the same live stage.
+                if (::extractBtn.isInitialized) {
+                    extractBtn.setActivityIndicator(status.color, status.blinking, status.label)
                 }
-                when {
-                    scanning -> {
-                        (scanDot.background as? GradientDrawable)?.setColor(stageColor)
-                        scanDotPhase = !scanDotPhase
-                        scanDot.alpha = if (scanDotPhase) 1f else 0.22f
-                    }
-                    waiting -> {
-                        (scanDot.background as? GradientDrawable)?.setColor(0xFFFFC107.toInt())
-                        scanDot.alpha = 1f
-                    }
-                    else -> {
-                        (scanDot.background as? GradientDrawable)?.setColor(0xFF555A64.toInt())
-                        scanDot.alpha = 1f
-                    }
+                scanDot.visibility = View.VISIBLE
+                scanDot.contentDescription = status.label
+                (scanDot.background as? GradientDrawable)?.setColor(status.color)
+                if (status.blinking) {
+                    scanDotPhase = !scanDotPhase
+                    scanDot.alpha = if (scanDotPhase) 1f else 0.22f
+                } else {
+                    scanDot.alpha = 1f
                 }
             }
             handler.postDelayed(this, 450L)
@@ -3051,6 +3166,8 @@ return t.length>=40?'TXT:'+t:'';
     private fun startWebModeExtract(token: Int, useSaved: Boolean = false) {
         // The panel on screen comes first: stop reading ahead (it keeps what it already finished).
         aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+        aheadOcrStage = ""
+        aheadOcrPct = -1
         webModeHandle?.cancel()
         webModePct = 1
         webModeStage = "Discovering chapter panels"
@@ -3204,14 +3321,21 @@ return t.length>=40?'TXT:'+t:'';
         // One OCR pass per prefetch page: the retry loop in the prefetch client must not start duplicates.
         if (webModePrefetchBusy) return
         webModePrefetchBusy = true
+        webModePrefetchStage = "Preparing next-chapter OCR"
+        webModePrefetchPct = 0
         val token = prefetchToken
         webModePrefetchHandle = webMode.start(WebModeRequest(
             webView = prefetchWv,
             isValid = { prefetchLoading && token == prefetchToken },
-            onProgress = { _, _ -> },
+            onProgress = { stage, pct ->
+                webModePrefetchStage = stage
+                webModePrefetchPct = pct
+            },
             onDone = { out ->
                 webModePrefetchBusy = false
                 webModePrefetchHandle = null
+                webModePrefetchStage = ""
+                webModePrefetchPct = -1
                 val stillWanted = prefetchLoading && token == prefetchToken
                 if (out is WebModeOutcome.Success && stillWanted) {
                     cb(out.chapter)
@@ -4647,7 +4771,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
                 wmScript = WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
             }
+            val placementId = beginTranslationPlacement()
             novelWv.evaluateJavascript(wmScript) { r ->
+                finishTranslationPlacement(placementId)
                 if (lastChapter !== ch) {
                     if (livePanelBatch) releaseDeepSeekHashBatch(ch)
                     return@evaluateJavascript
@@ -4673,9 +4799,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             shownTrRaw = text
             if (lastChapter !== ch) return
             injectBengaliFont()
+            val placementId = beginTranslationPlacement()
             novel543System.writeTranslation(
                 novelWv, ch, text, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
             ) { ok ->
+                finishTranslationPlacement(placementId)
                 if (lastChapter !== ch) return@writeTranslation
                 if (ok) {
                     hasTr = true
@@ -4691,9 +4819,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             shownTrRaw = text
             if (lastChapter !== ch) return
             injectBengaliFont()
+            val placementId = beginTranslationPlacement()
             qidianSystem.writeTranslation(
                 novelWv, ch, text, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
             ) { ok ->
+                finishTranslationPlacement(placementId)
                 if (lastChapter !== ch) return@writeTranslation
                 if (ok) {
                     hasTr = true
@@ -4709,9 +4839,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             shownTrRaw = text
             if (lastChapter !== ch) return
             injectBengaliFont()
+            val placementId = beginTranslationPlacement()
             wtrLabSystem.writeTranslation(
                 novelWv, ch, text, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
             ) { ok ->
+                finishTranslationPlacement(placementId)
                 if (lastChapter !== ch) return@writeTranslation
                 if (ok) {
                     hasTr = true
@@ -4739,6 +4871,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             shownTrRaw = text
             if (lastChapter !== ch) return
             injectBengaliFont()
+            val placementId = beginTranslationPlacement()
             webNovelSystem.writeTranslation(
                 novelWv,
                 ch,
@@ -4747,6 +4880,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 Prefs.sizePx(this),
                 pageKey(ch.url)
             ) { ok ->
+                finishTranslationPlacement(placementId)
                 if (lastChapter !== ch) return@writeTranslation
                 if (ok) {
                     hasTr = true
@@ -4794,6 +4928,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         // with the generic HTML mapper. Use the WTR writer so [001], [002]...
         // are mapped to the actual rendered blocks in DOM order.
         if (isWtrLab) {
+            val placementId = beginTranslationPlacement()
             WtrLabWriter().write(
                 novelWv,
                 ch,
@@ -4802,6 +4937,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 Prefs.sizePx(this),
                 pageKey(ch.url)
             ) { ok ->
+                finishTranslationPlacement(placementId)
                 if (lastChapter !== ch) return@write
                 if (ok) {
                     hasTr = true
@@ -4814,6 +4950,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             return
         }
 
+        val placementId = beginTranslationPlacement()
         novelWv.evaluateJavascript(
             Js.applyMapped(
                 sel,
@@ -4824,6 +4961,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 pageKey(ch.url)
             )
         ) { r ->
+            finishTranslationPlacement(placementId)
             if (lastChapter !== ch) return@evaluateJavascript
             if (r != null && r.contains("ok")) {
                 hasTr = true
