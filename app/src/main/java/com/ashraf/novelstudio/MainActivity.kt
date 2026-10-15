@@ -664,7 +664,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     private fun pumpRealtimeAheadTranslation() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
-        if (rtAheadWorkerBusy || running != null || queue.isNotEmpty() ||
+        // A background translation may run alongside the visible chatbot request because it has
+        // its own WebView. Still yield while foreground work is queued or visible OCR is in flight.
+        if (rtAheadWorkerBusy || queue.isNotEmpty() ||
             webModeHandle != null || webModePrefetchBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
