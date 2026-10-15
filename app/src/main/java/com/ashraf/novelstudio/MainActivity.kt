@@ -3690,6 +3690,9 @@ return t.length>=40?'TXT:'+t:'';
                                     toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
                                 handleChapter(out.chapter, useSavedTranslation = useSaved)
                             }
+                            // If this visible batch was already translated or returned no new bubbles,
+                            // resume queued future-panel translations rather than waiting for another tap.
+                            handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
                         }
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
