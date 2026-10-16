@@ -603,7 +603,8 @@ class MainActivity : Activity() {
         // batch for that page while another response is running/queued, or the previous reply
         // could be aligned against newer bubbles and be discarded by the same-page job guard.
         val identity = keyOf(pending.baseChapter)
-        if ((running != null && keyOf(running!!) == identity) || queue.any { keyOf(it) == identity }) {
+        if ((running != null && keyOf(running!!) == identity) ||
+            queue.any { keyOf(it) == identity } || activePlacementIds.isNotEmpty()) {
             rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
             val seq = ++rtVisibleOcrBatchSeq
             val retry = Runnable {
