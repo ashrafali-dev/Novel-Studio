@@ -106,40 +106,98 @@ function __snap(box){var m=new Map();__ctls(box).forEach(function(b){m.set(b,__o
 function __diffSend(box,snap){var cand=__ctls(box).filter(function(b){if(!__ok(b)||b.querySelector('input[type="file"]'))return false;var was=snap&&snap.get(b);return was===undefined||was===false;});return cand.length?cand[cand.length-1]:null;}
 function __findSend(p,box,snap){
  if(!box||!box.isConnected)return null;
- var sels=[];
- if(p.send)sels.push(p.send);
- sels.push('button[data-testid*="send" i]','[data-testid*="send" i][role="button"]',
+ var form=null;try{form=box.closest('form');}catch(e){}
+ var explicitSels=[];
+ if(p.send)explicitSels.push(p.send);
+ explicitSels.push(
+  'button[data-testid*="send" i]','[data-testid*="send" i][role="button"]',
+  'button[data-test-id*="send" i]','[data-test-id*="send" i][role="button"]',
   'button[aria-label*="send" i]','[role="button"][aria-label*="send" i]',
-  'button[title*="send" i]','[role="button"][title*="send" i]','button[type="submit"]');
- var all=[],seen=new Set();
- function label(b){return String((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||'')+' '+(b.getAttribute('data-test-id')||'')+' '+(b.innerText||b.textContent||'')+' '+(typeof b.className==='string'?b.className:'')).toLowerCase();}
+  'button[title*="send" i]','[role="button"][title*="send" i]',
+  'button[aria-label*="submit" i]','[role="button"][aria-label*="submit" i]'
+ );
+ function label(b){
+  return String((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+
+   (b.getAttribute('data-testid')||'')+' '+(b.getAttribute('data-test-id')||'')+' '+
+   (b.innerText||b.textContent||'')+' '+(typeof b.className==='string'?b.className:'')).toLowerCase();
+ }
  function acceptable(b){
   if(!__ok(b)||b.querySelector('input[type="file"]'))return false;
-  if(/\b(stop|cancel|pause|interrupt|abort|voice|microphone|attach|upload|search)\b/.test(label(b)))return false;
+  var t=label(b);
+  if(/\b(stop|cancel|pause|interrupt|abort|voice|microphone|attach|attachment|upload|file|search|deep.?think|reasoning|add file|plus|menu|settings)\b/.test(t))return false;
   return true;
  }
- function add(list){for(var i=0;i<list.length;i++){var b=list[i];if(!seen.has(b)&&acceptable(b)){seen.add(b);all.push(b);}}}
- try{var form=box.closest('form');if(form){var local=[];for(var i=0;i<sels.length;i++){try{local=local.concat([].slice.call(form.querySelectorAll(sels[i])));}catch(e){}}add(local);}}catch(e){}
- for(var i=0;i<sels.length;i++){try{add([].slice.call(document.querySelectorAll(sels[i])));}catch(e){}}
+ function isAfterBox(b){try{return !!(box.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING);}catch(e){return false;}}
  function score(b){
-  var br=b.getBoundingClientRect(),xr=box.getBoundingClientRect();
-  var q=Math.abs((br.left+br.width/2)-(xr.left+xr.width/2))+1.2*Math.abs((br.top+br.height/2)-(xr.top+xr.height/2));
-  var t=label(b);if(/\b(send|submit)\b/.test(t))q-=500;if(/send-button|submit-button/.test(t))q-=500;
-  try{var f=box.closest('form');if(f&&f.contains(b))q-=10000;}catch(e){}
+  var br=b.getBoundingClientRect(),xr=box.getBoundingClientRect(),t=label(b);
+  // The send control is normally on the lower-right edge of the composer.
+  var q=Math.abs(br.right-xr.right)+1.25*Math.abs((br.top+br.height/2)-(xr.bottom-18));
+  if(isAfterBox(b))q-=45;
+  if(form&&form.contains(b))q-=180;
+  if(String(b.type||'').toLowerCase()==='submit')q-=260;
+  if(/\b(send|submit)\b/.test(t))q-=1600;
+  if(/send-button|submit-button/.test(t))q-=400;
+  var was=snap&&snap.get(b);
+  if(was===false||was===undefined)q-=80;
   return q;
  }
- if(all.length){all.sort(function(a,b){return score(a)-score(b);});return all[0];}
- var c=box.parentElement;
- for(var up=0;c&&up<7;up++,c=c.parentElement){
-  var near=[].slice.call(c.querySelectorAll('button,[role="button"]')).filter(function(b){
-   if(!acceptable(b))return false;var r=b.getBoundingClientRect(),br=box.getBoundingClientRect();
-   return Math.abs((r.top+r.height/2)-(br.top+br.height/2))<130&&(box.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING);
+ function collect(root,selector,out){
+  try{[].slice.call(root.querySelectorAll(selector)).forEach(function(b){if(out.indexOf(b)<0&&acceptable(b))out.push(b);});}catch(e){}
+ }
+ function best(list){
+  if(!list.length)return null;
+  list.sort(function(a,b){return score(a)-score(b);});
+  return list[0];
+ }
+ // First use explicit site/button labels. Prefer controls inside the current composer form.
+ var explicit=[],seen=new Set();
+ function addExplicit(root,sel){
+  var a=[];collect(root,sel,a);
+  a.forEach(function(b){if(!seen.has(b)){seen.add(b);explicit.push(b);}});
+ }
+ if(form)for(var i=0;i<explicitSels.length;i++)addExplicit(form,explicitSels[i]);
+ for(var i=0;i<explicitSels.length;i++)addExplicit(document,explicitSels[i]);
+ if(explicit.length)return best(explicit);
+ // A real submit control inside this composer is safer than a page-wide submit button.
+ if(form){
+  var submits=[];collect(form,'button[type="submit"],[role="button"][type="submit"]',submits);
+  if(submits.length)return best(submits);
+ }
+ // Fall back only to controls in the composer’s own nearby DOM region; never choose
+ // an unrelated submit button elsewhere in a chatbot page.
+ var local=__ctls(box).filter(function(b){return acceptable(b);});
+ if(local.length){
+  var after=local.filter(function(b){return isAfterBox(b);});
+  if(after.length)return best(after);
+  return best(local);
+ }
+ // Last resort for chat layouts whose send button is a sibling outside the editor's form.
+ var near=[],c=box.parentElement,allSeen=new Set();
+ for(var up=0;c&&up<8;up++,c=c.parentElement){
+  var controls=[].slice.call(c.querySelectorAll('button,[role="button"]'));
+  if(controls.length>18)break;
+  controls.forEach(function(b){
+   if(allSeen.has(b)||!acceptable(b)||!isAfterBox(b))return;
+   allSeen.add(b);near.push(b);
   });
-  if(near.length){near.sort(function(a,b){return score(a)-score(b);});return near[0];}
+  if(near.length){var candidate=best(near);if(candidate)return candidate;}
  }
  return null;
 }
-function __press(b){try{if(!b||!b.isConnected||!__ok(b))return false;b.focus();b.click();return true;}catch(e){try{b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return true;}catch(x){return false;}}}
+function __press(b){
+ if(!b||!b.isConnected||!__ok(b))return false;
+ try{b.focus();}catch(e){}
+ var events=['pointerdown','mousedown','pointerup','mouseup','click'],clicked=false;
+ for(var i=0;i<events.length;i++){
+  try{
+   var C=events[i].indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;
+   b.dispatchEvent(new C(events[i],{bubbles:true,cancelable:true,view:window}));
+   if(events[i]==='click')clicked=true;
+  }catch(e){}
+ }
+ if(!clicked){try{b.click();clicked=true;}catch(e){}}
+ return clicked;
+}
 function __box(){
  // DeepSeek may use a transparent native textarea under a visible backdrop.
  // Do not reject a real editor just because it carries aria-hidden/aria-disabled.
@@ -248,15 +306,44 @@ function __box(){
     function keyEnter(){box.focus();try{var f=box.closest('form');if(f&&typeof f.requestSubmit==='function'){f.requestSubmit();return;}}catch(e){}var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
     var started=Date.now();
     var lastReadyBtn=null;
+    function keyEnter(){
+      try{box.focus();}catch(e){}
+      var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};
+      ['keydown','keypress','keyup'].forEach(function(k){try{box.dispatchEvent(new KeyboardEvent(k,o));}catch(e){}});
+    }
+    function requestComposerSubmit(){
+      try{
+        var f=box.closest('form');
+        if(f&&typeof f.requestSubmit==='function'){f.requestSubmit();return true;}
+      }catch(e){}
+      return false;
+    }
     function confirmSend(method){
       setTimeout(function(){
         if(sentOk()){
           window.__nsSendState='sent:'+method;
+          return;
+        }
+        // Some mobile chatbot UIs react to the form/keyboard submission, not a synthetic
+        // click alone. Recover only while the exact prompt is still in the composer.
+        if(method==='btn'&&composerMatches()){
+          requestComposerSubmit();
+          setTimeout(function(){
+            if(sentOk()){
+              window.__nsSendState='sent:submit';
+            }else if(composerMatches()){
+              keyEnter();
+              setTimeout(function(){
+                window.__nsSendState=sentOk()?'sent:enter':'failed';
+              },1200);
+            }else{
+              window.__nsSendState='failed';
+            }
+          },500);
         }else{
-          // Never retry a possibly successful submit: duplicate chapter prompts are worse than a clear failure.
           window.__nsSendState='failed';
         }
-      },1800);
+      },1200);
     }
     function waitUntilReady(){
       if(!box.isConnected){
@@ -275,10 +362,15 @@ function __box(){
         setTimeout(waitUntilReady,120);
         return;
       }
-      // A missed Send control is a real failure; do not silently submit by another key.
-      window.__nsSendState='failed';
+      // Legacy-compatible fallback: only submit after verifying the exact prompt text.
+      if(matches){
+        keyEnter();
+        confirmSend('enter');
+      }else{
+        window.__nsSendState='failed';
+      }
     }
-    // New/rolled-over chatbot threads need a little time for the composer and send control to settle.
+    // Wait 300 ms for controlled editors to commit the input before pressing Send.
     setTimeout(waitUntilReady,300);
   }
   return 'ok:'+n0+':'+len0;
