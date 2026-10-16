@@ -154,38 +154,34 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
   }
   if(doSend){
-    // Self-healing send: try the likeliest way first, VERIFY that the message really left
-    // (composer emptied / our text now shows in the thread), otherwise try the next way.
-    // What worked is remembered per chatbot site.
+    // Submit exactly once. Retrying Enter/Ctrl+Enter/toolbar icons after an uncertain
+    // first click can submit the same large OCR batch multiple times.
     window.__nsSendState='pending';
-    var hostKey='__nsSend:'+location.hostname,tailN=__nrm(text).slice(-60);
+    var hostKey='__nsSend:'+location.hostname;
+    var tailN=__nrm(text).slice(-60);
     function occ(){var a=__nrm(document.body.innerText||''),c=0,i=-1;while((i=a.indexOf(tailN,i+1))>=0)c++;return c;}
     var baseOcc=occ();
-    function sentOk(){var r=boxText();return (!r||r.length<Math.min(text.trim().length,20))||occ()>baseOcc;}
-    function key(ctrl){box.focus();var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true,ctrlKey:!!ctrl};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
-    var skip=/attach|upload|file|voice|mic|record|dictat|search|think|model|tool|plus|add|new chat|stop|menu|more|share|copy|\+/i;
-    function steps(){
-      var list=[],btn=__findSend(p,box,snap),seen=btn?[btn]:[];
-      if(btn)list.push({n:'btn',f:function(){__press(btn);}});
-      list.push({n:'enter',f:function(){key(false);}});
-      list.push({n:'ctrl',f:function(){key(true);}});
-      __ctls(box).filter(function(x){return __ok(x)&&seen.indexOf(x)<0&&!(x.innerText||'').trim()&&!x.querySelector('input[type="file"]')&&!skip.test((x.getAttribute('aria-label')||'')+' '+(x.getAttribute('title')||'')+' '+(x.getAttribute('data-testid')||''))&&(box.compareDocumentPosition(x)&Node.DOCUMENT_POSITION_FOLLOWING);}).reverse().forEach(function(x){list.push({n:'icon',f:function(){__press(x);}});});
-      var mem=null;try{mem=localStorage.getItem(hostKey);}catch(e){}
-      if(mem){list=list.filter(function(z){return z.n===mem;}).concat(list.filter(function(z){return z.n!==mem;}));}
-      return list;
+    function sentOk(){
+      var r=boxText();
+      return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
+    function keyEnter(){box.focus();var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
+    var mem=null;try{mem=localStorage.getItem(hostKey);}catch(e){}
+    var btn=__findSend(p,box,snap),method='';
+    // Reuse only a previously verified method; otherwise prefer the real Send button.
+    if(mem==='enter'){keyEnter();method='enter';}
+    else if(btn){__press(btn);method='btn';}
+    else {keyEnter();method='enter';}
     setTimeout(function(){
-      var list=steps(),i=0;
-      (function next(){
-        if(i>=list.length){window.__nsSendState='failed';try{localStorage.removeItem(hostKey);}catch(e){}return;}
-        var z=list[i++];
-        try{z.f();}catch(e){}
-        setTimeout(function(){
-          if(sentOk()){window.__nsSendState='sent:'+z.n;try{localStorage.setItem(hostKey,z.n);}catch(e){}return;}
-          next();
-        },900);
-      })();
-    },250);
+      if(sentOk()){
+        window.__nsSendState='sent:'+method;
+        try{localStorage.setItem(hostKey,method);}catch(e){}
+      }else{
+        // Fail closed. Do not try another control: an uncertain second action can double-send.
+        window.__nsSendState='failed';
+        try{localStorage.removeItem(hostKey);}catch(e){}
+      }
+    },1800);
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
@@ -194,6 +190,13 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // type the text into the chat box (and press send if asked). Returns "ok:<assistant message count>" or "nobox"
     fun send(text: String, doSend: Boolean): String =
         run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
+
+    /** Returns 1 only after a live, visible composer exists; used before rollover/paste. */
+    fun composerReady(): String = run(
+        "(function(){try{var b=__box();if(!b)return '0';var r=b.getBoundingClientRect(),s=getComputedStyle(b);" +
+        "return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&" +
+        "!b.disabled&&b.getAttribute('aria-disabled')!=='true'?'1':'0';}catch(e){return '0';}})()"
+    )
 
     // "<assistant msg count>|<streaming 0/1>|<length of last reply>"
     // "<assistant msg count>|<streaming 0/1>|<length of THIS job's reply>|<distinct [NNN] markers seen>|<new reply seen 0/1>"
@@ -275,7 +278,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     try{
       var st=document.getElementById('__ns_font');
       if(!st){st=document.createElement('style');st.id='__ns_font';(document.head||document.documentElement).appendChild(st);}
-      st.textContent="@font-face{font-family:'NSBn';src:url('"+location.origin+"/__ns_font/"+font+".ttf') format('truetype');font-display:swap;}";
+      // NSBn is registered from APK font bytes by MainActivity. Do not request a
+      // fake font URL from the novel site's own origin: most sites do not host it.
+      st.textContent=".ns-translated-content,.ns-translated-content *{font-family:'NSBn',sans-serif!important;}";
       fam="'NSBn',sans-serif";
     }catch(e){}
   }
@@ -479,7 +484,9 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     try{
       var st=document.getElementById('__ns_font');
       if(!st){ st=document.createElement('style'); st.id='__ns_font'; (document.head||document.documentElement).appendChild(st); }
-      st.textContent="@font-face{font-family:'NSBn';src:url('"+location.origin+"/__ns_font/"+font+".ttf') format('truetype');font-display:swap;} .ns-translated-content,.ns-translated-content *{font-family:'NSBn',sans-serif!important;}";
+      // Use the FontFace already loaded from local APK bytes, not a remote URL
+      // that is absent on third-party novel sites.
+      st.textContent=".ns-translated-content,.ns-translated-content *{font-family:'NSBn',sans-serif!important;}";
       fam="'NSBn',sans-serif";
     }catch(e){}
   }
