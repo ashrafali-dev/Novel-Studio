@@ -114,6 +114,15 @@ internal object WebModeWriter {
       b.appendChild(t); w.appendChild(b);
     }
     var allS=[]; for(var ai=0;ai<items.length;ai++){var as0=items[ai].s; if(as0&&allS.indexOf(as0)<0)allS.push(as0);}
+    // Source URLs whose path is shared by different query IDs are NOT interchangeable.
+    // Remember ambiguity from this layout too, since virtualized readers may keep only one recycled
+    // image in the DOM while several panels with the same base path are off-screen.
+    var sourceByBase=Object.create(null),ambiguousSourceBase=Object.create(null);
+    for(var si0=0;si0<allS.length;si0++){
+      var source=norm(allS[si0]),sourceBase=base(source);
+      if(sourceBase&&sourceByBase[sourceBase]&&sourceByBase[sourceBase]!==source)ambiguousSourceBase[sourceBase]=1;
+      else if(sourceBase)sourceByBase[sourceBase]=source;
+    }
     var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
     var cache={},miss={};
     function norm(u){return (u||'').split('#')[0];}
@@ -161,9 +170,13 @@ internal object WebModeWriter {
         delete cache[s];
         var moved=lookupImg(s,index);
         if(moved)return moved;
-        // This node now shows ANOTHER panel of this chapter: s has left the page, so hide its bubble
-        // instead of leaving the text on somebody else's picture.
+        // This node may now show a different panel or query-ID variant. If it has any identifiable
+        // source but no longer owns s, hide the bubble; never pin it to a recycled image.
         for(var q=0;q<allS.length;q++){if(allS[q]!==s&&owns(c,allS[q]))return null;}
+        var keysNow=srcsOf(c),hasIdentity=false;
+        for(var ki=0;ki<keysNow.length;ki++){if(norm(keysNow[ki])){hasIdentity=true;break;}}
+        if(hasIdentity)return null;
+        // Retain the old reference only if the page offers no usable source identity at all.
         cache[s]=c;
         return c;
       }
@@ -176,7 +189,7 @@ internal object WebModeWriter {
         var exact=index.exact[norm(s)], near=index.byBase[base(s)];
         // A query-stripped fallback is safe only when that base path belongs to one DOM image.
         // If two panels share a path but differ by ?id=..., do not guess and paint text on the wrong panel.
-        var match=exact||(near&&!near.ambiguous?near.el:null);
+        var match=exact||(near&&!near.ambiguous&&!ambiguousSourceBase[base(s)]?near.el:null);
         if(match){cache[s]=match;delete miss[s];return match;}
         miss[s]=Date.now(); return null;
       }
@@ -185,14 +198,16 @@ internal object WebModeWriter {
       var imgs=document.images;
       for(var i=0;i<imgs.length;i++){var l=srcsOf(imgs[i]);
         for(var k=0;k<l.length;k++){if(l[k]===norm(s)){cache[s]=imgs[i];return imgs[i];}}}
-      var bs0=base(s),baseMatch=null,baseAmbiguous=false;
-      for(var i2=0;i2<imgs.length;i2++){var l2=srcsOf(imgs[i2]);
-        for(var k2=0;k2<l2.length;k2++){
-          if(base(l2[k2])!==bs0)continue;
-          if(baseMatch&&baseMatch!==imgs[i2]){baseAmbiguous=true;break;}
-          baseMatch=imgs[i2];
+      var bs0=base(s),baseMatch=null,baseAmbiguous=!!ambiguousSourceBase[bs0];
+      if(!baseAmbiguous){
+        for(var i2=0;i2<imgs.length;i2++){var l2=srcsOf(imgs[i2]);
+          for(var k2=0;k2<l2.length;k2++){
+            if(base(l2[k2])!==bs0)continue;
+            if(baseMatch&&baseMatch!==imgs[i2]){baseAmbiguous=true;break;}
+            baseMatch=imgs[i2];
+          }
+          if(baseAmbiguous)break;
         }
-        if(baseAmbiguous)break;
       }
       if(baseMatch&&!baseAmbiguous){cache[s]=baseMatch;return baseMatch;}
       miss[s]=now; return null;
