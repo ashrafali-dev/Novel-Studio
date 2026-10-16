@@ -1436,14 +1436,13 @@ function cands(sc, includeBackgrounds){
     var xt=sc?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
     out.push({s:xs,t:Math.round(xt),l:Math.round(xr.left),w:Math.round(xr.width),h:Math.round(xr.height),d:1,fw:xr.width,fh:xr.height,vl:xr.left,vt:xr.top,vb:xr.bottom});
   }
-  // If the reader exposes several normal IMG panels, do not walk thousands of DOM nodes
-  // and call getComputedStyle() on every wrapper. This expensive fallback is only needed
-  // for canvas/CSS-background readers which do not expose their panels as IMG elements.
-  if(out.length>=3)return out;
+  // Any credible, large rendered image is enough to use the normal image path. Some readers
+  // virtualize panels and expose only one or two IMG elements at a time; a full DOM/style sweep
+  // on every scroll step for those pages makes both scanning and touch scrolling feel sluggish.
+  if(out.some(function(p){return p.fw>=160&&p.fh>=220;}))return out;
   if(includeBackgrounds!==false){
-    // CSS backgrounds and lazy-background attributes. Inspect larger nodes throughout the DOM,
-    // not just the first 5,000 nodes; also enter open shadow roots used by some custom readers.
-    var els=allNodes(16000);
+    // Bound the expensive fallback for unusual CSS/canvas readers. Normal image readers exit above.
+    var els=allNodes(4000);
     for(var j=0;j<els.length;j++){
       var el=els[j],r=el.getBoundingClientRect();
       if(r.width<80||r.height<50)continue;
