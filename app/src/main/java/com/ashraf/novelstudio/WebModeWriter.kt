@@ -100,16 +100,37 @@ internal object WebModeWriter {
       var ss=im.getAttribute('data-srcset')||im.getAttribute('srcset');
       if(ss){try{o.push(norm(new URL(ss.split(',')[0].trim().split(/\s+/)[0],document.baseURI).href));}catch(e){}}
       return o;}
-    function findImg(s){
+    function buildImgIndex(){
+      var exact=Object.create(null), byBase=Object.create(null), imgs=document.images;
+      for(var i=0;i<imgs.length;i++){
+        var im=imgs[i], keys=srcsOf(im);
+        for(var k=0;k<keys.length;k++){
+          var key=norm(keys[k]), bk=base(key);
+          if(key&&!exact[key])exact[key]=im;
+          if(bk&&!byBase[bk])byBase[bk]=im;
+        }
+      }
+      return {exact:exact,byBase:byBase};
+    }
+    function findImg(s, index){
       var c=cache[s]; if(c&&document.contains(c))return c;
+      // A single index is built per layout pass when any source needs lookup. This avoids
+      // scanning document.images once per bubble during scroll/re-render-heavy virtual readers.
+      if(index){
+        var exact=index.exact[norm(s)], near=index.byBase[base(s)], match=exact||near;
+        if(match){cache[s]=match;delete miss[s];return match;}
+        miss[s]=Date.now(); return null;
+      }
       var now=Date.now(); if(miss[s]&&now-miss[s]<1500)return null;
+      // Usually an image is already cached; keep a fallback for callers before an index exists.
       var imgs=document.images;
       for(var i=0;i<imgs.length;i++){var l=srcsOf(imgs[i]);
-        for(var k=0;k<l.length;k++){if(l[k]===s){cache[s]=imgs[i];return imgs[i];}}}
+        for(var k=0;k<l.length;k++){if(l[k]===norm(s)){cache[s]=imgs[i];return imgs[i];}}}
       var bs0=base(s);
       for(var i2=0;i2<imgs.length;i2++){var l2=srcsOf(imgs[i2]);
         for(var k2=0;k2<l2.length;k2++){if(base(l2[k2])===bs0){cache[s]=imgs[i2];return imgs[i2];}}}
-      miss[s]=now; return null;}
+      miss[s]=now; return null;
+    }
     // Largest font (up to maxPx) at which the text still fits inside its box.
     function fit(b,maxPx){
       var t=b.firstChild,lo=3.5,hi=Math.max(4,maxPx),best=3.5;
@@ -174,9 +195,19 @@ internal object WebModeWriter {
       }
       var bs=w.querySelectorAll('.__ns_b'),vh=window.innerHeight;
       var o=ABS?w.getBoundingClientRect():null;
-      var L=[];
+      var L=[],needsIndex=false,lookupNow=Date.now();
+      // Most Webtoon images stay in the DOM, so cached source-to-image references are enough.
+      // Only build the per-pass index when a cached image disappeared or an image has not yet
+      // been seen (and its short miss-cache has expired).
+      for(var pi=0;pi<bs.length;pi++){
+        var ps=bs[pi].getAttribute('data-s'),pc=cache[ps];
+        if(pc&&document.contains(pc))continue;
+        if(miss[ps]&&lookupNow-miss[ps]<1500)continue;
+        needsIndex=true;break;
+      }
+      var imgIndex=needsIndex?buildImgIndex():null;
       for(var i=0;i<bs.length;i++){
-        var b=bs[i],im=findImg(b.getAttribute('data-s'));
+        var b=bs[i],im=findImg(b.getAttribute('data-s'),imgIndex);
         if(!im){if(b.style.display!=='none')b.style.display='none';continue;}
         var r=im.getBoundingClientRect();
         if(r.width<8){if(b.style.display!=='none')b.style.display='none';continue;}
