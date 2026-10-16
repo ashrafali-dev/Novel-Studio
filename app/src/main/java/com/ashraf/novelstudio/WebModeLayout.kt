@@ -453,11 +453,21 @@ internal object WmBubbleStyle {
      * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
      * recognised block ([allRects]) accounts for - i.e. text the OCR missed.
      */
-    fun bubbleInterior(bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true): IntArray? {
+    fun bubbleInterior(
+        bmp: Bitmap,
+        box: IntArray,
+        allRects: List<IntArray>,
+        requireLeftover: Boolean = true,
+        verticalText: Boolean = false
+    ): IntArray? {
         val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
         if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
         val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
-        val mx = maxOf(40, (bwid * 0.9f).toInt()); val my = maxOf(40, (bhei * 1.2f).toInt())
+        // One vertical Japanese OCR block is usually only a narrow column, while the speech bubble
+        // spans several columns. Search wider sideways so flood-fill can recover the actual balloon
+        // instead of returning a box about the size of the original glyph column.
+        val mx = if (verticalText) maxOf(80, (bwid * 2.4f).toInt()) else maxOf(40, (bwid * 0.9f).toInt())
+        val my = maxOf(40, (bhei * 1.2f).toInt())
         val x0 = (box[0] - mx).coerceAtLeast(0); val y0 = (box[1] - my).coerceAtLeast(0)
         val x1 = (box[2] + mx).coerceAtMost(bmp.width); val y1 = (box[3] + my).coerceAtMost(bmp.height)
         val w = x1 - x0; val h = y1 - y0
