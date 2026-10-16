@@ -68,6 +68,7 @@ class JapaneseMangaEngineActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        JapaneseMangaRuntime.init(this)
         manager = JapaneseMangaModelManager(this)
         assetLoader = JapaneseMangaAssetLoader(this, manager)
         buildUi()
@@ -123,7 +124,7 @@ class JapaneseMangaEngineActivity : Activity() {
             textSize = 13f
             setTextColor(0xFFE0E6F0.toInt())
             setPadding(dp(7), dp(8), dp(7), dp(12))
-            text = "OCR ফল এখানে দেখাবে। প্রথমে ইঞ্জিন ডাউনলোড করে পেজ স্ক্যান করো।\n\nএটি আপাতত আলাদা OCR ও bounding-box preview; live translation/bubble overlay এখনো এতে যুক্ত নয়।"
+            text = "OCR ফল এখানে দেখাবে। প্রথমে ইঞ্জিন ডাউনলোড করে পেজ স্ক্যান করো।\n\nডাউনলোড করা থাকলে Realtime/Scan মোড জাপানিজ মাঙ্গায় এই মডেল নিজেই ব্যবহার করে; এই স্ক্রিন শুধু ডাউনলোড/মোছা ও টেস্টের জন্য।"
         }
         scroll.addView(resultView, android.widget.FrameLayout.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1.1f))
@@ -235,7 +236,8 @@ class JapaneseMangaEngineActivity : Activity() {
             progress.visibility = View.GONE
             when (result) {
                 JapaneseMangaModelManager.Result.Success -> {
-                    resultView.text = "✅ Japanese Manga Engine ইনস্টল হয়েছে। এখন পেজ স্ক্যান করো।"
+                    JapaneseMangaRuntime.invalidate()
+                    resultView.text = "✅ Japanese Manga Engine ইনস্টল হয়েছে। এখন থেকে Realtime/Scan মোডে জাপানিজ মাঙ্গায় এই মডেল নিজে থেকেই ব্যবহার হবে; অন্য ভাষায় আগের OCR-ই চলবে।"
                     loadRuntime()
                     status.text = "ইঞ্জিন ইনস্টল সম্পন্ন। OCR runtime প্রস্তুত হচ্ছে…"
                 }
@@ -252,7 +254,9 @@ class JapaneseMangaEngineActivity : Activity() {
             .setMessage("ডাউনলোড করা OCR মডেল, runtime, dictionary ও সাময়িক ছবি মুছে যাবে। NovelStudio-র বাকি ফিচার/ডেটা অক্ষত থাকবে।")
             .setNegativeButton("না", null)
             .setPositiveButton("মুছে ফেলো") { _, _ ->
+                JapaneseMangaRuntime.release()
                 val ok = manager.deleteEngine()
+                JapaneseMangaRuntime.invalidate()
                 if (ok) {
                     runtime.stopLoading()
                     runtime.loadUrl("about:blank")
