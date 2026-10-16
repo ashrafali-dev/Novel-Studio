@@ -544,7 +544,8 @@ class MainActivity : Activity() {
         chapter: Chapter,
         layout: WebModeLayout,
         hashes: Set<String>,
-        token: Int
+        token: Int,
+        force: Boolean = false
     ) {
         val page = cleanUrl(chapter.url)
         if (page.isBlank() || token != navToken ||
@@ -577,7 +578,7 @@ class MainActivity : Activity() {
 
         rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
         rtVisibleOcrFlush = null
-        if (pending.bubbles.size >= rtVisibleOcrBatchMin) {
+        if (force || pending.bubbles.size >= rtVisibleOcrBatchMin) {
             flushRealtimeVisibleOcrBatch(token, page)
             return
         }
@@ -591,9 +592,27 @@ class MainActivity : Activity() {
     }
 
     private fun flushRealtimeVisibleOcrBatch(expectedToken: Int? = null, expectedPage: String? = null) {
-        if (expectedToken != null && expectedToken != navToken) return
+        if (expectedToken != null && expectedToken != navToken) {
+            clearRealtimeVisibleOcrBatch()
+            return
+        }
         val pending = rtVisibleOcrBatch ?: return
         if (expectedPage != null && expectedPage != pending.pageUrl) return
+
+        // Web Mode's current scan geometry is stored per page. Never start a second visible
+        // batch for that page while another response is running/queued, or the previous reply
+        // could be aligned against newer bubbles and be discarded by the same-page job guard.
+        val identity = keyOf(pending.baseChapter)
+        if ((running != null && keyOf(running!!) == identity) || queue.any { keyOf(it) == identity }) {
+            rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
+            val seq = ++rtVisibleOcrBatchSeq
+            val retry = Runnable {
+                if (seq == rtVisibleOcrBatchSeq) flushRealtimeVisibleOcrBatch(pending.navToken, pending.pageUrl)
+            }
+            rtVisibleOcrFlush = retry
+            handler.postDelayed(retry, 250L)
+            return
+        }
 
         rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
         rtVisibleOcrFlush = null
@@ -4962,7 +4981,6 @@ return t.length>=40?'TXT:'+t:'';
                                         val liveText = selected.joinToString("\n\n") { it.sourceText.trim() }
                                         val liveChapter = out.chapter.copy(text = liveText, contentSel = "")
                                         val liveLayout = WebModeLayout(scanLayout.titleOffset, selected)
-                                        WebModeLayoutStore.setScan(liveChapter.url, liveLayout)
                                         val cachedTranslations = selected.map {
                                             if (WebModeLayout.fingerprint(it) in forcedHashes) null
                                             else rtAheadTranslationCache[rtAheadBubbleCacheKey(it)]
@@ -4986,23 +5004,29 @@ return t.length>=40?'TXT:'+t:'';
                                             )
                                             val missLayout = WebModeLayout(scanLayout.titleOffset, missBubbles)
                                             WebModeLayoutStore.setScan(missChapter.url, missLayout)
-                                            queueRealtimeVisibleOcrBatch(missChapter, missLayout, missHashes, token)
+                                            queueRealtimeVisibleOcrBatch(
+                                                missChapter, missLayout, missHashes, token,
+                                                force = forcedHashes.isNotEmpty()
+                                            )
                                         } else if (cachedCount == selected.size) {
-                                            // Every bubble in this visible batch has already been translated ahead.
-                                            // Apply the saved marker-aligned answer without another chatbot request.
-                                            deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
-                                            onChapter(liveChapter)
-                                            val cachedMarked = cachedTranslations.mapIndexed { index, value ->
-                                                "[${(index + 1).toString().padStart(3, '0')}] ${value.orEmpty()}"
+                                            // The translation is already cached. Place it directly instead
+                                            // of changing lastChapter/scan geometry while another batch runs.
+                                            val cachedValues = cachedTranslations.map { it.orEmpty() }
+                                            val cachedMarked = cachedValues.mapIndexed { index, value ->
+                                                "[${(index + 1).toString().padStart(3, '0')}] $value"
                                             }.joinToString("\n\n")
                                             copy(stripInternalMarkers(cachedMarked))
+                                            shownTrRaw = cachedMarked
                                             webModeStage = "Applying cached ahead translation"
-                                            applyTranslation(liveChapter, cachedMarked, false)
+                                            placeCachedBubbles(liveChapter.url, selected, cachedValues, hashes)
                                             handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
                                         } else {
                                             // Hold visible OCR until 10 bubbles are collected, or flush
                                             // after a short idle pause so realtime never waits indefinitely.
-                                            queueRealtimeVisibleOcrBatch(liveChapter, liveLayout, hashes, token)
+                                            queueRealtimeVisibleOcrBatch(
+                                                liveChapter, liveLayout, hashes, token,
+                                                force = forcedHashes.isNotEmpty()
+                                            )
                                         }
                                     }
                                 } else {
