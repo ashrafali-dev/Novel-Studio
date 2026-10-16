@@ -45,14 +45,20 @@ class JapaneseMangaEngineActivity : Activity() {
     private lateinit var deleteButton: Button
     private lateinit var scanButton: Button
     private lateinit var cancelButton: Button
+    private lateinit var translateButton: Button
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "japanese-manga-image").apply { isDaemon = true } }
     @Volatile private var scanning = false
     private var runtimeReady = false
+    private var lastResultJson = ""
+    private var scanPageUrl = ""
+    private var scannedPanels = JSONArray()
+    private data class ImageSource(val url: String, val top: Double, val width: Int, val height: Int)
+    private data class PanelImage(val sourceUrl: String, val localUrl: String, val top: Double, val sourceWidth: Int, val sourceHeight: Int)
     private var scanWhenReady = false
     private var requestId = 0
-    private var images = emptyList<Pair<String, String>>() // (source URL, local appassets URL)
-    private var pending = emptyMap<String, String>() // OCR request ID -> local image URL
+    private var images = emptyList<PanelImage>()
+    private var pending = emptyMap<String, PanelImage>() // OCR request ID -> panel metadata
     private var index = 0
     private var accumulated = ""
 
@@ -101,6 +107,9 @@ class JapaneseMangaEngineActivity : Activity() {
         row2.addView(scanButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { topMargin = dp(5); rightMargin = dp(4) })
         row2.addView(cancelButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { topMargin = dp(5); leftMargin = dp(4) })
         root.addView(row2)
+        translateButton = button("অনুবাদ করে বাবলে বসাও") { returnMangaResult() }
+        translateButton.isEnabled = false
+        root.addView(translateButton, LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(5) })
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
         root.addView(progress, LinearLayout.LayoutParams(-1, dp(5)).apply { topMargin = dp(5) })
         page = WebView(this).apply { setBackgroundColor(0xFF171C28.toInt()) }
@@ -196,6 +205,7 @@ class JapaneseMangaEngineActivity : Activity() {
         deleteButton.isEnabled = manager.hasFiles() && !manager.isDownloading() && !scanning && !scanWhenReady
         scanButton.isEnabled = installed && page.url?.startsWith("http") == true && !scanning && !scanWhenReady
         cancelButton.isEnabled = manager.isDownloading() || scanning || scanWhenReady
+        translateButton.isEnabled = lastResultJson.isNotBlank() && !scanning
     }
 
     private fun confirmInstall() {
@@ -268,25 +278,35 @@ class JapaneseMangaEngineActivity : Activity() {
         resultView.text = "পেজের ছবি খোঁজা হচ্ছে…"
         controls()
         val pageUrl = page.url.orEmpty()
+        scanPageUrl = pageUrl
+        lastResultJson = ""
+        scannedPanels = JSONArray()
+        translateButton.isEnabled = false
         val js = "(function(){return JSON.stringify({imgs:Array.from(document.images).map(function(i){var r=i.getBoundingClientRect();return {src:i.currentSrc||i.src||'',top:r.top+scrollY,w:r.width,h:r.height,nw:i.naturalWidth||0,nh:i.naturalHeight||0};}).filter(function(i){return /^https?:/i.test(i.src)&&i.nw>=160&&i.nh>=120&&i.w>=60&&i.h>=60;}).sort(function(a,b){return a.top-b.top;}).filter(function(v,i,a){return a.findIndex(function(x){return x.src===v.src;})===i;}).slice(0,2)})})()"
         page.evaluateJavascript(js) { raw ->
             try {
                 val result = JSONObject(org.json.JSONTokener(raw).nextValue() as String)
                 val arr = result.optJSONArray("imgs") ?: JSONArray()
-                val urls = ArrayList<String>()
-                for (i in 0 until arr.length()) arr.optJSONObject(i)?.optString("src")?.takeIf { it.startsWith("http") }?.let { urls.add(it) }
-                if (urls.isEmpty()) { finishScan("এই পেজে স্ক্যান করার মতো ছবি পাওয়া যায়নি।"); return@evaluateJavascript }
+                val sources = ArrayList<ImageSource>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val src = item.optString("src").takeIf { it.startsWith("http") } ?: continue
+                    sources.add(ImageSource(src, item.optDouble("top", 0.0), item.optInt("nw"), item.optInt("nh")))
+                }
+                if (sources.isEmpty()) { finishScan("এই পেজে স্ক্যান করার মতো ছবি পাওয়া যায়নি।"); return@evaluateJavascript }
                 val ua = page.settings.userAgentString
                 worker.execute {
-                    val saved = ArrayList<Pair<String, String>>()
+                    val saved = ArrayList<PanelImage>()
                     val failures = ArrayList<String>()
-                    for (src in urls) {
+                    for (source in sources) {
                         if (!scanning) break
-                        try { saved.add(src to ("https://appassets.androidplatform.net/manga-engine/" + downloadImage(src, pageUrl, ua))) }
-                        catch (e: Exception) { failures.add(Uri.parse(src).host.orEmpty() + ": " + (e.message ?: "download failed")) }
+                        try {
+                            val local = "https://appassets.androidplatform.net/manga-engine/" + downloadImage(source.url, pageUrl, ua)
+                            saved.add(PanelImage(source.url, local, source.top, source.width, source.height))
+                        } catch (e: Exception) { failures.add(Uri.parse(source.url).host.orEmpty() + ": " + (e.message ?: "download failed")) }
                     }
                     main.post {
-                        if (!scanning) { saved.forEach { deleteLocal(it.second) }; return@post }
+                        if (!scanning) { saved.forEach { deleteLocal(it.localUrl) }; return@post }
                         images = saved
                         accumulated = if (failures.isEmpty()) "" else "কিছু ছবি ডাউনলোড হয়নি: ${failures.joinToString("; ")}\n\n"
                         if (images.isEmpty()) finishScan("পেজের ছবি ডাউনলোড করা যায়নি।\n" + accumulated)
@@ -300,27 +320,34 @@ class JapaneseMangaEngineActivity : Activity() {
     private fun nextImage() {
         if (!scanning) return
         if (index >= images.size) {
-            val finalText = accumulated + "\n\n⚠️ এটি OCR ও বক্সের preview; অনুবাদ সরাসরি বুদবুদের মধ্যে বসায় না।"
+            lastResultJson = if (scannedPanels.length() > 0) {
+                JSONObject().put("pageUrl", scanPageUrl).put("panels", scannedPanels).toString()
+            } else ""
+            val finalText = accumulated + "\n\n✅ OCR সম্পন্ন। ফল ঠিক থাকলে ‘অনুবাদ করে বাবলে বসাও’ চাপো।"
             finishScan(finalText)
             status.text = "✅ OCR স্ক্যান সম্পন্ন।"
             return
         }
-        val (src, local) = images[index]
+        val panel = images[index]
         requestId++
         val id = "jm-" + requestId + "-" + UUID.randomUUID().toString()
-        pending = pending + (id to local)
+        pending = pending + (id to panel)
         status.text = "${index + 1}/${images.size} ছবি OCR হচ্ছে…"
-        runtime.evaluateJavascript("window.runJapaneseMangaOcr(${JSONObject.quote(local)},${JSONObject.quote(id)})", null)
+        runtime.evaluateJavascript("window.runJapaneseMangaOcr(${JSONObject.quote(panel.localUrl)},${JSONObject.quote(id)})", null)
     }
 
     private fun acceptOcr(id: String, raw: String) {
         if (!scanning) return
-        val local = pending[id] ?: return
+        val panel = pending[id] ?: return
         pending = pending - id
-        deleteLocal(local)
+        deleteLocal(panel.localUrl)
         val json = JSONObject(raw)
         val w = json.optInt("width"); val h = json.optInt("height")
         val regions = json.optJSONArray("regions") ?: JSONArray()
+        scannedPanels.put(JSONObject()
+            .put("src", panel.sourceUrl).put("top", panel.top)
+            .put("sourceWidth", panel.sourceWidth).put("sourceHeight", panel.sourceHeight)
+            .put("width", w).put("height", h).put("regions", regions))
         val sb = StringBuilder(accumulated)
         sb.append("\n━━━━━━━━━━━━━━━━━━\nছবি ").append(index + 1).append(" · ").append(w).append("×").append(h)
             .append("\nরিজিয়ন: ").append(regions.length()).append("\n\n")
@@ -390,15 +417,28 @@ class JapaneseMangaEngineActivity : Activity() {
     }
 
     private fun finishScan(text: String) {
-        images.forEach { deleteLocal(it.second) }
-        pending.values.forEach { deleteLocal(it) }
+        images.forEach { deleteLocal(it.localUrl) }
+        pending.values.forEach { deleteLocal(it.localUrl) }
         images = emptyList()
         pending = emptyMap()
         scanning = false
         progress.visibility = View.GONE
         resultView.text = text
+        if (text.contains("বাতিল", ignoreCase = true)) {
+            lastResultJson = ""
+            translateButton.isEnabled = false
+        } else if (lastResultJson.isBlank() && scannedPanels.length() > 0) {
+            lastResultJson = JSONObject().put("pageUrl", scanPageUrl).put("panels", scannedPanels).toString()
+        }
         status.text = text.lineSequence().firstOrNull()?.take(180)?.ifBlank { "স্ক্যান সম্পন্ন" } ?: "স্ক্যান সম্পন্ন"
         controls()
+    }
+
+    private fun returnMangaResult() {
+        if (lastResultJson.isBlank() || scanning) return
+        setResult(RESULT_OK, Intent().putExtra(EXTRA_RESULT_JSON, lastResultJson)
+            .putExtra(EXTRA_RESULT_URL, scanPageUrl))
+        finish()
     }
 
     private fun cancelWork() {
@@ -420,8 +460,8 @@ class JapaneseMangaEngineActivity : Activity() {
 
     override fun onDestroy() {
         scanning = false
-        images.forEach { deleteLocal(it.second) }
-        pending.values.forEach { deleteLocal(it) }
+        images.forEach { deleteLocal(it.localUrl) }
+        pending.values.forEach { deleteLocal(it.localUrl) }
         manager.shutdown()
         worker.shutdownNow()
         runtime.removeJavascriptInterface("NsJapaneseMangaBridge")
@@ -432,6 +472,9 @@ class JapaneseMangaEngineActivity : Activity() {
 
     companion object {
         const val EXTRA_PAGE_URL = "com.ashraf.novelstudio.japanesemanga.PAGE_URL"
+        const val EXTRA_RESULT_JSON = "com.ashraf.novelstudio.japanesemanga.RESULT_JSON"
+        const val EXTRA_RESULT_URL = "com.ashraf.novelstudio.japanesemanga.RESULT_URL"
+        const val REQUEST_CODE = 43
         private const val MAX_IMAGE_BYTES = 20L * 1024 * 1024
         private const val MAX_PIXELS = 10L * 1024 * 1024
     }
