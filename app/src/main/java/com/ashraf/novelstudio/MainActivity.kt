@@ -1540,6 +1540,10 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var chromeTopView: LinearLayout
     private lateinit var floatBoltHost: FrameLayout
     private var barsHidden = false
+    private var barsAnimating = false
+    private var barTopH = 0
+    private var barBotH = 0
+    private lateinit var contentHolderView: FrameLayout
     private enum class ReadMode { NOVEL, REALTIME, SCAN }
     private lateinit var extractBtn: ExtractButton
     private lateinit var progressBox: LinearLayout
@@ -2336,6 +2340,7 @@ return t.length>=40?'TXT:'+t:'';
             setPadding(dp(8), dp(4), dp(8), dp(2))
             addView(content, FrameLayout.LayoutParams(MP, MP))
         }
+        contentHolderView = contentHolder
 
         // ================= floating dock: [view mode] [prev] [EXTRACT] [next] [save]
         modeBtn = dockBtn(Ic.SPLIT, "View mode") { cycleMode() }
@@ -3543,47 +3548,82 @@ return t.length>=40?'TXT:'+t:'';
         sheet?.show()
     }
 
-    // ---- Chrome-style bars: hide while reading, come back with a light pull
+    // ---- Chrome-style bars: hide while reading, come back with a light pull.
+    // The WebView is resized ONLY while the bars still cover the changing area (so nothing visibly
+    // moves); the slide itself is pure translation, which stays smooth.
     private fun setBarsHidden(hide: Boolean) {
-        if (!::dockBar.isInitialized || !::chromeTopView.isInitialized || hide == barsHidden) return
+        if (!::dockBar.isInitialized || !::chromeTopView.isInitialized || !::contentHolderView.isInitialized) return
+        if (hide == barsHidden || barsAnimating) return
+        val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
+        val botLp = dockWrapView.layoutParams as? LinearLayout.LayoutParams ?: return
+        val ease = android.view.animation.DecelerateInterpolator()
+        val dur = 220L
         if (hide) {
             if (mode != Mode.NOVEL || urlBar.hasFocus()) return
+            val topH = chromeTopView.height
+            val botH = dockWrapView.height
+            if (topH <= 0 || botH <= 0) return
             barsHidden = true
-            val topH = chromeTopView.height.toFloat()
-            val botH = dockWrapView.height.toFloat()
-            chromeTopView.animate().cancel()
-            dockWrapView.animate().cancel()
-            chromeTopView.animate().translationY(-topH).alpha(0f).setDuration(180L).withEndAction {
-                if (barsHidden) chromeTopView.visibility = View.GONE
-            }.start()
-            dockWrapView.animate().translationY(botH).alpha(0f).setDuration(180L).withEndAction {
-                if (!barsHidden) return@withEndAction
-                dockWrapView.visibility = View.GONE
-                // The bolt stays reachable: it floats over the page while the bars are away.
-                (extractBtn.parent as? ViewGroup)?.removeView(extractBtn)
-                floatBoltHost.addView(extractBtn, FrameLayout.LayoutParams(dp(60), dp(60)))
-                floatBoltHost.alpha = 0f
-                floatBoltHost.visibility = View.VISIBLE
-                floatBoltHost.animate().alpha(1f).setDuration(140L).start()
-            }.start()
+            barsAnimating = true
+            barTopH = topH
+            barBotH = botH
+            // 1) Bars turn into overlays; the page grows underneath them but is shifted so that it
+            //    stays exactly where it was on screen.
+            topLp.bottomMargin = -topH
+            botLp.topMargin = -botH
+            chromeTopView.layoutParams = topLp
+            dockWrapView.layoutParams = botLp
+            chromeTopView.elevation = dp(16).toFloat()
+            dockWrapView.elevation = dp(16).toFloat()
+            contentHolderView.translationY = topH.toFloat()
+            chromeTopView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            dockWrapView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            // 2) Only translations from here on.
+            contentHolderView.post {
+                chromeTopView.animate().translationY(-topH.toFloat()).setDuration(dur).setInterpolator(ease).start()
+                contentHolderView.animate().translationY(0f).setDuration(dur).setInterpolator(ease).start()
+                dockWrapView.animate().translationY(botH.toFloat()).setDuration(dur).setInterpolator(ease).withEndAction {
+                    chromeTopView.setLayerType(View.LAYER_TYPE_NONE, null)
+                    dockWrapView.setLayerType(View.LAYER_TYPE_NONE, null)
+                    // The bolt stays reachable: it floats over the page while the bars are away.
+                    (extractBtn.parent as? ViewGroup)?.removeView(extractBtn)
+                    floatBoltHost.addView(extractBtn, FrameLayout.LayoutParams(dp(60), dp(60)))
+                    floatBoltHost.alpha = 0f
+                    floatBoltHost.visibility = View.VISIBLE
+                    floatBoltHost.animate().alpha(1f).setDuration(140L).start()
+                    barsAnimating = false
+                }.start()
+            }
         } else {
+            val topH = barTopH
+            val botH = barBotH
+            if (topH <= 0 || botH <= 0) { barsHidden = false; return }
             barsHidden = false
+            barsAnimating = true
             floatBoltHost.animate().cancel()
             if (extractBtn.parent === floatBoltHost) {
                 floatBoltHost.removeView(extractBtn)
                 dockBar.addView(extractBtn, 3, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
             }
             floatBoltHost.visibility = View.GONE
-            chromeTopView.animate().cancel()
-            dockWrapView.animate().cancel()
-            chromeTopView.visibility = View.VISIBLE
-            dockWrapView.visibility = View.VISIBLE
-            chromeTopView.alpha = 0f
-            dockWrapView.alpha = 0f
-            chromeTopView.translationY = -dp(40).toFloat()
-            dockWrapView.translationY = dp(40).toFloat()
-            chromeTopView.animate().translationY(0f).alpha(1f).setDuration(180L).start()
-            dockWrapView.animate().translationY(0f).alpha(1f).setDuration(180L).start()
+            chromeTopView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            dockWrapView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            chromeTopView.animate().translationY(0f).setDuration(dur).setInterpolator(ease).start()
+            contentHolderView.animate().translationY(topH.toFloat()).setDuration(dur).setInterpolator(ease).start()
+            dockWrapView.animate().translationY(0f).setDuration(dur).setInterpolator(ease).withEndAction {
+                // 3) Bars are back in place: hand the space back to the layout. The page's top edge is
+                //    already where the layout puts it, so nothing shifts on screen.
+                topLp.bottomMargin = 0
+                botLp.topMargin = 0
+                chromeTopView.layoutParams = topLp
+                dockWrapView.layoutParams = botLp
+                chromeTopView.elevation = 0f
+                dockWrapView.elevation = 0f
+                contentHolderView.translationY = 0f
+                chromeTopView.setLayerType(View.LAYER_TYPE_NONE, null)
+                dockWrapView.setLayerType(View.LAYER_TYPE_NONE, null)
+                barsAnimating = false
+            }.start()
         }
     }
 
