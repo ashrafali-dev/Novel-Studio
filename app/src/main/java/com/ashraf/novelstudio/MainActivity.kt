@@ -1778,10 +1778,9 @@ return t.length>=40?'TXT:'+t:'';
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
-    // Pause between two chatbot requests: a fresh random value of 3.0-4.5 s on every read, so the
-    // requests never arrive at a perfectly regular interval (which looks like a bot to anti-abuse checks).
-    // Average is ~3.75 s. The pause only applies right after a send or a finished answer; a request
-    // made later than that goes out immediately.
+    // Randomized request spacing: normal chapter jobs keep the safer 3.0–4.5 s gap, while
+    // real-time OCR uses 0.8–1.4 s so upcoming panels can be pre-translated before the reader reaches them.
+    // The gap applies after sends and completed replies; no delay is added once the gate has expired.
     private val chatbotRequestGapMs: Long
         get() = if (DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
             // Real-time batches contain multiple bubbles and use a separate read-ahead WebView.
