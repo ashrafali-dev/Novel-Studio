@@ -193,7 +193,7 @@ class JapaneseMangaEngineActivity : Activity() {
     private fun controls() {
         val installed = manager.isInstalled()
         installButton.isEnabled = !manager.isDownloading() && !scanning && !scanWhenReady
-        deleteButton.isEnabled = installed && !manager.isDownloading() && !scanning && !scanWhenReady
+        deleteButton.isEnabled = manager.hasFiles() && !manager.isDownloading() && !scanning && !scanWhenReady
         scanButton.isEnabled = installed && page.url?.startsWith("http") == true && !scanning && !scanWhenReady
         cancelButton.isEnabled = manager.isDownloading() || scanning || scanWhenReady
     }
@@ -343,6 +343,7 @@ class JapaneseMangaEngineActivity : Activity() {
         val id = UUID.randomUUID().toString()
         val raw = File(dir, id + ".download")
         val target = File(dir, id + ".jpg")
+        var success = false
         try {
             val conn = URL(src).openConnection() as HttpURLConnection
             try {
@@ -375,8 +376,12 @@ class JapaneseMangaEngineActivity : Activity() {
             }) ?: error("image decode failed")
             try { FileOutputStream(target).use { if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, it)) error("JPEG conversion failed") } }
             finally { bitmap.recycle() }
+            success = true
             return "input/" + target.name
-        } finally { raw.delete() }
+        } finally {
+            raw.delete()
+            if (!success) target.delete()
+        }
     }
 
     private fun deleteLocal(url: String) {
@@ -392,7 +397,7 @@ class JapaneseMangaEngineActivity : Activity() {
         scanning = false
         progress.visibility = View.GONE
         resultView.text = text
-        if (status.text.toString().isBlank()) status.text = "স্ক্যান সম্পন্ন"
+        status.text = text.lineSequence().firstOrNull()?.take(180)?.ifBlank { "স্ক্যান সম্পন্ন" } ?: "স্ক্যান সম্পন্ন"
         controls()
     }
 
