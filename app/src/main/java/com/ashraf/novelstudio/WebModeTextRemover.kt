@@ -187,12 +187,15 @@ internal object WebModeTextRemover {
 
             bitmap.setPixels(output, 0, width, 0, 0, width, height)
             val bytesOut = ByteArrayOutputStream()
-            val format = if (Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.WEBP
-            val quality = if (Build.VERSION.SDK_INT >= 30) 100 else 97
-            if (!bitmap.compress(format, quality, bytesOut)) return false
+            // API 30+ supports lossless WebP. Older Android versions use lossless PNG instead
+            // of re-encoding the whole comic page with lossy WebP.
+            val modern = Build.VERSION.SDK_INT >= 30
+            val format = if (modern) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.PNG
+            if (!bitmap.compress(format, 100, bytesOut)) return false
             val cleaned = bytesOut.toByteArray()
             if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return false
-            return WebModeTextRemovalCache.store(context, sourceUrl, cleaned, "image/webp")
+            return WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
+                if (modern) "image/webp" else "image/png")
         } catch (_: OutOfMemoryError) {
             return false
         } catch (_: Exception) {
