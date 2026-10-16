@@ -113,18 +113,20 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     val body = text.substring(m.range.last + 1, end).trim()
                     if (body.isNotEmpty() && no !in byNo) byNo[no] = body
                 }
-                // Some models preserve the title marker; others omit the title entirely and
-                // renumber the first bubble as [001]. Evaluate both layouts and use the one
-                // that maps the most actual bubbles instead of shifting every translation.
-                val withTitle = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
-                val withoutTitle = List(n) { i -> byNo[i + 1]?.replace(NL, " ") }
-                val a = withTitle.count { !it.isNullOrBlank() }
-                val b = withoutTitle.count { !it.isNullOrBlank() }
-                val out = if (b > a) withoutTitle else withTitle
-                val found = maxOf(a, b)
-                // A preserved marker identifies its bubble exactly. In live mode, place any
-                // correctly marked answers and leave missing bubbles untranslated instead of
-                // abandoning the whole batch and switching to reader view.
+                // Marker numbers are positional IDs, not a best-effort hint. Never choose an
+                // offset merely because it yields one more match: if a full-page reply includes
+                // [001] but omits the expected final marker, it is ambiguous whether the model
+                // renumbered the bubbles after dropping the title or simply omitted the last bubble.
+                // Refuse bubble placement in that case instead of shifting every translation by one.
+                val expectedLast = n + layout.titleOffset
+                if (layout.titleOffset > 0 && byNo.containsKey(1) && !byNo.containsKey(expectedLast)) {
+                    return null
+                }
+                val out = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
+                val found = out.count { !it.isNullOrBlank() }
+                // Missing marker IDs leave only their own bubbles blank; present IDs keep their
+                // original position. Live batches can be sparse because only new visible bubbles
+                // were sent, while a normal full scan still needs a meaningful matched result.
                 if (found > 0 && (found * 100 >= n * 70 || layout.titleOffset == 0)) return out
                 return null
             }
