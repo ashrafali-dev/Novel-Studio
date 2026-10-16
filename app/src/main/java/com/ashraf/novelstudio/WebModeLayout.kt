@@ -90,17 +90,6 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                 val value = values.getOrNull(i)?.trim().orEmpty()
                 if (value.isEmpty()) b else b.copy(translatedText = value)
             })
-        private val BLANK = Regex("\\n\\s*\\n")
-        private val NL = Regex("\\s*\\n\\s*")
-
-        /**
-         * One translated string per bubble (null = no translation for that bubble, leave it alone),
-         * or null when the translation cannot be matched to the bubbles with confidence.
-         *
-         * With [NNN] markers the match is exact by number, so a dropped marker only loses that one
-         * bubble (at least 70% must be present). Without markers the paragraph count must equal the
-         * paragraph count that was sent; guessing a position would put text in the wrong bubble.
-         */
         private val NL = Regex("\\s*\\n\\s*")
 
         /**
