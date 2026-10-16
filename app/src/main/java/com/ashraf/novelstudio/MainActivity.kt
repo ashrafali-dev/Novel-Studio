@@ -6058,20 +6058,35 @@ return t.length>=40?'TXT:'+t:'';
 
     // make sure the chatbot is not still busy with something else before we send
     private fun waitIdle(tok: Int, ch: Chapter, n: Int) {
+        if (tok != runToken) return
         chatWv.onResume()
         chatWv.resumeTimers()
         chatWv.evaluateJavascript(Js.readLen()) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val parts = decode(raw).split("|")
             val streaming = parts.getOrNull(1) == "1"
-            if (streaming) {
-                chatWv.evaluateJavascript(Js.stop()) {
-                    if (tok == runToken) {
-                        handler.postDelayed({ if (tok == runToken) sendJob(tok, ch) }, 120)
+            chatWv.evaluateJavascript(Js.sendState()) { stateRaw ->
+                if (tok != runToken) return@evaluateJavascript
+                val statusParts = decode(stateRaw).split("|")
+                val sendState = statusParts.getOrNull(0).orEmpty()
+                val sendAgeMs = statusParts.getOrNull(1)?.toLongOrNull() ?: -1L
+                // A just-submitted message may take a moment to show its Stop control.
+                val recentSubmit = sendState == "pending" ||
+                    (sendState.startsWith("sent:") && sendAgeMs in 0L..8_000L)
+                if (streaming || recentSubmit) {
+                    if (n == 20) toast("⏳ আগের chatbot উত্তর শেষ হওয়ার অপেক্ষা চলছে…")
+                    if (n >= 720) {
+                        failJob(
+                            tok, ch,
+                            if (streaming) "The previous chatbot reply is still running; new text was not sent"
+                            else "A previous chatbot message is still being submitted; new text was not sent"
+                        )
+                    } else {
+                        handler.postDelayed({ if (tok == runToken) waitIdle(tok, ch, n + 1) }, 500L)
                     }
+                } else {
+                    sendJob(tok, ch)
                 }
-            } else {
-                sendJob(tok, ch)
             }
         }
     }
@@ -6130,16 +6145,40 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
                 // Real-time mode starts checking almost immediately; normal jobs keep the old startup delay.
-                handler.postDelayed({
-                    if (tok == runToken) {
-                        pollJob(
-                            tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0,
-                            pollDelayMs = 0L
-                        )
-                    }
-                }, RealtimeCompletionPolicy.firstPollDelayMs(this))
+                awaitChatSend(tok, ch, n0, baseLen, 0)
             } else {
                 failJob(tok, ch, "Chat input not found — check that you are logged in to the chatbot")
+            }
+        }
+    }
+
+    private fun awaitChatSend(tok: Int, ch: Chapter, n0: Int, baseLen: Int, attempt: Int) {
+        if (tok != runToken) return
+        chatWv.evaluateJavascript(Js.sendState()) { raw ->
+            if (tok != runToken) return@evaluateJavascript
+            val state = decode(raw).substringBefore("|").trim()
+            when {
+                state.startsWith("sent:") -> {
+                    handler.postDelayed({
+                        if (tok == runToken) {
+                            pollJob(
+                                tok, ch, n0, baseLen, System.currentTimeMillis(), 0, 0,
+                                pollDelayMs = 0L
+                            )
+                        }
+                    }, RealtimeCompletionPolicy.firstPollDelayMs(this))
+                }
+                state == "failed" -> failJob(
+                    tok, ch,
+                    "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
+                )
+                attempt < 150 -> handler.postDelayed({
+                    if (tok == runToken) awaitChatSend(tok, ch, n0, baseLen, attempt + 1)
+                }, 200L)
+                else -> failJob(
+                    tok, ch,
+                    "Could not confirm the chatbot Send action. The next text was not inserted."
+                )
             }
         }
     }
@@ -6331,6 +6370,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             if (!livePanelBatch) {
                 toast("✅ Translation saved" + (if (ch.number.isNotEmpty()) " (Ch ${ch.number})" else ""))
             }
+            chatWv.evaluateJavascript(Js.clearSendState(), null)
             running = null
             startNext()
             handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
