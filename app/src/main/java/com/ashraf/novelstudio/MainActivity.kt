@@ -4032,6 +4032,8 @@ return t.length>=40?'TXT:'+t:'';
     private inner class NovelClient : WebViewClient() {
         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             val r = request ?: return null
+            // Only the marked image requests for a cached, OCR-cleaned panel are intercepted.
+            WebModeTextRemovalCache.intercept(r.url)?.let { return it }
             // Serve bundled Bengali fonts from a same-origin-looking path as well as the
             // legacy ns.local host. WebNovel's CSP can block cross-origin font URLs.
             val localFontPath = r.url.path?.startsWith("/__ns_font/") == true
@@ -4091,7 +4093,11 @@ return t.length>=40?'TXT:'+t:'';
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-            if (view === novelWv && url != null) AdBlock.pageHost = Uri.parse(url).host?.lowercase()
+            if (view === novelWv && url != null) {
+                AdBlock.pageHost = Uri.parse(url).host?.lowercase()
+                // Processed images belong to the current page only; never reuse them on another chapter.
+                WebModeTextRemovalCache.clear(this@MainActivity)
+            }
             if (view === novelWv && url != null && !restoringTab) {
                 browserTabs.getOrNull(activeTabIndex)?.url = url
                 browserTabs.getOrNull(activeTabIndex)?.label =
@@ -6974,7 +6980,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Real-time Prompt", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
-            "🎌 Japanese Manga Engine (optional)"
+            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -6982,12 +6988,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36),
-            "READER" to listOf(20, 23, 9, 37),
+            "READER" to listOf(20, 23, 9, 37, 38),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35)
         )
         lateinit var dlg: Dialog
@@ -7087,6 +7093,18 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuRtPromptLabel())
                     toast(if (on) "📝 Prompt is sent with every batch (scan & real-time)"
                           else "📝 Only the text is sent (no prompt) — scan & real-time")
+                }
+                38 -> {
+                    val on = !Prefs.bool(this, "wmTextRemoval", false)
+                    Prefs.putBool(this, "wmTextRemoval", on)
+                    if (on) {
+                        toast("🧽 Text Remover ON — next Web Mode/Japanese Manga OCR scan will clean only safe text pixels.")
+                    } else {
+                        WebModeTextRemovalCache.clear(this)
+                        novelWv.evaluateJavascript("(function(){var l=document.getElementById('__ns_wm_clean_layer');if(l&&l.parentNode)l.parentNode.removeChild(l);})()", null)
+                        toast("🧽 Text Remover OFF — active cleaned overlay removed; original page remains intact.")
+                    }
+                    refresh(i, menuTextRemovalLabel())
                 }
                 37 -> {
                     val sourceUrl = novelWv.url.orEmpty()
@@ -7589,6 +7607,9 @@ ${rows.take(220).joinToString("\n")}
 
     private fun menuAdBlockLabel(): String =
         (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
+
+    private fun menuTextRemovalLabel(): String =
+        (if (Prefs.bool(this, "wmTextRemoval", false)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
 
     /** Glass bottom sheet with one tappable row per label (long-press optional). */
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
