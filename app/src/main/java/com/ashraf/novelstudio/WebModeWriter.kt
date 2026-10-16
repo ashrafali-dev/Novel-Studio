@@ -83,6 +83,8 @@ internal object WebModeWriter {
       var b=document.createElement('div'); b.className='__ns_b';
       b.setAttribute('data-s',it.s);
       b.setAttribute('data-cl',it.cl||'');
+      b.setAttribute('data-bg',it.bg);
+      b.setAttribute('data-sf',it.sf?'1':'0');
       b.setAttribute('data-g',[it.cx,it.cy,it.w,it.h,it.a,it.f].join(','));
       b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:hidden;'
         +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
