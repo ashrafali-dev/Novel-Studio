@@ -1596,17 +1596,30 @@ function cands(sc, includeBackgrounds){
 """
 
         private const val JS_STEP = """
-var sc=scroller(),vh=window.innerHeight||800,before,after,hh,bottom,step=__STEP__;
+var sc=window.__nsWmUseDocumentScroll?null:scroller(),vh=window.innerHeight||800,before,after,hh,bottom,step=__STEP__;
 if(sc){
   if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
   before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*step);after=sc.scrollTop;hh=sc.scrollHeight;
+  // If the selected inner pane refuses to move before its real bottom, fall back to document
+  // scrolling rather than falsely claiming that discovery reached the end.
+  if(after===before&&before+vh<hh-4){
+    var docBefore=window.pageYOffset||de.scrollTop||0;
+    if(window.__nsWmY===undefined)window.__nsWmY=docBefore;
+    window.scrollBy(0,Math.round((window.innerHeight||vh)*step));
+    var docAfter=window.pageYOffset||de.scrollTop||0;
+    if(docAfter!==docBefore){
+      window.__nsWmUseDocumentScroll=true;
+      sc=null;before=docBefore;after=docAfter;vh=window.innerHeight||vh;
+      hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
+    }
+  }
 }else{
   before=window.pageYOffset||de.scrollTop||0;
   if(window.__nsWmY===undefined)window.__nsWmY=before;
   window.scrollBy(0,Math.round(vh*step));after=window.pageYOffset||de.scrollTop||0;
   hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
 }
-bottom=(after+vh>=hh-4)||after===before;
+bottom=(after+vh>=hh-4);
 var now=Date.now(),probeBg=now-(window.__nsWmStepBgProbeAt||0)>=1200;
 if(probeBg)window.__nsWmStepBgProbeAt=now;
 var c=cands(sc,probeBg),p=0,maxPanelBottom=0,fastUrls=c.length>=30;
@@ -1663,8 +1676,8 @@ var e=document.getElementById('__ns_wm_overlay');if(e)e.style.visibility='';retu
         private const val JS_RESTORE = """
 var sc=scroller();
 if(sc&&window.__nsWmS!==undefined)sc.scrollTop=window.__nsWmS;
-else if(window.__nsWmY!==undefined)window.scrollTo(0,window.__nsWmY);
-try{delete window.__nsWmY;delete window.__nsWmS;}catch(e){}
+if(window.__nsWmY!==undefined)window.scrollTo(0,window.__nsWmY);
+try{delete window.__nsWmY;delete window.__nsWmS;delete window.__nsWmUseDocumentScroll;}catch(e){}
 return '1';
 """
 
