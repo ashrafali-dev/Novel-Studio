@@ -477,7 +477,7 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES = 10
+    private val REALTIME_AHEAD_PANEL_BATCH_SIZE = 10
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
@@ -488,10 +488,8 @@ class MainActivity : Activity() {
         // The OCR worker returns a completed image panel at a time. Batch bubble lines across panels,
         // but start the chatbot as soon as 10+ bubbles are ready instead of waiting for all 10 images.
         // A small remainder is flushed by queueRealtimeAheadTranslations after a short debounce.
+        // Treat ten image panels as one read-ahead unit, regardless of how many bubbles each contains.
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
-        fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
-            panel.bubbles.count { it.sourceText.isNotBlank() }
-        }
         fun flushCollected() {
             if (collectedPanels.isEmpty()) return
             val ready = collectedPanels.values.sortedBy { it.top }
@@ -517,9 +515,9 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Start pre-translation early when the collected OCR has at least 10 text bubbles.
-                    // The OCR worker continues reading the remaining upcoming panels in parallel.
-                    if (collectedBubbleCount() >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
+                    // Once ten panels have OCR results, send that batch while the next OCR batch
+                    // can start as soon as this worker finishes. Panel count, not bubble count, controls it.
+                    if (collectedPanels.size >= REALTIME_AHEAD_PANEL_BATCH_SIZE) flushCollected()
                 }
             },
             onAheadDone = {
@@ -1621,7 +1619,9 @@ return t.length>=40?'TXT:'+t:'';
                 // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
                 // Keep the DOM probe light enough that it does not compete with touch scrolling.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
-                    rtAheadTranslationQueue.size < 2 &&
+                    // Keep a bounded OCR/translation pipeline: allow the next ten-panel batch
+                    // to be prepared while the previous batch is still being translated.
+                    rtAheadTranslationQueue.size < 4 &&
                     System.currentTimeMillis() - deepSeekAheadAtMs >= 220L) {
                     startAheadOcr()
                 }
@@ -1974,6 +1974,7 @@ return t.length>=40?'TXT:'+t:'';
                     if (!resumed) {
                         resumed = true
                         chatReloadPending = null
+                        var composerReadyStreak = 0
                         fun probeComposer(attempt: Int) {
                             if (!isValid()) {
                                 onResult("nobox")
@@ -1985,10 +1986,16 @@ return t.length>=40?'TXT:'+t:'';
                                     return@evaluateJavascript
                                 }
                                 if (decode(readyRaw).trim() == "1") {
-                                    // Re-enter the normal shared rate gate only after
-                                    // the new chat's composer is mounted and usable.
-                                    sendChatRequest(text, true, isValid, allowDuringTranslation) { result -> onResult(result) }
+                                    composerReadyStreak++
+                                    if (composerReadyStreak >= 2) {
+                                        // Re-enter the normal shared rate gate only after the new
+                                        // composer remains mounted and usable across two checks.
+                                        sendChatRequest(text, true, isValid, allowDuringTranslation) { result -> onResult(result) }
+                                    } else {
+                                        handler.postDelayed({ probeComposer(attempt + 1) }, 350L)
+                                    }
                                 } else if (attempt < 48) {
+                                    composerReadyStreak = 0
                                     handler.postDelayed({ probeComposer(attempt + 1) }, 250L)
                                 } else {
                                     copy(text)
