@@ -26,6 +26,10 @@ function __stream(p){
   'button[aria-label*="stop" i]', 'button[title*="stop" i]',
   '[data-is-streaming="true"]', '[aria-label*="cancel generation" i]'].filter(Boolean).join(',');
  try{var ss=[].slice.call(document.querySelectorAll(stopSelectors));for(var si=0;si<ss.length;si++){if(__vis(ss[si]))return 1;}}catch(e){}
+ // Site-independent signal: the newest assistant text changed within the last 0.9 s => still generating.
+ try{var al=__asst(p),lt=al.length?al[al.length-1]:null,ln=lt?(lt.innerText||lt.textContent||'').length:-1,g=window.__nsGrow,nw=Date.now();
+  if(!g||g.n!==al.length||g.l!==ln){window.__nsGrow={n:al.length,l:ln,t:nw,init:!!g};if(g&&g.n===al.length&&ln>=0&&g.l>=0)return 1;}
+  else if(g.init&&nw-g.t<900&&ln>0)return 1;}catch(e){}
  // Claude can expose a textual thinking/responding status without a reliable stop button.
  if(/claude\.ai$/i.test(location.hostname)){
   var tail=(document.body.innerText||'').slice(-6000);
@@ -104,6 +108,34 @@ function __ok(b){return __vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=
 function __ctls(box){var out=[],seen=new Set(),c=box.parentElement,prev=[];for(var up=0;c&&up<7;up++,c=c.parentElement){var l=[].slice.call(c.querySelectorAll('button,[role="button"]'));if(l.length>14)break;prev=l;}prev.forEach(function(x){if(!seen.has(x)){seen.add(x);out.push(x);}});return out;}
 function __snap(box){var m=new Map();__ctls(box).forEach(function(b){m.set(b,__ok(b));});return m;}
 function __diffSend(box,snap){var cand=__ctls(box).filter(function(b){if(!__ok(b)||b.querySelector('input[type="file"]'))return false;var was=snap&&snap.get(b);return was===undefined||was===false;});return cand.length?cand[cand.length-1]:null;}
+function __denyBtn(b){
+ var n=String((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||'')+' '+(b.getAttribute('data-test-id')||'')+' '+String(b.innerText||'').slice(0,24)).toLowerCase();
+ return /\b(voice|microphone|mic|dictation|audio|record|stop|cancel|pause|interrupt|abort|attach|attachment|upload|file|photo|image|camera|search|deep.?think|reasoning|plus|menu|settings|model|tools?)\b/.test(n);
+}
+// Last-resort Send finder for sites whose Send button has no label (e.g. DeepSeek icon button):
+// 1) a control that became usable after the text was inserted, 2) the right-most usable control to the right of the editor's centre.
+function __guessSend(box,snap){
+ if(!box||!box.isConnected)return null;
+ var d=__diffSend(box,snap);if(d&&!__denyBtn(d))return d;
+ var xr=box.getBoundingClientRect(),mid=xr.left+xr.width/2;
+ var c=__ctls(box).filter(function(b){
+  if(!__ok(b)||b.querySelector('input[type="file"]')||__denyBtn(b))return false;
+  var r=b.getBoundingClientRect();
+  return r.left+r.width/2>mid&&r.width<=96&&r.height<=96;
+ });
+ if(!c.length)return null;
+ c.sort(function(a,b){var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();return (rb.right+rb.bottom)-(ra.right+ra.bottom);});
+ return c[0];
+}
+function __pressFull(b){
+ if(!b||!b.isConnected||!__ok(b))return false;
+ try{b.scrollIntoView({block:'nearest'});}catch(e){}
+ try{b.focus();}catch(e){}
+ var r=b.getBoundingClientRect(),o={bubbles:true,cancelable:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2,button:0,pointerId:1,pointerType:'touch',isPrimary:true};
+ try{['pointerdown','mousedown','pointerup','mouseup'].forEach(function(k){
+  var E=k.indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;b.dispatchEvent(new E(k,o));});}catch(e){}
+ try{b.click();return true;}catch(e){return false;}
+}
 function __findSend(p,box,snap){
  if(!box||!box.isConnected)return null;
  var form=null;try{form=box.closest('form');}catch(e){}
@@ -131,7 +163,8 @@ function __findSend(p,box,snap){
   if(!__ok(b)||b.querySelector('input[type="file"]'))return false;
   var t=label(b);
   // Never click a voice/microphone or other composer utility control.
-  if(/\b(voice|microphone|mic|dictation|audio|record|stop|cancel|pause|interrupt|abort|attach|attachment|upload|file|search|deep.?think|reasoning|plus|menu|settings)\b/.test(t))return false;
+  // Only the accessible name is checked (not CSS classes), so a class such as "file-x" cannot veto the real Send button.
+  if(__denyBtn(b))return false;
   // Explicitly labelled Send/Submit, or known send-button test IDs only.
   return /\b(send|submit)\b/.test(t)||/send-button/.test(t);
  }
@@ -214,7 +247,7 @@ function __box(){
   var box=__box();
   if(!box) return 'nobox';
   box.focus();
-  var snap=__snap(box);
+  var snap=__snap(box);window.__nsSnap=snap;
   window.__nsSentN=__nrm(text);
   try{var __bs=new WeakSet(),__bt=new Set(),__tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),__nn;
     while(__nn=__tw.nextNode()){__bs.add(__nn);var __x=__nrm(__nn.nodeValue);if(__x.length>=20)__bt.add(__x);}
@@ -282,13 +315,13 @@ function __box(){
       return false;
     }
     function confirmSend(method){
-      setTimeout(function(){
-        if(sentOk()){
-          window.__nsSendState='sent:'+method;
-        }else{
-          window.__nsSendState='failed';
-        }
-      },1400);
+      var t0=Date.now();
+      (function chk(){
+        var streaming=0;try{streaming=__stream(p);}catch(e){}
+        if(sentOk()||streaming){window.__nsSendState='sent:'+method;return;}
+        if(Date.now()-t0<7000){setTimeout(chk,350);return;}
+        window.__nsSendState='failed';
+      })();
     }
     function waitUntilReady(){
       if(!box.isConnected){
@@ -308,13 +341,21 @@ function __box(){
       }
       var btn=__findSend(p,box,snap);
       if(btn&&__ok(btn)){
-        if(__press(btn)){
+        if(__pressFull(btn)){
           confirmSend('btn');
           return;
         }
       }
-      // If no explicitly identifiable Send button exists, submit the verified composer
-      // using the site's keyboard/form mechanism; never guess by clicking a nearby icon.
+      // Send button has no usable label (DeepSeek and similar): the control that became enabled
+      // once text was inserted, or the right-most control beside the editor.
+      var g=__guessSend(box,snap);
+      if(g){
+        if(__pressFull(g)){
+          confirmSend('guess');
+          return;
+        }
+      }
+      // Last resort: the site's keyboard/form mechanism.
       if(requestComposerSubmit()){
         confirmSend('submit');
       }else{
@@ -336,6 +377,22 @@ function __box(){
     /** Send status plus elapsed milliseconds, so a queued job can wait for a just-submitted message. */
     fun sendState(): String = run(
         "(function(){var t=Number(window.__nsSentAt||0);return String(window.__nsSendState||'idle')+'|'+(t?Date.now()-t:-1);})()"
+    )
+
+    /** Centre of the best Send candidate in WebView pixels ("x|y"), or "none". Used for a trusted native tap. */
+    fun sendButtonRect(): String = run(
+        "(function(){try{var p=__prof(),box=__box();if(!box)return 'none';var snap=window.__nsSnap||null;" +
+        "var b=__findSend(p,box,snap)||__guessSend(box,snap);if(!b)return 'none';" +
+        "try{b.scrollIntoView({block:'nearest'});}catch(e){}" +
+        "var r=b.getBoundingClientRect(),vv=window.visualViewport,dpr=window.devicePixelRatio||1;" +
+        "var x=(r.left+r.width/2-(vv?vv.offsetLeft:0))*dpr,y=(r.top+r.height/2-(vv?vv.offsetTop:0))*dpr;" +
+        "return Math.round(x)+'|'+Math.round(y);}catch(e){return 'none';}})()"
+    )
+
+    /** "1" when the composer was emptied or a reply has started, i.e. the message really went out. */
+    fun sendLanded(): String = run(
+        "(function(){try{var box=__box(),p=__prof();var t=box?String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim():'';" +
+        "var exp=String(window.__nsSentN||'');if(!box||t.length<Math.min(exp.length,20)||__stream(p))return '1';return '0';}catch(e){return '0';}})()"
     )
 
     /** Clear only the send state after a reply is fully consumed; keep timestamps for readLen fallbacks. */

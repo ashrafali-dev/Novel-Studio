@@ -6183,14 +6183,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
                 // Real-time mode starts checking almost immediately; normal jobs keep the old startup delay.
-                awaitChatSend(tok, ch, n0, baseLen, 0)
+                awaitChatSend(tok, ch, n0, baseLen, 0, false)
             } else {
                 failJob(tok, ch, "Chat input not found — check that you are logged in to the chatbot")
             }
         }
     }
 
-    private fun awaitChatSend(tok: Int, ch: Chapter, n0: Int, baseLen: Int, attempt: Int) {
+    private fun awaitChatSend(tok: Int, ch: Chapter, n0: Int, baseLen: Int, attempt: Int, tapTried: Boolean) {
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.sendState()) { raw ->
             if (tok != runToken) return@evaluateJavascript
@@ -6206,17 +6206,74 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         }
                     }, RealtimeCompletionPolicy.firstPollDelayMs(this))
                 }
+                state == "failed" && !tapTried -> rescueSendWithTap(tok, ch, n0, baseLen)
                 state == "failed" -> failJob(
                     tok, ch,
                     "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
                 )
+                state.startsWith("failed:") -> failJob(
+                    tok, ch,
+                    "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
+                )
                 attempt < 150 -> handler.postDelayed({
-                    if (tok == runToken) awaitChatSend(tok, ch, n0, baseLen, attempt + 1)
+                    if (tok == runToken) awaitChatSend(tok, ch, n0, baseLen, attempt + 1, tapTried)
                 }, 200L)
                 else -> failJob(
                     tok, ch,
                     "Could not confirm the chatbot Send action. The next text was not inserted."
                 )
+            }
+        }
+    }
+
+    /**
+     * Web-side clicks are "untrusted" events and some chatbots (DeepSeek, Claude on mobile) ignore them.
+     * As a rescue we tap the Send button with a real, native touch event, then re-check that the message left the composer.
+     */
+    private fun rescueSendWithTap(tok: Int, ch: Chapter, n0: Int, baseLen: Int) {
+        if (tok != runToken) return
+        chatWv.evaluateJavascript(Js.sendLanded()) { landedRaw ->
+            if (tok != runToken) return@evaluateJavascript
+            // The message may have gone out late (slow editor): then do NOT send it a second time.
+            if (decode(landedRaw).trim() == "1") {
+                chatWv.evaluateJavascript("window.__nsSendState='sent:late';'ok'", null)
+                awaitChatSend(tok, ch, n0, baseLen, 0, true)
+                return@evaluateJavascript
+            }
+            chatWv.evaluateJavascript(Js.sendButtonRect()) { rectRaw ->
+                if (tok != runToken) return@evaluateJavascript
+                val xy = decode(rectRaw).trim().split("|")
+                val x = xy.getOrNull(0)?.toFloatOrNull()
+                val y = xy.getOrNull(1)?.toFloatOrNull()
+                if (x != null && y != null) {
+                    val t = android.os.SystemClock.uptimeMillis()
+                    val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0)
+                    val up = MotionEvent.obtain(t, t + 70, MotionEvent.ACTION_UP, x, y, 0)
+                    chatWv.dispatchTouchEvent(down)
+                    chatWv.dispatchTouchEvent(up)
+                    down.recycle(); up.recycle()
+                } else {
+                    // No identifiable button: send a native Enter key press into the focused editor.
+                    chatWv.requestFocus()
+                    val t = android.os.SystemClock.uptimeMillis()
+                    chatWv.dispatchKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER, 0))
+                    chatWv.dispatchKeyEvent(android.view.KeyEvent(t, t + 40, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER, 0))
+                }
+                handler.postDelayed({
+                    if (tok != runToken) return@postDelayed
+                    chatWv.evaluateJavascript(Js.sendLanded()) { r2 ->
+                        if (tok != runToken) return@evaluateJavascript
+                        if (decode(r2).trim() == "1") {
+                            chatWv.evaluateJavascript("window.__nsSendState='sent:tap';'ok'", null)
+                            awaitChatSend(tok, ch, n0, baseLen, 0, true)
+                        } else {
+                            failJob(
+                                tok, ch,
+                                "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
+                            )
+                        }
+                    }
+                }, 2500L)
             }
         }
     }
