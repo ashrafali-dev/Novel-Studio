@@ -1144,11 +1144,26 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private var activityPausedAtMs = 0L
     // If WebView drops a JS callback during reload/navigation, a watchdog restarts the probe.
     private var deepSeekPollEvalSeq = 0
+    private var deepSeekProbeInFlight = false
+    private var deepSeekProbeStartedAtMs = 0L
     private val deepSeekVisiblePoll = object : Runnable {
         override fun run() {
             if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
                 deepSeekPollBusy = false
                 return
+            }
+            // Never stack evaluateJavascript probes. Previously the 1.2 s watchdog launched a
+            // second DOM sweep while the first was still running; slow CSS-heavy readers could then
+            // accumulate main-thread work and make touch scrolling stutter.
+            if (deepSeekProbeInFlight) {
+                val age = android.os.SystemClock.elapsedRealtime() - deepSeekProbeStartedAtMs
+                if (age < 6000L) {
+                    handler.postDelayed(this, 300L)
+                    return
+                }
+                // The prior WebView callback was lost. Invalidate it and safely restart one probe.
+                deepSeekPollEvalSeq++
+                deepSeekProbeInFlight = false
             }
             val url = novelWv.url.orEmpty()
             if (!url.startsWith("http", ignoreCase = true)) {
@@ -1283,14 +1298,17 @@ var t=String((rootEl&&(rootEl.innerText||rootEl.textContent))||'').replace(/\s+/
 return t.length>=40?'TXT:'+t:'';
 }catch(e){return '';}})();"""
             val probeSeq = ++deepSeekPollEvalSeq
+            deepSeekProbeInFlight = true
+            deepSeekProbeStartedAtMs = android.os.SystemClock.elapsedRealtime()
             handler.removeCallbacks(this)
-            // A JS result normally returns almost immediately. If WebView drops its callback while
-            // navigating/reloading, this watchdog starts another probe instead of leaving OCR stuck
-            // until the user force-closes the app.
-            handler.postDelayed(this, 1200L)
+            // Only one watchdog is armed. It retries after 6 s if WebView loses this callback;
+            // the timeout path above invalidates the old result before starting a replacement.
+            handler.postDelayed(this, 6000L)
             novelWv.evaluateJavascript(js) { raw ->
                 if (probeSeq != deepSeekPollEvalSeq) return@evaluateJavascript
                 handler.removeCallbacks(this)
+                deepSeekProbeInFlight = false
+                deepSeekProbeStartedAtMs = 0L
                 if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
                     deepSeekPollBusy = false
                     return@evaluateJavascript
@@ -7539,6 +7557,8 @@ ${rows.take(220).joinToString("\n")}
             deepSeekPollEvalSeq++
             handler.removeCallbacks(deepSeekVisiblePoll)
             deepSeekPollBusy = false
+            deepSeekProbeInFlight = false
+            deepSeekProbeStartedAtMs = 0L
             scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
         }
     }
