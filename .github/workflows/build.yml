@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, feature/optional-webtoon-text-remover]
+    branches: [main, master, feature/optional-webtoon-text-remover] # temporary branch validation
 
 jobs:
   build:
