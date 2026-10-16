@@ -5347,6 +5347,11 @@ return t.length>=40?'TXT:'+t:'';
             val pre = prefetchNextOf.values.firstOrNull { pageKey(it.url) == here }
             if (pre != null) { commit(pre, token); return }
             hideNavLoading()
+            if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+                // Real-time mode owns viewport-only OCR. Do not launch the manual full-chapter
+                // scanner from navigation polling, because its tick loop scrolls the page.
+                return
+            }
             startWebModeExtract(token, useSaved = true)
             return
         }
