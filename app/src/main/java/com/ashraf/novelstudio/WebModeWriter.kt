@@ -45,7 +45,7 @@ internal object WebModeWriter {
             .replace("__PID__", JSONObject.quote(pageId))
 
     private const val BUBBLES = """
-(function(items,font,pid){
+(function(items,sources,font,pid){
   try{
     if(window.__nsWmStop){try{window.__nsWmStop();}catch(e){}}
     var old=document.getElementById('__ns_wm_overlay'); if(old&&old.parentNode)old.parentNode.removeChild(old);
@@ -113,7 +113,15 @@ internal object WebModeWriter {
       }
       b.appendChild(t); w.appendChild(b);
     }
-    var allS=[]; for(var ai=0;ai<items.length;ai++){var as0=items[ai].s; if(as0&&allS.indexOf(as0)<0)allS.push(as0);}
+    var allS=[],seenSources=Object.create(null);
+    for(var si=0;si<(sources||[]).length;si++){
+      var sourceUrl=norm(sources[si]);
+      if(sourceUrl&&!seenSources[sourceUrl]){seenSources[sourceUrl]=1;allS.push(sourceUrl);}
+    }
+    for(var ai=0;ai<items.length;ai++){
+      var as0=norm(items[ai].s);
+      if(as0&&!seenSources[as0]){seenSources[as0]=1;allS.push(as0);}
+    }
     // Source URLs whose path is shared by different query IDs are NOT interchangeable.
     // Remember ambiguity from this layout too, since virtualized readers may keep only one recycled
     // image in the DOM while several panels with the same base path are off-screen.
@@ -135,7 +143,15 @@ internal object WebModeWriter {
       for(var a=0;a<LAZY.length;a++){var v=im.getAttribute(LAZY[a]);
         if(v&&v.length>4){try{o.push(norm(new URL(v,document.baseURI).href));}catch(e){}}}
       var ss=im.getAttribute('data-srcset')||im.getAttribute('srcset');
-      if(ss){try{o.push(norm(new URL(ss.split(',')[0].trim().split(/\s+/)[0],document.baseURI).href));}catch(e){}}
+      if(ss){
+        // Keep all responsive candidates so a width/DPR change can still resolve to this same element.
+        var variants=ss.split(',');
+        for(var vi=0;vi<variants.length;vi++){
+          var vu=(variants[vi].trim().split(/\s+/)[0]||'');
+          if(!vu)continue;
+          try{o.push(norm(new URL(vu,document.baseURI).href));}catch(e){}
+        }
+      }
       return o;}
     function buildImgIndex(){
       var exact=Object.create(null), byBase=Object.create(null), imgs=document.images;
@@ -663,7 +679,7 @@ internal object WebModeWriter {
     }catch(e){}
     return 'ok';
   }catch(e){return 'err:'+e;}
-})(__ITEMS__,__FONT__,__PID__)
+})(__ITEMS__,__SOURCES__,__FONT__,__PID__)
 """
 
     private fun css(c: Int) = String.format("#%06X", c and 0xFFFFFF)
@@ -697,10 +713,19 @@ internal object WebModeWriter {
                     WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
+        val sources = JSONArray()
+        // Pass every OCR source, including bubbles with no translation. Otherwise an off-screen
+        // query-ID variant could be mistaken for the one translated item still in the DOM.
+        layout.bubbles.asSequence()
+            .map { WebModeLogic.normalizeUrl(it.src) }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .forEach { sources.put(it) }
         return BUBBLES
             .replace("__FONT__", JSONObject.quote(font))
             .replace("__PID__", JSONObject.quote(pageId))
             .replace("__ITEMS__", arr.toString())
+            .replace("__SOURCES__", sources.toString())
     }
 }
 
