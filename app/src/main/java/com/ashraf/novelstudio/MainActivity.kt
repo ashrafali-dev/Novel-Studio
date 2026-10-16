@@ -6938,7 +6938,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Real-time Prompt", menuForceLabel(),
-            "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel()
+            "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
+            "🎌 Japanese Manga Engine (optional)"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -6946,12 +6947,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36),
-            "READER" to listOf(20, 23, 9),
+            "READER" to listOf(20, 23, 9, 37),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35)
         )
         lateinit var dlg: Dialog
@@ -7051,6 +7052,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuRtPromptLabel())
                     toast(if (on) "📝 Prompt is sent with every batch (scan & real-time)"
                           else "📝 Only the text is sent (no prompt) — scan & real-time")
+                }
+                37 -> {
+                    val sourceUrl = novelWv.url.orEmpty()
+                    dlg.dismiss()
+                    startActivity(Intent(
+                        this,
+                        com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity::class.java
+                    ).putExtra(
+                        com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.EXTRA_PAGE_URL,
+                        sourceUrl
+                    ))
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
