@@ -518,12 +518,40 @@ class MainActivity : Activity() {
     }
 
     /** Stable cross-quality identity: OCR models can shift bubble geometry by a few pixels. */
+    // The cache key is the bubble's TEXT only. Image URLs change between visits (signed/tokenised CDN
+    // links, different image hosts) and OCR box positions shift slightly between fast/detailed passes,
+    // so either of them used to cause cache misses for a bubble that was already translated.
+    // Punctuation/spacing are ignored so tiny OCR differences still hit the cache.
     private fun rtAheadBubbleCacheKey(bubble: WmBubble): String {
-        val src = WebModeLogic.normalizeUrl(bubble.src)
-        val x = Math.round(bubble.cx * 100f).toInt()
-        val y = Math.round(bubble.cy * 100f).toInt()
         val text = WebModeLayout.normalizeOcrText(bubble.sourceText)
-        return "$src|$x,$y|$text"
+        val letters = text.filter { it.isLetterOrDigit() }
+        return if (letters.isNotEmpty()) letters else text
+    }
+
+    /**
+     * Put already-cached bubble translations straight onto the page overlay (no chatbot request)
+     * and mark them as translated so they are not selected again.
+     */
+    private fun placeCachedBubbles(pageUrl: String, bubbles: List<WmBubble>, values: List<String>, hashes: Set<String>) {
+        synchronized(deepSeekInFlightTextHashes) {
+            deepSeekInFlightTextHashes.removeAll(hashes)
+            deepSeekTranslatedTextHashes.addAll(hashes)
+            while (deepSeekTranslatedTextHashes.size > 2000) {
+                deepSeekTranslatedTextHashes.remove(deepSeekTranslatedTextHashes.first())
+            }
+        }
+        if (bubbles.isEmpty()) return
+        val cumulative = WebModeLayoutStore.mergeTranslated(this, pageUrl, WebModeLayout(0, bubbles), values)
+        injectBengaliFont()
+        val script = WebModeWriter.bubbleScript(
+            cumulative,
+            cumulative.bubbles.map { it.translatedText.takeIf { value -> value.isNotBlank() } },
+            Prefs.fontFile(this), pageKey(pageUrl)
+        )
+        novelWv.evaluateJavascript(script, null)
+        hasTr = true
+        shownTranslated = true
+        updatePill()
     }
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>) {
@@ -771,6 +799,16 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 scheduleRealtimeAheadPump(900L)
                 return
             }
+            if (aheadChatRequestCount >= chatNewWindowEvery && aheadChatBaseUrl.startsWith("http", true)) {
+                // Fresh chat window for the read-ahead worker; onPageFinished resumes the pump.
+                aheadChatRequestCount = 0
+                aheadChatReady = false
+                queueRtAheadTask(task, front = true)
+                worker.stopLoading()
+                worker.loadUrl(aheadChatBaseUrl)
+                return
+            }
+            aheadChatRequestCount++
             rtAheadTranslationTasksByJobKey[jobKey] = task
             rtAheadWorkerBusy = true
             rtAheadWorkerTask = task
@@ -1004,6 +1042,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private var deepSeekPendingSince = 0L
     private var deepSeekPollUrl = ""
     private var deepSeekPollBusy = false
+    // Consecutive OCR failures on this page; drives retry back-off so a broken site cannot loop forever.
+    private var deepSeekFailStreak = 0
     private var activityPausedAtMs = 0L
     // If WebView drops a JS callback during reload/navigation, a watchdog restarts the probe.
     private var deepSeekPollEvalSeq = 0
@@ -1032,6 +1072,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 deepSeekPendingSince = 0L
                 deepSeekLastOcrAtMs = 0L
                 deepSeekNoImageTriedUrl = ""
+                deepSeekFailStreak = 0
             }
             // Probe the viewport 4x/second. Image changes trigger OCR quickly; a stable image set
             // is rechecked periodically, while text-only pages get one safe HTML-extraction fallback.
@@ -1073,6 +1114,18 @@ for(var i=0;i<imgs.length;i++){
  if(r.width*r.height>=Math.max(18000,vw*vh*0.12))hasLargeImage=true;
  add('IMG',s,r,'#'+(e.naturalWidth||0)+'x'+(e.naturalHeight||0));
 }
+// Readers inside a same-origin <iframe> are invisible to document.images.
+var frs=document.querySelectorAll('iframe');
+for(var fi=0;fi<frs.length&&fi<8;fi++){try{
+ var fd=frs[fi].contentDocument,fb=frs[fi].getBoundingClientRect();if(!fd||!fd.images)continue;
+ for(var fk=0;fk<fd.images.length;fk++){
+  var ie=fd.images[fk],ir=ie.getBoundingClientRect(),is=ie.currentSrc||ie.src||'';
+  if(!good(is)||ir.width<60||ir.height<45)continue;
+  var rr={left:fb.left+ir.left,top:fb.top+ir.top,right:fb.left+ir.right,bottom:fb.top+ir.bottom,width:ir.width,height:ir.height};
+  if(rr.right<=0||rr.bottom<=0||rr.left>=vw||rr.top>=vh||rr.width*rr.height<3500)continue;
+  if(rr.width*rr.height>=Math.max(18000,vw*vh*0.12))hasLargeImage=true;
+  add('IMG',is,rr,'#'+(ie.naturalWidth||0)+'x'+(ie.naturalHeight||0));
+ }}catch(ignore){}}
 // SVG images, video posters and canvas readers do not always expose a normal <img>.
 var svgs=document.querySelectorAll('svg image');
 for(var si=0;si<svgs.length;si++){
@@ -1082,7 +1135,8 @@ for(var si=0;si<svgs.length;si++){
 var vids=document.querySelectorAll('video[poster]');
 for(var vi=0;vi<vids.length;vi++){var ve=vids[vi],vr=ve.getBoundingClientRect();if(vr.width>=80&&vr.height>=60&&vr.right>0&&vr.bottom>0&&vr.left<vw&&vr.top<vh)add('POSTER',ve.getAttribute('poster'),vr,'');}
 var cvs=document.querySelectorAll('canvas');
-for(var ci=0;ci<cvs.length;ci++){var ce=cvs[ci],cr=ce.getBoundingClientRect();if(cr.width>=100&&cr.height>=70&&cr.right>0&&cr.bottom>0&&cr.left<vw&&cr.top<vh&&cr.width*cr.height>12000){if(cr.width*cr.height>=Math.max(18000,vw*vh*0.12))hasLargeImage=true;add('CANVAS','canvas:'+location.hostname+':'+Math.round(cr.width)+'x'+Math.round(cr.height),cr,'#'+(ce.width||0)+'x'+(ce.height||0));}}
+for(var ci=0;ci<cvs.length;ci++){var ce=cvs[ci],cr=ce.getBoundingClientRect();if(cr.width>=100&&cr.height>=70&&cr.right>0&&cr.bottom>0&&cr.left<vw&&cr.top<vh&&cr.width*cr.height>12000){if(cr.width*cr.height>=Math.max(18000,vw*vh*0.12))hasLargeImage=true;var cs='';try{var tc=window.__nsRtTc||(window.__nsRtTc=document.createElement('canvas'));tc.width=8;tc.height=8;var tx=tc.getContext('2d');tx.drawImage(ce,0,0,8,8);var px=tx.getImageData(0,0,8,8).data,hv=0;for(var pi=0;pi<px.length;pi+=4){hv=(hv*31+(px[pi]>>3)*3+(px[pi+1]>>3)*5+(px[pi+2]>>3))|0;}cs=':'+hv;}catch(ignore){}
+add('CANVAS','canvas:'+location.hostname+':'+Math.round(cr.width)+'x'+Math.round(cr.height)+cs,cr,'#'+(ce.width||0)+'x'+(ce.height||0));}}
 // CSS-background scanning is a slow fallback, not the normal path. In particular,
 // never let an empty cached result force a 7,000-node sweep on every 150 ms poll.
 var bgSig=window.__nsRtBgSignature||'';
@@ -1453,6 +1507,14 @@ return t.length>=40?'TXT:'+t:'';
     private val chatbotRequestGapMs = 3_000L
     private var nextChatbotRequestAtMs = 0L
 
+    // A long chatbot conversation gets slower and starts to forget the prompt, so after every
+    // CHAT_NEW_WINDOW_EVERY requests a fresh chat window (the bot's base URL) is opened.
+    private val chatNewWindowEvery = 20
+    private var chatRequestCount = 0          // visible chat WebView
+    private var aheadChatRequestCount = 0     // hidden read-ahead chat WebView
+    private var chatReloadPending: (() -> Unit)? = null
+    private fun chatRolloverDue() = chatRequestCount >= chatNewWindowEvery
+
     /** Send through the shared rate gate so every selected chatbot follows the same spacing. */
     private fun sendChatRequest(
         text: String,
@@ -1473,6 +1535,27 @@ return t.length>=40?'TXT:'+t:'';
             handler.postDelayed({ sendChatRequest(text, true, isValid, onResult) }, waitMs)
             return
         }
+        if (chatRolloverDue()) {
+            chatRequestCount = 0
+            val base = selectedBotBaseUrl()
+            if (base.startsWith("http", true)) {
+                toast("🔄 নতুন চ্যাট উইন্ডো খোলা হচ্ছে ($chatNewWindowEvery টি রিকুয়েস্ট পূর্ণ)")
+                var resumed = false
+                val resume = {
+                    if (!resumed) {
+                        resumed = true
+                        chatReloadPending = null
+                        sendChatRequest(text, true, isValid, onResult)
+                    }
+                }
+                chatReloadPending = { handler.postDelayed({ resume() }, 1500L) }
+                handler.postDelayed({ resume() }, 15000L)   // safety net if onPageFinished never fires
+                chatWv.stopLoading()
+                chatWv.loadUrl(base)
+                return
+            }
+        }
+        chatRequestCount++
         nextChatbotRequestAtMs = now + chatbotRequestGapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + chatbotRequestGapMs)
         chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
@@ -3173,6 +3256,8 @@ return t.length>=40?'TXT:'+t:'';
     private fun openBot(u: String) {
         val key = botKey(u)
         if (key == currentBotKey) return
+        chatRequestCount = 0
+        aheadChatRequestCount = 0
         clearRealtimeAheadStateForNavigation()
         aheadChatBaseUrl = ""
         aheadChatReady = false
@@ -3250,6 +3335,10 @@ return t.length>=40?'TXT:'+t:'';
         }
         override fun onPageFinished(view: WebView?, url: String?) {
             CookieManager.getInstance().flush()
+            if (view === chatWv && url.orEmpty().startsWith("http", true)) {
+                val cb = chatReloadPending
+                if (cb != null) { chatReloadPending = null; cb() }
+            }
             if (view === aheadChatWv) {
                 val finished = url.orEmpty()
                 if (finished.startsWith("http", true) &&
@@ -4020,6 +4109,7 @@ return t.length>=40?'TXT:'+t:'';
                     when (out) {
                         is WebModeOutcome.Success -> {
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
+                            deepSeekFailStreak = 0
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (DeepSeekRealtimeTranslation.isEnabled(this)) {
                                 // OCR is complete; keep the status light pink while the chatbot handles the text.
@@ -4029,6 +4119,7 @@ return t.length>=40?'TXT:'+t:'';
                                 if (scanLayout != null && sourceBubbles.isNotEmpty()) {
                                     val selected = ArrayList<WmBubble>()
                                     val hashes = LinkedHashSet<String>()
+                                    val forcedHashes = HashSet<String>()
                                     // Reserve new bubbles atomically. Bubbles already translated or
                                     // currently waiting for DeepSeek are skipped even when viewports overlap.
                                     val usedTargets = ArrayList<RetrTarget>()
@@ -4041,7 +4132,7 @@ return t.length>=40?'TXT:'+t:'';
                                             if (hash !in deepSeekTranslatedTextHashes || forced != null) {
                                                 selected.add(bubble)
                                                 hashes.add(hash)
-                                                if (forced != null) usedTargets.add(forced)
+                                                if (forced != null) { usedTargets.add(forced); forcedHashes.add(hash) }
                                             }
                                         }
                                         deepSeekInFlightTextHashes.addAll(hashes)
@@ -4056,9 +4147,30 @@ return t.length>=40?'TXT:'+t:'';
                                         WebModeLayoutStore.setScan(liveChapter.url, liveLayout)
                                         deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
                                         val cachedTranslations = selected.map {
-                                            rtAheadTranslationCache[rtAheadBubbleCacheKey(it)]
+                                            if (WebModeLayout.fingerprint(it) in forcedHashes) null
+                                            else rtAheadTranslationCache[rtAheadBubbleCacheKey(it)]
                                         }
-                                        if (cachedTranslations.all { !it.isNullOrBlank() }) {
+                                        val cachedCount = cachedTranslations.count { !it.isNullOrBlank() }
+                                        if (cachedCount in 1 until selected.size) {
+                                            // Partly cached: place the cached bubbles immediately and send ONLY the
+                                            // missing ones to the chatbot (previously all were re-translated).
+                                            val hitBubbles = ArrayList<WmBubble>()
+                                            val hitValues = ArrayList<String>()
+                                            val missBubbles = ArrayList<WmBubble>()
+                                            selected.forEachIndexed { idx, b ->
+                                                val v = cachedTranslations[idx]
+                                                if (!v.isNullOrBlank()) { hitBubbles.add(b); hitValues.add(v) } else missBubbles.add(b)
+                                            }
+                                            val hitHashes = hitBubbles.map { WebModeLayout.fingerprint(it) }.toSet()
+                                            val missHashes = LinkedHashSet(missBubbles.map { WebModeLayout.fingerprint(it) })
+                                            placeCachedBubbles(liveChapter.url, hitBubbles, hitValues, hitHashes)
+                                            val missChapter = out.chapter.copy(
+                                                text = missBubbles.joinToString("\n\n") { it.sourceText.trim() }, contentSel = ""
+                                            )
+                                            WebModeLayoutStore.setScan(missChapter.url, WebModeLayout(scanLayout.titleOffset, missBubbles))
+                                            deepSeekTextHashByChapter[keyOf(missChapter)] = missHashes
+                                            handleChapter(missChapter, useSavedTranslation = false)
+                                        } else if (cachedCount == selected.size) {
                                             // Every bubble in this visible batch has already been translated ahead.
                                             // Apply the saved marker-aligned answer without another chatbot request.
                                             onChapter(liveChapter)
@@ -4115,7 +4227,7 @@ return t.length>=40?'TXT:'+t:'';
                                             return@extractNow
                                         }
                                         if (ch == null || ch.text.isBlank()) {
-                                            toast("🤖 No image panels or readable chapter text found")
+                                            toast("🤖 No image panels or readable chapter text found" + WebModeExtractor.lastDiscoveryDebug.takeIf { it.isNotBlank() }.let { if (it == null) "" else " (" + it + ")" })
                                             deepSeekLastOcrAtMs = System.currentTimeMillis()
                                             return@extractNow
                                         }
@@ -4143,14 +4255,16 @@ return t.length>=40?'TXT:'+t:'';
                                     toast("⚠ OCR: " + out.message)
                                 }
                                 deepSeekAutoStartedUrl = novelWv.url.orEmpty()
-                                // The same panel must be eligible for another OCR attempt after failure.
-                                deepSeekVisibleSignature = ""
-                                deepSeekLastOcrAtMs = 0L
+                                // Retry the same panel, but back off (2s, 4s, 8s ... max 20s) instead of
+                                // looping instantly; a broken site used to keep the OCR light blinking forever.
+                                deepSeekFailStreak = (deepSeekFailStreak + 1).coerceAtMost(8)
+                                val backoffMs = (1000L shl deepSeekFailStreak).coerceAtMost(20000L)
+                                deepSeekLastOcrAtMs = System.currentTimeMillis()
                                 handler.postDelayed({
                                     if (token == navToken && DeepSeekRealtimeTranslation.isEnabled(this)) {
                                         deepSeekVisibleSignature = ""
                                     }
-                                }, 1800L)
+                                }, backoffMs)
                             } else if (out.error != WebModeError.NAVIGATION_INVALIDATED) {
                                 toast("❌ " + out.message)
                             }
@@ -5310,7 +5424,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         // Real-time menu switch: send the editable prompt (+ glossary) with every batch, or only the
         // text with the marker/page rules (when the prompt already lives in the chat).
         // The switch applies to every image-chapter translation (Web Mode scan, prefetch and real-time).
-        val skipPrompt = webModeOn() && ch.contentSel.isBlank() && !Prefs.bool(this, "rtSendPrompt", true)
+        val skipPrompt = webModeOn() && ch.contentSel.isBlank() && !Prefs.bool(this, "rtSendPrompt", true) && !chatRolloverDue()   // a fresh chat window needs the full prompt again
         val full = if (skipPrompt) {
             // Prompt OFF: only the text goes to the chatbot (the prompt already lives in the chat).
             // One short line keeps the [001] markers, because the reply is matched to bubbles by them.

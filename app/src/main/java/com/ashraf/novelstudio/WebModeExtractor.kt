@@ -381,6 +381,7 @@ internal class WebModeExtractor(
                 if (!alive()) { fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
                 val o = parseJson(raw)
                 if (o == null) { fail(WebModeError.NO_IMAGES); return@evaluateJavascript }
+                lastDiscoveryDebug = o.optString("dbg")
                 val arr = o.optJSONArray("imgs") ?: JSONArray()
                 val refs = ArrayList<PanelRef>(arr.length())
                 for (i in 0 until minOf(arr.length(), MAX_PANELS)) {
@@ -750,6 +751,21 @@ internal class WebModeExtractor(
             if (u.startsWith("data:", true)) return try { decodeDataUrl(u) } catch (_: Exception) { null }
             if (u.startsWith("blob:", true)) return try { fetchViaPage(u, timeoutMs = 7000L) } catch (_: Exception) { null }
 
+            if (req.visibleOnly) {
+                // Real-time reads only a few panels, so it can afford to be patient. The page's own fetch()
+                // goes first: it reuses the browser cache, cookies and Referer, so an image the reader has
+                // already loaded costs no new download. Slow CDNs (e.g. MangaDex@Home nodes) used to fail
+                // here on the first visit because of the 2.5 s / 3.5 s direct-HTTP timeouts.
+                try { return fetchViaPage(u, timeoutMs = 8000L) } catch (_: Exception) {}
+                if (!alive()) return null
+                return try {
+                    httpGet(u, pageUrl, medium = true)
+                } catch (e: IOException) {
+                    if (!alive()) return null
+                    val definitive = Regex("http\\s+(401|403|404|410|451)").containsMatchIn(e.message.orEmpty())
+                    if (definitive) null else try { httpGet(u, pageUrl, medium = true) } catch (_: Exception) { null }
+                } catch (_: Exception) { null }
+            }
             // A failed image used to spend up to three rounds of 15–25 s HTTP timeouts plus
             // a 25 s page-fetch timeout per round. One bad panel could therefore stall a
             // 97-panel chapter for over a minute before OCR even began. Keep each attempt bounded.
@@ -774,11 +790,11 @@ internal class WebModeExtractor(
             }
         }
 
-        private fun httpGet(url: String, referer: String, quick: Boolean = false): ByteArray {
+        private fun httpGet(url: String, referer: String, quick: Boolean = false, medium: Boolean = false): ByteArray {
             val c = URL(url).openConnection() as HttpURLConnection
             try {
-                c.connectTimeout = if (quick) 2500 else 15000
-                c.readTimeout = if (quick) 3500 else 25000
+                c.connectTimeout = if (quick) 2500 else if (medium) 6000 else 15000
+                c.readTimeout = if (quick) 3500 else if (medium) 12000 else 25000
                 c.instanceFollowRedirects = true
                 // A CDN may reuse a panel URL while replacing its bytes in a live reader.
                 // Disable HTTP caching so same-URL OCR rechecks see current pixels.
@@ -1280,6 +1296,8 @@ internal class WebModeExtractor(
     private class PageMeta(val url: String, val lang: String, val title: String, val novel: String, val next: String?, val prev: String?)
 
     companion object {
+        /** Last live-discovery summary (img/iframe/canvas counts); shown when no panels were found. */
+        @Volatile var lastDiscoveryDebug: String = ""
         private const val TAG = "NsWebMode"
         private val NEWLINES = Regex("\\s*\\n\\s*")
         private const val MAX_PANELS = 400
@@ -1356,13 +1374,37 @@ function cands(sc, includeBackgrounds){
     var im=imgs[i],src=imageSrc(im);
     if(!src)continue;
     var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
-    if(!((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120)))continue;
+    if(!((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120))){
+      // A lazy image that has not loaded yet is often collapsed to 0x0: use its wrapper's box instead,
+      // otherwise the panel is not found at all until the page is reloaded.
+      var pe=im.parentElement,pr=pe?pe.getBoundingClientRect():null;
+      if(!(pr&&pr.width>=100&&pr.height>=60&&(!im.complete||nw===0)))continue;
+      r=pr;
+    }
     var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
     if(BAD.test(meta))continue;
-    if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]'))continue;
+    // Small thumbnails inside comment/related blocks are not panels, but a big image is one even if the
+    // reader sits inside such a container.
+    if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]')&&!(r.width>=360&&r.height>=240))continue;
     if(seen[src])continue;seen[src]=1;
     var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
     out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
+  }
+  // Readers inside a same-origin <iframe>.
+  var frs=document.querySelectorAll('iframe');
+  for(var fi=0;fi<frs.length&&fi<8;fi++){
+    var fd=null,fb=frs[fi].getBoundingClientRect();
+    try{fd=frs[fi].contentDocument;}catch(ignore){fd=null;}
+    if(!fd||!fd.images)continue;
+    for(var fk=0;fk<fd.images.length;fk++){
+      var fim=fd.images[fk],fsrc=fim.currentSrc||fim.src||'';
+      if(!goodUrl(fsrc)||seen[fsrc])continue;
+      var fr=fim.getBoundingClientRect(),fnw=fim.naturalWidth||0,fnh=fim.naturalHeight||0;
+      if(!((fr.width>=100&&fr.height>=60)||(fnw>=300&&fnh>=120)))continue;
+      seen[fsrc]=1;
+      var ft=fb.top+fr.top,fl=fb.left+fr.left;
+      out.push({s:fsrc,t:Math.round(ft+wy),l:Math.round(fl),w:Math.round(fr.width),h:Math.round(fr.height),d:(fim.complete&&fnw>0)?1:0,fw:fr.width,fh:fr.height,vl:fl,vt:ft,vb:ft+fr.height});
+    }
   }
   // Some pages use SVG <image> or videos with posters.
   var extra=document.querySelectorAll('svg image,video[poster]');
@@ -1503,7 +1545,8 @@ function link(kind){
 var og=document.querySelector('meta[property="og:title"]');
 var title=q('.subj_episode')||q('h1')||(og&&og.content)||document.title||'';
 var novel=q('.detail_header .subj')||q('a.subj')||q('.series-title')||q('.comic-title')||'';
-return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,title:title,novel:novel,next:link('next'),prev:link('prev'),imgs:c.slice(0,600)});
+var dbg=document.images.length+' img, '+document.querySelectorAll('iframe').length+' iframe, '+document.querySelectorAll('canvas').length+' canvas, '+c.length+' found';
+return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,title:title,novel:novel,next:link('next'),prev:link('prev'),imgs:c.slice(0,600),dbg:dbg});
 """
 
         // Real-time read-ahead: the next images that are completely below the screen (nothing is scrolled).
