@@ -2,6 +2,7 @@ package com.ashraf.novelstudio.japanesemanga
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -121,7 +122,7 @@ class JapaneseMangaEngineActivity : Activity() {
             setPadding(dp(7), dp(8), dp(7), dp(12))
             text = "OCR ফল এখানে দেখাবে। প্রথমে ইঞ্জিন ডাউনলোড করে পেজ স্ক্যান করো।\n\nএটি আপাতত আলাদা OCR ও bounding-box preview; live translation/bubble overlay এখনো এতে যুক্ত নয়।"
         }
-        scroll.addView(resultView, ScrollView.LayoutParams(-1, -2))
+        scroll.addView(resultView, android.widget.FrameLayout.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1.1f))
         runtime = WebView(this).apply {
             alpha = 0.01f
