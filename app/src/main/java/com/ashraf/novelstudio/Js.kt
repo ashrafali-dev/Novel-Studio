@@ -22,7 +22,10 @@ function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
 function __reply(p){var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
 function __stream(p){
- if(p.stop){try{var ss=[].slice.call(document.querySelectorAll(p.stop));for(var si=0;si<ss.length;si++){if(__vis(ss[si]))return 1;}}catch(e){}}
+ var stopSelectors=[p.stop||'', '[data-testid*="stop" i]', '[data-test-id*="stop" i]',
+  'button[aria-label*="stop" i]', 'button[title*="stop" i]',
+  '[data-is-streaming="true"]', '[aria-label*="cancel generation" i]'].filter(Boolean).join(',');
+ try{var ss=[].slice.call(document.querySelectorAll(stopSelectors));for(var si=0;si<ss.length;si++){if(__vis(ss[si]))return 1;}}catch(e){}
  // Claude can expose a textual thinking/responding status without a reliable stop button.
  if(/claude\.ai$/i.test(location.hostname)){
   var tail=(document.body.innerText||'').slice(-6000);
@@ -102,43 +105,61 @@ function __ctls(box){var out=[],seen=new Set(),c=box.parentElement,prev=[];for(v
 function __snap(box){var m=new Map();__ctls(box).forEach(function(b){m.set(b,__ok(b));});return m;}
 function __diffSend(box,snap){var cand=__ctls(box).filter(function(b){if(!__ok(b)||b.querySelector('input[type="file"]'))return false;var was=snap&&snap.get(b);return was===undefined||was===false;});return cand.length?cand[cand.length-1]:null;}
 function __findSend(p,box,snap){
+ if(!box||!box.isConnected)return null;
  var sels=[];
  if(p.send)sels.push(p.send);
- sels.push('button[data-testid*="send" i]','button[aria-label*="send" i]','[role="button"][aria-label*="send" i]','button[type="submit"]');
+ sels.push('button[data-testid*="send" i]','[data-testid*="send" i][role="button"]',
+  'button[aria-label*="send" i]','[role="button"][aria-label*="send" i]',
+  'button[title*="send" i]','[role="button"][title*="send" i]','button[type="submit"]');
  var all=[],seen=new Set();
- for(var i=0;i<sels.length;i++){
-  var l=[];try{l=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}
-  for(var j=0;j<l.length;j++){if(__ok(l[j])&&!seen.has(l[j])){seen.add(l[j]);all.push(l[j]);}}
+ function label(b){return String((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||'')+' '+(b.getAttribute('data-test-id')||'')+' '+(b.innerText||b.textContent||'')+' '+(typeof b.className==='string'?b.className:'')).toLowerCase();}
+ function acceptable(b){
+  if(!__ok(b)||b.querySelector('input[type="file"]'))return false;
+  if(/\b(stop|cancel|pause|interrupt|abort|voice|microphone|attach|upload|search)\b/.test(label(b)))return false;
+  return true;
  }
- // Some chat pages retain another visible composer (or toolbar). Prefer the send control
- // physically associated with this exact textbox, not merely the first matching button.
+ function add(list){for(var i=0;i<list.length;i++){var b=list[i];if(!seen.has(b)&&acceptable(b)){seen.add(b);all.push(b);}}}
+ try{var form=box.closest('form');if(form){var local=[];for(var i=0;i<sels.length;i++){try{local=local.concat([].slice.call(form.querySelectorAll(sels[i])));}catch(e){}}add(local);}}catch(e){}
+ for(var i=0;i<sels.length;i++){try{add([].slice.call(document.querySelectorAll(sels[i])));}catch(e){}}
  function score(b){
   var br=b.getBoundingClientRect(),xr=box.getBoundingClientRect();
-  var q=Math.abs((br.left+br.width/2)-(xr.left+xr.width/2))+
-        1.15*Math.abs((br.top+br.height/2)-(xr.top+xr.height/2));
+  var q=Math.abs((br.left+br.width/2)-(xr.left+xr.width/2))+1.2*Math.abs((br.top+br.height/2)-(xr.top+xr.height/2));
+  var t=label(b);if(/\b(send|submit)\b/.test(t))q-=500;if(/send-button|submit-button/.test(t))q-=500;
   try{var f=box.closest('form');if(f&&f.contains(b))q-=10000;}catch(e){}
-  try{var bf=b.closest('form');if(bf&&bf.contains(box))q-=10000;}catch(e){}
   return q;
  }
  if(all.length){all.sort(function(a,b){return score(a)-score(b);});return all[0];}
- // Last-resort: look for a newly enabled local control (useful for providers with icon-only send buttons).
- var d=__diffSend(box,snap);if(d)return d;
- if(/deepseek/i.test(location.hostname)){
-  var c=box.parentElement;
-  for(var up=0;c&&up<7;up++,c=c.parentElement){
-   var b=[].slice.call(c.querySelectorAll('button,[role="button"]')).filter(function(x){
-    if(!__ok(x)||x.querySelector('input[type="file"]'))return false;
-    var r=x.getBoundingClientRect(),br=box.getBoundingClientRect();
-    return Math.abs((r.top+r.height/2)-(br.top+br.height/2))<160&&
-      (box.compareDocumentPosition(x)&Node.DOCUMENT_POSITION_FOLLOWING);
-   });
-   if(b.length){b.sort(function(a,b){return score(a)-score(b);});return b[0];}
-  }
+ var c=box.parentElement;
+ for(var up=0;c&&up<7;up++,c=c.parentElement){
+  var near=[].slice.call(c.querySelectorAll('button,[role="button"]')).filter(function(b){
+   if(!acceptable(b))return false;var r=b.getBoundingClientRect(),br=box.getBoundingClientRect();
+   return Math.abs((r.top+r.height/2)-(br.top+br.height/2))<130&&(box.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  if(near.length){near.sort(function(a,b){return score(a)-score(b);});return near[0];}
  }
  return null;
 }
 function __press(b){try{if(!b||!b.isConnected||!__ok(b))return false;b.focus();b.click();return true;}catch(e){try{b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return true;}catch(x){return false;}}}
-function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
+function __box(){
+ var sels=['#prompt-textarea','textarea','input:not([type="hidden"])','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]'];
+ var c=[],seen=new Set();
+ for(var i=0;i<sels.length;i++){
+  try{var a=[].slice.call(document.querySelectorAll(sels[i]));for(var j=0;j<a.length;j++){
+   var e=a[j];if(seen.has(e)||!__vis(e)||e.disabled||e.getAttribute('aria-disabled')==='true'||e.getAttribute('aria-hidden')==='true')continue;
+   seen.add(e);c.push(e);
+  }}catch(e){}
+ }
+ if(!c.length)return null;
+ var active=document.activeElement;if(active&&c.indexOf(active)>=0)return active;
+ c.sort(function(a,b){
+  var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();
+  var aid=(a.id==='prompt-textarea'||a.getAttribute('data-testid')==='prompt-textarea')?1:0;
+  var bid=(b.id==='prompt-textarea'||b.getAttribute('data-testid')==='prompt-textarea')?1:0;
+  if(aid!==bid)return bid-aid;
+  return br.bottom-ar.bottom;
+ });
+ return c[0];
+}
 """
 
     private fun run(body: String) = PRELUDE + "\n;" + body
@@ -169,21 +190,29 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
     box.dispatchEvent(new Event('change',{bubbles:true}));
   } else {
-    // Same as the Novel Translator extension: one direct textContent write + one input event.
-    // document.execCommand('insertText') on a long chapter takes SECONDS in ProseMirror/Quill
-    // editors; textContent is instant. DeepSeek's editor is the only one that needs execCommand.
-    var done=false;
-    if(/deepseek/i.test(location.hostname)){
+    // Prefer a browser editing transaction so React/ProseMirror editors register
+    // the text as genuine input, rather than seeing only a visual textContent change.
+    var inserted=false;
+    try{
+      box.focus();
+      var sel=window.getSelection(),range=document.createRange();
+      range.selectNodeContents(box);
+      sel.removeAllRanges();sel.addRange(range);
+      inserted=document.execCommand('insertText',false,text) &&
+        __nrm(boxText())===__nrm(text);
+    }catch(e){inserted=false;}
+    if(!inserted){
+      // Fallback for editors where the browser editing command is unavailable.
       try{
-        var sel=window.getSelection(),range=document.createRange();
-        range.selectNodeContents(box); sel.removeAllRanges(); sel.addRange(range);
-        done=document.execCommand('insertText',false,text)&&boxText().length>=Math.min(text.length,20);
-      }catch(e){done=false;}
+        box.focus();
+        box.textContent=text;
+        try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}catch(e){}
+        try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+        catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
+        box.dispatchEvent(new Event('change',{bubbles:true}));
+      }catch(e){}
     }
-    if(!done) box.textContent=text;
-    try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
-    catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
-  }
+  }  }
   if(doSend){
     // Do not press Send until the editor has committed the full text and the control is enabled.
     // The first readiness check happens 300 ms after insertion; retries only re-check readiness,
@@ -201,7 +230,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
     function keyEnter(){box.focus();try{var f=box.closest('form');if(f&&typeof f.requestSubmit==='function'){f.requestSubmit();return;}}catch(e){}var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
     var started=Date.now();
-    var lastReadyBtn=null,stableReady=0;
+    var lastReadyBtn=null;
     function confirmSend(method){
       setTimeout(function(){
         if(sentOk()){
@@ -220,32 +249,20 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       var matches=composerMatches();
       var btn=matches?__findSend(p,box,snap):null;
       if(matches&&btn&&__ok(btn)){
-        if(lastReadyBtn===btn)stableReady++; else {lastReadyBtn=btn;stableReady=1;}
-        // Require the same enabled, visible button on two polls before clicking it.
-        if(stableReady>=2){
-          __press(btn);
+        if(__press(btn)){
           confirmSend('btn');
           return;
         }
-      }else{
-        lastReadyBtn=null;
-        stableReady=0;
       }
       if(Date.now()-started<2600){
         setTimeout(waitUntilReady,120);
         return;
       }
-      // Compatibility fallback for chatbots that do not expose a detectable Send button.
-      // Only use Enter after verifying the exact composer text; never do both.
-      if(matches){
-        keyEnter();
-        confirmSend('enter');
-      }else{
-        window.__nsSendState='failed';
-      }
+      // A missed Send control is a real failure; do not silently submit by another key.
+      window.__nsSendState='failed';
     }
     // New/rolled-over chatbot threads need a little time for the composer and send control to settle.
-    setTimeout(waitUntilReady,500);
+    setTimeout(waitUntilReady,300);
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
