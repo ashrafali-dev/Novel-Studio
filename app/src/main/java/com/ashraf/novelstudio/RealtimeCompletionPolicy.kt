@@ -11,9 +11,11 @@ import android.content.Context
  */
 internal object RealtimeCompletionPolicy {
     private const val NORMAL_POLL_MS = 500L
-    private const val REALTIME_FIRST_POLL_MS = 50L
-    private const val REALTIME_STREAMING_POLL_MS = 100L
-    private const val REALTIME_IDLE_POLL_MS = 40L
+    // WebView DOM probes are expensive on long, animated webtoon pages. These values
+    // keep completion responsive without hammering the compositor/main thread.
+    private const val REALTIME_FIRST_POLL_MS = 200L
+    private const val REALTIME_STREAMING_POLL_MS = 250L
+    private const val REALTIME_IDLE_POLL_MS = 180L
 
     fun enabled(context: Context): Boolean =
         DeepSeekRealtimeTranslation.isEnabled(context)
