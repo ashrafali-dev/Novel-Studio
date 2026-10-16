@@ -489,6 +489,8 @@ class JapaneseMangaEngineActivity : Activity() {
             if (Prefs.bool(this, "wmTextRemoval", false) &&
                 bounds.outWidth <= 4096 && bounds.outHeight <= 4096 &&
                 bounds.outWidth.toLong() * bounds.outHeight.toLong() <= MAX_CLEAN_PIXELS) {
+                // If preserving the original fails, fall back to OCR only; the cleaner won't use the
+                // lower-quality temporary JPEG unless its dimensions/geometry were checked above.
                 raw.renameTo(original)
             }
             success = true
