@@ -1170,6 +1170,22 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 handler.postDelayed(this, 250L)
                 return
             }
+            // Recover a real-time scan whose progress callback has stalled. Normal image fetches
+            // are bounded; 45 s without even a stage update means this job is likely wedged. Invalidate
+            // the old callback first, then this same probe can safely discover and retry the visible panel.
+            val monotonicNow = android.os.SystemClock.elapsedRealtime()
+            if (webModeHandle != null && webModeLastProgressAtMs > 0L &&
+                monotonicNow - webModeLastProgressAtMs >= 45000L) {
+                webModeJobSerial++
+                webModeHandle?.cancel()
+                webModeHandle = null
+                webModeLastProgressAtMs = 0L
+                clearWebModeProgress()
+                deepSeekVisibleSignature = ""
+                deepSeekPendingSig = ""
+                deepSeekPendingSince = 0L
+                deepSeekLastOcrAtMs = 0L
+            }
             val pageKeyNow = cleanUrl(url)
             if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
                 aheadOcrHandle?.cancel()
@@ -1350,7 +1366,7 @@ return t.length>=40?'TXT:'+t:'';
                 // Keep the DOM probe light enough that it does not compete with touch scrolling.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
                     rtAheadTranslationQueue.size < 2 &&
-                    System.currentTimeMillis() - deepSeekAheadAtMs >= 400L) {
+                    System.currentTimeMillis() - deepSeekAheadAtMs >= 850L) {
                     startAheadOcr()
                 }
                 handler.postDelayed(this, 250L)
