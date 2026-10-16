@@ -31,6 +31,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     private data class Asset(val path: String, val url: String, val min: Long, val max: Long)
 
     fun isDownloading() = busy
+    fun hasFiles(): Boolean = root.exists() && (root.list()?.isNotEmpty() == true)
     fun packageBytes(): Long = SPECS.sumOf { safeFile(it.path)?.takeIf { file -> file.isFile }?.length() ?: 0L }
 
     @Synchronized fun isInstalled(): Boolean {
