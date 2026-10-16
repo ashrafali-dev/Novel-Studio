@@ -641,7 +641,7 @@ class MainActivity : Activity() {
         )
         WebModeLayoutStore.setScan(chapter.url, WebModeLayout(pending.titleOffset, bubbles))
         deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
-        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, page=${pending.pageUrl}")
+        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
