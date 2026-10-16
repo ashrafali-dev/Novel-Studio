@@ -169,6 +169,8 @@ internal class WebModeExtractor(
         private val cancelled = AtomicBoolean(false)
         private val startedAt = SystemClock.elapsedRealtime()
         private val wv = req.webView
+        // Preserve panels seen during full-chapter scrolling; virtualized readers recycle DOM nodes.
+        private val discoveredDuringScroll = LinkedHashMap<String, PanelRef>()
         // Read on the main thread (the job is created there); the worker thread must never ask the WebView.
         private val startUrl = wv.url.orEmpty()
         val diag = WebModeDiagnostics(id, hostOf(startUrl))
@@ -360,6 +362,20 @@ internal class WebModeExtractor(
                 val pending = o.optInt("p", 0)
                 val bottom = o.optBoolean("bottom", false)
                 val ready = o.optString("ready") == "complete"
+                // Collect panels at every scroll position, not just the final viewport.
+                o.optJSONArray("imgs")?.let { seenImgs ->
+                    for (si in 0 until minOf(seenImgs.length(), MAX_PANELS)) {
+                        val item = seenImgs.optJSONObject(si) ?: continue
+                        val src = item.optString("s").trim()
+                        if (src.isBlank()) continue
+                        val panel = PanelRef(src, item.optInt("t"), item.optInt("l"), item.optInt("w"), item.optInt("h"))
+                        val key = WebModeLogic.normalizeUrl(src).ifBlank { src }
+                        val old = discoveredDuringScroll[key]
+                        if (old == null || panel.width * panel.height > old.width * old.height) {
+                            discoveredDuringScroll[key] = panel
+                        }
+                    }
+                }
                 // A large, non-virtualized image gallery already exposes every panel URL and
                 // its layout boxes. There is no need to scroll through all panels just to trigger
                 // lazy loading; the bounded downloader reads those URLs directly in the worker.
@@ -399,19 +415,28 @@ internal class WebModeExtractor(
                 if (o == null) { fail(WebModeError.NO_IMAGES); return@evaluateJavascript }
                 lastDiscoveryDebug = o.optString("dbg")
                 val arr = o.optJSONArray("imgs") ?: JSONArray()
-                val refs = ArrayList<PanelRef>(arr.length())
+                // Merge scroll history with the final DOM snapshot for complete scans on recycled readers.
+                val merged = LinkedHashMap<String, PanelRef>()
+                for ((key, panel) in discoveredDuringScroll) merged[key] = panel
+                var rawPanelCount = merged.size
                 for (i in 0 until minOf(arr.length(), MAX_PANELS)) {
                     val p = arr.optJSONObject(i) ?: continue
-                    val s = p.optString("s")
-                    if (s.isNotBlank()) refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
+                    val s = p.optString("s").trim()
+                    if (s.isBlank()) continue
+                    val panel = PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h"))
+                    val key = WebModeLogic.normalizeUrl(s).ifBlank { s }
+                    val old = merged[key]
+                    if (old == null) { merged[key] = panel; rawPanelCount++ }
+                    else if (panel.width * panel.height > old.width * old.height) merged[key] = panel
                 }
+                val refs = merged.values.toList()
                 val allPanels = WebModeLogic.dedupeAndOrder(refs)
                 val targetSrc = req.forceOcrSrc
                 val panels = if (targetSrc.isNullOrBlank()) allPanels else allPanels.filter {
                     WebModeLogic.normalizeUrl(it.src) == WebModeLogic.normalizeUrl(targetSrc)
                 }
                 diag.discovered = panels.size
-                diag.duplicates = refs.size - allPanels.size
+                diag.duplicates = (rawPanelCount - allPanels.size).coerceAtLeast(0)
                 if (panels.isEmpty()) {
                     fail(WebModeError.NO_IMAGES, if (targetSrc.isNullOrBlank()) WebModeError.NO_IMAGES.label
                         else "Selected image could not be found on the page")
@@ -475,11 +500,9 @@ internal class WebModeExtractor(
                 try {
                     progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
                     val targeted = !req.forceOcrSrc.isNullOrBlank()
-                    // For large chapters, use the same low-latency OCR path that works well in
-                    // real-time mode. Full-quality OCR is retained for selected regions and is used
-                    // as a fallback only when the fast pass finds no text in a panel.
-                    val fastChapterMode = !targeted && total >= FAST_CHAPTER_PANELS
-                    val fastPass = !targeted && (req.visibleOnly || fastChapterMode)
+                    // Scope separation is intentional: full-chapter scans use thorough OCR;
+                    // only explicitly visible real-time requests use the low-latency fast pass.
+                    val fastPass = !targeted && req.visibleOnly
                     val po = if (targeted && req.forceOcrRegion != null) {
                         // Some Android codecs throw while decoding a selected region. Retry with a
                         // bounded downsampled bitmap rather than aborting manual OCR.
@@ -490,11 +513,7 @@ internal class WebModeExtractor(
                             ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion, cropFallback = true)
                         }
                     } else {
-                        val firstPass = ocrBytes(bytes, script, p.src, fastMode = fastPass)
-                        if (fastChapterMode && firstPass != null && firstPass.text.isBlank() && alive()) {
-                            progress("Detailed OCR retry ${i + 1}/$total", 10 + i * 89 / total)
-                            ocrBytes(bytes, script, p.src, fastMode = false)
-                        } else firstPass
+                        ocrBytes(bytes, script, p.src, fastMode = fastPass)
                     }
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
@@ -1338,7 +1357,6 @@ internal class WebModeExtractor(
         private const val TAG = "NsWebMode"
         private val NEWLINES = Regex("\\s*\\n\\s*")
         private const val MAX_PANELS = 400
-        private const val FAST_CHAPTER_PANELS = 12
         private const val MAX_TICKS = 400
         private const val MAX_BYTES = 25 * 1024 * 1024
         private const val DISCOVERY_MAX_MS = 120_000L
@@ -1521,12 +1539,18 @@ if(sc){
 bottom=(after+vh>=hh-4)||after===before;
 var now=Date.now(),probeBg=now-(window.__nsWmStepBgProbeAt||0)>=1200;
 if(probeBg)window.__nsWmStepBgProbeAt=now;
-var c=cands(sc,probeBg),p=0,fastUrls=c.length>=20;
+var c=cands(sc,probeBg),p=0,maxPanelBottom=0,fastUrls=c.length>=30;
 for(var i=0;i<c.length;i++){
   if(!c[i].d)p++;
   if(!/^https?:\/\//i.test(c[i].s))fastUrls=false;
+  maxPanelBottom=Math.max(maxPanelBottom,(Number(c[i].t)||0)+(Number(c[i].h)||0));
 }
-return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,fastUrls:fastUrls});
+// Only skip the scroll sweep when the exposed image list reaches the real content bottom.
+// A virtualized reader may expose nearby images while hiding the rest of the chapter.
+var contentHeight=sc?sc.scrollHeight:hh;
+fastUrls=fastUrls&&maxPanelBottom>=contentHeight-Math.max(vh*2,1400);
+var scanRefs=c.slice(0,600).map(function(x){return {s:x.s,t:x.t,l:x.l,w:x.w,h:x.h};});
+return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,fastUrls:fastUrls,imgs:scanRefs});
 """
 
         private const val JS_FORCE_INFO = """
