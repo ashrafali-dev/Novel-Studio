@@ -1447,7 +1447,9 @@ function allNodes(limit){
   return out;
 }
 function scroller(){
-  if((de.scrollHeight||0)>(window.innerHeight||0)+80)return null;
+  // Do not assume the document is the reader scroller just because the page itself is tall.
+  // Many comic sites have a tall document plus a separately scrolling chapter container; the old
+  // early return skipped that container and repeatedly scanned only the first visible panels.
   // Cache the inner reader scroller; rescanning thousands of wrappers every scan tick
   // makes touch scrolling visibly hitch on long comic chapters.
   var cached=window.__nsWmScroller;
