@@ -7,7 +7,8 @@ import java.net.URI
 internal object JapaneseMangaResultParser {
     data class Result(val pageUrl: String, val layout: WebModeLayout)
 
-    fun parse(raw: String): Result? = try {
+    fun parse(raw: String): Result? {
+        return try {
         if (raw.length !in 2..900_000) return null
         val root = JSONObject(raw)
         val pageUrl = root.optString("pageUrl").trim()
@@ -59,6 +60,7 @@ internal object JapaneseMangaResultParser {
         if (bubbles.isEmpty()) null else Result(pageUrl, WebModeLayout(0, bubbles))
     } catch (_: Exception) {
         null
+        }
     }
 
     private fun isHttpUrl(value: String): Boolean = try {
