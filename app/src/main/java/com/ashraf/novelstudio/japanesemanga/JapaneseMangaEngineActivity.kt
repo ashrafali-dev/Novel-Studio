@@ -69,6 +69,7 @@ class JapaneseMangaEngineActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         JapaneseMangaRuntime.init(this)
+        JapaneseMangaRuntime.release()
         manager = JapaneseMangaModelManager(this)
         assetLoader = JapaneseMangaAssetLoader(this, manager)
         buildUi()
