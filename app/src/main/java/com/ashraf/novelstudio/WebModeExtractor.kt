@@ -777,7 +777,7 @@ internal class WebModeExtractor(
                 } catch (e: IOException) {
                     if (!alive()) return null
                     val msg = e.message.orEmpty()
-                    val definitive = Regex("http\\\\s+(401|403|404|410|451)").containsMatchIn(msg)
+                    val definitive = Regex("http\\s+(401|403|404|410|451)").containsMatchIn(msg)
                     try {
                         fetchViaPage(u, timeoutMs = 4500L)
                     } catch (_: Exception) {
@@ -794,7 +794,7 @@ internal class WebModeExtractor(
                 } catch (e: IOException) {
                     if (!alive()) return null
                     val msg = e.message.orEmpty()
-                    val definitive = Regex("http\\\\s+(401|403|404|410|451)").containsMatchIn(msg)
+                    val definitive = Regex("http\\s+(401|403|404|410|451)").containsMatchIn(msg)
                     try {
                         fetchViaPage(u, timeoutMs = 3500L)
                     } catch (_: Exception) {
