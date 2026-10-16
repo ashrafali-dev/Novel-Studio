@@ -17,7 +17,7 @@ internal object WebModeWriter {
     private const val BODY = """
 (function(paras,title,font,size,pid){
   try{
-    var old=document.getElementById('__ns_wm_overlay'); if(old&&old.parentNode)old.parentNode.removeChild(old);
+    var old=document.getElementById('__ns_wm_overlay');
     var w=document.createElement('div'); w.id='__ns_wm_overlay';
     w.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;pointer-events:none;';
     var box=document.createElement('div');
@@ -29,7 +29,7 @@ internal object WebModeWriter {
     for(var i=0;i<paras.length;i++){var t=(paras[i]||'').trim();if(!t)continue;
       var p=document.createElement('p');p.textContent=t;p.style.cssText='margin:0 0 '+Math.round(size*0.9)+'px;';box.appendChild(p);}
     w.appendChild(box);
-    (document.body||document.documentElement).appendChild(w);
+    if(old&&old.parentNode)old.parentNode.replaceChild(w,old); else (document.body||document.documentElement).appendChild(w);
     window.__nsEl=w; window.__nsOrig=''; window.__nsTr=w.innerHTML; window.__nsShown=1;
     w.setAttribute('data-ns','1'); w.setAttribute('data-ns-page-id',pid||''); window.__nsPageId=pid||'';
     return 'ok';
@@ -379,7 +379,7 @@ internal object WebModeWriter {
       }
     }catch(e){}
     window.__nsWmStop=stop;
-    (document.body||document.documentElement).appendChild(w);
+    if(old&&old.parentNode)old.parentNode.replaceChild(w,old); else (document.body||document.documentElement).appendChild(w);
     window.__nsEl=w; window.__nsOrig=''; window.__nsTr=w.innerHTML; window.__nsShown=1;
     w.setAttribute('data-ns','1'); w.setAttribute('data-ns-page-id',pid||''); window.__nsPageId=pid||'';
     lastRun=0; layout();
