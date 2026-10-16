@@ -599,12 +599,9 @@ class MainActivity : Activity() {
         val pending = rtVisibleOcrBatch ?: return
         if (expectedPage != null && expectedPage != pending.pageUrl) return
 
-        // Web Mode's current scan geometry is stored per page. Never start a second visible
-        // batch for that page while another response is running/queued, or the previous reply
-        // could be aligned against newer bubbles and be discarded by the same-page job guard.
-        val identity = keyOf(pending.baseChapter)
-        if ((running != null && keyOf(running!!) == identity) ||
-            queue.any { keyOf(it) == identity } || activePlacementIds.isNotEmpty()) {
+        // Scan geometry and lastChapter are shared across page writes. Wait for the visible
+        // chatbot job queue and any async overlay insertion to finish before replacing either.
+        if (running != null || queue.isNotEmpty() || activePlacementIds.isNotEmpty()) {
             rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
             val seq = ++rtVisibleOcrBatchSeq
             val retry = Runnable {
