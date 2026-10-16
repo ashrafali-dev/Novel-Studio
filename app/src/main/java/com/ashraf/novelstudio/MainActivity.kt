@@ -5444,7 +5444,7 @@ return t.length>=40?'TXT:'+t:'';
         if (Prefs.auto(this)) autoFlow(ch) else copyChapter(ch)
         // A live OCR batch represents only newly visible bubbles, not a complete chapter.
         // Do not let chapter prefetch compete with its real-time chat submission.
-        if (!livePanelBatch) schedulePrefetch(ch)
+        if (!livePanelBatch && !JapaneseMangaSession.isManaged(ch)) schedulePrefetch(ch)
     }
 
     // ---- WTR-LAB SPA watcher ---------------------------------------------------
@@ -6084,7 +6084,9 @@ Keep every marker exactly once, in the same order. Do not translate, remove,
 merge, split, or reorder the markers. Return only the translation with the
 markers preserved.
 """.trimIndent()
-        val imageRules = if (webModeOn() && ch.contentSel.isBlank()) """
+        val mangaSession = JapaneseMangaSession.isManaged(ch)
+        val imageMode = (webModeOn() && ch.contentSel.isBlank()) || mangaSession
+        val imageRules = if (imageMode) """
 
 [Comic / webtoon page]
 Every marker is one piece of text read from a comic image: speech, narration, a system window or a
@@ -6105,7 +6107,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         // Real-time menu switch: send the editable prompt (+ glossary) with every batch, or only the
         // text with the marker/page rules (when the prompt already lives in the chat).
         // The switch applies to every image-chapter translation (Web Mode scan, prefetch and real-time).
-        val skipPrompt = webModeOn() && ch.contentSel.isBlank() && !Prefs.bool(this, "rtSendPrompt", true) && !chatRolloverDue()   // a fresh chat window needs the full prompt again
+        val skipPrompt = imageMode && !Prefs.bool(this, "rtSendPrompt", true) && !chatRolloverDue()   // a fresh chat window needs the full prompt again
         val full = if (skipPrompt) {
             // Prompt OFF: only the text goes to the chatbot (the prompt already lives in the chat).
             // One short line keeps the [001] markers, because the reply is matched to bubbles by them.
@@ -6398,7 +6400,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     // ---- put the translation into the novel page itself
     private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
-        DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
+        !JapaneseMangaSession.isManaged(ch) &&
+            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
 
     /** Resolve only the bubble hashes that were actually inserted successfully. */
     private fun completeDeepSeekHashBatch(ch: Chapter, matched: Set<String>? = null) {
@@ -6421,6 +6424,38 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
+        // Dedicated Japanese manga result: reuse the existing bubble writer, without switching
+        // the standard Web Mode toggle or changing the normal Webtoon extraction pipeline.
+        if (JapaneseMangaSession.isManaged(ch) && ch.contentSel.isBlank()) {
+            shownTrRaw = text
+            if (lastChapter !== ch) return
+            injectBengaliFont()
+            val mangaLayout = WebModeLayoutStore.getScan(ch.url)
+            val aligned = mangaLayout?.let { WebModeLayout.align(text, it) }
+            val script = if (mangaLayout != null && aligned != null) {
+                WebModeLayoutStore.replace(this, ch.url, WebModeLayout.translated(mangaLayout, aligned))
+                WebModeWriter.bubbleScript(mangaLayout, aligned, Prefs.fontFile(this), pageKey(ch.url))
+            } else {
+                toast("⚠️ Manga translation markers did not match; showing the reader view instead")
+                WebModeWriter.script(
+                    splitInternalMarkedTranslation(text, preserveParagraphs = true),
+                    ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
+                )
+            }
+            val placementId = beginTranslationPlacement()
+            novelWv.evaluateJavascript(script) { result ->
+                finishTranslationPlacement(placementId)
+                if (lastChapter !== ch) return@evaluateJavascript
+                if (result != null && result.contains("ok")) {
+                    hasTr = true
+                    shownTranslated = true
+                    updatePill()
+                } else {
+                    toast("⚠️ Could not place manga translation; it remains saved in the library")
+                }
+            }
+            return
+        }
         // Web Mode (image chapters): there is no text node to replace, so show a reader panel instead.
         if (webModeOn() && ch.contentSel.isBlank()) {
             shownTrRaw = text
@@ -7056,13 +7091,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 37 -> {
                     val sourceUrl = novelWv.url.orEmpty()
                     dlg.dismiss()
-                    startActivity(Intent(
+                    startActivityForResult(Intent(
                         this,
                         com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity::class.java
                     ).putExtra(
                         com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.EXTRA_PAGE_URL,
                         sourceUrl
-                    ))
+                    ), com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.REQUEST_CODE)
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
@@ -7677,7 +7712,47 @@ ${rows.take(220).joinToString("\n")}
             } catch (e: Exception) {
                 toast("❌ " + (e.message ?: "Failed"))
             }
+        } else if (requestCode == com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.REQUEST_CODE &&
+            resultCode == RESULT_OK) {
+            handleJapaneseMangaResult(data)
         }
+    }
+
+    private fun handleJapaneseMangaResult(data: Intent?) {
+        val raw = data?.getStringExtra(
+            com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.EXTRA_RESULT_JSON
+        ).orEmpty()
+        if (raw.isBlank()) return toast("⚠️ Japanese Manga OCR result is empty")
+        val parsed = JapaneseMangaResultParser.parse(raw)
+            ?: return toast("⚠️ Japanese Manga OCR result is invalid; nothing was sent")
+        val pageUrl = parsed.pageUrl
+        if (cleanUrl(pageUrl) != cleanUrl(novelWv.url.orEmpty())) {
+            toast("⚠️ Page changed while OCR was running; no translation was started")
+            return
+        }
+        val layout = parsed.layout
+        if (layout.bubbles.isEmpty()) return toast("⚠️ No manga text regions to translate")
+        val sourceText = layout.bubbles.joinToString("\n\n") { it.sourceText.trim() }
+        if (sourceText.isBlank()) return toast("⚠️ OCR text is empty")
+        WebModeLayoutStore.setScan(pageUrl, layout)
+        val host = Uri.parse(pageUrl).host.orEmpty().lowercase().removePrefix("www.")
+        val title = novelWv.title.orEmpty().trim().ifBlank { "Japanese Manga" }
+        val chapter = Chapter(
+            title = title,
+            text = sourceText,
+            next = null,
+            prev = null,
+            url = pageUrl,
+            novel = host.ifBlank { "Japanese Manga" },
+            number = "",
+            contentSel = "",
+            titleSel = "",
+            nextSel = "",
+            prevSel = ""
+        )
+        JapaneseMangaSession.register(chapter)
+        toast("🎌 Manga OCR: ${layout.bubbles.size} text regions · sending for translation")
+        handleChapter(chapter, useSavedTranslation = false)
     }
 
     // ---------- bookmarks ----------
