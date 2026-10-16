@@ -961,7 +961,13 @@ internal class WebModeExtractor(
                 // coordinate system and must never be used to rewrite the underlying source image.
                 if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
                     (src.startsWith("https://", true) || src.startsWith("http://", true))) {
-                    WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                    try {
+                        WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                    } catch (_: OutOfMemoryError) {
+                        // Optional cleanup must never turn a successful OCR result into a failed panel.
+                    } catch (_: Exception) {
+                        // If cleanup is uncertain, retain the original panel and normal overlay.
+                    }
                 }
                 return PanelOcr(texts.joinToString("\n\n"), bubbles)
             }
