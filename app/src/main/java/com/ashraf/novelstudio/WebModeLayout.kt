@@ -101,45 +101,45 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
          * bubble (at least 70% must be present). Without markers the paragraph count must equal the
          * paragraph count that was sent; guessing a position would put text in the wrong bubble.
          */
+        private val NL = Regex("\\s*\\n\\s*")
+
+        /**
+         * Align the chatbot's marked reply to exact OCR bubbles. A markerless reply has no stable
+         * bubble identity; matching it by paragraph count can silently put every translation in
+         * the wrong box after the model merges, reorders, or drops one paragraph. In that case the
+         * caller must show the reader view, never guess placement.
+         */
         fun align(text: String, layout: WebModeLayout): List<String?>? {
             val n = layout.bubbles.size
             if (n == 0) return null
             val ms = MARK.findAll(text).toList()
-            if (ms.isNotEmpty()) {
-                val byNo = HashMap<Int, String>()
-                for ((k, m) in ms.withIndex()) {
-                    val no = m.groupValues[1].toIntOrNull() ?: continue
-                    val end = if (k + 1 < ms.size) ms[k + 1].range.first else text.length
-                    val body = text.substring(m.range.last + 1, end).trim()
-                    if (body.isNotEmpty() && no !in byNo) byNo[no] = body
-                }
-                // Marker numbers are positional IDs, not a best-effort hint. Never choose an
-                // offset merely because it yields one more match: if a full-page reply includes
-                // [001] but omits the expected final marker, it is ambiguous whether the model
-                // renumbered the bubbles after dropping the title or simply omitted the last bubble.
-                // Refuse bubble placement in that case instead of shifting every translation by one.
-                val expectedLast = n + layout.titleOffset
-                if (layout.titleOffset > 0 && byNo.containsKey(1) && !byNo.containsKey(expectedLast)) {
-                    return null
-                }
-                val out = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
-                val found = out.count { !it.isNullOrBlank() }
-                // Missing marker IDs leave only their own bubbles blank; present IDs keep their
-                // original position. Live batches can be sparse because only new visible bubbles
-                // were sent, while a normal full scan still needs a meaningful matched result.
-                if (found > 0 && (found * 100 >= n * 70 || layout.titleOffset == 0)) return out
+            if (ms.isEmpty()) return null
+
+            val expectedLast = n + layout.titleOffset
+            val byNo = HashMap<Int, String>()
+            var previousNo = 0
+            for ((k, m) in ms.withIndex()) {
+                val no = m.groupValues[1].toIntOrNull() ?: return null
+                // Repeated, reversed, or out-of-range markers cannot be trusted for overlay placement.
+                if (no <= previousNo || no > expectedLast) return null
+                previousNo = no
+                val end = if (k + 1 < ms.size) ms[k + 1].range.first else text.length
+                val body = text.substring(m.range.last + 1, end).trim()
+                if (body.isNotEmpty()) byNo[no] = body
+            }
+
+            // Full-chapter replies include the title as [001], so a response that starts at [001]
+            // but lacks the final expected marker is ambiguous: it may have renumbered bubbles after
+            // dropping the title, or it may have omitted the final bubble. Do not shift all bubbles.
+            if (layout.titleOffset > 0 && byNo.containsKey(1) && !byNo.containsKey(expectedLast)) {
                 return null
             }
-            val blankLineParas = text.split(BLANK).map { it.trim() }.filter { it.isNotEmpty() }
-            val lineParas = text.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
-            val expected = n + layout.titleOffset
-            val paras = when {
-                blankLineParas.size == expected -> blankLineParas
-                lineParas.size == expected -> lineParas
-                else -> blankLineParas
-            }
-            if (paras.size != expected) return null
-            return List(n) { i -> paras[i + layout.titleOffset].replace(NL, " ") }
+
+            // Marker numbers are positional IDs. Never select a different offset just because it
+            // happens to produce more matches; missing IDs leave their own bubble blank.
+            val out = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
+            val found = out.count { !it.isNullOrBlank() }
+            return if (found > 0 && (found * 100 >= n * 70 || layout.titleOffset == 0)) out else null
         }
     }
 }
