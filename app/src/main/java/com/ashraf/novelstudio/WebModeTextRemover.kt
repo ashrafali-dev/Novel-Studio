@@ -147,7 +147,9 @@ internal object WebModeTextRemover {
                 }
 
                 // If the inferred mask covers too much of a region, it is probably art rather than text.
-                if (selectedCount < 4 || selectedCount > regionCount * 0.28f) continue
+                // Tight OCR boxes around dense CJK glyphs can legitimately contain more ink than Latin boxes.
+                // The connected-component/size checks above remain the stronger art-protection filters.
+                if (selectedCount < 4 || selectedCount > regionCount * 0.5f) continue
 
                 // Fill only selected glyph pixels from the nearest unmasked pixels. On flat speech-bubble
                 // backgrounds this retains the exact local paper/colour instead of repainting a big box.
