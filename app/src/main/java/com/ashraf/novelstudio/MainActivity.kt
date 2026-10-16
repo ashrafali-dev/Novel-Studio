@@ -1658,6 +1658,9 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var floatBoltHost: FrameLayout
     private var barsHidden = false
     private var barsAnimating = false
+    // True while WebToon Realtime or Scanning is active (Web Mode on). Read on every touch-move, so it is
+    // a plain field kept in sync by syncToonBars() instead of a SharedPreferences lookup per event.
+    private var barsLockedForToon = false
     private var barTopH = 0
     private var barBotH = 0
     private lateinit var contentHolderView: FrameLayout
@@ -2223,11 +2226,16 @@ return t.length>=40?'TXT:'+t:'';
                     pullDownStartX = event.x
                     barMoveLastY = event.rawY
                     barMoveAccum = 0f
+                    // Re-read once per gesture, so it is right however Web Mode / Realtime was switched
+                    // (menu, mode sheet, restored preference after leaving Realtime).
+                    if (barsLockedForToon != webModeOn()) syncToonBars()
                 }
                 MotionEvent.ACTION_MOVE -> {
                     // Chrome-style bars: finger moving up (page scrolls down) hides them,
                     // a light pull the other way brings them back.
-                    if (event.pointerCount == 1) {
+                    // WebToon Realtime / Scanning keep the bars still: sliding them resizes the WebView,
+                    // which jerks the scroll and moves the page under the translated text bubbles.
+                    if (event.pointerCount == 1 && !barsLockedForToon) {
                         val d = event.rawY - barMoveLastY
                         barMoveLastY = event.rawY
                         if (d != 0f && (d > 0f) != (barMoveAccum > 0f)) barMoveAccum = 0f
@@ -2500,7 +2508,18 @@ return t.length>=40?'TXT:'+t:'';
             addView(scanDot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.TOP or Gravity.END).also {
                 it.setMargins(0, dp(10), dp(10), 0)
             })
-            addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob -> if (b - t != ob - ot) applyLayout() }
+            addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
+                if (b - t != ob - ot) {
+                    // NOVEL / CHAT panes are already MATCH_PARENT, so a height change (bars sliding away,
+                    // keyboard, rotation) needs no new LayoutParams, no bringToFront and no elevation
+                    // writes. Redoing all of that on every resize forced both WebViews (the novel page and
+                    // the hidden chatbot) through a full extra layout pass in the middle of a scroll, which
+                    // was one source of the stutter. Only SPLIT has to recompute its two half-heights;
+                    // the very first measurement (old height 0) still runs the full pass.
+                    if (ob - ot > 0 && mode != Mode.SPLIT) return@addOnLayoutChangeListener
+                    applyLayout()
+                }
+            }
         }
         val contentHolder = FrameLayout(this).apply {
             setPadding(dp(8), dp(4), dp(8), dp(2))
@@ -3555,6 +3574,7 @@ return t.length>=40?'TXT:'+t:'';
     /** Same work the menu's "Web Mode" row did, so the menu and the mode sheet share it. */
     private fun applyWebModeFlag(on: Boolean) {
         Prefs.putBool(this, "webMode", on)
+        syncToonBars()
         if (!on) {
             webModeHandle?.cancel(); webModeHandle = null
             webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
@@ -3571,6 +3591,7 @@ return t.length>=40?'TXT:'+t:'';
     /** Same work the menu's "AI Real-time Translation" row did when turning it on. */
     private fun enableRealtimeMode() {
         DeepSeekRealtimeTranslation.enable(this)
+        syncToonBars()
         chatWv.onResume()
         chatWv.resumeTimers()
         scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
@@ -3608,6 +3629,7 @@ return t.length>=40?'TXT:'+t:'';
         clearWebModeProgress()
         val previousBot = DeepSeekRealtimeTranslation.disable(this)
         openBot(previousBot)
+        syncToonBars()
         if (!webModeOn()) {
             webModeHandle?.cancel(); webModeHandle = null
             webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
@@ -3719,6 +3741,7 @@ return t.length>=40?'TXT:'+t:'';
     // moves); the slide itself is pure translation, which stays smooth.
     private fun setBarsHidden(hide: Boolean) {
         if (!::dockBar.isInitialized || !::chromeTopView.isInitialized || !::contentHolderView.isInitialized) return
+        if (hide && (barsLockedForToon || webModeOn())) return
         if (hide == barsHidden || barsAnimating) return
         val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
         val botLp = dockWrapView.layoutParams as? LinearLayout.LayoutParams ?: return
@@ -3790,6 +3813,18 @@ return t.length>=40?'TXT:'+t:'';
                 dockWrapView.setLayerType(View.LAYER_TYPE_NONE, null)
                 barsAnimating = false
             }.start()
+        }
+    }
+
+    /**
+     * Keeps the bars locked in place while a WebToon mode is on, and brings them back if they were
+     * hidden when the mode was switched on. Safe to call at any time (also from the mode switchers).
+     */
+    private fun syncToonBars() {
+        barsLockedForToon = webModeOn()
+        if (barsLockedForToon && barsHidden) {
+            if (barsAnimating) handler.postDelayed({ syncToonBars() }, 120L)
+            else setBarsHidden(false)
         }
     }
 

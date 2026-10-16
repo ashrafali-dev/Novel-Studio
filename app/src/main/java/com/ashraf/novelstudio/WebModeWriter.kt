@@ -53,11 +53,11 @@ internal object WebModeWriter {
     // ABS: the page itself scrolls, so the bubbles live INSIDE the page (position:absolute) and the
     // browser scrolls them together with the images on its own thread: no lag, no shaking.
     // FIXED (only when an inner element scrolls): bubbles follow the images from script.
+    var CSS_ABS='position:absolute;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483647;pointer-events:none;';
+    var CSS_FIX='position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;pointer-events:none;overflow:hidden;';
     var ABS=(de.scrollHeight||0)>(window.innerHeight||0)+80;
     var w=document.createElement('div'); w.id='__ns_wm_overlay';
-    w.style.cssText=ABS
-      ?'position:absolute;left:0;top:0;width:0;height:0;overflow:visible;z-index:2147483647;pointer-events:none;'
-      :'position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;pointer-events:none;overflow:hidden;';
+    w.style.cssText=ABS?CSS_ABS:CSS_FIX;
     var fam=font?"'NSBn',sans-serif":'sans-serif';
     for(var i=0;i<items.length;i++){
       var it=items[i];
@@ -89,6 +89,7 @@ internal object WebModeWriter {
       }
       b.appendChild(t); w.appendChild(b);
     }
+    var allS=[]; for(var ai=0;ai<items.length;ai++){var as0=items[ai].s; if(as0&&allS.indexOf(as0)<0)allS.push(as0);}
     var LAZY=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
     var cache={},miss={};
     function norm(u){return (u||'').split('#')[0];}
@@ -112,8 +113,31 @@ internal object WebModeWriter {
       }
       return {exact:exact,byBase:byBase};
     }
+    // True while this <img> still shows source s (same file, query string ignored).
+    function owns(im,s){
+      var k=srcsOf(im),ns=norm(s),bs=base(s);
+      for(var i=0;i<k.length;i++){if(k[i]===ns||base(k[i])===bs)return true;}
+      return false;
+    }
     function findImg(s, index){
-      var c=cache[s]; if(c&&document.contains(c))return c;
+      var c=cache[s];
+      if(c&&document.contains(c)){
+        if(owns(c,s))return c;
+        // Virtual readers recycle <img> nodes for other panels: a cached node that no longer shows s
+        // would put this text on the wrong picture. Look for the real owner; if there is none
+        // (e.g. the page swapped to a blob: URL) keep the old node exactly as before.
+        delete cache[s];
+        var moved=lookupImg(s,index);
+        if(moved)return moved;
+        // This node now shows ANOTHER panel of this chapter: s has left the page, so hide its bubble
+        // instead of leaving the text on somebody else's picture.
+        for(var q=0;q<allS.length;q++){if(allS[q]!==s&&owns(c,allS[q]))return null;}
+        cache[s]=c;
+        return c;
+      }
+      return lookupImg(s,index);
+    }
+    function lookupImg(s, index){
       // A single index is built per layout pass when any source needs lookup. This avoids
       // scanning document.images once per bubble during scroll/re-render-heavy virtual readers.
       if(index){
@@ -194,6 +218,13 @@ internal object WebModeWriter {
         if(!document.contains(w))return;
       }
       var bs=w.querySelectorAll('.__ns_b'),vh=window.innerHeight;
+      if(!ABS&&(de.scrollHeight||0)>(window.innerHeight||0)+80){
+        // The overlay was built while the page was still short (images not loaded yet), so it chose the
+        // script-driven FIXED mode, which trails behind the picture while scrolling. The page now scrolls
+        // by itself: move the bubbles into the page so the browser scrolls them with the images.
+        ABS=true; w.style.cssText=CSS_ABS;
+        for(var u=0;u<bs.length;u++)bs[u].removeAttribute('data-k');
+      }
       var o=ABS?w.getBoundingClientRect():null;
       var L=[],needsIndex=false,lookupNow=Date.now();
       // Most Webtoon images stay in the DOM, so cached source-to-image references are enough.
@@ -238,17 +269,39 @@ internal object WebModeWriter {
         var fw=String(Math.round(R.rw));
         if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,gg[5]*R.rw*1.2);}
       }}
-    var raf=0,lastRun=0;
+    var raf=0,lastRun=0,forceNext=false,settleT=0,ro=null;
     function sched(){
       if(raf)return;
       // In ABS mode scrolling needs no work at all except showing bubbles that come near: 4x a second is plenty.
       raf=requestAnimationFrame(function(){raf=0;
-        var n=Date.now(); if(ABS&&n-lastRun<250)return; lastRun=n;
+        var n=Date.now(),f=forceNext; forceNext=false;
+        if(ABS&&!f&&n-lastRun<250)return; lastRun=n;
         try{layout();}catch(e){}});}
+    // Anything that moves the pictures (viewport resize, an image finishing its load, the page growing,
+    // the end of a scroll) re-places the bubbles on the very next frame. Before, such an event that landed
+    // within 250 ms of the last pass was simply dropped and the text sat on the old spot until the
+    // next 500 ms tick.
+    function schedNow(){forceNext=true;sched();}
     var iv=setInterval(function(){lastRun=0;sched();},500);
-    function onScroll(){ if(ABS)sched(); else {if(raf)return;raf=requestAnimationFrame(function(){raf=0;try{layout();}catch(e){}});} }
-    function stop(){window.removeEventListener('scroll',onScroll,true);window.removeEventListener('resize',sched);clearInterval(iv);}
-    window.addEventListener('scroll',onScroll,{capture:true,passive:true}); window.addEventListener('resize',sched);
+    function onScroll(){
+      if(ABS){sched();clearTimeout(settleT);settleT=setTimeout(schedNow,160);}
+      else {if(raf)return;raf=requestAnimationFrame(function(){raf=0;try{layout();}catch(e){}});}
+    }
+    function onImgLoad(e){var t=e&&e.target;if(t&&t.tagName==='IMG')schedNow();}
+    function stop(){
+      window.removeEventListener('scroll',onScroll,true);window.removeEventListener('resize',schedNow);
+      window.removeEventListener('orientationchange',schedNow);window.removeEventListener('load',onImgLoad,true);
+      clearInterval(iv);clearTimeout(settleT);
+      if(ro){try{ro.disconnect();}catch(e){}ro=null;}
+    }
+    window.addEventListener('scroll',onScroll,{capture:true,passive:true}); window.addEventListener('resize',schedNow);
+    window.addEventListener('orientationchange',schedNow); window.addEventListener('load',onImgLoad,true);
+    try{
+      if(window.ResizeObserver){
+        ro=new ResizeObserver(schedNow);
+        ro.observe(document.documentElement); if(document.body)ro.observe(document.body);
+      }
+    }catch(e){}
     window.__nsWmStop=stop;
     (document.body||document.documentElement).appendChild(w);
     window.__nsEl=w; window.__nsOrig=''; window.__nsTr=w.innerHTML; window.__nsShown=1;
