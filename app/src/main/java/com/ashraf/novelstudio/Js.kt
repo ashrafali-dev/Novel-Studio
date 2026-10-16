@@ -284,8 +284,8 @@ function __box(){
       // Fallback for editors where the browser editing command is unavailable.
       try{
         box.focus();
+        try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text.length>1000?null:text}));}catch(e){}
         box.textContent=text;
-        try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}catch(e){}
         try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
         catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
         box.dispatchEvent(new Event('change',{bubbles:true}));
@@ -308,6 +308,7 @@ function __box(){
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
     var started=Date.now();
+    var textRepairTried=false;
     function keyEnter(){
       try{box.focus();}catch(e){}
       var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};
@@ -329,16 +330,55 @@ function __box(){
         window.__nsSendState='failed';
       })();
     }
+    // A freshly opened conversation can remount its editor after the first input event.
+    // Re-find the live composer and replace the app-owned prompt once before giving up.
+    function repairComposerText(){
+      try{
+        var live=__box();
+        if(live&&live.isConnected)box=live;
+        if(!box||!box.isConnected)return false;
+        box.focus();
+        if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
+          var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+          var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
+          setter.call(box,text);
+          try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+          catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
+          box.dispatchEvent(new Event('change',{bubbles:true}));
+        }else{
+          var insertedAgain=false;
+          try{
+            var sel=window.getSelection(),range=document.createRange();
+            range.selectNodeContents(box);sel.removeAllRanges();sel.addRange(range);
+            insertedAgain=document.execCommand('insertText',false,text)&&__nrm(boxText())===expected;
+          }catch(e){}
+          if(!insertedAgain){
+            try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text.length>1000?null:text}));}catch(e){}
+            box.textContent=text;
+            try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+            catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
+            box.dispatchEvent(new Event('change',{bubbles:true}));
+          }
+        }
+        snap=__snap(box);window.__nsSnap=snap;
+        return composerMatches();
+      }catch(e){return false;}
+    }
     function waitUntilReady(){
-      if(!box.isConnected){
-        window.__nsSendState='failed:composer-detached';
-        return;
+      if(!box||!box.isConnected){
+        var live=__box();
+        if(live&&live.isConnected){box=live;snap=__snap(box);window.__nsSnap=snap;}
+        else if(Date.now()-started<3000){setTimeout(waitUntilReady,100);return;}
+        else{window.__nsSendState='failed:composer-detached';return;}
       }
-      // Hard gate: absolutely no button selection or click until 300 ms has elapsed
-      // and the exact inserted prompt is present in the live composer.
+      // Hard gate: no send action until the full prompt is committed to the live editor.
       var matches=composerMatches();
       if(!matches){
-        if(Date.now()-started<3000){
+        if(!textRepairTried&&Date.now()-started>=650){
+          textRepairTried=true;
+          repairComposerText();
+          setTimeout(waitUntilReady,250);
+        }else if(Date.now()-started<3000){
           setTimeout(waitUntilReady,100);
         }else{
           window.__nsSendState='failed:text-not-committed';
