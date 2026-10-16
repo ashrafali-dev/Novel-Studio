@@ -13,9 +13,9 @@ internal object RealtimeCompletionPolicy {
     private const val NORMAL_POLL_MS = 500L
     // WebView DOM probes are expensive on long, animated webtoon pages. These values
     // keep completion responsive without hammering the compositor/main thread.
-    private const val REALTIME_FIRST_POLL_MS = 200L
-    private const val REALTIME_STREAMING_POLL_MS = 250L
-    private const val REALTIME_IDLE_POLL_MS = 180L
+    private const val REALTIME_FIRST_POLL_MS = 100L
+    private const val REALTIME_STREAMING_POLL_MS = 160L
+    private const val REALTIME_IDLE_POLL_MS = 90L
 
     fun enabled(context: Context): Boolean =
         DeepSeekRealtimeTranslation.isEnabled(context)
@@ -28,7 +28,10 @@ internal object RealtimeCompletionPolicy {
         return if (streaming || !replyAvailable) REALTIME_STREAMING_POLL_MS else REALTIME_IDLE_POLL_MS
     }
 
-    fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 2): Int =
+    // A single unchanged, non-streaming sample is enough when explicit completion evidence
+    // exists (all paragraph markers or the chatbot's completed/send-ready UI). The no-signal
+    // fallback remains at two samples so a brief generation pause is not mistaken for completion.
+    fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 1): Int =
         if (enabled(context)) realtimeThreshold else normalThreshold
 
     fun noStopSignalThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 2): Int =
