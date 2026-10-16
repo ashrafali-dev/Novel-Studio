@@ -31,7 +31,7 @@ internal object RealtimeCompletionPolicy {
     // A single unchanged, non-streaming sample is enough when explicit completion evidence
     // exists (all paragraph markers or the chatbot's completed/send-ready UI). The no-signal
     // fallback remains at two samples so a brief generation pause is not mistaken for completion.
-    fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 1): Int =
+    fun stableThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 2): Int =
         if (enabled(context)) realtimeThreshold else normalThreshold
 
     fun noStopSignalThreshold(context: Context, normalThreshold: Int, realtimeThreshold: Int = 2): Int =
