@@ -1513,6 +1513,8 @@ return t.length>=40?'TXT:'+t:'';
                 scanDot.visibility = View.VISIBLE
                 scanDot.contentDescription = status.label
                 (scanDot.background as? GradientDrawable)?.setColor(status.color)
+                if (::modeChipDot.isInitialized) (modeChipDot.background as? GradientDrawable)?.setColor(status.color)
+                refreshModeChip()
                 if (status.blinking) {
                     scanDotPhase = !scanDotPhase
                     scanDot.alpha = if (scanDotPhase) 1f else 0.22f
@@ -1530,6 +1532,15 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var tabStrip: LinearLayout
     private lateinit var shortcutStrip: LinearLayout
     private lateinit var modeBtn: ImageView
+    private lateinit var modeChip: LinearLayout
+    private lateinit var modeChipText: TextView
+    private lateinit var modeChipDot: View
+    private lateinit var dockBar: LinearLayout
+    private lateinit var dockWrapView: FrameLayout
+    private lateinit var chromeTopView: LinearLayout
+    private lateinit var floatBoltHost: FrameLayout
+    private var barsHidden = false
+    private enum class ReadMode { NOVEL, REALTIME, SCAN }
     private lateinit var extractBtn: ExtractButton
     private lateinit var progressBox: LinearLayout
     private lateinit var progressBar: BookwormProgress
@@ -2032,12 +2043,28 @@ return t.length>=40?'TXT:'+t:'';
         }
         var pullDownStartY = 0f
         var pullDownStartX = 0f
+        var barMoveLastY = 0f
+        var barMoveAccum = 0f
         novelWv.setOnTouchListener { view, event ->
             activeWv = novelWv
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     pullDownStartY = event.y
                     pullDownStartX = event.x
+                    barMoveLastY = event.rawY
+                    barMoveAccum = 0f
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    // Chrome-style bars: finger moving up (page scrolls down) hides them,
+                    // a light pull the other way brings them back.
+                    if (event.pointerCount == 1) {
+                        val d = event.rawY - barMoveLastY
+                        barMoveLastY = event.rawY
+                        if (d != 0f && (d > 0f) != (barMoveAccum > 0f)) barMoveAccum = 0f
+                        barMoveAccum += d
+                        if (barMoveAccum < -dp(32)) { setBarsHidden(true); barMoveAccum = 0f }
+                        else if (barMoveAccum > dp(16)) { setBarsHidden(false); barMoveAccum = 0f }
+                    }
                 }
                 MotionEvent.ACTION_UP -> {
                     val dy = event.y - pullDownStartY
@@ -2183,6 +2210,8 @@ return t.length>=40?'TXT:'+t:'';
             addView(shortcutScroll, LinearLayout.LayoutParams(MP, WC))
         }
 
+        chromeTopView = browserChrome
+
         // ================= panes (both always full-size and alive; the one on top is the one you see)
         novelBox = FrameLayout(this).apply { addView(novelWv, FrameLayout.LayoutParams(MP, MP)) }
         strip = LinearLayout(this).apply {
@@ -2310,6 +2339,28 @@ return t.length>=40?'TXT:'+t:'';
 
         // ================= floating dock: [view mode] [prev] [EXTRACT] [next] [save]
         modeBtn = dockBtn(Ic.SPLIT, "View mode") { cycleMode() }
+        modeChipDot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(UiTheme.ok) }
+        }
+        modeChipText = TextView(this).apply {
+            textSize = 11.5f
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+            maxLines = 2
+            setLineSpacing(0f, 0.95f)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        modeChip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(6), 0)
+            background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x14FFFFFF, 18, UiTheme.strokeSoft), 18)
+            contentDescription = "Reading mode"
+            setOnClickListener { showModeSheet() }
+            addView(modeChipText, LinearLayout.LayoutParams(0, WC, 1f))
+            addView(modeChipDot, LinearLayout.LayoutParams(dp(7), dp(7)).also { it.marginStart = dp(6) })
+        }
+        refreshModeChip()
         extractBtn = ExtractButton(this).apply {
             val tapDetector = GestureDetector(this@MainActivity,
                 object : GestureDetector.SimpleOnGestureListener() {
@@ -2336,6 +2387,7 @@ return t.length>=40?'TXT:'+t:'';
             setPadding(dp(8), 0, dp(8), 0)
             background = Glass.panel(this@MainActivity, 34, strong = true)
             elevation = dp(12).toFloat()
+            addView(modeChip, LinearLayout.LayoutParams(0, dp(42), 1.9f).also { it.setMargins(0, 0, dp(2), 0) })
             addView(modeBtn)
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
             addView(extractBtn, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
@@ -2346,6 +2398,8 @@ return t.length>=40?'TXT:'+t:'';
             setPadding(dp(14), dp(6), dp(14), dp(12))
             addView(dock, FrameLayout.LayoutParams(MP, dp(68)))
         }
+        dockBar = dock
+        dockWrapView = dockWrap
 
         snackView = TextView(this).apply {
             textSize = 13f
@@ -2371,9 +2425,14 @@ return t.length>=40?'TXT:'+t:'';
             addView(contentHolder, LinearLayout.LayoutParams(MP, 0, 1f))
             addView(dockWrap, LinearLayout.LayoutParams(MP, WC))
         }
+        floatBoltHost = FrameLayout(this).apply {
+            visibility = View.GONE
+            elevation = dp(12).toFloat()
+        }
         val root = FrameLayout(this).apply {
             background = appBackground()
             addView(main, FrameLayout.LayoutParams(MP, MP))
+            addView(floatBoltHost, FrameLayout.LayoutParams(dp(60), dp(60), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(20) })
             addView(snackView, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(106) })
         }
         setContentView(root)
@@ -2383,6 +2442,7 @@ return t.length>=40?'TXT:'+t:'';
         buildSiteShortcuts()
         initBrowserTabs()
         setMode(Mode.SPLIT)
+        refreshModeChip()
         refreshAutoBtn()
         applyDark()
         if (browserTabs.firstOrNull()?.url.isNullOrBlank()) {
@@ -3190,6 +3250,7 @@ return t.length>=40?'TXT:'+t:'';
             Mode.SPLIT -> "Split view"
         }
         activeWv = if (m == Mode.CHAT) chatWv else novelWv
+        if (barsHidden && m != Mode.NOVEL) setBarsHidden(false)
         applyLayout()
         if (m != Mode.NOVEL) refreshChatViewport()
         updatePill()
@@ -3300,6 +3361,229 @@ return t.length>=40?'TXT:'+t:'';
                     chatWv.invalidate()
                 }
             }, 120L)
+        }
+    }
+
+    // ================================================================== reading mode (Novel / Realtime / Scanning)
+    private fun currentReadMode(): ReadMode = when {
+        DeepSeekRealtimeTranslation.isEnabled(this) -> ReadMode.REALTIME
+        webModeOn() -> ReadMode.SCAN
+        else -> ReadMode.NOVEL
+    }
+
+    private fun refreshModeChip() {
+        if (!::modeChipText.isInitialized) return
+        val t = when (currentReadMode()) {
+            ReadMode.NOVEL -> "Novel"
+            ReadMode.REALTIME -> "WebToon\nRealtime"
+            ReadMode.SCAN -> "WebToon\nScanning"
+        }
+        if (modeChipText.text.toString() != t) modeChipText.text = t
+    }
+
+    /** Same work the menu's "Web Mode" row did, so the menu and the mode sheet share it. */
+    private fun applyWebModeFlag(on: Boolean) {
+        Prefs.putBool(this, "webMode", on)
+        if (!on) {
+            webModeHandle?.cancel(); webModeHandle = null
+            webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
+            webModePrefetchBusy = false
+            aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+            aheadOcrStage = ""
+            aheadOcrPct = -1
+            clearRealtimeAheadStateForNavigation()
+            clearWebModeProgress()
+            updateProgressUi()
+        }
+    }
+
+    /** Same work the menu's "AI Real-time Translation" row did when turning it on. */
+    private fun enableRealtimeMode() {
+        DeepSeekRealtimeTranslation.enable(this)
+        chatWv.onResume()
+        chatWv.resumeTimers()
+        scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
+    }
+
+    /** Same work the menu's "AI Real-time Translation" row did when turning it off. */
+    private fun disableRealtimeMode() {
+        deepSeekPollEvalSeq++
+        handler.removeCallbacks(deepSeekVisiblePoll)
+        handler.removeCallbacks(overlayGuard)
+        aheadOcrHandle?.cancel()
+        aheadOcrHandle = null
+        aheadOcrSeq++
+        aheadOcrStage = ""
+        aheadOcrPct = -1
+        clearRealtimeAheadStateForNavigation()
+        deepSeekPollBusy = false
+        deepSeekVisibleSignature = ""
+        deepSeekLastOcrAtMs = 0L
+        deepSeekNoImageTriedUrl = ""
+        // Do not let a partial real-time batch finish after the mode is disabled
+        // and overwrite the chapter cache with a viewport-only translation.
+        webModeHandle?.cancel()
+        webModeHandle = null
+        deepSeekTextHashByChapter.values.flatten().forEach { hash ->
+            synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
+        }
+        deepSeekTextHashByChapter.clear()
+        if (running != null) {
+            runToken++
+            running = null
+            queue.clear()
+            chatWv.evaluateJavascript(Js.stop(), null)
+        }
+        clearWebModeProgress()
+        val previousBot = DeepSeekRealtimeTranslation.disable(this)
+        openBot(previousBot)
+        if (!webModeOn()) {
+            webModeHandle?.cancel(); webModeHandle = null
+            webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
+            webModePrefetchBusy = false
+            clearWebModeProgress()
+            updateProgressUi()
+        }
+    }
+
+    private fun setReadMode(target: ReadMode) {
+        if (currentReadMode() == target) return
+        when (target) {
+            ReadMode.REALTIME -> enableRealtimeMode()
+            ReadMode.SCAN -> {
+                if (DeepSeekRealtimeTranslation.isEnabled(this)) disableRealtimeMode()
+                if (!webModeOn()) applyWebModeFlag(true)
+            }
+            ReadMode.NOVEL -> {
+                if (DeepSeekRealtimeTranslation.isEnabled(this)) disableRealtimeMode()
+                if (webModeOn()) applyWebModeFlag(false)
+            }
+        }
+        if (target != ReadMode.NOVEL) Prefs.put(this, "lastToonSub", if (target == ReadMode.REALTIME) "rt" else "scan")
+        refreshModeChip()
+    }
+
+    private fun showModeSheet() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(18))
+            background = Sheets.sheetBackground(this@MainActivity)
+        }
+        box.addView(TextView(this).apply {
+            text = "Reading mode"
+            textSize = 15f
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+        }, LinearLayout.LayoutParams(MP, WC).also { it.bottomMargin = dp(10) })
+        val rowMain = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val rowSub = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val viewBtn = TextView(this).apply {
+            textSize = 12.5f
+            typeface = medium
+            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(UiTheme.dim)
+            setPadding(dp(14), 0, dp(14), 0)
+            background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x0FFFFFFF, 14, UiTheme.strokeSoft), 14)
+        }
+        fun viewLabel() = "View: " + when (mode) {
+            Mode.SPLIT -> "Split view"
+            Mode.NOVEL -> "Novel only"
+            Mode.CHAT -> "Chatbot only"
+        } + "  (tap to change)"
+        viewBtn.text = viewLabel()
+        viewBtn.setOnClickListener { cycleMode(); viewBtn.text = viewLabel() }
+
+        var sheet: android.app.Dialog? = null
+        fun seg(label: String, selected: Boolean, onClick: () -> Unit): TextView = TextView(this).apply {
+            text = label
+            textSize = 13.5f
+            typeface = boldMedium
+            gravity = Gravity.CENTER
+            setTextColor(if (selected) Color.WHITE else UiTheme.dim)
+            background = Glass.ripple(
+                this@MainActivity,
+                if (selected) Glass.accent(this@MainActivity, 14) else Glass.solid(this@MainActivity, 0x12FFFFFF, 14, UiTheme.strokeSoft),
+                14
+            )
+            setOnClickListener { onClick() }
+        }
+        fun lp() = LinearLayout.LayoutParams(0, dp(46), 1f).also { it.setMargins(dp(3), 0, dp(3), 0) }
+        fun render() {
+            val cur = currentReadMode()
+            rowMain.removeAllViews()
+            rowSub.removeAllViews()
+            rowMain.addView(seg("Novel", cur == ReadMode.NOVEL) {
+                setReadMode(ReadMode.NOVEL)
+                toast("📖 Novel mode")
+                sheet?.dismiss()
+            }, lp())
+            rowMain.addView(seg("WebToon", cur != ReadMode.NOVEL) {
+                if (currentReadMode() == ReadMode.NOVEL) {
+                    setReadMode(if (Prefs.get(this, "lastToonSub", "scan") == "rt") ReadMode.REALTIME else ReadMode.SCAN)
+                }
+                render()
+            }, lp())
+            rowSub.addView(seg("Realtime", cur == ReadMode.REALTIME) {
+                setReadMode(ReadMode.REALTIME)
+                toast("🤖 AI real-time mode ON — current chatbot will translate chapter panels")
+                sheet?.dismiss()
+            }, lp())
+            rowSub.addView(seg("Scanning", cur == ReadMode.SCAN) {
+                setReadMode(ReadMode.SCAN)
+                toast("🖼 Scanning mode — tap ⚡ to read image chapters with OCR")
+                sheet?.dismiss()
+            }, lp())
+            rowSub.visibility = if (cur == ReadMode.NOVEL) View.GONE else View.VISIBLE
+        }
+        render()
+        box.addView(rowMain, LinearLayout.LayoutParams(MP, WC))
+        box.addView(rowSub, LinearLayout.LayoutParams(MP, WC).also { it.topMargin = dp(6) })
+        box.addView(viewBtn, LinearLayout.LayoutParams(MP, dp(42)).also { it.topMargin = dp(12) })
+        sheet = Sheets.create(this, box)
+        sheet?.show()
+    }
+
+    // ---- Chrome-style bars: hide while reading, come back with a light pull
+    private fun setBarsHidden(hide: Boolean) {
+        if (!::dockBar.isInitialized || !::chromeTopView.isInitialized || hide == barsHidden) return
+        if (hide) {
+            if (mode != Mode.NOVEL || urlBar.hasFocus()) return
+            barsHidden = true
+            val topH = chromeTopView.height.toFloat()
+            val botH = dockWrapView.height.toFloat()
+            chromeTopView.animate().cancel()
+            dockWrapView.animate().cancel()
+            chromeTopView.animate().translationY(-topH).alpha(0f).setDuration(180L).withEndAction {
+                if (barsHidden) chromeTopView.visibility = View.GONE
+            }.start()
+            dockWrapView.animate().translationY(botH).alpha(0f).setDuration(180L).withEndAction {
+                if (!barsHidden) return@withEndAction
+                dockWrapView.visibility = View.GONE
+                // The bolt stays reachable: it floats over the page while the bars are away.
+                (extractBtn.parent as? ViewGroup)?.removeView(extractBtn)
+                floatBoltHost.addView(extractBtn, FrameLayout.LayoutParams(dp(60), dp(60)))
+                floatBoltHost.alpha = 0f
+                floatBoltHost.visibility = View.VISIBLE
+                floatBoltHost.animate().alpha(1f).setDuration(140L).start()
+            }.start()
+        } else {
+            barsHidden = false
+            floatBoltHost.animate().cancel()
+            if (extractBtn.parent === floatBoltHost) {
+                floatBoltHost.removeView(extractBtn)
+                dockBar.addView(extractBtn, 3, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
+            }
+            floatBoltHost.visibility = View.GONE
+            chromeTopView.animate().cancel()
+            dockWrapView.animate().cancel()
+            chromeTopView.visibility = View.VISIBLE
+            dockWrapView.visibility = View.VISIBLE
+            chromeTopView.alpha = 0f
+            dockWrapView.alpha = 0f
+            chromeTopView.translationY = -dp(40).toFloat()
+            dockWrapView.translationY = dp(40).toFloat()
+            chromeTopView.animate().translationY(0f).alpha(1f).setDuration(180L).start()
+            dockWrapView.animate().translationY(0f).alpha(1f).setDuration(180L).start()
         }
     }
 
@@ -6432,19 +6716,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 }
                 31 -> {
                     val on = !webModeOn()
-                    Prefs.putBool(this, "webMode", on)
-                    if (!on) {
-                        webModeHandle?.cancel(); webModeHandle = null
-                        webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
-                        webModePrefetchBusy = false
-                        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
-                        aheadOcrStage = ""
-                        aheadOcrPct = -1
-                        clearRealtimeAheadStateForNavigation()
-                        clearWebModeProgress()
-                        updateProgressUi()
-                    }
+                    applyWebModeFlag(on)
                     refresh(i, menuWebModeLabel())
+                    refreshModeChip()
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
@@ -6460,54 +6734,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 }
                 32 -> {
                     if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
-                        DeepSeekRealtimeTranslation.enable(this)
-                        chatWv.onResume()
-                        chatWv.resumeTimers()
+                        enableRealtimeMode()
                         refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
                         refresh(31, menuWebModeLabel())
+                        refreshModeChip()
                         dlg.dismiss()
-                        scheduleDeepSeekAutoTranslation(novelWv.url.orEmpty())
                         toast("🤖 AI real-time mode ON — current chatbot will translate chapter panels")
                     } else {
-                        deepSeekPollEvalSeq++
-                        handler.removeCallbacks(deepSeekVisiblePoll)
-                        handler.removeCallbacks(overlayGuard)
-                        aheadOcrHandle?.cancel()
-                        aheadOcrHandle = null
-                        aheadOcrSeq++
-                        aheadOcrStage = ""
-                        aheadOcrPct = -1
-                        clearRealtimeAheadStateForNavigation()
-                        deepSeekPollBusy = false
-                        deepSeekVisibleSignature = ""
-                        deepSeekLastOcrAtMs = 0L
-                        deepSeekNoImageTriedUrl = ""
-                        // Do not let a partial real-time batch finish after the mode is disabled
-                        // and overwrite the chapter cache with a viewport-only translation.
-                        webModeHandle?.cancel()
-                        webModeHandle = null
-                        deepSeekTextHashByChapter.values.flatten().forEach { hash ->
-                            synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
-                        }
-                        deepSeekTextHashByChapter.clear()
-                        if (running != null) {
-                            runToken++
-                            running = null
-                            queue.clear()
-                            chatWv.evaluateJavascript(Js.stop(), null)
-                        }
-                        clearWebModeProgress()
-                        val previousBot = DeepSeekRealtimeTranslation.disable(this)
-                        openBot(previousBot)
-                        if (!webModeOn()) {
-                            webModeHandle?.cancel(); webModeHandle = null
-                            webModePrefetchHandle?.cancel(); webModePrefetchHandle = null
-                            webModePrefetchBusy = false
-                            clearWebModeProgress()
-                            updateProgressUi()
-                        }
+                        disableRealtimeMode()
                         refresh(i, DeepSeekRealtimeTranslation.menuLabel(this))
                         refresh(31, menuWebModeLabel())
+                        refreshModeChip()
                         toast("📖 AI Real-time Translation OFF — previous settings restored")
                     }
                 }
