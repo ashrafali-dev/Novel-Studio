@@ -65,7 +65,7 @@ internal object WebModeWriter {
     var cleanImgs=Object.create(null);
     function ensureCleanImage(im,s,url,r,o0){
       if(!url||!im||!r||r.width<8||r.height<8)return;
-      var key=base(s),entry=cleanImgs[key];
+      var key=norm(s),entry=cleanImgs[key];
       if(!entry){
         var ci=document.createElement('img');ci.alt='';ci.draggable=false;
         ci.style.cssText='position:absolute;left:0;top:0;display:block;max-width:none;max-height:none;'
@@ -120,6 +120,9 @@ internal object WebModeWriter {
     function base(u){var x=norm(u),q=x.indexOf('?');return q>0?x.slice(0,q):x;}
     function srcsOf(im){
       var o=[],c=im.currentSrc||im.src; if(c)o.push(norm(c));
+      // Include the declared src too: currentSrc may be a responsive srcset variant.
+      var declared=im.getAttribute('src');
+      if(declared){try{o.push(norm(new URL(declared,document.baseURI).href));}catch(e){}}
       for(var a=0;a<LAZY.length;a++){var v=im.getAttribute(LAZY[a]);
         if(v&&v.length>4){try{o.push(norm(new URL(v,document.baseURI).href));}catch(e){}}}
       var ss=im.getAttribute('data-srcset')||im.getAttribute('srcset');
@@ -132,15 +135,20 @@ internal object WebModeWriter {
         for(var k=0;k<keys.length;k++){
           var key=norm(keys[k]), bk=base(key);
           if(key&&!exact[key])exact[key]=im;
-          if(bk&&!byBase[bk])byBase[bk]=im;
+          if(bk){
+            var prior=byBase[bk];
+            if(!prior)byBase[bk]={el:im,ambiguous:false};
+            else if(prior.el!==im)prior.ambiguous=true;
+          }
         }
       }
       return {exact:exact,byBase:byBase};
     }
-    // True while this <img> still shows source s (same file, query string ignored).
+    // A cached element owns a source only when its actual candidate URL matches exactly.
+    // Stripping the query string here is unsafe: some readers encode panel identity in it.
     function owns(im,s){
-      var k=srcsOf(im),ns=norm(s),bs=base(s);
-      for(var i=0;i<k.length;i++){if(k[i]===ns||base(k[i])===bs)return true;}
+      var k=srcsOf(im),ns=norm(s);
+      for(var i=0;i<k.length;i++){if(k[i]===ns)return true;}
       return false;
     }
     function findImg(s, index){
@@ -165,7 +173,10 @@ internal object WebModeWriter {
       // A single index is built per layout pass when any source needs lookup. This avoids
       // scanning document.images once per bubble during scroll/re-render-heavy virtual readers.
       if(index){
-        var exact=index.exact[norm(s)], near=index.byBase[base(s)], match=exact||near;
+        var exact=index.exact[norm(s)], near=index.byBase[base(s)];
+        // A query-stripped fallback is safe only when that base path belongs to one DOM image.
+        // If two panels share a path but differ by ?id=..., do not guess and paint text on the wrong panel.
+        var match=exact||(near&&!near.ambiguous?near.el:null);
         if(match){cache[s]=match;delete miss[s];return match;}
         miss[s]=Date.now(); return null;
       }
@@ -174,9 +185,16 @@ internal object WebModeWriter {
       var imgs=document.images;
       for(var i=0;i<imgs.length;i++){var l=srcsOf(imgs[i]);
         for(var k=0;k<l.length;k++){if(l[k]===norm(s)){cache[s]=imgs[i];return imgs[i];}}}
-      var bs0=base(s);
+      var bs0=base(s),baseMatch=null,baseAmbiguous=false;
       for(var i2=0;i2<imgs.length;i2++){var l2=srcsOf(imgs[i2]);
-        for(var k2=0;k2<l2.length;k2++){if(base(l2[k2])===bs0){cache[s]=imgs[i2];return imgs[i2];}}}
+        for(var k2=0;k2<l2.length;k2++){
+          if(base(l2[k2])!==bs0)continue;
+          if(baseMatch&&baseMatch!==imgs[i2]){baseAmbiguous=true;break;}
+          baseMatch=imgs[i2];
+        }
+        if(baseAmbiguous)break;
+      }
+      if(baseMatch&&!baseAmbiguous){cache[s]=baseMatch;return baseMatch;}
       miss[s]=now; return null;
     }
     // Largest font (up to maxPx) at which the text still fits inside its box.
