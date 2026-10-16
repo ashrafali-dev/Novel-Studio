@@ -107,96 +107,61 @@ function __diffSend(box,snap){var cand=__ctls(box).filter(function(b){if(!__ok(b
 function __findSend(p,box,snap){
  if(!box||!box.isConnected)return null;
  var form=null;try{form=box.closest('form');}catch(e){}
- var explicitSels=[];
- if(p.send)explicitSels.push(p.send);
- explicitSels.push(
-  'button[data-testid*="send" i]','[data-testid*="send" i][role="button"]',
-  'button[data-test-id*="send" i]','[data-test-id*="send" i][role="button"]',
-  'button[aria-label*="send" i]','[role="button"][aria-label*="send" i]',
-  'button[title*="send" i]','[role="button"][title*="send" i]',
-  'button[aria-label*="submit" i]','[role="button"][aria-label*="submit" i]'
+ var sels=[];
+ if(p.send)sels.push(p.send);
+ sels.push(
+  'button[data-testid="send-button"]',
+  'button[data-testid*="send" i]',
+  '[data-testid*="send" i][role="button"]',
+  'button[data-test-id*="send" i]',
+  '[data-test-id*="send" i][role="button"]',
+  'button[aria-label*="send" i]',
+  '[role="button"][aria-label*="send" i]',
+  'button[title*="send" i]',
+  '[role="button"][title*="send" i]',
+  'button[aria-label*="submit" i]',
+  '[role="button"][aria-label*="submit" i]'
  );
  function label(b){
   return String((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+
    (b.getAttribute('data-testid')||'')+' '+(b.getAttribute('data-test-id')||'')+' '+
    (b.innerText||b.textContent||'')+' '+(typeof b.className==='string'?b.className:'')).toLowerCase();
  }
- function acceptable(b){
+ function okSend(b){
   if(!__ok(b)||b.querySelector('input[type="file"]'))return false;
   var t=label(b);
-  if(/\b(stop|cancel|pause|interrupt|abort|voice|microphone|attach|attachment|upload|file|search|deep.?think|reasoning|add file|plus|menu|settings)\b/.test(t))return false;
-  return true;
+  // Never click a voice/microphone or other composer utility control.
+  if(/\b(voice|microphone|mic|dictation|audio|record|stop|cancel|pause|interrupt|abort|attach|attachment|upload|file|search|deep.?think|reasoning|plus|menu|settings)\b/.test(t))return false;
+  // Explicitly labelled Send/Submit, or known send-button test IDs only.
+  return /\b(send|submit)\b/.test(t)||/send-button/.test(t);
  }
- function isAfterBox(b){try{return !!(box.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING);}catch(e){return false;}}
+ var all=[],seen=new Set();
+ function add(root,sel){
+  try{[].slice.call(root.querySelectorAll(sel)).forEach(function(b){
+   if(!seen.has(b)&&okSend(b)){seen.add(b);all.push(b);}
+  });}catch(e){}
+ }
+ if(form)for(var i=0;i<sels.length;i++)add(form,sels[i]);
+ for(var i=0;i<sels.length;i++)add(document,sels[i]);
+ if(!all.length&&form){
+  var sub=[];try{sub=[].slice.call(form.querySelectorAll('button[type="submit"],input[type="submit"]'));}catch(e){}
+  sub=sub.filter(okSend);all=all.concat(sub);
+ }
+ if(!all.length)return null;
+ var xr=box.getBoundingClientRect();
  function score(b){
-  var br=b.getBoundingClientRect(),xr=box.getBoundingClientRect(),t=label(b);
-  // The send control is normally on the lower-right edge of the composer.
-  var q=Math.abs(br.right-xr.right)+1.25*Math.abs((br.top+br.height/2)-(xr.bottom-18));
-  if(isAfterBox(b))q-=45;
-  if(form&&form.contains(b))q-=180;
-  if(String(b.type||'').toLowerCase()==='submit')q-=260;
-  if(/\b(send|submit)\b/.test(t))q-=1600;
-  if(/send-button|submit-button/.test(t))q-=400;
-  var was=snap&&snap.get(b);
-  if(was===false||was===undefined)q-=80;
+  var r=b.getBoundingClientRect(),q=Math.abs(r.right-xr.right)+Math.abs(r.top-xr.bottom);
+  if(form&&form.contains(b))q-=10000;
+  if(/send-button/.test(label(b)))q-=500;
   return q;
  }
- function collect(root,selector,out){
-  try{[].slice.call(root.querySelectorAll(selector)).forEach(function(b){if(out.indexOf(b)<0&&acceptable(b))out.push(b);});}catch(e){}
- }
- function best(list){
-  if(!list.length)return null;
-  list.sort(function(a,b){return score(a)-score(b);});
-  return list[0];
- }
- // First use explicit site/button labels. Prefer controls inside the current composer form.
- var explicit=[],seen=new Set();
- function addExplicit(root,sel){
-  var a=[];collect(root,sel,a);
-  a.forEach(function(b){if(!seen.has(b)){seen.add(b);explicit.push(b);}});
- }
- if(form)for(var i=0;i<explicitSels.length;i++)addExplicit(form,explicitSels[i]);
- for(var i=0;i<explicitSels.length;i++)addExplicit(document,explicitSels[i]);
- if(explicit.length)return best(explicit);
- // A real submit control inside this composer is safer than a page-wide submit button.
- if(form){
-  var submits=[];collect(form,'button[type="submit"],[role="button"][type="submit"]',submits);
-  if(submits.length)return best(submits);
- }
- // Fall back only to controls in the composer’s own nearby DOM region; never choose
- // an unrelated submit button elsewhere in a chatbot page.
- var local=__ctls(box).filter(function(b){return acceptable(b);});
- if(local.length){
-  var after=local.filter(function(b){return isAfterBox(b);});
-  if(after.length)return best(after);
-  return best(local);
- }
- // Last resort for chat layouts whose send button is a sibling outside the editor's form.
- var near=[],c=box.parentElement,allSeen=new Set();
- for(var up=0;c&&up<8;up++,c=c.parentElement){
-  var controls=[].slice.call(c.querySelectorAll('button,[role="button"]'));
-  if(controls.length>18)break;
-  controls.forEach(function(b){
-   if(allSeen.has(b)||!acceptable(b)||!isAfterBox(b))return;
-   allSeen.add(b);near.push(b);
-  });
-  if(near.length){var candidate=best(near);if(candidate)return candidate;}
- }
- return null;
+ all.sort(function(a,b){return score(a)-score(b);});
+ return all[0];
 }
 function __press(b){
  if(!b||!b.isConnected||!__ok(b))return false;
  try{b.focus();}catch(e){}
- var events=['pointerdown','mousedown','pointerup','mouseup','click'],clicked=false;
- for(var i=0;i<events.length;i++){
-  try{
-   var C=events[i].indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;
-   b.dispatchEvent(new C(events[i],{bubbles:true,cancelable:true,view:window}));
-   if(events[i]==='click')clicked=true;
-  }catch(e){}
- }
- if(!clicked){try{b.click();clicked=true;}catch(e){}}
- return clicked;
+ try{b.click();return true;}catch(e){return false;}
 }
 function __box(){
  // DeepSeek may use a transparent native textarea under a visible backdrop.
@@ -320,52 +285,41 @@ function __box(){
       setTimeout(function(){
         if(sentOk()){
           window.__nsSendState='sent:'+method;
-          return;
-        }
-        // Some mobile chatbot UIs react to the form/keyboard submission, not a synthetic
-        // click alone. Recover only while the exact prompt is still in the composer.
-        if(method==='btn'&&composerMatches()){
-          requestComposerSubmit();
-          setTimeout(function(){
-            if(sentOk()){
-              window.__nsSendState='sent:submit';
-            }else if(composerMatches()){
-              keyEnter();
-              setTimeout(function(){
-                window.__nsSendState=sentOk()?'sent:enter':'failed';
-              },1200);
-            }else{
-              window.__nsSendState='failed';
-            }
-          },500);
         }else{
           window.__nsSendState='failed';
         }
-      },1200);
+      },1400);
     }
     function waitUntilReady(){
       if(!box.isConnected){
-        window.__nsSendState='failed';
+        window.__nsSendState='failed:composer-detached';
         return;
       }
+      // Hard gate: absolutely no button selection or click until 300 ms has elapsed
+      // and the exact inserted prompt is present in the live composer.
       var matches=composerMatches();
-      var btn=matches?__findSend(p,box,snap):null;
-      if(matches&&btn&&__ok(btn)){
+      if(!matches){
+        if(Date.now()-started<3000){
+          setTimeout(waitUntilReady,100);
+        }else{
+          window.__nsSendState='failed:text-not-committed';
+        }
+        return;
+      }
+      var btn=__findSend(p,box,snap);
+      if(btn&&__ok(btn)){
         if(__press(btn)){
           confirmSend('btn');
           return;
         }
       }
-      if(Date.now()-started<2600){
-        setTimeout(waitUntilReady,120);
-        return;
-      }
-      // Legacy-compatible fallback: only submit after verifying the exact prompt text.
-      if(matches){
+      // If no explicitly identifiable Send button exists, submit the verified composer
+      // using the site's keyboard/form mechanism; never guess by clicking a nearby icon.
+      if(requestComposerSubmit()){
+        confirmSend('submit');
+      }else{
         keyEnter();
         confirmSend('enter');
-      }else{
-        window.__nsSendState='failed';
       }
     }
     // Wait 300 ms for controlled editors to commit the input before pressing Send.
