@@ -571,6 +571,6 @@ class JapaneseMangaEngineActivity : Activity() {
         const val REQUEST_CODE = 43
         private const val MAX_IMAGE_BYTES = 20L * 1024 * 1024
         private const val MAX_PIXELS = 10L * 1024 * 1024
-        private const val MAX_CLEAN_PIXELS = 4_500_000L
+        private const val MAX_CLEAN_PIXELS = 3_000_000L
     }
 }
