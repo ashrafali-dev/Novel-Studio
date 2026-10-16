@@ -352,7 +352,10 @@ class JapaneseMangaEngineActivity : Activity() {
         } else emptyList()
 
         // Image decode, pixel masking, and WebP encoding must not run on the UI thread.
-        val shouldAttempt = removalBubbles.isNotEmpty() && panel.sourceWidth == w && panel.sourceHeight == h
+        val shouldAttempt = removalBubbles.isNotEmpty() &&
+            panel.sourceWidth == w && panel.sourceHeight == h &&
+            panel.sourceWidth <= 4096 && panel.sourceHeight <= 4096 &&
+            panel.sourceWidth.toLong() * panel.sourceHeight.toLong() <= MAX_CLEAN_PIXELS
         if (!shouldAttempt) {
             deleteLocal(panel.localUrl)
             commitOcrResult(panel, w, h, regions)
@@ -361,11 +364,13 @@ class JapaneseMangaEngineActivity : Activity() {
         worker.execute {
             try {
                 val localPath = Uri.parse(panel.localUrl).path.orEmpty().removePrefix("/manga-engine/")
-                val file = manager.resolve(localPath)
+                val originalPath = localPath.removeSuffix(".jpg") + ".original"
+                val file = manager.resolve(originalPath)?.takeIf { it.isFile }
+                    ?: manager.resolve(localPath)
                 if (file != null && file.isFile && file.length() <= MAX_IMAGE_BYTES) {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFile(file.absolutePath, bounds)
-                    // Never overlay a resized or mismatched source copy on top of the original artwork.
+                    // Prefer original bytes so the cleaner layer never replaces art with a recompressed OCR JPEG.
                     if (bounds.outWidth == panel.sourceWidth && bounds.outHeight == panel.sourceHeight &&
                         bounds.outWidth == w && bounds.outHeight == h) {
                         WebModeTextRemover.cleanAndCache(this@JapaneseMangaEngineActivity,
@@ -445,6 +450,7 @@ class JapaneseMangaEngineActivity : Activity() {
         val id = UUID.randomUUID().toString()
         val raw = File(dir, id + ".download")
         val target = File(dir, id + ".jpg")
+        val original = File(dir, id + ".original")
         var success = false
         try {
             val conn = URL(src).openConnection() as HttpURLConnection
@@ -478,17 +484,28 @@ class JapaneseMangaEngineActivity : Activity() {
             }) ?: error("image decode failed")
             try { FileOutputStream(target).use { if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, it)) error("JPEG conversion failed") } }
             finally { bitmap.recycle() }
+            // Keep the original compressed source only while this optional remover is enabled and
+            // the frame is small enough to be cleaned safely. The JPEG used by OCR stays separate.
+            if (Prefs.bool(this, "wmTextRemoval", false) &&
+                bounds.outWidth <= 4096 && bounds.outHeight <= 4096 &&
+                bounds.outWidth.toLong() * bounds.outHeight.toLong() <= MAX_CLEAN_PIXELS) {
+                raw.renameTo(original)
+            }
             success = true
             return "input/" + target.name
         } finally {
             raw.delete()
-            if (!success) target.delete()
+            if (!success) {
+                target.delete()
+                original.delete()
+            }
         }
     }
 
     private fun deleteLocal(url: String) {
         val path = Uri.parse(url).path.orEmpty().removePrefix("/manga-engine/")
         manager.resolve(path)?.delete()
+        if (path.endsWith(".jpg")) manager.resolve(path.removeSuffix(".jpg") + ".original")?.delete()
     }
 
     private fun finishScan(text: String) {
@@ -552,5 +569,6 @@ class JapaneseMangaEngineActivity : Activity() {
         const val REQUEST_CODE = 43
         private const val MAX_IMAGE_BYTES = 20L * 1024 * 1024
         private const val MAX_PIXELS = 10L * 1024 * 1024
+        private const val MAX_CLEAN_PIXELS = 4_500_000L
     }
 }
