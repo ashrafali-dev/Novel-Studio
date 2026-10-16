@@ -76,6 +76,64 @@
     return {tensor:new ort.Tensor('float32', data, [1,3,rh,rw]), rw,rh,W,H};
   }
 
+  function toArgb(r,g,b) {
+    return (0xFF000000 | (Math.round(r)<<16) | (Math.round(g)<<8) | Math.round(b)) | 0;
+  }
+
+  // Sample the pixels immediately around the detected lettering. Bubble pages are usually
+  // black ink on white paper; sampled colour helps the overlay cover the original glyphs.
+  function sampleColors(image, box) {
+    const iw=image.naturalWidth, ih=image.naturalHeight;
+    const pad=Math.max(3,Math.min(14,Math.round(Math.min(box.w,box.h)*0.16)));
+    const x0=Math.max(0,Math.floor(box.x)-pad), y0=Math.max(0,Math.floor(box.y)-pad);
+    const x1=Math.min(iw,Math.ceil(box.x+box.w)+pad), y1=Math.min(ih,Math.ceil(box.y+box.h)+pad);
+    const cw=Math.max(1,x1-x0), ch=Math.max(1,y1-y0);
+    const canvas=canvasOf(cw,ch),ctx=canvas.getContext('2d',{willReadFrequently:true});
+    ctx.drawImage(image,x0,y0,cw,ch,0,0,cw,ch);
+    const pixels=ctx.getImageData(0,0,cw,ch).data;
+    const left=Math.max(0,Math.min(cw-1,Math.floor(box.x)-x0));
+    const top=Math.max(0,Math.min(ch-1,Math.floor(box.y)-y0));
+    const right=Math.max(left,Math.min(cw-1,Math.ceil(box.x+box.w)-x0));
+    const bottom=Math.max(top,Math.min(ch-1,Math.ceil(box.y+box.h)-y0));
+    const border=[];
+    function addBorder(x,y) {
+      x=Math.round(x);y=Math.round(y);
+      if(x<0||y<0||x>=cw||y>=ch)return;
+      const at=(y*cw+x)*4;
+      border.push([pixels[at],pixels[at+1],pixels[at+2]]);
+    }
+    for(let k=0;k<=6;k++){
+      const fx=k/6;
+      addBorder(left+(right-left)*fx,top-pad/2);
+      addBorder(left+(right-left)*fx,bottom+pad/2);
+      addBorder(left-pad/2,top+(bottom-top)*fx);
+      addBorder(right+pad/2,top+(bottom-top)*fx);
+    }
+    function medianChannel(at) {
+      if(!border.length)return 255;
+      const values=border.map(p=>p[at]).sort((a,b)=>a-b);
+      return values[Math.floor(values.length/2)];
+    }
+    const br=medianChannel(0), bgc=medianChannel(1), bb=medianChannel(2);
+    const luma=0.2126*br+0.7152*bgc+0.0722*bb;
+    const chroma=Math.max(br,bgc,bb)-Math.min(br,bgc,bb);
+    const dark=[];
+    const strideX=Math.max(1,Math.floor((right-left)/18));
+    const strideY=Math.max(1,Math.floor((bottom-top)/18));
+    for(let y=top;y<=bottom;y+=strideY)for(let x=left;x<=right;x+=strideX){
+      const at=(y*cw+x)*4,r=pixels[at],g=pixels[at+1],b=pixels[at+2];
+      const lum=0.2126*r+0.7152*g+0.0722*b;
+      if(lum<Math.max(80,luma*0.58))dark.push([r,g,b]);
+    }
+    let fr=20,fg=20,fb=20;
+    if(dark.length){
+      fr=dark.reduce((a,p)=>a+p[0],0)/dark.length;
+      fg=dark.reduce((a,p)=>a+p[1],0)/dark.length;
+      fb=dark.reduce((a,p)=>a+p[2],0)/dark.length;
+    }
+    return {bg:toArgb(br,bgc,bb),fg:toArgb(fr,fg,fb),soft:(luma<150||chroma>38)};
+  }
+
   function detectComponents(map, mh, mw, input) {
     const visited = new Uint8Array(mh*mw), boxes = [];
     for (let start=0; start<map.length && boxes.length<5000; start++) {
@@ -184,7 +242,7 @@
       for(const b of boxes){
         let text='';
         try{text=await recognize(image,b);}catch(_){}
-        if(text)regions.push({order:0,text,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000});
+        if(text)regions.push({order:0,text,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
       }
       const vertical=regions.filter(r=>r.vertical).length>regions.length*0.45;
       regions.sort((a,b)=>{
