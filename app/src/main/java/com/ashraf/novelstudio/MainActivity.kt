@@ -439,6 +439,22 @@ class MainActivity : Activity() {
         val attempts: Int = 0
     )
 
+    /** Visible panels are accumulated so slow/unavailable read-ahead does not force one-bubble requests. */
+    private data class RtVisibleOcrBatch(
+        val pageUrl: String,
+        val navToken: Int,
+        var baseChapter: Chapter,
+        var titleOffset: Int,
+        val bubbles: MutableList<WmBubble> = ArrayList(),
+        val hashes: LinkedHashSet<String> = LinkedHashSet(),
+        val seen: HashSet<String> = HashSet()
+    )
+    private var rtVisibleOcrBatch: RtVisibleOcrBatch? = null
+    private var rtVisibleOcrFlush: Runnable? = null
+    private var rtVisibleOcrBatchSeq = 0
+    private val rtVisibleOcrBatchMin = 10
+    private val rtVisibleOcrIdleFlushMs = 1000L
+
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
     private val rtAheadTranslationSuppressedIds = mutableSetOf<String>()
@@ -522,6 +538,105 @@ class MainActivity : Activity() {
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 80L)
             }
         ))
+    }
+
+    private fun queueRealtimeVisibleOcrBatch(
+        chapter: Chapter,
+        layout: WebModeLayout,
+        hashes: Set<String>,
+        token: Int
+    ) {
+        val page = cleanUrl(chapter.url)
+        if (page.isBlank() || token != navToken ||
+            page != cleanUrl(novelWv.url.orEmpty()) ||
+            !DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
+            synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.removeAll(hashes) }
+            return
+        }
+
+        var pending = rtVisibleOcrBatch
+        if (pending != null && (pending.pageUrl != page || pending.navToken != token)) {
+            clearRealtimeVisibleOcrBatch()
+            pending = null
+        }
+        if (pending == null) {
+            pending = RtVisibleOcrBatch(page, token, chapter, layout.titleOffset)
+            rtVisibleOcrBatch = pending
+        } else {
+            pending.baseChapter = chapter
+            pending.titleOffset = layout.titleOffset
+        }
+
+        for (bubble in layout.bubbles) {
+            if (bubble.sourceText.isBlank()) continue
+            val fingerprint = WebModeLayout.fingerprint(bubble)
+            if (fingerprint !in hashes || !pending.seen.add(fingerprint)) continue
+            pending.bubbles.add(bubble)
+            pending.hashes.add(fingerprint)
+        }
+
+        rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
+        rtVisibleOcrFlush = null
+        if (pending.bubbles.size >= rtVisibleOcrBatchMin) {
+            flushRealtimeVisibleOcrBatch(token, page)
+            return
+        }
+
+        val seq = ++rtVisibleOcrBatchSeq
+        val flush = Runnable {
+            if (seq == rtVisibleOcrBatchSeq) flushRealtimeVisibleOcrBatch(token, page)
+        }
+        rtVisibleOcrFlush = flush
+        handler.postDelayed(flush, rtVisibleOcrIdleFlushMs)
+    }
+
+    private fun flushRealtimeVisibleOcrBatch(expectedToken: Int? = null, expectedPage: String? = null) {
+        if (expectedToken != null && expectedToken != navToken) return
+        val pending = rtVisibleOcrBatch ?: return
+        if (expectedPage != null && expectedPage != pending.pageUrl) return
+
+        rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
+        rtVisibleOcrFlush = null
+        rtVisibleOcrBatch = null
+        rtVisibleOcrBatchSeq++
+
+        if (pending.navToken != navToken ||
+            pending.pageUrl != cleanUrl(novelWv.url.orEmpty()) ||
+            !DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
+            synchronized(deepSeekInFlightTextHashes) {
+                deepSeekInFlightTextHashes.removeAll(pending.hashes)
+            }
+            return
+        }
+        val bubbles = pending.bubbles.filter { it.sourceText.isNotBlank() }
+        if (bubbles.isEmpty()) {
+            synchronized(deepSeekInFlightTextHashes) {
+                deepSeekInFlightTextHashes.removeAll(pending.hashes)
+            }
+            return
+        }
+
+        val chapter = pending.baseChapter.copy(
+            text = bubbles.joinToString("\n\n") { it.sourceText.trim() },
+            contentSel = ""
+        )
+        WebModeLayoutStore.setScan(chapter.url, WebModeLayout(pending.titleOffset, bubbles))
+        deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
+        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, page=${pending.pageUrl}")
+        handleChapter(chapter, useSavedTranslation = false)
+    }
+
+    private fun clearRealtimeVisibleOcrBatch() {
+        val pending = rtVisibleOcrBatch
+        rtVisibleOcrBatch = null
+        rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
+        rtVisibleOcrFlush = null
+        rtVisibleOcrBatchSeq++
+        if (pending != null && pending.hashes.isNotEmpty()) {
+            synchronized(deepSeekInFlightTextHashes) {
+                deepSeekInFlightTextHashes.removeAll(pending.hashes)
+            }
+        }
     }
 
     private fun rtAheadTaskId(pageUrl: String, layout: WebModeLayout): String {
@@ -1215,6 +1330,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun clearRealtimeAheadStateForNavigation() {
+        clearRealtimeVisibleOcrBatch()
         cancelRealtimeAheadWorker(requeue = false)
         rtAheadTranslationQueue.clear()
         rtAheadTranslationQueuedIds.clear()
@@ -4847,7 +4963,6 @@ return t.length>=40?'TXT:'+t:'';
                                         val liveChapter = out.chapter.copy(text = liveText, contentSel = "")
                                         val liveLayout = WebModeLayout(scanLayout.titleOffset, selected)
                                         WebModeLayoutStore.setScan(liveChapter.url, liveLayout)
-                                        deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
                                         val cachedTranslations = selected.map {
                                             if (WebModeLayout.fingerprint(it) in forcedHashes) null
                                             else rtAheadTranslationCache[rtAheadBubbleCacheKey(it)]
@@ -4869,12 +4984,13 @@ return t.length>=40?'TXT:'+t:'';
                                             val missChapter = out.chapter.copy(
                                                 text = missBubbles.joinToString("\n\n") { it.sourceText.trim() }, contentSel = ""
                                             )
-                                            WebModeLayoutStore.setScan(missChapter.url, WebModeLayout(scanLayout.titleOffset, missBubbles))
-                                            deepSeekTextHashByChapter[keyOf(missChapter)] = missHashes
-                                            handleChapter(missChapter, useSavedTranslation = false)
+                                            val missLayout = WebModeLayout(scanLayout.titleOffset, missBubbles)
+                                            WebModeLayoutStore.setScan(missChapter.url, missLayout)
+                                            queueRealtimeVisibleOcrBatch(missChapter, missLayout, missHashes, token)
                                         } else if (cachedCount == selected.size) {
                                             // Every bubble in this visible batch has already been translated ahead.
                                             // Apply the saved marker-aligned answer without another chatbot request.
+                                            deepSeekTextHashByChapter[keyOf(liveChapter)] = hashes
                                             onChapter(liveChapter)
                                             val cachedMarked = cachedTranslations.mapIndexed { index, value ->
                                                 "[${(index + 1).toString().padStart(3, '0')}] ${value.orEmpty()}"
@@ -4884,7 +5000,9 @@ return t.length>=40?'TXT:'+t:'';
                                             applyTranslation(liveChapter, cachedMarked, false)
                                             handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
                                         } else {
-                                            handleChapter(liveChapter, useSavedTranslation = false)
+                                            // Hold visible OCR until 10 bubbles are collected, or flush
+                                            // after a short idle pause so realtime never waits indefinitely.
+                                            queueRealtimeVisibleOcrBatch(liveChapter, liveLayout, hashes, token)
                                         }
                                     }
                                 } else {
