@@ -576,6 +576,7 @@ class MainActivity : Activity() {
 
         val seenInBatch = HashSet<String>()
         val batch = ArrayList<WmBubble>()
+        val batchTop = ArrayList<Int>()
         for (panel in panels.sortedBy { it.top }) {
             val ordered = panel.bubbles
                 .filter { it.sourceText.isNotBlank() }
@@ -590,21 +591,36 @@ class MainActivity : Activity() {
                 if (cacheKey in rtAheadTranslationCache ||
                     cacheKey in pendingBubbleKeys || isTextReserved) continue
                 batch.add(bubble)
+                batchTop.add(panel.top)
                 pendingBubbleKeys.add(cacheKey)
             }
         }
         if (batch.isEmpty()) return
 
-        val layout = WebModeLayout(0, batch)
-        val id = rtAheadTaskId(page, layout)
-        if (id in rtAheadTranslationQueuedIds || id in rtAheadTranslationSuppressedIds ||
-            rtAheadTranslationTasksByJobKey.values.any { it.id == id }) return
-
-        rtAheadTranslationQueuedIds.add(id)
-        rtAheadTranslationQueue.add(
-            RtAheadTranslationTask(id, page, layout, panels.minOfOrNull { it.top } ?: 0)
-        )
-        // This is intentionally one chatbot call for the complete OCR batch.
+        // Several small requests instead of one big one: the nearest panels are translated (and ready)
+        // first, and the chatbot starts on the next chunk as soon as it is free. 3-5 bubbles per request
+        // (Prefs "rtAheadBatch", default 4). A lone trailing bubble joins the previous chunk.
+        val chunkSize = (Prefs.get(this, "rtAheadBatch", "4").toIntOrNull() ?: 4).coerceIn(3, 5)
+        val chunks = ArrayList<MutableList<Int>>()
+        var i = 0
+        while (i < batch.size) {
+            chunks.add((i until minOf(i + chunkSize, batch.size)).toMutableList())
+            i += chunkSize
+        }
+        if (chunks.size > 1 && chunks.last().size < 2) {
+            val last = chunks.removeAt(chunks.size - 1)
+            chunks.last().addAll(last)
+        }
+        for (chunk in chunks) {
+            val layout = WebModeLayout(0, chunk.map { batch[it] })
+            val id = rtAheadTaskId(page, layout)
+            if (id in rtAheadTranslationQueuedIds || id in rtAheadTranslationSuppressedIds ||
+                rtAheadTranslationTasksByJobKey.values.any { it.id == id }) continue
+            rtAheadTranslationQueuedIds.add(id)
+            rtAheadTranslationQueue.add(
+                RtAheadTranslationTask(id, page, layout, chunk.minOf { batchTop[it] })
+            )
+        }
         pumpRealtimeAheadTranslation()
     }
 
@@ -1508,8 +1524,9 @@ return t.length>=40?'TXT:'+t:'';
     private var nextChatbotRequestAtMs = 0L
 
     // A long chatbot conversation gets slower and starts to forget the prompt, so after every
-    // CHAT_NEW_WINDOW_EVERY requests a fresh chat window (the bot's base URL) is opened.
-    private val chatNewWindowEvery = 20
+    // chatNewWindowEvery requests a fresh chat window (the bot's base URL) is opened.
+    // Open a fresh chat after this many requests (Prefs "chatNewEvery", default 5). Applies to every chatbot.
+    private val chatNewWindowEvery: Int get() = (Prefs.get(this, "chatNewEvery", "5").toIntOrNull() ?: 5).coerceIn(2, 100)
     private var chatRequestCount = 0          // visible chat WebView
     private var aheadChatRequestCount = 0     // hidden read-ahead chat WebView
     private var chatReloadPending: (() -> Unit)? = null
