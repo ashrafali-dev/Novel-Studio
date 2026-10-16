@@ -24,6 +24,10 @@
     } catch (_) {}
   }
 
+  // 'all' optimisation keeps a second copy of the weights and the arena pre-allocates; on phones with a
+  // small WebView/WASM heap that failed with "failed to allocate a buffer". Lean options use far less memory.
+  const SESSION_OPTS = { executionProviders: ['wasm'], graphOptimizationLevel: 'disabled', enableCpuMemArena: false, enableMemPattern: false };
+
   async function loadModels() {
     if (!window.ort) throw new Error('ONNX Runtime WASM could not load');
     ort.env.wasm.wasmPaths = {
@@ -32,8 +36,8 @@
     };
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
-    if (!detector) detector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
-    if (!recognizer) recognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    if (!detector) detector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', SESSION_OPTS);
+    if (!recognizer) recognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', SESSION_OPTS);
     if (!dictionary) {
       const response = await fetch(BASE + 'ppocrv6_dict.txt');
       if (!response.ok) throw new Error('Character dictionary unavailable (' + response.status + ')');
