@@ -680,7 +680,7 @@ internal class WebModeExtractor(
                                     if (out !== full) full.recycle()
                                     if (out == null) {
                                         Log.w(TAG, "PixelCopy full-window fallback failed: result=$code, " +
-                                            "window=${full.width}x${full.height}, view=${vw}x${vh}, " +
+                                            "window=${dw}x${dh}, view=${vw}x${vh}, " +
                                             "at=${loc[0]},${loc[1]}")
                                     }
                                 } catch (e: Throwable) {
