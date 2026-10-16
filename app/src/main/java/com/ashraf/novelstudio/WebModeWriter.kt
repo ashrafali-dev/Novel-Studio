@@ -59,7 +59,7 @@ internal object WebModeWriter {
     var w=document.createElement('div'); w.id='__ns_wm_overlay';
     w.style.cssText=ABS?CSS_ABS:CSS_FIX;
     // Cleaned images are drawn below translation bubbles without mutating source <img> elements.
-    var cleanLayer=document.createElement('div');
+    var cleanLayer=document.createElement('div'); cleanLayer.id='__ns_wm_clean_layer';
     cleanLayer.style.cssText='position:absolute;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:0;';
     w.appendChild(cleanLayer);
     var cleanImgs=Object.create(null);
