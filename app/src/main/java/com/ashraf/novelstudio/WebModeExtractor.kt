@@ -1447,27 +1447,61 @@ function allNodes(limit){
   return out;
 }
 function scroller(){
-  // Do not assume the document is the reader scroller just because the page itself is tall.
-  // Many comic sites have a tall document plus a separately scrolling chapter container; the old
-  // early return skipped that container and repeatedly scanned only the first visible panels.
-  // Cache the inner reader scroller; rescanning thousands of wrappers every scan tick
-  // makes touch scrolling visibly hitch on long comic chapters.
+  var vw=window.innerWidth||de.clientWidth||360,vh=window.innerHeight||800;
+  var minW=Math.min(vw*0.48,300),minH=Math.min(vh*0.24,150);
+  function dimensions(e){
+    if(!e||!e.isConnected)return null;
+    var d=(e.scrollHeight||0)-(e.clientHeight||0);
+    if(d<=200)return null;
+    var o='';try{o=getComputedStyle(e).overflowY||'';}catch(ignore){}
+    if(o!=='auto'&&o!=='scroll'&&o!=='overlay')return null;
+    var r=e.getBoundingClientRect();
+    if(r.width<minW||r.height<minH||r.right<vw*0.12||r.left>vw*0.88)return null;
+    return {d:d,r:r};
+  }
+  function panelCount(e){
+    var n=0,imgs=document.images,limit=Math.min(imgs.length,1200);
+    for(var i=0;i<limit;i++){
+      var im=imgs[i];if(!e.contains(im))continue;
+      var src=imageSrc(im);if(!src)continue;
+      var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
+      if(BAD.test(meta))continue;
+      var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
+      if((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120))n++;
+    }
+    return n;
+  }
   var cached=window.__nsWmScroller;
-  if(cached&&cached.isConnected){
-    var cd=cached.scrollHeight-cached.clientHeight;
-    if(cd>200){
-      var co='';
-      try{co=getComputedStyle(cached).overflowY;}catch(ignore){}
-      if(co==='auto'||co==='scroll'||co==='overlay')return cached;
+  if(cached){
+    var cd=dimensions(cached);
+    if(cd){
+      var cm=(cached.className&&cached.className.baseVal!==undefined?cached.className.baseVal:cached.className||'')+' '+(cached.id||'');
+      if(panelCount(cached)>0||/comic|chapter|reader|viewer|episode|webtoon|toon|panel|content/i.test(cm))return cached;
     }
     window.__nsWmScroller=null;
   }
-  var best=null,bs=0,els=document.querySelectorAll('div,main,section,article');
-  for(var i=0;i<els.length&&i<1200;i++){var e=els[i];var d=e.scrollHeight-e.clientHeight;
-    if(d>200&&e.scrollHeight>bs){var o=getComputedStyle(e).overflowY;
-      if(o==='auto'||o==='scroll'||o==='overlay'){bs=e.scrollHeight;best=e;}}}
-  if(best)window.__nsWmScroller=best;
-  return best;
+  var els=document.querySelectorAll('div,main,section,article');
+  var best=null,bestScore=-Infinity,fallback=null,fallbackScore=-Infinity;
+  var limit=Math.min(els.length,1600);
+  for(var j=0;j<limit;j++){
+    var e=els[j],info=dimensions(e);if(!info)continue;
+    var meta=(e.className&&e.className.baseVal!==undefined?e.className.baseVal:e.className||'')+' '+(e.id||'')+' '+(e.getAttribute('aria-label')||'');
+    if(/(^|\s)(sidebar|side-bar|recommend|related|comment|advert|ad-container|banner)(\s|$)/i.test(meta))continue;
+    var semantic=/comic|chapter|reader|viewer|episode|webtoon|toon|panel|content|scroll/i.test(meta);
+    var count=panelCount(e);
+    var widthScore=Math.min(info.r.width/vw,1)*10000;
+    var heightScore=Math.min(info.d,100000)/100;
+    var score=count*1000000+(semantic?50000:0)+widthScore+heightScore;
+    if(score>fallbackScore){fallback=e;fallbackScore=score;}
+    if(count>0||semantic){
+      if(score>bestScore){best=e;bestScore=score;}
+    }
+  }
+  // Image-heavy readers win; for CSS-background/canvas readers, use the widest plausible
+  // semantic reader container. If no semantic container exists, use the widest scroll pane.
+  var chosen=best||fallback;
+  if(chosen)window.__nsWmScroller=chosen;
+  return chosen;
 }
 function cands(sc, includeBackgrounds){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
@@ -1488,7 +1522,7 @@ function cands(sc, includeBackgrounds){
     // reader sits inside such a container.
     if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]')&&!(r.width>=360&&r.height>=240))continue;
     if(seen[src])continue;seen[src]=1;
-    var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
+    var inScroller=!!(sc&&sc.contains(im));var top=inScroller?(r.top-sr.top+sc.scrollTop):(r.top+wy);
     out.push({s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
   }
   // Readers inside a same-origin <iframe>.
@@ -1504,7 +1538,8 @@ function cands(sc, includeBackgrounds){
       if(!((fr.width>=100&&fr.height>=60)||(fnw>=300&&fnh>=120)))continue;
       seen[fsrc]=1;
       var ft=fb.top+fr.top,fl=fb.left+fr.left;
-      out.push({s:fsrc,t:Math.round(ft+wy),l:Math.round(fl),w:Math.round(fr.width),h:Math.round(fr.height),d:(fim.complete&&fnw>0)?1:0,fw:fr.width,fh:fr.height,vl:fl,vt:ft,vb:ft+fr.height});
+      var fit=sc&&sc.contains(frs[fi])?ft-sr.top+sc.scrollTop:ft+wy;
+      out.push({s:fsrc,t:Math.round(fit),l:Math.round(fl),w:Math.round(fr.width),h:Math.round(fr.height),d:(fim.complete&&fnw>0)?1:0,fw:fr.width,fh:fr.height,vl:fl,vt:ft,vb:ft+fr.height});
     }
   }
   // Some pages use SVG <image> or videos with posters.
@@ -1521,10 +1556,8 @@ function cands(sc, includeBackgrounds){
     var xt=sc?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
     out.push({s:xs,t:Math.round(xt),l:Math.round(xr.left),w:Math.round(xr.width),h:Math.round(xr.height),d:1,fw:xr.width,fh:xr.height,vl:xr.left,vt:xr.top,vb:xr.bottom});
   }
-  // Any credible, large rendered image is enough to use the normal image path. Some readers
-  // virtualize panels and expose only one or two IMG elements at a time; a full DOM/style sweep
-  // on every scroll step for those pages makes both scanning and touch scrolling feel sluggish.
-  if(out.some(function(p){return p.fw>=160&&p.fh>=220;}))return out;
+  // Some readers mix normal IMG panels with CSS-background panels. Keep the bounded,
+  // rate-limited background sweep even when ordinary images were found.
   if(includeBackgrounds!==false){
     // Bound the expensive fallback for unusual CSS/canvas readers. Normal image readers exit above.
     var els=allNodes(4000);
@@ -1548,7 +1581,7 @@ function cands(sc, includeBackgrounds){
         var s=absUrl((m[1]||'').trim());
         if(!s||!goodUrl(s)||seen[s])continue;
         seen[s]=1;
-        var top=sc?(r.top-sr.top+sc.scrollTop):(r.top+wy);
+        var inScroller=!!(sc&&sc.contains(el));var top=inScroller?(r.top-sr.top+sc.scrollTop):(r.top+wy);
         out.push({s:s,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:1,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom});
       }
     }
