@@ -303,9 +303,7 @@ function __box(){
       var r=boxText();
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
-    function keyEnter(){box.focus();try{var f=box.closest('form');if(f&&typeof f.requestSubmit==='function'){f.requestSubmit();return;}}catch(e){}var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
     var started=Date.now();
-    var lastReadyBtn=null;
     function keyEnter(){
       try{box.focus();}catch(e){}
       var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};
