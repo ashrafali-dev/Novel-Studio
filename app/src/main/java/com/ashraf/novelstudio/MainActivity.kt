@@ -880,14 +880,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     private fun pumpRealtimeAheadTranslation() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
-        // Read-ahead uses its own WebView and may translate while the foreground panel is being
-        // read/translated. The shared 3-second rate gate below prevents rapid-fire submissions.
+        // Read-ahead uses its own WebView and can overlap with a foreground bubble batch. The shorter,
+        // randomized real-time request gap still prevents rapid-fire submissions.
         if (rtAheadWorkerBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
         // The read-ahead translator owns a separate hidden WebView and its own job state. Let it
         // translate upcoming panels while the current visible bubble batch is streaming, so answers can
-        // be cached before the reader reaches them. Keep normal whole-chapter jobs serialized.
+        // be cached before the reader reaches them. Whole-chapter jobs stay serialized.
         val foregroundNormalJob = running?.let { !isRealtimeBubbleBatch(it) } == true
         val queuedNormalJob = queue.any { !isRealtimeBubbleBatch(it) }
         if (foregroundNormalJob || queuedNormalJob) {
@@ -1048,7 +1048,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 rtAheadWorkerJobKey != jobKey) return@postDelayed
             worker.onResume()
             worker.resumeTimers()
-            worker.evaluateJavascript(Js.readLen()) { raw ->
+            worker.evaluateJavascript(Js.readLen(realtimeFast = true)) { raw ->
                 if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy ||
                     rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
                 val fields = decode(raw).split("|")
@@ -6313,7 +6313,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     ) {
         handler.postDelayed({
             if (tok != runToken) return@postDelayed
-            chatWv.evaluateJavascript(Js.readLen()) { raw ->
+            chatWv.evaluateJavascript(Js.readLen(realtimeFast = isDeepSeekLivePanel(ch))) { raw ->
                 if (tok != runToken) return@evaluateJavascript
                 val parts = decode(raw).split("|")
                 val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
@@ -6342,7 +6342,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 // Normal jobs retain their original length-stability rule. In real-time mode,
                 // only count stable polls after streaming is no longer detected, so one brief pause
                 // during generation cannot prematurely finish the translation.
-                val realtimeFast = RealtimeCompletionPolicy.enabled(this)
+                val realtimeFast = isDeepSeekLivePanel(ch)
                 val st = if (got && effLen == lastLen && (!realtimeFast || !streaming)) stable + 1 else 0
                 val elapsed = System.currentTimeMillis() - started
 
