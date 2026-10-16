@@ -399,8 +399,8 @@ internal class WebModeExtractor(
                 var st = if (bottom && ready && count == lastCount) stable + 1 else 0
                 // A reader that has not drawn anything yet gets a longer grace period.
                 if (count == 0 && elapsed() < EMPTY_GRACE_MS) st = 0
-                progress("Discovering panels: $count found · $pending loading", 1 + minOf(8, n / 4))
-                if (st >= 8 && pending == 0 || st >= 12) finishDiscovery()
+                progress("Discovering panels: ${discoveredDuringScroll.size} collected · $pending loading", 1 + minOf(8, n / 4))
+                if ((st >= 8 && pending == 0) || st >= 12) finishDiscovery()
                 else {
                     // Many ordinary IMG-based readers can scroll faster once the image list is visible.
                     // Keep a slower cadence for unknown/virtualized readers so their lazy loaders can react.
@@ -1629,18 +1629,10 @@ if(sc){
 bottom=(after+vh>=hh-4);
 var now=Date.now(),probeBg=now-(window.__nsWmStepBgProbeAt||0)>=1200;
 if(probeBg)window.__nsWmStepBgProbeAt=now;
-var c=cands(sc,probeBg),p=0,maxPanelBottom=0,fastUrls=c.length>=30;
-for(var i=0;i<c.length;i++){
-  if(!c[i].d)p++;
-  if(!/^https?:\/\//i.test(c[i].s))fastUrls=false;
-  maxPanelBottom=Math.max(maxPanelBottom,(Number(c[i].t)||0)+(Number(c[i].h)||0));
-}
-// Only skip the scroll sweep when the exposed image list reaches the real content bottom.
-// A virtualized reader may expose nearby images while hiding the rest of the chapter.
-var contentHeight=sc?sc.scrollHeight:hh;
-fastUrls=fastUrls&&maxPanelBottom>=contentHeight-Math.max(vh*2,1400);
+var c=cands(sc,probeBg),p=0;
+for(var i=0;i<c.length;i++)if(!c[i].d)p++;
 var scanRefs=c.slice(0,600).map(function(x){return {s:x.s,t:x.t,l:x.l,w:x.w,h:x.h};});
-return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,fastUrls:fastUrls,imgs:scanRefs});
+return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,imgs:scanRefs});
 """
 
         private const val JS_FORCE_INFO = """
