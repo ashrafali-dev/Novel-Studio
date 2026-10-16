@@ -451,6 +451,7 @@ class MainActivity : Activity() {
     private var aheadChatWv: WebView? = null
     private var aheadChatBaseUrl = ""
     private var aheadChatReady = false
+    private var aheadChatReadySeq = 0
     private var rtAheadWorkerBusy = false
     private var rtAheadWorkerSeq = 0
     private var rtAheadWorkerTask: RtAheadTranslationTask? = null
@@ -659,7 +660,7 @@ class MainActivity : Activity() {
 
         // Prefer one complete request for the whole ahead window. A 10-panel comic usually fits in
         // one 30-bubble request; only unusually dialogue-heavy windows are split into bounded chunks.
-        val chunkSize = (Prefs.get(this, "rtAheadBatch", "30").toIntOrNull() ?: 30).coerceIn(15, 40)
+        val chunkSize = (Prefs.get(this, "rtAheadBatch", "40").toIntOrNull() ?: 40).coerceIn(15, 40)
         val chunks = ArrayList<MutableList<Int>>()
         var i = 0
         while (i < batch.size) {
@@ -737,6 +738,44 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * A page-finished callback only means navigation ended; modern chat apps often mount
+     * their composer later. Never paste into a new conversation until the real composer exists.
+     */
+    private fun awaitAheadChatComposer(wv: WebView?, baseUrl: String) {
+        if (wv == null) return
+        val seq = ++aheadChatReadySeq
+        aheadChatReady = false
+        fun probe(attempt: Int) {
+            if (seq != aheadChatReadySeq || wv !== aheadChatWv || aheadChatBaseUrl != baseUrl) return
+            if (botKey(wv.url.orEmpty()) != botKey(baseUrl)) {
+                if (attempt < 60) handler.postDelayed({ probe(attempt + 1) }, 250L)
+                else scheduleRealtimeAheadPump(1200L)
+                return
+            }
+            try {
+                wv.evaluateJavascript(Js.composerReady()) { raw ->
+                    if (seq != aheadChatReadySeq || wv !== aheadChatWv || aheadChatBaseUrl != baseUrl) return@evaluateJavascript
+                    if (decode(raw).trim() == "1") {
+                        aheadChatReady = true
+                        handler.postDelayed({
+                            if (seq == aheadChatReadySeq && aheadChatReady) pumpRealtimeAheadTranslation()
+                        }, 350L)
+                    } else if (attempt < 60) {
+                        handler.postDelayed({ probe(attempt + 1) }, 250L)
+                    } else {
+                        aheadChatReady = false
+                        scheduleRealtimeAheadPump(1200L)
+                    }
+                }
+            } catch (_: Exception) {
+                if (attempt < 60) handler.postDelayed({ probe(attempt + 1) }, 250L)
+                else scheduleRealtimeAheadPump(1200L)
+            }
+        }
+        handler.postDelayed({ probe(0) }, 250L)
+    }
+
     private fun ensureRealtimeAheadChatWebView(): WebView? {
         if (!::content.isInitialized) return null
         val baseUrl = selectedBotBaseUrl()
@@ -763,6 +802,7 @@ class MainActivity : Activity() {
             aheadChatWv = wv
             aheadChatBaseUrl = baseUrl
             aheadChatReady = false
+            aheadChatReadySeq++
             wv.loadUrl(baseUrl)
             wv.onResume()
             wv.resumeTimers()
@@ -772,6 +812,7 @@ class MainActivity : Activity() {
         if (aheadChatBaseUrl != baseUrl || botKey(aheadChatBaseUrl) != targetBot) {
             aheadChatBaseUrl = baseUrl
             aheadChatReady = false
+            aheadChatReadySeq++
             wv.stopLoading()
             wv.loadUrl(baseUrl)
             wv.onResume()
@@ -834,6 +875,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (rtAheadWorkerBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
+        // OCR may continue while the visible batch is being translated, but never submit the
+        // next read-ahead batch until the foreground chatbot job and its queue are idle.
+        if (running != null || queue.isNotEmpty()) {
+            scheduleRealtimeAheadPump(350L)
+            return
+        }
         val now = System.currentTimeMillis()
         val earliestSend = maxOf(rtAheadNextSendAtMs, nextChatbotRequestAtMs)
         if (now < earliestSend) {
@@ -896,9 +943,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 return
             }
             if (aheadChatRequestCount >= chatNewWindowEvery && aheadChatBaseUrl.startsWith("http", true)) {
-                // Fresh chat window for the read-ahead worker; onPageFinished resumes the pump.
+                // Fresh chat window for the read-ahead worker; wait until its composer is really ready.
                 aheadChatRequestCount = 0
                 aheadChatReady = false
+                aheadChatReadySeq++
                 queueRtAheadTask(task, front = true)
                 worker.stopLoading()
                 worker.loadUrl(aheadChatBaseUrl)
@@ -1268,17 +1316,17 @@ add('CANVAS','canvas:'+location.hostname+':'+Math.round(cr.width)+'x'+Math.round
 // CSS-background scanning is a slow fallback, not the normal path. In particular,
 // never let an empty cached result force a 7,000-node sweep on every 150 ms poll.
 var bgSig=window.__nsRtBgSignature||'';
-if(hasLargeImage){
+if(hasLargeImage||v.length>=2){
  window.__nsRtBgSignature='';
  window.__nsRtBgProbeAt=now;
  bgSig='';
-}else if(now-(window.__nsRtBgProbeAt||0)>=1500){
+}else if(now-(window.__nsRtBgProbeAt||0)>=2500){
  window.__nsRtBgProbeAt=now;
  var nodes=[],roots=[document],seenRoots=[];
- while(roots.length&&nodes.length<2500){
+ while(roots.length&&nodes.length<900){
   var root=roots.shift();if(!root||seenRoots.indexOf(root)>=0)continue;seenRoots.push(root);
   var list=root.querySelectorAll?root.querySelectorAll('*'):[];
-  for(var ni=0;ni<list.length&&nodes.length<2500;ni++){var ne=list[ni];nodes.push(ne);if(ne.shadowRoot)roots.push(ne.shadowRoot);}
+  for(var ni=0;ni<list.length&&nodes.length<900;ni++){var ne=list[ni];nodes.push(ne);if(ne.shadowRoot)roots.push(ne.shadowRoot);}
  }
  var eligible=[];
  for(var nj=0;nj<nodes.length;nj++){
@@ -1287,7 +1335,7 @@ if(hasLargeImage){
   eligible.push({el:el,r:er,area:Math.min(vw,er.right)-Math.max(0,er.left)>0?(Math.min(vw,er.right)-Math.max(0,er.left))*(Math.min(vh,er.bottom)-Math.max(0,er.top)):0});
  }
  eligible.sort(function(a,b){return b.area-a.area;});
- var bgv=[],bgSeen={},checks=Math.min(eligible.length,500);
+ var bgv=[],bgSeen={},checks=Math.min(eligible.length,180);
  for(var bj=0;bj<checks;bj++){
   var be=eligible[bj].el,br=eligible[bj].r,bg='';
   try{bg=getComputedStyle(be).backgroundImage||'';}catch(ignore){}
@@ -1330,7 +1378,7 @@ return t.length>=40?'TXT:'+t:'';
                     return@evaluateJavascript
                 }
                 if (novelWv.url.orEmpty() != url) {
-                    handler.postDelayed(this, 150L)
+                    handler.postDelayed(this, 200L)
                     return@evaluateJavascript
                 }
                 val signature = decode(raw).trim()
@@ -1694,11 +1742,36 @@ return t.length>=40?'TXT:'+t:'';
                     if (!resumed) {
                         resumed = true
                         chatReloadPending = null
-                        sendChatRequest(text, true, isValid, onResult)
+                        fun probeComposer(attempt: Int) {
+                            if (!isValid()) {
+                                onResult("nobox")
+                                return
+                            }
+                            chatWv.evaluateJavascript(Js.composerReady()) { readyRaw ->
+                                if (!isValid()) {
+                                    onResult("nobox")
+                                    return@evaluateJavascript
+                                }
+                                if (decode(readyRaw).trim() == "1") {
+                                    // Re-enter the normal shared 3-second rate gate only after
+                                    // the new chat's composer is mounted and usable.
+                                    sendChatRequest(text, true, isValid, onResult)
+                                } else if (attempt < 48) {
+                                    handler.postDelayed({ probeComposer(attempt + 1) }, 250L)
+                                } else {
+                                    copy(text)
+                                    toast("⚠️ নতুন চ্যাট প্রস্তুত হয়নি; লেখাটি কপি করা হয়েছে, পুনরায় পাঠানো হয়নি")
+                                    onResult("nobox")
+                                }
+                            }
+                        }
+                        handler.postDelayed({ probeComposer(0) }, 250L)
                     }
                 }
-                chatReloadPending = { handler.postDelayed({ resume() }, 1500L) }
-                handler.postDelayed({ resume() }, 15000L)   // safety net if onPageFinished never fires
+                chatReloadPending = { handler.post { resume() } }
+                handler.postDelayed({
+                    if (!resumed) resume()
+                }, 15000L)   // safety net if onPageFinished never fires
                 chatWv.stopLoading()
                 chatWv.loadUrl(base)
                 return
@@ -3825,8 +3898,7 @@ return t.length>=40?'TXT:'+t:'';
                 val finished = url.orEmpty()
                 if (finished.startsWith("http", true) &&
                     botKey(finished) == botKey(aheadChatBaseUrl)) {
-                    aheadChatReady = true
-                    handler.postDelayed({ pumpRealtimeAheadTranslation() }, 450L)
+                    awaitAheadChatComposer(view, aheadChatBaseUrl)
                 }
             }
         }
@@ -5485,15 +5557,42 @@ return t.length>=40?'TXT:'+t:'';
     private fun prefetchAhead(): Int = (Prefs.get(this, "prefetchAhead", "1").toIntOrNull() ?: 1).coerceIn(1, 7)
 
     /**
-     * Keeps a sliding window: the chapters after [ch] are prefetched until N (menu setting) of them
-     * are ready. Called whenever a chapter is shown, so opening chapter 2 tops the window up again.
+     * A live OCR batch may be a copy of the chapter (only a few bubbles), not the original
+     * prefetched Chapter object. Resolve it back to the full chapter before sliding the window.
+     */
+    private fun prefetchedChapterForPage(url: String, number: String = ""): Chapter? {
+        if (url.isBlank()) return null
+        val current = cleanUrl(url)
+        val wtr = wtrLabSystem.matches(url)
+        val candidates = prefetchNextOf.values
+        if (wtr && number.isNotBlank()) {
+            candidates.firstOrNull {
+                wtrLabSystem.matches(it.url) && it.number.isNotBlank() && it.number == number
+            }?.let { return it }
+        }
+        candidates.firstOrNull { cleanUrl(it.url) == current }?.let { return it }
+        if (!wtr) candidates.firstOrNull { pageKey(it.url) == pageKey(url) }?.let { return it }
+        return null
+    }
+
+    /**
+     * Keeps a sliding window of N chapters after the one the user is actually reading.
+     * Resolve the current page to its full prefetched Chapter object first; a partial realtime
+     * bubble batch must not break the chapter-1 -> chapter-2 -> chapter-3 chain.
      */
     private fun schedulePrefetch(ch: Chapter) {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
+        val currentUrl = novelWv.url.orEmpty()
+        val currentNumber = ch.number
+        val samePage = cleanUrl(ch.url) == cleanUrl(currentUrl) ||
+            (!wtrLabSystem.matches(currentUrl) && pageKey(ch.url) == pageKey(currentUrl)) ||
+            (wtrLabSystem.matches(currentUrl) && wtrLabSystem.matches(ch.url))
+        var cur = if (samePage) prefetchedChapterForPage(currentUrl, currentNumber) ?: ch else ch
         val want = prefetchAhead()
-        var cur = ch
         var depth = 0
+        val seen = HashSet<String>()
         while (depth < want) {
+            if (!seen.add(keyOf(cur))) break
             val nx = prefetchNextOf[keyOf(cur)] ?: break
             cur = nx
             depth++
@@ -5502,11 +5601,15 @@ return t.length>=40?'TXT:'+t:'';
         prefetchOne(cur)
     }
 
-    /** After a job finishes, wait a few seconds, then top the window up from the chapter being read. */
+    /** After a job finishes, top up the window from the chapter currently visible. */
     private fun prefetchContinue() {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
-        // Depth 1 is a sliding window too: schedulePrefetch() decides whether it is already full.
-        handler.postDelayed({ lastChapter?.let { schedulePrefetch(it) } }, prefetchGapMs)
+        handler.postDelayed({
+            val visible = lastChapter?.let {
+                prefetchedChapterForPage(novelWv.url.orEmpty(), it.number) ?: it
+            }
+            visible?.let { schedulePrefetch(it) }
+        }, prefetchGapMs)
     }
 
     private fun prefetchOne(ch: Chapter) {
@@ -5575,6 +5678,9 @@ return t.length>=40?'TXT:'+t:'';
         prefetchWv.loadUrl(target)
         handler.postDelayed({
             if (prefetchLoading && token == prefetchToken) {
+                // A timed-out target must be retryable; otherwise its stale dedupe entry prevents
+                // the sliding window from ever trying this chapter again.
+                prefetchRequestedUrls.remove(cleanUrl(prefetchTarget))
                 prefetchLoading = false
                 prefetchCatalogPending = false
                 prefetchTarget = ""
