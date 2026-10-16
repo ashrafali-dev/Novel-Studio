@@ -24,7 +24,7 @@ import kotlin.math.min
 internal object WebModeTextRemover {
     private const val MAX_WIDTH = 4096
     private const val MAX_HEIGHT = 4096
-    private const val MAX_PIXELS = 4_500_000L
+    private const val MAX_PIXELS = 3_000_000L
     private const val MAX_BYTES = 18 * 1024 * 1024
 
     fun cleanAndCache(
@@ -151,16 +151,14 @@ internal object WebModeTextRemover {
 
                 // Fill only selected glyph pixels from the nearest unmasked pixels. On flat speech-bubble
                 // backgrounds this retains the exact local paper/colour instead of repainting a big box.
-                val rSamples = IntArray(24)
-                val gSamples = IntArray(24)
-                val bSamples = IntArray(24)
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
                         val at = ry * rw + rx
                         if (selected[at].toInt() == 0) continue
                         var sampleN = 0
+                        var sumR = 0; var sumG = 0; var sumB = 0
                         var radius = 1
-                        while (radius <= 6 && sampleN < 8) {
+                        while (radius <= 5 && sampleN < 6) {
                             for (dy in -radius..radius) {
                                 for (dx in -radius..radius) {
                                     if (max(abs(dx), abs(dy)) != radius) continue
@@ -169,21 +167,16 @@ internal object WebModeTextRemover {
                                     val ni = ny * rw + nx
                                     if (selected[ni].toInt() != 0) continue
                                     val p = original[(y0 + ny) * width + x0 + nx]
-                                    if (distance(p, bg) > 84f) continue
-                                    if (sampleN < rSamples.size) {
-                                        rSamples[sampleN] = red(p)
-                                        gSamples[sampleN] = green(p)
-                                        bSamples[sampleN] = blue(p)
-                                        sampleN++
-                                    }
+                                    if (distance(p, bg) > 72f) continue
+                                    sumR += red(p); sumG += green(p); sumB += blue(p); sampleN++
                                 }
                             }
                             radius++
                         }
+                        // Average only nearby unmasked pixels with similar background colour; avoids
+                        // repainting the whole line or allocating arrays for every single glyph pixel.
                         val fill = if (sampleN >= 3) {
-                            median(rSamples, sampleN, 0) shl 16 or
-                                (median(gSamples, sampleN, 1) shl 8) or
-                                median(bSamples, sampleN, 2)
+                            (sumR / sampleN shl 16) or (sumG / sampleN shl 8) or (sumB / sampleN)
                         } else bg and 0x00FFFFFF
                         output[(y0 + ry) * width + x0 + rx] = 0xFF000000.toInt() or fill
                     }
@@ -231,9 +224,4 @@ internal object WebModeTextRemover {
         return (abs(red(a) - red(b)) + abs(green(a) - green(b)) + abs(blue(a) - blue(b))) / 3f
     }
 
-    private fun median(values: IntArray, count: Int, channel: Int): Int {
-        val work = IntArray(count) { i -> values[i] }
-        work.sort()
-        return work[count / 2]
-    }
 }
