@@ -767,19 +767,40 @@ internal class WebModeExtractor(
             if (u.startsWith("data:", true)) return try { decodeDataUrl(u) } catch (_: Exception) { null }
             if (u.startsWith("blob:", true)) return try { fetchViaPage(u, timeoutMs = 7000L) } catch (_: Exception) { null }
 
-            if (req.visibleOnly) {
-                // Real-time reads only a few panels, so it can afford to be patient. The page's own fetch()
-                // goes first: it reuses the browser cache, cookies and Referer, so an image the reader has
-                // already loaded costs no new download. Slow CDNs (e.g. MangaDex@Home nodes) used to fail
-                // here on the first visit because of the 2.5 s / 3.5 s direct-HTTP timeouts.
-                try { return fetchViaPage(u, timeoutMs = 8000L) } catch (_: Exception) {}
-                if (!alive()) return null
+            if (req.ahead > 0) {
+                // Read-ahead panels are often BELOW the viewport and are not loaded by the page yet.
+                // Starting with page.fetch() made each image wait up to 8 s before any fallback.
+                // Download directly first (cookies + Referer included); use the page only for
+                // hotlink/CORS-sensitive hosts, then retry transient errors once.
                 return try {
                     httpGet(u, pageUrl, medium = true)
                 } catch (e: IOException) {
                     if (!alive()) return null
-                    val definitive = Regex("http\\s+(401|403|404|410|451)").containsMatchIn(e.message.orEmpty())
-                    if (definitive) null else try { httpGet(u, pageUrl, medium = true) } catch (_: Exception) { null }
+                    val msg = e.message.orEmpty()
+                    val definitive = Regex("http\\\\s+(401|403|404|410|451)").containsMatchIn(msg)
+                    try {
+                        fetchViaPage(u, timeoutMs = 4500L)
+                    } catch (_: Exception) {
+                        if (!alive() || definitive) null
+                        else try { httpGet(u, pageUrl, medium = true) } catch (_: Exception) { null }
+                    }
+                } catch (_: Exception) { null }
+            }
+            if (req.visibleOnly) {
+                // Keep foreground real-time OCR latency-sensitive: short HTTP first, then the browser
+                // cache/canvas path for image URLs protected by hotlink/CORS rules.
+                return try {
+                    httpGet(u, pageUrl, quick = true)
+                } catch (e: IOException) {
+                    if (!alive()) return null
+                    val msg = e.message.orEmpty()
+                    val definitive = Regex("http\\\\s+(401|403|404|410|451)").containsMatchIn(msg)
+                    try {
+                        fetchViaPage(u, timeoutMs = 3500L)
+                    } catch (_: Exception) {
+                        if (!alive() || definitive) null
+                        else try { httpGet(u, pageUrl, medium = true) } catch (_: Exception) { null }
+                    }
                 } catch (_: Exception) { null }
             }
             // A failed image used to spend up to three rounds of 15–25 s HTTP timeouts plus
