@@ -365,7 +365,9 @@ internal class WebModeExtractor(
         private fun tick(n: Int, lastCount: Int, stable: Int) {
             if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return }
             if (elapsed() > DISCOVERY_MAX_MS || n > MAX_TICKS) { finishDiscovery(); return }
-            val stepSize = if (lastCount >= 8) "1.15" else "0.85"
+            // Read the current viewport before moving; virtualized readers can recycle the first panels on scroll.
+            // Then use overlapping steps so lazy-loaded panels are less likely to be skipped.
+            val stepSize = if (n == 0 && lastCount < 0) "0" else "0.70"
             wv.evaluateJavascript(wrap(LIB + JS_STEP.replace("__STEP__", stepSize))) { raw ->
                 if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
                 val o = parseJson(raw)
