@@ -5003,7 +5003,6 @@ return t.length>=40?'TXT:'+t:'';
                                                 text = missBubbles.joinToString("\n\n") { it.sourceText.trim() }, contentSel = ""
                                             )
                                             val missLayout = WebModeLayout(scanLayout.titleOffset, missBubbles)
-                                            WebModeLayoutStore.setScan(missChapter.url, missLayout)
                                             queueRealtimeVisibleOcrBatch(
                                                 missChapter, missLayout, missHashes, token,
                                                 force = forcedHashes.isNotEmpty()
