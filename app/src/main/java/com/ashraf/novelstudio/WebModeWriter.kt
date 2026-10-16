@@ -86,8 +86,10 @@ internal object WebModeWriter {
       b.setAttribute('data-g',[it.cx,it.cy,it.w,it.h,it.a,it.f].join(','));
       b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:hidden;'
         +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
-        +'background:'+it.bg+';color:'+it.fg+';font-family:'+fam+';font-weight:600;'
-        +(it.sf?'border-radius:12px;box-shadow:0 0 7px 5px '+it.bg+';':'border-radius:4px;box-shadow:0 0 0 3px '+it.bg+';');
+        // If the underlying source image was cleaned, do not put an opaque box over it:
+        // untouched nearby lettering/line art stays visible instead of disappearing under the translation.
+        +'background:'+(it.cl?'transparent':it.bg)+';color:'+it.fg+';font-family:'+fam+';font-weight:600;'
+        +(it.cl?'border-radius:0;box-shadow:none;':(it.sf?'border-radius:12px;box-shadow:0 0 7px 5px '+it.bg+';':'border-radius:4px;box-shadow:0 0 0 3px '+it.bg+';'));
       var t=document.createElement('div'); t.textContent=it.t;
       // Preserve Bengali grapheme clusters/ conjuncts and use a shaping-friendly text layout.
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
@@ -646,7 +648,8 @@ internal object WebModeWriter {
                 .put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
                 .put("a", r5(b.angle)).put("f", r5(b.font))
                 .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
-                .put("cl", WebModeTextRemovalCache.urlFor(b.src).orEmpty()))
+                // Transparent translations are safe only for the flat regions the cleaner can handle.
+                .put("cl", if (!b.soft) WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
         return BUBBLES
