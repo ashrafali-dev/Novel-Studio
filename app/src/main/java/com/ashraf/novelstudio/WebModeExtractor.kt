@@ -1707,9 +1707,16 @@ return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,
         // Real-time read-ahead: the next images that are completely below the screen (nothing is scrolled).
         private const val JS_COLLECT_AHEAD = """
 var sc=scroller(),c=cands(sc);
-var vpH=window.innerHeight||800;
+var vpH=window.innerHeight||800,vpBottom=vpH;
 var all=__ALL__;
-if(!all)c=c.filter(function(p){return p.vt>=vpH-2;});
+// "Full chapter links" means we may inspect every URL already present in the DOM, not that
+// we should OCR from panel 1 again. Upcoming-panel OCR must always start strictly below the
+// reader's current viewport, otherwise its answers arrive late and duplicate the foreground OCR.
+if(sc){
+  var sr=sc.getBoundingClientRect();
+  vpBottom=Math.max(sr.top,Math.min(vpH,sr.bottom));
+}
+c=c.filter(function(p){return p.vt>=vpBottom-2;});
 // Use the page's document-space top for a stable reading order across batches.
 c.sort(function(a,b){return all?(a.t-b.t):(a.vt-b.vt);});
 return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:c.slice(0,__N__)});
