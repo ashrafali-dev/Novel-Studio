@@ -1194,6 +1194,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private var deepSeekPollEvalSeq = 0
     private var deepSeekProbeInFlight = false
     private var deepSeekProbeStartedAtMs = 0L
+    // Recovery guard for a scanner whose progress callback stops. Retry twice per unchanged
+    // viewport, then pause that exact signature until the user scrolls to new content.
+    private var deepSeekStallRecoveryUrl = ""
+    private var deepSeekStallRecoveryCount = 0
+    private var deepSeekStallBlockedSignature = ""
     private val deepSeekVisiblePoll = object : Runnable {
         override fun run() {
             if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
@@ -1218,24 +1223,44 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 handler.postDelayed(this, 250L)
                 return
             }
-            // Recover a real-time scan whose progress callback has stalled. Normal image fetches
-            // are bounded; 45 s without even a stage update means this job is likely wedged. Invalidate
-            // the old callback first, then this same probe can safely discover and retry the visible panel.
+            val pageKeyNow = cleanUrl(url)
+            if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
+                deepSeekStallRecoveryUrl = pageKeyNow
+                deepSeekStallRecoveryCount = 0
+                deepSeekStallBlockedSignature = ""
+            }
+            // Normal realtime work advances in seconds. If no stage update arrives for 25 s,
+            // invalidate stale job state so the app can recover without being force-closed.
             val monotonicNow = android.os.SystemClock.elapsedRealtime()
             if (webModeHandle != null && webModeLastProgressAtMs > 0L &&
-                monotonicNow - webModeLastProgressAtMs >= 45000L) {
+                monotonicNow - webModeLastProgressAtMs >= 25000L) {
+                if (deepSeekStallRecoveryUrl != pageKeyNow) {
+                    deepSeekStallRecoveryUrl = pageKeyNow
+                    deepSeekStallRecoveryCount = 0
+                    deepSeekStallBlockedSignature = ""
+                }
+                val stalledSignature = deepSeekPendingSig.ifBlank { deepSeekVisibleSignature }
                 webModeJobSerial++
                 webModeHandle?.cancel()
                 webModeHandle = null
                 webModeLastProgressAtMs = 0L
                 clearWebModeProgress()
-                deepSeekVisibleSignature = ""
-                deepSeekPendingSig = ""
-                deepSeekPendingSince = 0L
-                deepSeekLastOcrAtMs = 0L
+                if (deepSeekStallRecoveryCount < 2) {
+                    deepSeekStallRecoveryCount++
+                    deepSeekVisibleSignature = ""
+                    deepSeekPendingSig = ""
+                    deepSeekPendingSince = 0L
+                    deepSeekLastOcrAtMs = 0L
+                    Log.w("NovelStudioOCR", "Recovering stalled realtime OCR #$deepSeekStallRecoveryCount for $pageKeyNow")
+                } else {
+                    deepSeekStallBlockedSignature = stalledSignature
+                    deepSeekVisibleSignature = stalledSignature
+                    deepSeekPendingSig = stalledSignature
+                    deepSeekPendingSince = System.currentTimeMillis()
+                    deepSeekLastOcrAtMs = System.currentTimeMillis()
+                    toast("⚠️ OCR একই প্যানেলে আটকে আছে; বারবার retry বন্ধ করেছি। স্ক্রল বা reload করলে আবার চেষ্টা করবে।")
+                }
             }
-            val pageKeyNow = cleanUrl(url)
-            if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
                 aheadOcrHandle?.cancel()
                 aheadOcrHandle = null
                 aheadOcrSeq++
@@ -1249,6 +1274,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 deepSeekLastOcrAtMs = 0L
                 deepSeekNoImageTriedUrl = ""
                 deepSeekFailStreak = 0
+                deepSeekStallRecoveryUrl = pageKeyNow
+                deepSeekStallRecoveryCount = 0
+                deepSeekStallBlockedSignature = ""
             }
             // Probe the viewport 4x/second. Image changes trigger OCR quickly; a stable image set
             // is rechecked periodically, while text-only pages get one safe HTML-extraction fallback.
@@ -1384,12 +1412,22 @@ return t.length>=40?'TXT:'+t:'';
                 val signature = decode(raw).trim()
                 val now = System.currentTimeMillis()
                 val hasImages = signature.startsWith("IMG:")
+                if (deepSeekStallBlockedSignature.isNotBlank() && signature != deepSeekStallBlockedSignature) {
+                    // New panel/content means the reader has progressed; permit recovery again.
+                    deepSeekStallBlockedSignature = ""
+                    deepSeekStallRecoveryUrl = pageKeyNow
+                    deepSeekStallRecoveryCount = 0
+                }
                 val textFallbackDue = signature.startsWith("TXT:") && deepSeekNoImageTriedUrl != pageKeyNow
-                val changed = signature.isNotEmpty() && signature != deepSeekVisibleSignature
+                val changed = signature.isNotEmpty() &&
+                    signature != deepSeekVisibleSignature &&
+                    signature != deepSeekStallBlockedSignature
                 // New image URLs trigger immediately; a long safety recheck only catches readers that mutate
                 // pixels without changing their image URL. Avoid re-OCRing the same panel every 3 s.
                 val runningAhead = running?.let { rtAheadTranslationTasksByJobKey.containsKey(keyOf(it)) } == true
-                val periodicRecheck = hasImages && !runningAhead && now - deepSeekLastOcrAtMs >= 10000L
+                val periodicRecheck = hasImages && !runningAhead &&
+                    signature != deepSeekStallBlockedSignature &&
+                    now - deepSeekLastOcrAtMs >= 10000L
                 // While the reader is still flicking through panels, let the current image settle briefly
                 // without imposing a full 300 ms pause before the real-time OCR can start.
                 if (signature != deepSeekPendingSig) { deepSeekPendingSig = signature; deepSeekPendingSince = now }
