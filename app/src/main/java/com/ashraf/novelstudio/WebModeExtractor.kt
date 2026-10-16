@@ -228,14 +228,17 @@ internal class WebModeExtractor(
         @Volatile private var fellBackToForce = false
 
         private fun fail(e: WebModeError, msg: String = e.label) {
-            // Live (real-time) OCR always tries the normal way first. Only when the images cannot be
-            // downloaded/decoded does Force Extract (screen OCR) take over, once.
-            if (req.force && req.visibleOnly && !fellBackToForce &&
+            // Viewport-only OCR must recover even when the user's full-chapter Force Extract
+            // preference is OFF. Cross-origin/CDN images can render in WebView while HttpURLConnection,
+            // fetch(), and canvas export all fail; capture the already-visible pixels once instead.
+            // processForce() does not scroll when visibleOnly=true, so this remains safe for real-time mode.
+            if (req.visibleOnly && !fellBackToForce &&
                 (e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
                 fellBackToForce = true
                 diag.error = null
+                Log.i(TAG, "visible OCR falling back to viewport capture after $e: ${diag.summary()}")
                 worker.execute { runCatching { processForce() }.onFailure {
-                    fail(WebModeError.DECODE_FAILED, "Force extract crashed: ${it.javaClass.simpleName}")
+                    fail(WebModeError.DECODE_FAILED, "Viewport capture fallback crashed: ${it.javaClass.simpleName}")
                 } }
                 return
             }
