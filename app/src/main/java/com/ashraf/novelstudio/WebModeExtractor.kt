@@ -393,18 +393,14 @@ internal class WebModeExtractor(
                         }
                     }
                 }
-                // A large, non-virtualized image gallery already exposes every panel URL and
-                // its layout boxes. There is no need to scroll through all panels just to trigger
-                // lazy loading; the bounded downloader reads those URLs directly in the worker.
-                if (o.optBoolean("fastUrls", false)) {
-                    finishDiscovery()
-                    return@evaluateJavascript
-                }
+                // Never treat a long list of currently exposed URLs as proof that a lazy chapter
+                // is complete. Sites often expose only the first 30–32 panels and add the rest on scroll.
+                // Keep walking to the real bottom while preserving every panel seen along the way.
                 var st = if (bottom && ready && count == lastCount) stable + 1 else 0
                 // A reader that has not drawn anything yet gets a longer grace period.
                 if (count == 0 && elapsed() < EMPTY_GRACE_MS) st = 0
                 progress("Discovering panels: $count found · $pending loading", 1 + minOf(8, n / 4))
-                if (st >= 3 && (pending == 0 || st >= 8)) finishDiscovery()
+                if (st >= 8 && pending == 0 || st >= 12) finishDiscovery()
                 else {
                     // Many ordinary IMG-based readers can scroll faster once the image list is visible.
                     // Keep a slower cadence for unknown/virtualized readers so their lazy loaders can react.
