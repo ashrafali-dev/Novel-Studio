@@ -371,7 +371,7 @@ internal class WebModeExtractor(
                         val panel = PanelRef(src, item.optInt("t"), item.optInt("l"), item.optInt("w"), item.optInt("h"))
                         val key = WebModeLogic.normalizeUrl(src).ifBlank { src }
                         val old = discoveredDuringScroll[key]
-                        if (old == null || panel.width * panel.height > old.width * old.height) {
+                        if (old == null || panel.w * panel.h > old.w * old.h) {
                             discoveredDuringScroll[key] = panel
                         }
                     }
@@ -427,7 +427,7 @@ internal class WebModeExtractor(
                     val key = WebModeLogic.normalizeUrl(s).ifBlank { s }
                     val old = merged[key]
                     if (old == null) { merged[key] = panel; rawPanelCount++ }
-                    else if (panel.width * panel.height > old.width * old.height) merged[key] = panel
+                    else if (panel.w * panel.h > old.w * old.h) merged[key] = panel
                 }
                 val refs = merged.values.toList()
                 val allPanels = WebModeLogic.dedupeAndOrder(refs)
