@@ -686,7 +686,16 @@ internal class WebModeExtractor(
         }
 
         private fun processForce() {
-            val mo = evalWait(wrap(LIB + JS_COLLECT)) { parseJson(it) }
+            // A viewport-only recovery needs chapter metadata, not a full-page inventory. Defer
+            // candidate collection until JS_FORCE_INFO so CSS-background panels are not lost to
+            // cands()' 1200 ms background-probe throttle between these two calls.
+            val collectBody = if (req.visibleOnly) {
+                JS_COLLECT.replaceFirst(
+                    "var sc=scroller(),c=cands(sc,true);",
+                    "var sc=scroller(),c=[];"
+                )
+            } else JS_COLLECT
+            val mo = evalWait(wrap(LIB + collectBody)) { parseJson(it) }
             if (mo == null) { fail(WebModeError.NO_IMAGES); return }
             val meta = PageMeta(
                 url = mo.optString("url", startUrl),
@@ -698,6 +707,14 @@ internal class WebModeExtractor(
             )
             val script = ScriptState(WebModeLogic.pickScript(meta.lang, meta.url))
             val accs = LinkedHashMap<String, ForceAcc>()
+            // In visible-only recovery, collect image candidates exactly once and include CSS
+            // backgrounds; full-chapter Force Extract retains its original throttled scan.
+            val forceInfoScript = if (req.visibleOnly) {
+                JS_FORCE_INFO.replaceFirst(
+                    "var sc=scroller(),c=cands(sc),vw=",
+                    "var sc=scroller(),c=cands(sc,true),vw="
+                )
+            } else JS_FORCE_INFO
             // the old translation overlay must not be in the picture
             evalWait(wrap(JS_FORCE_HIDE)) { null }
             if (!req.visibleOnly) evalWait(wrap(LIB + JS_FORCE_TOP)) { null }
@@ -708,7 +725,7 @@ internal class WebModeExtractor(
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; forceFail(WebModeError.TIMEOUT); return }
                 if (steps > MAX_TICKS) break
                 try { Thread.sleep(if (steps == 0) 450L else 350L) } catch (_: InterruptedException) { return }
-                val info = evalWait(wrap(LIB + JS_FORCE_INFO)) { parseJson(it) }
+                val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
                 val bmp = captureView()
                 forceShots++
                 if (info != null && bmp != null) {
