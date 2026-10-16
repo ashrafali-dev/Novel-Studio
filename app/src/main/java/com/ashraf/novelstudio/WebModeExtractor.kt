@@ -1071,10 +1071,17 @@ internal class WebModeExtractor(
             for (i in blocks.indices) {
                 if (consumed[i]) continue
                 val b = blocks[i]
-                if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
+                // Full chapter scans keep vertical blocks independent for accuracy. In real-time mode,
+                // however, narrow Japanese columns must be grouped into one whole speech bubble so Bengali
+                // does not get squeezed into a separate vertical strip.
+                if ((!fastMode && b.vertical) || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
                 val inter: IntArray = (try {
-                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = !fastMode)
+                    WmBubbleStyle.bubbleInterior(
+                        bmp, rects[i], rects,
+                        requireLeftover = !fastMode,
+                        verticalText = fastMode && b.vertical
+                    )
                 } catch (_: Exception) { null }) ?: continue
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
@@ -1090,15 +1097,29 @@ internal class WebModeExtractor(
                 if (i !in inside) continue
 
                 if (fastMode) {
-                    // Real-time: no second OCR. Every line inside one closed bubble is ONE unit, so the
-                    // chatbot gets the whole sentence and the overlay gets the whole bubble as its box
-                    // (bigger box = bigger Bengali text, and no half-translated fragments).
+                    // Real-time: use one sentence/bubble unit instead of placing Bengali into individual OCR
+                    // glyph columns. Japanese is traditionally read vertically, right-to-left; keep each
+                    // recognised column's top-to-bottom text, then concatenate the columns in manga order.
                     val members = inside.filter { !consumed[it] }
-                    if (members.size < 2 || i !in members) continue
-                    val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
-                    val joinedText = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
-                        .replace(Regex("\\s+"), " ").trim()
+                    if (i !in members) continue
+                    val verticalGroup = members.count { blocks[it].vertical } > members.size * 0.45f
+                    val ordered = if (verticalGroup) {
+                        members.sortedWith(compareByDescending<Int> { blocks[it].cx }.thenBy { blocks[it].cy })
+                    } else {
+                        members.sortedWith(compareBy<Int> { blocks[it].cy }.thenBy { blocks[it].cx })
+                    }
+                    val joinedText = if (verticalGroup && st.current == OcrScript.JAPANESE) {
+                        ordered.joinToString("") {
+                            blocks[it].text.replace(NEWLINES, "").replace(Regex("\\s+"), "").trim()
+                        }
+                    } else {
+                        ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
+                            .replace(Regex("\\s+"), " ").trim()
+                    }
                     if (joinedText.isBlank()) continue
+                    // Even a single detected text column can use the recovered speech-bubble interior.
+                    // This gives translated Bengali natural width and lets the existing background cover
+                    // hide the source text rather than leaving Japanese glyphs behind it.
                     val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
                     refinedText[i] = joinedText
                     refinedBox[i] = inter
