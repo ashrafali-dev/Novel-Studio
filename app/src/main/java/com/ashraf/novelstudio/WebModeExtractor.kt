@@ -1459,27 +1459,32 @@ function scroller(){
     if(r.width<minW||r.height<minH||r.right<vw*0.12||r.left>vw*0.88)return null;
     return {d:d,r:r};
   }
-  function panelCount(e){
-    var n=0,imgs=document.images,limit=Math.min(imgs.length,1200);
-    for(var i=0;i<limit;i++){
-      var im=imgs[i];if(!e.contains(im))continue;
-      var src=imageSrc(im);if(!src)continue;
-      var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
-      if(BAD.test(meta))continue;
-      var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
-      if((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120))n++;
-    }
-    return n;
+  // Discard the old "largest scroll pane wins" cache once; it could point at a sidebar/ad.
+  if(window.__nsWmScrollerVersion!==2){
+    window.__nsWmScroller=null;
+    window.__nsWmScrollerVersion=2;
   }
   var cached=window.__nsWmScroller;
   if(cached){
-    var cd=dimensions(cached);
-    if(cd){
-      var cm=(cached.className&&cached.className.baseVal!==undefined?cached.className.baseVal:cached.className||'')+' '+(cached.id||'');
-      if(panelCount(cached)>0||/comic|chapter|reader|viewer|episode|webtoon|toon|panel|content/i.test(cm))return cached;
-    }
+    if(dimensions(cached))return cached;
     window.__nsWmScroller=null;
   }
+  // Count panel images for all ancestors in one pass. Doing a descendant query for every
+  // candidate container made discovery quadratic and could freeze long comic pages.
+  var countByEl=new Map(),imgs=document.images,imgLimit=Math.min(imgs.length,1200);
+  for(var i=0;i<imgLimit;i++){
+    var im=imgs[i],src=imageSrc(im);if(!src)continue;
+    var imMeta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
+    if(BAD.test(imMeta))continue;
+    var ir=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
+    if(!((ir.width>=100&&ir.height>=60)||(nw>=300&&nh>=120)))continue;
+    var node=im.parentElement,depth=0;
+    while(node&&node!==document.documentElement&&depth<40){
+      countByEl.set(node,(countByEl.get(node)||0)+1);
+      node=node.parentElement;depth++;
+    }
+  }
+  function panelCount(e){return countByEl.get(e)||0;}
   var els=document.querySelectorAll('div,main,section,article');
   var best=null,bestScore=-Infinity,fallback=null,fallbackScore=-Infinity;
   var limit=Math.min(els.length,1600);
@@ -1497,8 +1502,7 @@ function scroller(){
       if(score>bestScore){best=e;bestScore=score;}
     }
   }
-  // Image-heavy readers win; for CSS-background/canvas readers, use the widest plausible
-  // semantic reader container. If no semantic container exists, use the widest scroll pane.
+  // Image-heavy readers win; CSS-background/canvas readers use a wide semantic reader container.
   var chosen=best||fallback;
   if(chosen)window.__nsWmScroller=chosen;
   return chosen;
@@ -1553,13 +1557,13 @@ function cands(sc, includeBackgrounds){
     var xmeta=(xe.className&&xe.className.baseVal!==undefined?xe.className.baseVal:xe.className||'')+' '+(xe.id||'');
     if(BAD.test(xmeta))continue;
     seen[xs]=1;
-    var xt=sc?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
+    var svgInside=!!(sc&&sc.contains(xe));var xt=svgInside?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
     out.push({s:xs,t:Math.round(xt),l:Math.round(xr.left),w:Math.round(xr.width),h:Math.round(xr.height),d:1,fw:xr.width,fh:xr.height,vl:xr.left,vt:xr.top,vb:xr.bottom});
   }
   // Some readers mix normal IMG panels with CSS-background panels. Keep the bounded,
   // rate-limited background sweep even when ordinary images were found.
   if(includeBackgrounds!==false){
-    // Bound the expensive fallback for unusual CSS/canvas readers. Normal image readers exit above.
+    // Keep the CSS/canvas fallback bounded; the caller rate-limits this DOM/style sweep.
     var els=allNodes(4000);
     for(var j=0;j<els.length;j++){
       var el=els[j],r=el.getBoundingClientRect();
