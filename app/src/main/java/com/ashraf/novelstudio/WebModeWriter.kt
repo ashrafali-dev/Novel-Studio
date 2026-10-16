@@ -58,11 +58,31 @@ internal object WebModeWriter {
     var ABS=(de.scrollHeight||0)>(window.innerHeight||0)+80;
     var w=document.createElement('div'); w.id='__ns_wm_overlay';
     w.style.cssText=ABS?CSS_ABS:CSS_FIX;
+    // Cleaned images are drawn below translation bubbles without mutating source <img> elements.
+    var cleanLayer=document.createElement('div');
+    cleanLayer.style.cssText='position:absolute;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:0;';
+    w.appendChild(cleanLayer);
+    var cleanImgs=Object.create(null);
+    function ensureCleanImage(im,s,url,r,o0){
+      if(!url||!im||!r||r.width<8||r.height<8)return;
+      var key=base(s),entry=cleanImgs[key];
+      if(!entry){
+        var ci=document.createElement('img');ci.alt='';ci.draggable=false;
+        ci.style.cssText='position:absolute;left:0;top:0;display:block;max-width:none;max-height:none;'
+          +'object-fit:fill;pointer-events:none;user-select:none;margin:0;padding:0;border:0;z-index:0;';
+        cleanLayer.appendChild(ci);entry=cleanImgs[key]={el:ci,url:''};
+      }
+      if(entry.url!==url){entry.url=url;entry.el.src=url;}
+      var x=ABS?(r.left-o0.left):r.left,y=ABS?(r.top-o0.top):r.top;
+      entry.el.style.width=r.width+'px';entry.el.style.height=r.height+'px';
+      entry.el.style.transform='translate3d('+x+'px,'+y+'px,0)';
+    }
     var fam=font?"'NSBn',sans-serif":'sans-serif';
     for(var i=0;i<items.length;i++){
       var it=items[i];
       var b=document.createElement('div'); b.className='__ns_b';
       b.setAttribute('data-s',it.s);
+      b.setAttribute('data-cl',it.cl||'');
       b.setAttribute('data-g',[it.cx,it.cy,it.w,it.h,it.a,it.f].join(','));
       b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:hidden;'
         +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
@@ -242,6 +262,9 @@ internal object WebModeWriter {
         if(!im){if(b.style.display!=='none')b.style.display='none';continue;}
         var r=im.getBoundingClientRect();
         if(r.width<8){if(b.style.display!=='none')b.style.display='none';continue;}
+        // Keep original DOM nodes intact so srcset, lazy loading and site click handlers keep working.
+        var cleanUrl=b.getAttribute('data-cl');
+        if(cleanUrl)ensureCleanImage(im,b.getAttribute('data-s'),cleanUrl,r,o);
         var g=b.getAttribute('data-g').split(',');
         var bw=g[2]*r.width,bh=g[3]*r.height;
         var vx=r.left+g[0]*r.width,vy=r.top+g[1]*r.height;       // centre in the viewport
@@ -622,7 +645,8 @@ internal object WebModeWriter {
                 .put("t", t).put("s", WebModeLogic.normalizeUrl(b.src))
                 .put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
                 .put("a", r5(b.angle)).put("f", r5(b.font))
-                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft))
+                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
+                .put("cl", WebModeTextRemovalCache.urlFor(b.src).orEmpty()))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
         return BUBBLES
