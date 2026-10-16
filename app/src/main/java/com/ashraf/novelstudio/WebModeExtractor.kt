@@ -956,6 +956,15 @@ internal class WebModeExtractor(
             val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
+            fun finishResult(): PanelOcr {
+                // Cleaning is opt-in and limited to whole-image OCR. A force-OCR crop has a different
+                // coordinate system and must never be used to rewrite the underlying source image.
+                if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
+                    (src.startsWith("https://", true) || src.startsWith("http://", true))) {
+                    WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                }
+                return PanelOcr(texts.joinToString("\n\n"), bubbles)
+            }
             if (crop != null) {
                 // Decode the requested rectangle. If the region decoder is unsupported or throws,
                 // use a bounded downsampled bitmap and crop that instead.
@@ -996,7 +1005,7 @@ internal class WebModeExtractor(
                     readSlice(cropped, st, originY, sample, w, h, src, texts, bubbles,
                         firstSlice = true, lastSlice = true, x0 = originX, fastMode = false)
                 } finally { cropped.recycle() }
-                return PanelOcr(texts.joinToString("\n\n"), bubbles)
+                return finishResult()
             }
             if (h <= WebModeLogic.SLICE_H) {
                 val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: throw DecodeException()
@@ -1018,7 +1027,7 @@ internal class WebModeExtractor(
                     }
                 } finally { region.recycle() }
             }
-            return PanelOcr(texts.joinToString("\n\n"), bubbles)
+            return finishResult()
         }
 
         /**
