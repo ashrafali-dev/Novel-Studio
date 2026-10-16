@@ -623,26 +623,106 @@ internal class WebModeExtractor(
             return differs < 3
         }
 
-        /** Second way to take the picture (API 26+): copy the WebView's rectangle from the window surface. */
+        /** Capture the visible WebView from the hardware-composited window surface. */
         private fun captureByPixelCopy(): Bitmap? {
             if (android.os.Build.VERSION.SDK_INT < 26) return null
             var act: android.app.Activity? = null
             var c: android.content.Context? = wv.context
-            while (c is android.content.ContextWrapper) { if (c is android.app.Activity) { act = c; break }; c = c.baseContext }
+            while (c is android.content.ContextWrapper) {
+                if (c is android.app.Activity) { act = c; break }
+                c = c.baseContext
+            }
             val win = act?.window ?: return null
             val latch = CountDownLatch(1)
             var out: Bitmap? = null
             handler.post {
+                val loc = IntArray(2)
+                val vw = wv.width
+                val vh = wv.height
                 try {
-                    val loc = IntArray(2); wv.getLocationInWindow(loc)
-                    if (wv.width > 0 && wv.height > 0) {
-                        val b = Bitmap.createBitmap(wv.width, wv.height, Bitmap.Config.ARGB_8888)
-                        android.view.PixelCopy.request(win, Rect(loc[0], loc[1], loc[0] + wv.width, loc[1] + wv.height), b,
-                            { code -> if (code == android.view.PixelCopy.SUCCESS) out = b else b.recycle(); latch.countDown() }, handler)
-                    } else latch.countDown()
-                } catch (_: Throwable) { latch.countDown() }
+                    wv.getLocationInWindow(loc)
+                    if (vw <= 0 || vh <= 0 || !wv.isAttachedToWindow) {
+                        Log.w(TAG, "PixelCopy skipped: WebView has no visible bounds")
+                        latch.countDown()
+                        return@post
+                    }
+
+                    // First request only the WebView rectangle. Some Android/OEM windows return
+                    // an empty crop even though the WebView is visible, so retry from the whole
+                    // window surface and crop in app-window coordinates.
+                    fun requestFullWindow() {
+                        val decor = win.decorView
+                        val dw = decor.width
+                        val dh = decor.height
+                        if (dw <= 0 || dh <= 0) {
+                            Log.w(TAG, "PixelCopy full-window fallback has empty decor bounds")
+                            latch.countDown()
+                            return
+                        }
+                        val full = try {
+                            Bitmap.createBitmap(dw, dh, Bitmap.Config.ARGB_8888)
+                        } catch (_: Throwable) {
+                            latch.countDown()
+                            return
+                        }
+                        try {
+                            android.view.PixelCopy.request(win, null, full, { code ->
+                                try {
+                                    if (code == android.view.PixelCopy.SUCCESS) {
+                                        val right = loc[0] + vw
+                                        val bottom = loc[1] + vh
+                                        if (loc[0] >= 0 && loc[1] >= 0 &&
+                                            right <= full.width && bottom <= full.height) {
+                                            val crop = Bitmap.createBitmap(full, loc[0], loc[1], vw, vh)
+                                            if (!isBlank(crop)) out = crop else crop.recycle()
+                                        }
+                                    }
+                                    if (out !== full) full.recycle()
+                                    if (out == null) {
+                                        Log.w(TAG, "PixelCopy full-window fallback failed: result=$code, " +
+                                            "window=${full.width}x${full.height}, view=${vw}x${vh}, " +
+                                            "at=${loc[0]},${loc[1]}")
+                                    }
+                                } catch (e: Throwable) {
+                                    if (!full.isRecycled && out !== full) full.recycle()
+                                    Log.w(TAG, "PixelCopy full-window crop failed: ${e.javaClass.simpleName}")
+                                } finally {
+                                    latch.countDown()
+                                }
+                            }, handler)
+                        } catch (e: Throwable) {
+                            if (!full.isRecycled) full.recycle()
+                            Log.w(TAG, "PixelCopy full-window request failed: ${e.javaClass.simpleName}")
+                            latch.countDown()
+                        }
+                    }
+
+                    val tile = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888)
+                    try {
+                        android.view.PixelCopy.request(
+                            win, Rect(loc[0], loc[1], loc[0] + vw, loc[1] + vh), tile,
+                            { code ->
+                                if (code == android.view.PixelCopy.SUCCESS && !isBlank(tile)) {
+                                    out = tile
+                                    latch.countDown()
+                                } else {
+                                    tile.recycle()
+                                    Log.w(TAG, "PixelCopy WebView-crop failed/blank: result=$code; retrying whole window")
+                                    requestFullWindow()
+                                }
+                            }, handler
+                        )
+                    } catch (e: Throwable) {
+                        tile.recycle()
+                        Log.w(TAG, "PixelCopy WebView-crop request failed: ${e.javaClass.simpleName}; retrying whole window")
+                        requestFullWindow()
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "PixelCopy setup failed: ${e.javaClass.simpleName}")
+                    latch.countDown()
+                }
             }
-            latch.await(10, TimeUnit.SECONDS)
+            latch.await(12, TimeUnit.SECONDS)
             return out
         }
 
@@ -650,10 +730,14 @@ internal class WebModeExtractor(
             val a = captureByDraw()
             if (a != null && !isBlank(a)) return a
             a?.recycle()
-            forceBlank++
             val b = captureByPixelCopy()
             if (b != null && !isBlank(b)) return b
             b?.recycle()
+            // Count only after both draw and PixelCopy (including full-window retry) failed.
+            forceBlank++
+            Log.w(TAG, "Visible screen capture returned blank after all paths; " +
+                "drawView=${wv.width}x${wv.height}, attached=${wv.isAttachedToWindow}, " +
+                "hardware=${wv.isHardwareAccelerated}")
             return null
         }
 
