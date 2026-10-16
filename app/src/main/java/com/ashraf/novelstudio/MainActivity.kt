@@ -4730,7 +4730,8 @@ return t.length>=40?'TXT:'+t:'';
             webView = novelWv,
             // DeepSeek real-time mode OCRs only the currently visible panel; never auto-scroll.
             visibleOnly = realtimeViewport,
-            force = Prefs.bool(this, "wmForce"),
+            // Force Extract may scroll the screen; real-time OCR must stay viewport-only.
+            force = Prefs.bool(this, "wmForce") && !realtimeViewport,
             isValid = { token == navToken && jobSeq == webModeJobSerial },
             onProgress = { stage, pct ->
                 if (token == navToken && jobSeq == webModeJobSerial) {
