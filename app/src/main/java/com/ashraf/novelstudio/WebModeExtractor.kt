@@ -120,6 +120,10 @@ internal class WebModeExtractor(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PanelOcr>?): Boolean = size > 60
     }
     private val aheadDone: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    // Panels the read-ahead gave up on (no text, too small, or the download failed twice). They must not
+    // keep occupying the look-ahead window, otherwise art-only panels would stop it from moving forward.
+    private val aheadBlank: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val aheadFails = ConcurrentHashMap<String, Int>()
     private val jobIds = AtomicInteger(0)
     private val bridge = PageBridge()
     private val bridged = java.util.Collections.newSetFromMap(java.util.WeakHashMap<WebView, Boolean>())
@@ -249,7 +253,12 @@ internal class WebModeExtractor(
         fun beginAhead() {
             try {
                 ensureBridge(wv)
-                val js = wrap(LIB + JS_COLLECT_AHEAD.replace("__N__", req.ahead.coerceIn(1, 12).toString()))
+                val aheadN = req.ahead.coerceIn(1, 12)
+                // Look at up to 3x the batch size below the screen; the first aheadN panels that are still
+                // undone are read. As panels finish, the window moves on by itself (it used to stop after
+                // the first N, until the reader scrolled).
+                val aheadWindow = (aheadN * 3).coerceAtMost(30)
+                val js = wrap(LIB + JS_COLLECT_AHEAD.replace("__N__", aheadWindow.toString()))
                 wv.evaluateJavascript(js) { raw ->
                     if (!alive()) { aheadFinished(); return@evaluateJavascript }
                     val o = parseJson(raw)
@@ -262,9 +271,11 @@ internal class WebModeExtractor(
                         val p = arr.optJSONObject(i) ?: continue
                         val s = p.optString("s")
                         if (s.isBlank()) continue
-                        if (aheadDone.contains(WebModeLogic.normalizeUrl(s))) continue
+                        val nk = WebModeLogic.normalizeUrl(s)
+                        if (aheadDone.contains(nk) || aheadBlank.contains(nk)) continue
                         refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
                     }
+                    while (refs.size > aheadN) refs.removeAt(refs.size - 1)
                     if (refs.isEmpty()) { aheadFinished(); return@evaluateJavascript }
                     aheadWorker.execute {
                         try { runCatching { processAhead(refs, pageUrl, lang) } } finally { aheadFinished() }
@@ -277,7 +288,7 @@ internal class WebModeExtractor(
 
         private fun processAhead(refs: List<PanelRef>, pageUrl: String, lang: String) {
             val script = ScriptState(WebModeLogic.pickScript(lang, pageUrl))
-            if (aheadDone.size > 400) aheadDone.clear()
+            if (aheadDone.size > 400) { aheadDone.clear(); aheadBlank.clear(); aheadFails.clear() }
             val total = refs.size.coerceAtLeast(1)
             var cachedCount = 0
             fun emitReady(panel: WebModeAheadPanel) {
@@ -301,14 +312,19 @@ internal class WebModeExtractor(
                 aheadDone.remove(key)
                 try {
                     progress("Read-ahead OCR: loading image ${index + 1}/$total", index * 99 / total)
-                    val bytes = fetchWithRetry(p, pageUrl) ?: continue
+                    val bytes = fetchWithRetry(p, pageUrl) ?: run {
+                        if ((aheadFails.merge(key, 1) { x, y -> x + y } ?: 1) >= 2) aheadBlank.add(key)
+                        null
+                    } ?: continue
                     // Full-quality OCR (not the fast one-pass reading): this runs in the background.
                     progress("Read-ahead OCR: reading text ${index + 1}/$total", index * 99 / total)
-                    val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: continue
+                    val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: run { aheadBlank.add(key); null } ?: continue
                     // Do not poison the read-ahead cache with an empty OCR result; the visible scan
                     // gets another attempt when the panel reaches the viewport.
                     if (po.text.isBlank()) {
-                        progress("Read-ahead OCR: no text yet; leave panel eligible for visible retry", index * 99 / total)
+                        // Skipped by read-ahead from now on (the visible scan still reads it when it arrives).
+                        aheadBlank.add(key)
+                        progress("Read-ahead OCR: no text; skipping panel", index * 99 / total)
                         continue
                     }
                     synchronized(aheadCache) { aheadCache[key] = po }

@@ -1248,7 +1248,9 @@ return t.length>=40?'TXT:'+t:'';
                     startWebModeExtract(token, useSaved = false)
                 }
                 // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
+                // Keep going while the translation queue is short; wait when OCR is already well ahead of it.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
+                    rtAheadTranslationQueue.size < 2 &&
                     System.currentTimeMillis() - deepSeekAheadAtMs >= 1200L) {
                     startAheadOcr()
                 }
