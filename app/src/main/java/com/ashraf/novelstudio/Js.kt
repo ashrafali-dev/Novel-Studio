@@ -235,7 +235,13 @@ function __box(){
 }
 """
 
-    private fun run(body: String) = PRELUDE + "\n;" + body
+    private fun run(body: String, realtimeFast: Boolean = false): String {
+        // The generic streaming probe treats the newest text changing in the last 900 ms as active.
+        // For live OCR batches, shorten that quiet window so a finished answer is copied/applied quickly;
+        // ordinary chapter translations retain the conservative 900 ms detector.
+        val prelude = if (realtimeFast) PRELUDE.replace("nw-g.t<900", "nw-g.t<250") else PRELUDE
+        return prelude + "\n;" + body
+    }
 
     private const val SEND_BODY = """
 (function(text,doSend){
@@ -412,7 +418,7 @@ function __box(){
     // "This job's reply" = an assistant node that is new, or whose text changed, since send().
     // "<assistant msg count>|<streaming 0/1>|<length of THIS job's reply>|<distinct [NNN] markers seen>|<new reply seen 0/1>"
     // 1) page-text scan (no selectors: works on any chatbot), 2) element detection as a fallback.
-    fun readLen(): String = run("(function(){var p=__prof();var l=null;var nowT=Date.now();var tk=__trk();var tkOn=!!window.__nsBaseNodes;var tkGot=!!tk&&tk.len>=20;var useOld=!tkOn||(!tkGot&&(Date.now()-(window.__nsSentAt||0))>12000);var sc=useOld?__scan():null;var len=0,found=0,got=0;if(tkGot){got=1;len=tk.len;found=tk.found;}else if(useOld){if(sc&&sc.got){got=1;len=sc.len;found=sc.found;}else{if(!l)l=__asst(p);var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);len=b?((b.innerText||b.textContent||'').trim().length):0;}}}var stop=__stream(p);var sendReady=0;try{var sb=p.send?document.querySelector(p.send):null;sendReady=__ok(sb)?1:0;if(!sendReady){var box=__box();var ct=box&&__ctls(box);sendReady=ct&&ct.some(function(b){return __ok(b)&&/send/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||''))})?1:0;}}catch(e){}var done=(got&&len>50&&!stop&&sendReady)?1:0;var cnt;if(!l&&tkGot&&window.__nsAsstT&&nowT-window.__nsAsstT<3000){cnt=window.__nsAsstN;}else{if(!l)l=__asst(p);cnt=l.length;window.__nsAsstN=cnt;window.__nsAsstT=nowT;}return cnt+'|'+stop+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+done;})()")
+    fun readLen(realtimeFast: Boolean = false): String = run("(function(){var p=__prof();var l=null;var nowT=Date.now();var tk=__trk();var tkOn=!!window.__nsBaseNodes;var tkGot=!!tk&&tk.len>=20;var useOld=!tkOn||(!tkGot&&(Date.now()-(window.__nsSentAt||0))>12000);var sc=useOld?__scan():null;var len=0,found=0,got=0;if(tkGot){got=1;len=tk.len;found=tk.found;}else if(useOld){if(sc&&sc.got){got=1;len=sc.len;found=sc.found;}else{if(!l)l=__asst(p);var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);len=b?((b.innerText||b.textContent||'').trim().length):0;}}}var stop=__stream(p);var sendReady=0;try{var sb=p.send?document.querySelector(p.send):null;sendReady=__ok(sb)?1:0;if(!sendReady){var box=__box();var ct=box&&__ctls(box);sendReady=ct&&ct.some(function(b){return __ok(b)&&/send/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||''))})?1:0;}}catch(e){}var done=(got&&len>50&&!stop&&sendReady)?1:0;var cnt;if(!l&&tkGot&&window.__nsAsstT&&nowT-window.__nsAsstT<3000){cnt=window.__nsAsstN;}else{if(!l)l=__asst(p);cnt=l.length;window.__nsAsstN=cnt;window.__nsAsstT=nowT;}return cnt+'|'+stop+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+done;})()", realtimeFast)
 
     // Final reply text. Markers are forced to the start of a line so the paragraph split works
     // even when the chatbot put several paragraphs on one line.
