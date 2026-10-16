@@ -318,7 +318,7 @@ internal class WebModeExtractor(
                     } ?: continue
                     // Full-quality OCR (not the fast one-pass reading): this runs in the background.
                     progress("Read-ahead OCR: reading text ${index + 1}/$total", index * 99 / total)
-                    val po = ocrBytes(bytes, script, p.src, fastMode = false) ?: run { aheadBlank.add(key); null } ?: continue
+                    val po = ocrBytes(bytes, script, p.src, fastMode = true) ?: run { aheadBlank.add(key); null } ?: continue
                     // Do not poison the read-ahead cache with an empty OCR result; the visible scan
                     // gets another attempt when the panel reaches the viewport.
                     if (po.text.isBlank()) {
@@ -1399,10 +1399,23 @@ function allNodes(limit){
 }
 function scroller(){
   if((de.scrollHeight||0)>(window.innerHeight||0)+80)return null;
+  // Cache the inner reader scroller; rescanning thousands of wrappers every scan tick
+  // makes touch scrolling visibly hitch on long comic chapters.
+  var cached=window.__nsWmScroller;
+  if(cached&&cached.isConnected){
+    var cd=cached.scrollHeight-cached.clientHeight;
+    if(cd>200){
+      var co='';
+      try{co=getComputedStyle(cached).overflowY;}catch(ignore){}
+      if(co==='auto'||co==='scroll'||co==='overlay')return cached;
+    }
+    window.__nsWmScroller=null;
+  }
   var best=null,bs=0,els=document.querySelectorAll('div,main,section,article');
-  for(var i=0;i<els.length&&i<3000;i++){var e=els[i];var d=e.scrollHeight-e.clientHeight;
+  for(var i=0;i<els.length&&i<1200;i++){var e=els[i];var d=e.scrollHeight-e.clientHeight;
     if(d>200&&e.scrollHeight>bs){var o=getComputedStyle(e).overflowY;
       if(o==='auto'||o==='scroll'||o==='overlay'){bs=e.scrollHeight;best=e;}}}
+  if(best)window.__nsWmScroller=best;
   return best;
 }
 function cands(sc, includeBackgrounds){
