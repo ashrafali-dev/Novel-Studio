@@ -106,12 +106,14 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
 
             val expectedLast = n + layout.titleOffset
             val byNo = HashMap<Int, String>()
+            val seenNumbers = HashSet<Int>()
             var previousNo = 0
             for ((k, m) in ms.withIndex()) {
                 val no = m.groupValues[1].toIntOrNull() ?: return null
                 // Repeated, reversed, or out-of-range markers cannot be trusted for overlay placement.
                 if (no <= previousNo || no > expectedLast) return null
                 previousNo = no
+                seenNumbers.add(no)
                 val end = if (k + 1 < ms.size) ms[k + 1].range.first else text.length
                 val body = text.substring(m.range.last + 1, end).trim()
                 if (body.isNotEmpty()) byNo[no] = body
@@ -120,7 +122,7 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             // Full-chapter replies include the title as [001], so a response that starts at [001]
             // but lacks the final expected marker is ambiguous: it may have renumbered bubbles after
             // dropping the title, or it may have omitted the final bubble. Do not shift all bubbles.
-            if (layout.titleOffset > 0 && byNo.containsKey(1) && !byNo.containsKey(expectedLast)) {
+            if (layout.titleOffset > 0 && seenNumbers.contains(1) && !seenNumbers.contains(expectedLast)) {
                 return null
             }
 
