@@ -141,22 +141,39 @@ function __findSend(p,box,snap){
 }
 function __press(b){try{if(!b||!b.isConnected||!__ok(b))return false;b.focus();b.click();return true;}catch(e){try{b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return true;}catch(x){return false;}}}
 function __box(){
- var sels=['#prompt-textarea','textarea','input:not([type="hidden"])','div[contenteditable="true"]','div[contenteditable="plaintext-only"]','[role="textbox"]'];
+ // DeepSeek may use a transparent native textarea under a visible backdrop.
+ // Do not reject a real editor just because it carries aria-hidden/aria-disabled.
+ var sels=['#prompt-textarea','textarea','input:not([type="hidden"])',
+  '[contenteditable="true"]','[contenteditable="plaintext-only"]','[contenteditable]',
+  '[role="textbox"]','[data-placeholder*="Message" i]','[placeholder*="Message" i]'];
  var c=[],seen=new Set();
  for(var i=0;i<sels.length;i++){
-  try{var a=[].slice.call(document.querySelectorAll(sels[i]));for(var j=0;j<a.length;j++){
-   var e=a[j];if(seen.has(e)||!__vis(e)||e.disabled||e.getAttribute('aria-disabled')==='true'||e.getAttribute('aria-hidden')==='true')continue;
-   seen.add(e);c.push(e);
-  }}catch(e){}
+  try{
+   var a=[].slice.call(document.querySelectorAll(sels[i]));
+   for(var j=0;j<a.length;j++){
+    var e=a[j]; if(seen.has(e)||e.disabled)continue;
+    var r=e.getBoundingClientRect();
+    if(r.width<=0||r.height<=0)continue;
+    seen.add(e);c.push(e);
+   }
+  }catch(e){}
  }
  if(!c.length)return null;
- var active=document.activeElement;if(active&&c.indexOf(active)>=0)return active;
+ var active=document.activeElement;
+ if(active&&c.indexOf(active)>=0)return active;
+ function priority(e){
+  var v=String((e.id||'')+' '+(e.getAttribute('placeholder')||'')+' '+
+   (e.getAttribute('data-placeholder')||'')+' '+(e.getAttribute('aria-label')||'')+' '+
+   (e.getAttribute('data-testid')||'')+' '+(typeof e.className==='string'?e.className:'')).toLowerCase();
+  var n=0;
+  if(e.id==='prompt-textarea'||e.getAttribute('data-testid')==='prompt-textarea')n+=1000;
+  if(/message|composer|prompt|chat.?input|text.?area/.test(v))n+=100;
+  if(e.matches&&e.matches('textarea,[contenteditable="true"],[contenteditable="plaintext-only"],[role="textbox"]'))n+=20;
+  return n;
+ }
  c.sort(function(a,b){
-  var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();
-  var aid=(a.id==='prompt-textarea'||a.getAttribute('data-testid')==='prompt-textarea')?1:0;
-  var bid=(b.id==='prompt-textarea'||b.getAttribute('data-testid')==='prompt-textarea')?1:0;
-  if(aid!==bid)return bid-aid;
-  return br.bottom-ar.bottom;
+  var d=priority(b)-priority(a);if(d)return d;
+  return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;
  });
  return c[0];
 }
