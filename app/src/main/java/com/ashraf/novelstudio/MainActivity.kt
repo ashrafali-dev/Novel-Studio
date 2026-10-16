@@ -7101,7 +7101,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         toast("🧽 Text Remover ON — next Web Mode/Japanese Manga OCR scan will clean only safe text pixels.")
                     } else {
                         WebModeTextRemovalCache.clear(this)
-                        novelWv.evaluateJavascript("(function(){var l=document.getElementById('__ns_wm_clean_layer');if(l&&l.parentNode)l.parentNode.removeChild(l);})()", null)
+                        novelWv.evaluateJavascript("(function(){var l=document.getElementById('__ns_wm_clean_layer');if(l&&l.parentNode)l.parentNode.removeChild(l);var w=document.getElementById('__ns_wm_overlay');if(w){var bs=w.querySelectorAll('.__ns_b[data-cl]');for(var i=0;i<bs.length;i++){var b=bs[i],bg=b.getAttribute('data-bg')||'#FFFFFF',sf=b.getAttribute('data-sf')==='1';b.style.background=bg;b.style.borderRadius=sf?'12px':'4px';b.style.boxShadow=sf?'0 0 7px 5px '+bg:'0 0 0 3px '+bg;b.removeAttribute('data-cl');}}})()", null)
                         toast("🧽 Text Remover OFF — active cleaned overlay removed; original page remains intact.")
                     }
                     refresh(i, menuTextRemovalLabel())
