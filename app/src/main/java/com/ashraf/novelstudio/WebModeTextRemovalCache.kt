@@ -33,7 +33,8 @@ internal object WebModeTextRemovalCache {
         return try {
             val dir = directory(context)
             val digest = sha256(key)
-            val target = File(dir, "$digest.webp")
+            val ext = if (mime.equals("image/png", true)) "png" else "webp"
+            val target = File(dir, "$digest.$ext")
             val part = File(dir, "$digest.part")
             FileOutputStream(part).use { it.write(encodedImage) }
             if (target.exists()) target.delete()
