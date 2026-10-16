@@ -229,7 +229,7 @@ function __box(){
         box.dispatchEvent(new Event('change',{bubbles:true}));
       }catch(e){}
     }
-  }  }
+  }
   if(doSend){
     // Do not press Send until the editor has committed the full text and the control is enabled.
     // The first readiness check happens 300 ms after insertion; retries only re-check readiness,
