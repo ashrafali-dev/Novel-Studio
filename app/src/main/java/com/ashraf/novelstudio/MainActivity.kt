@@ -963,8 +963,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             rtAheadWorkerMarkerCount = markerCount
             rtAheadWorkerSourceLength = task.layout.bubbles.sumOf { it.sourceText.length }
             val sendAtMs = System.currentTimeMillis()
-            rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, sendAtMs + chatbotRequestGapMs)
-            nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, sendAtMs + chatbotRequestGapMs)
+            val aheadGapMs = chatbotRequestGapMs
+            rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, sendAtMs + aheadGapMs)
+            nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, sendAtMs + aheadGapMs)
             webModeStage = "Pre-translating upcoming panel"
             webModePct = 1
             updateProgressUi()
@@ -1738,7 +1739,12 @@ return t.length>=40?'TXT:'+t:'';
     private var running: Chapter? = null
     private var runToken = 0
     private var progress = 0
-    private val chatbotRequestGapMs = 3_000L
+    // Pause between two chatbot requests: a fresh random value of 3.0-4.5 s on every read, so the
+    // requests never arrive at a perfectly regular interval (which looks like a bot to anti-abuse checks).
+    // Average is ~3.75 s. The pause only applies right after a send or a finished answer; a request
+    // made later than that goes out immediately.
+    private val chatbotRequestGapMs: Long
+        get() = kotlin.random.Random.nextLong(3_000L, 4_501L)
     private var nextChatbotRequestAtMs = 0L
 
     // A long chatbot conversation gets slower and starts to forget the prompt, so after every
@@ -1791,7 +1797,7 @@ return t.length>=40?'TXT:'+t:'';
                                     return@evaluateJavascript
                                 }
                                 if (decode(readyRaw).trim() == "1") {
-                                    // Re-enter the normal shared 3-second rate gate only after
+                                    // Re-enter the normal shared rate gate only after
                                     // the new chat's composer is mounted and usable.
                                     sendChatRequest(text, true, isValid, onResult)
                                 } else if (attempt < 48) {
@@ -1816,12 +1822,13 @@ return t.length>=40?'TXT:'+t:'';
             }
         }
         chatRequestCount++
-        nextChatbotRequestAtMs = now + chatbotRequestGapMs
-        rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + chatbotRequestGapMs)
+        val gapMs = chatbotRequestGapMs
+        nextChatbotRequestAtMs = now + gapMs
+        rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
         chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
     }
 
-    /** Leave a 3-second pause after a response ends (or is interrupted). */
+    /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
     private fun deferNextChatbotRequest() {
         val cooldownUntil = System.currentTimeMillis() + chatbotRequestGapMs
         nextChatbotRequestAtMs = maxOf(nextChatbotRequestAtMs, cooldownUntil)
