@@ -1838,7 +1838,7 @@ return t.length>=40?'TXT:'+t:'';
                                 if (decode(readyRaw).trim() == "1") {
                                     // Re-enter the normal shared rate gate only after
                                     // the new chat's composer is mounted and usable.
-                                    sendChatRequest(text, true, isValid, onResult)
+                                    sendChatRequest(text, true, isValid, allowDuringTranslation) { result -> onResult(result) }
                                 } else if (attempt < 48) {
                                     handler.postDelayed({ probeComposer(attempt + 1) }, 250L)
                                 } else {
