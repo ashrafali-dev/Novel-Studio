@@ -563,7 +563,7 @@ class MainActivity : Activity() {
     private var rtAheadHoldPage = ""
     private var rtAheadHoldFlushRunnable: Runnable? = null
     private var rtAheadHoldSince = 0L
-    private val rtAheadHoldFlushMs = 5000L
+    private val rtAheadHoldFlushMs = 3000L
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
@@ -658,14 +658,14 @@ class MainActivity : Activity() {
         // Several small requests instead of one big one: the nearest panels are translated (and ready)
         // first, and the chatbot starts on the next chunk as soon as it is free. 3-15 bubbles per request
         // (Prefs "rtAheadBatch", default 10). A lone trailing bubble joins the previous chunk.
-        val chunkSize = (Prefs.get(this, "rtAheadBatch", "10").toIntOrNull() ?: 10).coerceIn(3, 15)
+        val chunkSize = (Prefs.get(this, "rtAheadBatch", "10").toIntOrNull() ?: 10).coerceIn(5, 15)
         val chunks = ArrayList<MutableList<Int>>()
         var i = 0
         while (i < batch.size) {
             chunks.add((i until minOf(i + chunkSize, batch.size)).toMutableList())
             i += chunkSize
         }
-        val minChunk = minOf(3, chunkSize)
+        val minChunk = minOf(5, chunkSize)
         if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
             if (!force) {
                 // Too small to be worth a request of its own: hold it for the next OCR round.
@@ -673,9 +673,9 @@ class MainActivity : Activity() {
                 for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
                 val nowMs = System.currentTimeMillis()
                 if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
-                // Wait for more OCR to fill the chunk: 5 s after the last new bubble, but never longer
-                // than 12 s in total since the first held bubble.
-                val delayMs = minOf(rtAheadHoldFlushMs, maxOf(300L, 12000L - (nowMs - rtAheadHoldSince)))
+                // Wait for more OCR to fill the chunk: a 3 s quiet period, with a bounded total
+                // wait so sparse pages still make progress.
+                val delayMs = minOf(rtAheadHoldFlushMs, maxOf(300L, 9000L - (nowMs - rtAheadHoldSince)))
                 rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
                 val flush = Runnable {
                     rtAheadHoldFlushRunnable = null
@@ -828,10 +828,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     private fun pumpRealtimeAheadTranslation() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
-        // A background translation may run alongside the visible chatbot request because it has
-        // its own WebView. Still yield while foreground work is queued or visible OCR is in flight.
-        if (rtAheadWorkerBusy || queue.isNotEmpty() ||
-            webModeHandle != null || webModePrefetchBusy) return
+        // Read-ahead uses its own WebView and may translate while the foreground panel is being
+        // read/translated. The shared 3-second rate gate below prevents rapid-fire submissions.
+        if (rtAheadWorkerBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
         val now = System.currentTimeMillis()
@@ -1201,7 +1200,7 @@ function imageSrc(e){
 function add(kind,s,r,extra){
  s=absolute(s);if(!s||seen[kind+':'+s])return;
  seen[kind+':'+s]=1;
- v.push(kind+':'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height)+'@'+Math.round(r.left/50)+','+Math.round(r.top/50)+(extra||''));
+ v.push(kind+':'+s+'@'+Math.round(r.width)+'x'+Math.round(r.height)+(extra||''));
 }
 var imgs=document.images||[];
 for(var i=0;i<imgs.length;i++){
@@ -1244,10 +1243,10 @@ if(hasLargeImage){
 }else if(now-(window.__nsRtBgProbeAt||0)>=1500){
  window.__nsRtBgProbeAt=now;
  var nodes=[],roots=[document],seenRoots=[];
- while(roots.length&&nodes.length<7000){
+ while(roots.length&&nodes.length<2500){
   var root=roots.shift();if(!root||seenRoots.indexOf(root)>=0)continue;seenRoots.push(root);
   var list=root.querySelectorAll?root.querySelectorAll('*'):[];
-  for(var ni=0;ni<list.length&&nodes.length<7000;ni++){var ne=list[ni];nodes.push(ne);if(ne.shadowRoot)roots.push(ne.shadowRoot);}
+  for(var ni=0;ni<list.length&&nodes.length<2500;ni++){var ne=list[ni];nodes.push(ne);if(ne.shadowRoot)roots.push(ne.shadowRoot);}
  }
  var eligible=[];
  for(var nj=0;nj<nodes.length;nj++){
@@ -1256,7 +1255,7 @@ if(hasLargeImage){
   eligible.push({el:el,r:er,area:Math.min(vw,er.right)-Math.max(0,er.left)>0?(Math.min(vw,er.right)-Math.max(0,er.left))*(Math.min(vh,er.bottom)-Math.max(0,er.top)):0});
  }
  eligible.sort(function(a,b){return b.area-a.area;});
- var bgv=[],bgSeen={},checks=Math.min(eligible.length,1400);
+ var bgv=[],bgSeen={},checks=Math.min(eligible.length,500);
  for(var bj=0;bj<checks;bj++){
   var be=eligible[bj].el,br=eligible[bj].r,bg='';
   try{bg=getComputedStyle(be).backgroundImage||'';}catch(ignore){}
@@ -1268,7 +1267,7 @@ if(hasLargeImage){
   while((m=re.exec(bg))!==null){
    var u=absolute(m[1]);if(!u||!good(u)||bgSeen[u])continue;
    bgSeen[u]=1;
-   bgv.push('BG:'+u+'@'+Math.round(br.width)+'x'+Math.round(br.height)+'@'+Math.round(br.left/50)+','+Math.round(br.top/50));
+   bgv.push('BG:'+u+'@'+Math.round(br.width)+'x'+Math.round(br.height));
   }
  }
  window.__nsRtBgSignature=bgv.join('|');
@@ -1329,13 +1328,13 @@ return t.length>=40?'TXT:'+t:'';
                     startWebModeExtract(token, useSaved = false)
                 }
                 // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
-                // Keep going while the translation queue is short; wait when OCR is already well ahead of it.
+                // Keep the DOM probe light enough that it does not compete with touch scrolling.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
                     rtAheadTranslationQueue.size < 2 &&
                     System.currentTimeMillis() - deepSeekAheadAtMs >= 400L) {
                     startAheadOcr()
                 }
-                handler.postDelayed(this, 150L)
+                handler.postDelayed(this, 250L)
             }
         }
     }
@@ -2029,6 +2028,30 @@ return t.length>=40?'TXT:'+t:'';
                             val current = lastChapter
                             if (current != null && keyOf(next) == keyOf(current)) return@prefetchExtractNow
                             srcChapter?.let { prefetchNextOf[keyOf(it)] = next }
+                            // If the reader has already advanced to the chapter just prefetched,
+                            // roll the depth-1 window forward now; do not wait for a later job callback.
+                            val visibleNow = cleanUrl(novelWv.url.orEmpty())
+                            val visibleChapter = lastChapter
+                            val visibleIsNext = if (wtrLabSystem.matches(next.url)) {
+                                visibleChapter != null && wtrLabSystem.matches(visibleChapter.url) &&
+                                    visibleChapter.number == next.number
+                            } else {
+                                visibleNow == cleanUrl(next.url) ||
+                                    pageKey(visibleNow) == pageKey(next.url) ||
+                                    (visibleChapter != null && keyOf(visibleChapter) == keyOf(next))
+                            }
+                            if (visibleIsNext) {
+                                handler.postDelayed({
+                                    if (Prefs.bool(this@MainActivity, "prefetchNextChapter") &&
+                                        (cleanUrl(novelWv.url.orEmpty()) == cleanUrl(next.url) ||
+                                            pageKey(novelWv.url.orEmpty()) == pageKey(next.url) ||
+                                            lastChapter?.let { keyOf(it) == keyOf(next) } == true ||
+                                            (wtrLabSystem.matches(next.url) &&
+                                                lastChapter?.number == next.number))) {
+                                        schedulePrefetch(next)
+                                    }
+                                }, 250L)
+                            }
                             if (Store.find(this@MainActivity, next) != null) {
                                 prefetchContinue()
                                 return@prefetchExtractNow
@@ -5446,7 +5469,8 @@ return t.length>=40?'TXT:'+t:'';
 
     /** After a job finishes, wait a few seconds, then top the window up from the chapter being read. */
     private fun prefetchContinue() {
-        if (!Prefs.bool(this, "prefetchNextChapter") || prefetchAhead() <= 1) return
+        if (!Prefs.bool(this, "prefetchNextChapter")) return
+        // Depth 1 is a sliding window too: schedulePrefetch() decides whether it is already full.
         handler.postDelayed({ lastChapter?.let { schedulePrefetch(it) } }, prefetchGapMs)
     }
 
@@ -6428,9 +6452,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "for(var i=0;i<l;i++)u[i]=s.charCodeAt(i);var f=new FontFace('NSBn',u.buffer);document.fonts.add(f);window.__nsFontLoading=n;" +
             "f.load().then(function(){window.__nsFontName=n;window.__nsFontLoading='';}).catch(function(){window.__nsFontLoading='';});return 'ok';}" +
             "catch(e){return 'err';}})('" + name + "','" + b64 + "')"
-        novelWv.evaluateJavascript("(window.__nsFontName||'')") { cur ->
-            if (cur == null || !cur.contains(name)) novelWv.evaluateJavascript(js, null)
-        }
+        // Register the FontFace immediately, before the translation writer is queued. The old
+        // asynchronous getter could let a site's writer run first and keep its fallback font.
+        novelWv.evaluateJavascript(js, null)
     }
 
     private fun toggleView() {
