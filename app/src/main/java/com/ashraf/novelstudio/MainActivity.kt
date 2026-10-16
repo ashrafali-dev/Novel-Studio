@@ -461,6 +461,7 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
+    private val REALTIME_AHEAD_MIN_BUBBLES = 10
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
@@ -468,10 +469,19 @@ class MainActivity : Activity() {
         if (n == 0) return
         val token = navToken
         val seq = ++aheadOcrSeq
-        // OCR callbacks arrive one panel at a time. Hold them until the scan finishes so the
-        // chatbot receives one ordered request for the whole read-ahead batch, not one request
-        // per panel.
+        // The OCR worker returns a completed image panel at a time. Batch bubble lines across panels,
+        // but start the chatbot as soon as 10+ bubbles are ready instead of waiting for all 10 images.
+        // A small remainder is flushed by queueRealtimeAheadTranslations after a short debounce.
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
+        fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
+            panel.bubbles.count { it.sourceText.isNotBlank() }
+        }
+        fun flushCollected() {
+            if (collectedPanels.isEmpty()) return
+            val ready = collectedPanels.values.sortedBy { it.top }
+            collectedPanels.clear()
+            queueRealtimeAheadTranslations(novelWv.url.orEmpty(), ready)
+        }
         aheadOcrHandle = webMode.start(WebModeRequest(
             webView = novelWv,
             visibleOnly = true,
@@ -491,9 +501,9 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Collect the complete read-ahead window first. Do not submit a partial request
-                    // for each finished image: those small overlapping requests caused duplicate/too-small
-                    // chatbot messages and left later panels waiting in separate batches.
+                    // Start pre-translation early when the collected OCR has at least 10 text bubbles.
+                    // The OCR worker continues reading the remaining upcoming panels in parallel.
+                    if (collectedBubbleCount() >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
                 }
             },
             onAheadDone = {
@@ -502,16 +512,14 @@ class MainActivity : Activity() {
                     aheadOcrStage = ""
                     aheadOcrPct = -1
                     if (token == navToken) {
-                        // One ordered batch from all successfully OCRed panels in this 9–10 panel window.
-                        queueRealtimeAheadTranslations(
-                            novelWv.url.orEmpty(),
-                            collectedPanels.values.sortedBy { it.top }
-                        )
+                        // Send any remaining lines; if there are fewer than 10, the short hold below
+                        // gives immediately arriving OCR a chance to join, then sends the current batch.
+                        flushCollected()
                     }
                     collectedPanels.clear()
                 }
                 deepSeekAheadAtMs = System.currentTimeMillis()
-                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 180L)
+                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 80L)
             }
         ))
     }
@@ -568,7 +576,7 @@ class MainActivity : Activity() {
     private var rtAheadHoldPage = ""
     private var rtAheadHoldFlushRunnable: Runnable? = null
     private var rtAheadHoldSince = 0L
-    private val rtAheadHoldFlushMs = 3000L
+    private val rtAheadHoldFlushMs = 160L
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
@@ -677,9 +685,9 @@ class MainActivity : Activity() {
                 for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
                 val nowMs = System.currentTimeMillis()
                 if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
-                // Wait for more OCR to fill the chunk: a 3 s quiet period, with a bounded total
-                // wait so sparse pages still make progress.
-                val delayMs = minOf(rtAheadHoldFlushMs, maxOf(300L, 9000L - (nowMs - rtAheadHoldSince)))
+                // Give already-running nearby OCR a brief chance to join this request. Do not
+                // make real-time reading wait seconds for a full chunk; send the lines we have quickly.
+                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 450L - (nowMs - rtAheadHoldSince)))
                 rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
                 val flush = Runnable {
                     rtAheadHoldFlushRunnable = null
@@ -877,10 +885,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (rtAheadWorkerBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
-        // OCR may continue while the visible batch is being translated, but never submit the
-        // next read-ahead batch until the foreground chatbot job and its queue are idle.
-        if (running != null || queue.isNotEmpty()) {
-            scheduleRealtimeAheadPump(350L)
+        // The read-ahead translator owns a separate hidden WebView and its own job state. Let it
+        // translate upcoming panels while the current visible bubble batch is streaming, so answers can
+        // be cached before the reader reaches them. Keep normal whole-chapter jobs serialized.
+        val foregroundNormalJob = running?.let { !isRealtimeBubbleBatch(it) } == true
+        val queuedNormalJob = queue.any { !isRealtimeBubbleBatch(it) }
+        if (foregroundNormalJob || queuedNormalJob) {
+            scheduleRealtimeAheadPump(250L)
             return
         }
         val now = System.currentTimeMillis()
@@ -1120,7 +1131,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         }
         if (webModeStage == "Pre-translating upcoming panel") clearWebModeProgress()
         updateProgressUi()
-        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 600L)
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 180L)
     }
 
     private fun cancelRealtimeAheadWorker(requeue: Boolean) {
@@ -1200,7 +1211,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         deepSeekLastOcrAtMs = System.currentTimeMillis()
         if (webModeStage == "Pre-translating upcoming panel") clearWebModeProgress()
         updateProgressUi()
-        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 300L)
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 100L)
     }
 
     private fun clearRealtimeAheadStateForNavigation() {
@@ -1478,7 +1489,7 @@ return t.length>=40?'TXT:'+t:'';
                 // Keep the DOM probe light enough that it does not compete with touch scrolling.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
                     rtAheadTranslationQueue.size < 2 &&
-                    System.currentTimeMillis() - deepSeekAheadAtMs >= 850L) {
+                    System.currentTimeMillis() - deepSeekAheadAtMs >= 220L) {
                     startAheadOcr()
                 }
                 handler.postDelayed(this, 250L)
@@ -1772,7 +1783,13 @@ return t.length>=40?'TXT:'+t:'';
     // Average is ~3.75 s. The pause only applies right after a send or a finished answer; a request
     // made later than that goes out immediately.
     private val chatbotRequestGapMs: Long
-        get() = kotlin.random.Random.nextLong(3_000L, 4_501L)
+        get() = if (DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
+            // Real-time batches contain multiple bubbles and use a separate read-ahead WebView.
+            // Keep a brief randomized gap, not the multi-second normal-chapter pause.
+            kotlin.random.Random.nextLong(800L, 1_401L)
+        } else {
+            kotlin.random.Random.nextLong(3_000L, 4_501L)
+        }
     private var nextChatbotRequestAtMs = 0L
 
     // A long chatbot conversation gets slower and starts to forget the prompt, so after every
@@ -6543,6 +6560,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
         !JapaneseMangaSession.isManaged(ch) &&
             DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
+
+    /** True only for an interactive OCR bubble batch, not a whole-chapter Web Mode scan. */
+    private fun isRealtimeBubbleBatch(ch: Chapter): Boolean =
+        isDeepSeekLivePanel(ch) && deepSeekTextHashByChapter.containsKey(keyOf(ch))
 
     /** Resolve only the bubble hashes that were actually inserted successfully. */
     private fun completeDeepSeekHashBatch(ch: Chapter, matched: Set<String>? = null) {
