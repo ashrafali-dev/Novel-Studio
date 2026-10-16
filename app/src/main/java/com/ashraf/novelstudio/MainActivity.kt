@@ -488,6 +488,10 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
+                    // Hand each panel to the translation queue the moment its OCR is done, instead of
+                    // waiting for the whole read-ahead round: translation starts earlier and the queue
+                    // packs the bubbles into batches.
+                    queueRealtimeAheadTranslations(novelWv.url.orEmpty(), panels)
                 }
             },
             onAheadDone = {
@@ -496,10 +500,8 @@ class MainActivity : Activity() {
                     aheadOcrStage = ""
                     aheadOcrPct = -1
                     if (token == navToken) {
-                        queueRealtimeAheadTranslations(
-                            novelWv.url.orEmpty(),
-                            collectedPanels.values.toList()
-                        )
+                        // Panels were already queued one by one; this only nudges held-back bubbles.
+                        queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList())
                     }
                     collectedPanels.clear()
                 }
@@ -554,10 +556,21 @@ class MainActivity : Activity() {
         updatePill()
     }
 
-    private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>) {
+    // Bubbles read ahead but not yet sent because fewer than a full chunk were available. They wait for
+    // the next OCR round to fill the chunk, and are sent anyway after a short delay (never 1-line requests
+    // just because one round found a single new bubble).
+    private val rtAheadHold = ArrayList<Pair<WmBubble, Int>>()
+    private var rtAheadHoldPage = ""
+    private var rtAheadHoldFlushRunnable: Runnable? = null
+    private var rtAheadHoldSince = 0L
+    private val rtAheadHoldFlushMs = 5000L
+
+    private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         val page = cleanUrl(pageUrl)
-        if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty()) || panels.isEmpty()) return
+        if (page != rtAheadHoldPage) { rtAheadHold.clear(); rtAheadHoldPage = page }
+        if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty()) ||
+            (panels.isEmpty() && rtAheadHold.isEmpty())) return
 
         // Do not queue a bubble that is already cached, already queued, being translated, or
         // already completed. This also prevents overlapping read-ahead windows from resending
@@ -595,21 +608,87 @@ class MainActivity : Activity() {
                 pendingBubbleKeys.add(cacheKey)
             }
         }
+        // While the chatbot is busy, tasks that have not started yet are taken back and repacked together
+        // with the new bubbles, so requests grow to a full batch instead of staying small.
+        run {
+            val reclaimed = ArrayList<Pair<WmBubble, Int>>()
+            val qi = rtAheadTranslationQueue.iterator()
+            while (qi.hasNext()) {
+                val t = qi.next()
+                if (cleanUrl(t.pageUrl) != page || t.attempts > 0 || t.id.endsWith("-r")) continue
+                t.layout.bubbles.forEach { reclaimed.add(it to t.top) }
+                rtAheadTranslationQueuedIds.remove(t.id)
+                qi.remove()
+            }
+            if (reclaimed.isNotEmpty()) {
+                val have = HashSet<String>()
+                batch.forEach { have.add(rtAheadBubbleCacheKey(it)) }
+                val rb = ArrayList<WmBubble>(); val rt = ArrayList<Int>()
+                for ((b, t) in reclaimed) {
+                    val k = rtAheadBubbleCacheKey(b)
+                    if (k in rtAheadTranslationCache || !have.add(k)) continue
+                    rb.add(b); rt.add(t)
+                }
+                batch.addAll(0, rb)
+                batchTop.addAll(0, rt)
+            }
+        }
+        // Put the bubbles held back earlier in front of the new ones (skipping any that got translated or
+        // queued in the meantime, and duplicates).
+        if (rtAheadHold.isNotEmpty()) {
+            val have = HashSet<String>()
+            batch.forEach { have.add(rtAheadBubbleCacheKey(it)) }
+            val heldBubbles = ArrayList<WmBubble>()
+            val heldTops = ArrayList<Int>()
+            for ((hb, ht) in rtAheadHold) {
+                val k = rtAheadBubbleCacheKey(hb)
+                if (k in rtAheadTranslationCache || k in have) continue
+                val queued = rtAheadTranslationQueue.any { t -> t.layout.bubbles.any { rtAheadBubbleCacheKey(it) == k } } ||
+                    rtAheadTranslationTasksByJobKey.values.any { t -> t.layout.bubbles.any { rtAheadBubbleCacheKey(it) == k } }
+                if (queued) continue
+                have.add(k)
+                heldBubbles.add(hb); heldTops.add(ht)
+            }
+            rtAheadHold.clear()
+            batch.addAll(0, heldBubbles)
+            batchTop.addAll(0, heldTops)
+        }
         if (batch.isEmpty()) return
 
         // Several small requests instead of one big one: the nearest panels are translated (and ready)
-        // first, and the chatbot starts on the next chunk as soon as it is free. 3-5 bubbles per request
-        // (Prefs "rtAheadBatch", default 4). A lone trailing bubble joins the previous chunk.
-        val chunkSize = (Prefs.get(this, "rtAheadBatch", "4").toIntOrNull() ?: 4).coerceIn(3, 5)
+        // first, and the chatbot starts on the next chunk as soon as it is free. 3-15 bubbles per request
+        // (Prefs "rtAheadBatch", default 10). A lone trailing bubble joins the previous chunk.
+        val chunkSize = (Prefs.get(this, "rtAheadBatch", "10").toIntOrNull() ?: 10).coerceIn(3, 15)
         val chunks = ArrayList<MutableList<Int>>()
         var i = 0
         while (i < batch.size) {
             chunks.add((i until minOf(i + chunkSize, batch.size)).toMutableList())
             i += chunkSize
         }
-        if (chunks.size > 1 && chunks.last().size < 2) {
-            val last = chunks.removeAt(chunks.size - 1)
-            chunks.last().addAll(last)
+        val minChunk = minOf(3, chunkSize)
+        if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
+            if (!force) {
+                // Too small to be worth a request of its own: hold it for the next OCR round.
+                val rest = chunks.removeAt(chunks.size - 1)
+                for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
+                val nowMs = System.currentTimeMillis()
+                if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
+                // Wait for more OCR to fill the chunk: 5 s after the last new bubble, but never longer
+                // than 12 s in total since the first held bubble.
+                val delayMs = minOf(rtAheadHoldFlushMs, maxOf(300L, 12000L - (nowMs - rtAheadHoldSince)))
+                rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
+                val flush = Runnable {
+                    rtAheadHoldFlushRunnable = null
+                    if (rtAheadHold.isNotEmpty()) {
+                        queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
+                    }
+                }
+                rtAheadHoldFlushRunnable = flush
+                handler.postDelayed(flush, delayMs)
+            } else if (chunks.size > 1 && chunks.last().size < 2) {
+                val last = chunks.removeAt(chunks.size - 1)
+                chunks.last().addAll(last)
+            }
         }
         for (chunk in chunks) {
             val layout = WebModeLayout(0, chunk.map { batch[it] })
@@ -621,6 +700,7 @@ class MainActivity : Activity() {
                 RtAheadTranslationTask(id, page, layout, chunk.minOf { batchTop[it] })
             )
         }
+        if (rtAheadHold.isEmpty()) rtAheadHoldSince = 0L
         pumpRealtimeAheadTranslation()
     }
 
@@ -1052,6 +1132,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         rtAheadTranslationTasksByJobKey.clear()
         rtAheadTranslationCache.clear()
         rtAheadTranslationSuppressedIds.clear()
+        rtAheadHold.clear()
     }
 
     private var deepSeekPendingSig = ""
@@ -1251,7 +1332,7 @@ return t.length>=40?'TXT:'+t:'';
                 // Keep going while the translation queue is short; wait when OCR is already well ahead of it.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
                     rtAheadTranslationQueue.size < 2 &&
-                    System.currentTimeMillis() - deepSeekAheadAtMs >= 1200L) {
+                    System.currentTimeMillis() - deepSeekAheadAtMs >= 400L) {
                     startAheadOcr()
                 }
                 handler.postDelayed(this, 150L)

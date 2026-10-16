@@ -114,7 +114,7 @@ internal class WebModeExtractor(
     // Read-ahead (real-time mode): its own low-priority thread, so it never queues in front of the job
     // for the panel the reader is looking at.
     private val aheadWorker: ExecutorService = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "ns-webmode-ahead").apply { priority = Thread.MIN_PRIORITY }
+        Thread(r, "ns-webmode-ahead").apply { priority = 3 }   // was MIN_PRIORITY (1): read-ahead OCR must keep up
     }
     private val aheadCache = object : LinkedHashMap<String, PanelOcr>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PanelOcr>?): Boolean = size > 60
