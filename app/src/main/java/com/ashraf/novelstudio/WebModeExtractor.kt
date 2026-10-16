@@ -1480,6 +1480,7 @@ function scroller(){
     if(BAD.test(imMeta))continue;
     var ir=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
     if(!((ir.width>=100&&ir.height>=60)||(nw>=300&&nh>=120)))continue;
+    if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]')&&!(ir.width>=360&&ir.height>=240))continue;
     var node=im.parentElement,depth=0;
     while(node&&node!==document.documentElement&&depth<40){
       countByEl.set(node,(countByEl.get(node)||0)+1);
