@@ -1443,7 +1443,7 @@ return t.length>=40?'TXT:'+t:'';
                     val token = navToken
                     chatWv.onResume()
                     chatWv.resumeTimers()
-                    startWebModeExtract(token, useSaved = false)
+                    startWebModeExtract(token, useSaved = false, realtimeViewport = true)
                 }
                 // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
                 // Keep the DOM probe light enough that it does not compete with touch scrolling.
@@ -4657,17 +4657,26 @@ return t.length>=40?'TXT:'+t:'';
      */
     private var deepSeekLastFailToastAtMs = 0L
 
-    private fun startWebModeExtract(token: Int, useSaved: Boolean = false) {
+    private fun startWebModeExtract(token: Int, useSaved: Boolean = false, realtimeViewport: Boolean = false) {
         // In real-time mode the ahead worker has its own low-priority executor and does not scroll
         // the page. Let it finish caching upcoming panels while the visible panel is scanned and
         // translated; cancelling it on every viewport change made the 9-panel read-ahead starve.
         // For a manual/full-chapter extraction, stop read-ahead so foreground extraction gets priority.
-        if (!DeepSeekRealtimeTranslation.isEnabled(this)) {
+        if (!realtimeViewport) {
             aheadOcrHandle?.cancel()
             aheadOcrHandle = null
             aheadOcrSeq++
             aheadOcrStage = ""
             aheadOcrPct = -1
+            // Full-chapter extraction owns the foreground; don't race the realtime batch worker.
+            cancelRealtimeAheadWorker(requeue = false)
+            rtAheadTranslationQueue.clear()
+            rtAheadTranslationQueuedIds.clear()
+            rtAheadTranslationTasksByJobKey.clear()
+            rtAheadHold.clear()
+            rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
+            rtAheadHoldFlushRunnable = null
+            rtAheadHoldSince = 0L
         }
         val jobSeq = ++webModeJobSerial
         webModeHandle?.cancel()
@@ -4678,7 +4687,7 @@ return t.length>=40?'TXT:'+t:'';
         webModeHandle = webMode.start(WebModeRequest(
             webView = novelWv,
             // DeepSeek real-time mode OCRs only the currently visible panel; never auto-scroll.
-            visibleOnly = DeepSeekRealtimeTranslation.isEnabled(this),
+            visibleOnly = realtimeViewport,
             force = Prefs.bool(this, "wmForce"),
             isValid = { token == navToken && jobSeq == webModeJobSerial },
             onProgress = { stage, pct ->
@@ -4700,7 +4709,7 @@ return t.length>=40?'TXT:'+t:'';
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                             deepSeekFailStreak = 0
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
-                            if (DeepSeekRealtimeTranslation.isEnabled(this)) {
+                            if (realtimeViewport) {
                                 // OCR is complete; keep the status light pink while the chatbot handles the text.
                                 webModeStage = "Sending to chatbot"
                                 val scanLayout = WebModeLayoutStore.getScan(out.chapter.url)
@@ -4796,14 +4805,13 @@ return t.length>=40?'TXT:'+t:'';
                                     toast("⚠ ${out.failedPanels} panel(s) could not be read; the rest were kept")
                                 handleChapter(out.chapter, useSavedTranslation = useSaved)
                             }
-                            // If this visible batch was already translated or returned no new bubbles,
-                            // resume queued future-panel translations rather than waiting for another tap.
-                            handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
+                            // Only realtime viewport scans may resume the ahead-translation queue.
+                            if (realtimeViewport) handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
                         }
                         is WebModeOutcome.Failure -> {
                             updateProgressUi()
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
-                            if (DeepSeekRealtimeTranslation.isEnabled(this) &&
+                            if (realtimeViewport &&
                                 out.error == WebModeError.NO_IMAGES) {
                                 // Text-only chapters do not produce image OCR. Retry the normal extractor
                                 // briefly while the reader settles, then hash the extracted source so it
@@ -4835,7 +4843,7 @@ return t.length>=40?'TXT:'+t:'';
                                     }
                                 }
                                 fallbackText(0)
-                            } else if (DeepSeekRealtimeTranslation.isEnabled(this) &&
+                            } else if (realtimeViewport &&
                                 out.error != WebModeError.NAVIGATION_INVALIDATED) {
                                 // Repeated OCR-failure toasts are rate-limited (one per 15 s) so the reason is visible.
                                 val failNow = System.currentTimeMillis()
