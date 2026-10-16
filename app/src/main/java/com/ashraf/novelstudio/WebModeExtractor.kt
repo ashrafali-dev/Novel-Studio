@@ -1563,9 +1563,17 @@ function cands(sc, includeBackgrounds){
     var svgInside=!!(sc&&sc.contains(xe));var xt=svgInside?(xr.top-sr.top+sc.scrollTop):(xr.top+wy);
     out.push({s:xs,t:Math.round(xt),l:Math.round(xr.left),w:Math.round(xr.width),h:Math.round(xr.height),d:1,fw:xr.width,fh:xr.height,vl:xr.left,vt:xr.top,vb:xr.bottom});
   }
-  // Some readers mix normal IMG panels with CSS-background panels. Keep the bounded,
-  // rate-limited background sweep even when ordinary images were found.
-  if(includeBackgrounds!==false){
+  // Some readers mix normal IMG panels with CSS-background panels. Rate-limit the expensive
+  // style sweep for callers that do not specify a mode; full-chapter final collection opts in.
+  var doBackgrounds=includeBackgrounds;
+  if(doBackgrounds===undefined){
+    var bgNow=Date.now();
+    doBackgrounds=bgNow-(window.__nsWmLastBgProbeAt||0)>=1200;
+    if(doBackgrounds)window.__nsWmLastBgProbeAt=bgNow;
+  }else if(doBackgrounds){
+    window.__nsWmLastBgProbeAt=Date.now();
+  }
+  if(doBackgrounds===true){
     // Keep the CSS/canvas fallback bounded; the caller rate-limits this DOM/style sweep.
     var els=allNodes(4000);
     for(var j=0;j<els.length;j++){
@@ -1720,7 +1728,7 @@ return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,
 """
 
         private const val JS_COLLECT = """
-var sc=scroller(),c=cands(sc);
+var sc=scroller(),c=cands(sc,true);
 function q(s){var e=document.querySelector(s);return e?(e.textContent||'').trim():'';}
 function link(kind){
   var re=kind==='next'?/next|\u4e0b\u4e00|\ub2e4\uc74c|\u6b21\u306e|\u6b21\u3078|\u6b21\u7ae0/i:/prev(?!iew)|\u4e0a\u4e00|\uc774\uc804|\u524d\u306e|\u524d\u3078|\u524d\u7ae0/i;
