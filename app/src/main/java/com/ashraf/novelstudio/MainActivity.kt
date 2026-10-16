@@ -980,14 +980,41 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val parts = sent.substring(3).split(":")
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                handler.postDelayed({
-                    pollRealtimeAheadTranslation(
-                        seq, task, jobKey, worker, n0, baseLen,
-                        System.currentTimeMillis(), 0, 0, false, -1
-                    )
-                }, RealtimeCompletionPolicy.firstPollDelayMs(this))
+                awaitRealtimeAheadSend(seq, task, jobKey, worker, n0, baseLen, 0)
             }
             return
+        }
+    }
+
+    private fun awaitRealtimeAheadSend(
+        seq: Int,
+        task: RtAheadTranslationTask,
+        jobKey: String,
+        worker: WebView,
+        n0: Int,
+        baseLen: Int,
+        attempt: Int
+    ) {
+        if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy || rtAheadWorkerJobKey != jobKey) return
+        worker.evaluateJavascript(Js.sendState()) { raw ->
+            if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy || rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
+            val state = decode(raw).substringBefore("|").trim()
+            when {
+                state.startsWith("sent:") -> {
+                    handler.postDelayed({
+                        pollRealtimeAheadTranslation(
+                            seq, task, jobKey, worker, n0, baseLen,
+                            System.currentTimeMillis(), 0, 0, false, -1,
+                            pollDelayMs = 0L
+                        )
+                    }, RealtimeCompletionPolicy.firstPollDelayMs(this))
+                }
+                state == "failed" -> failRealtimeAheadTranslation(seq, task, jobKey)
+                attempt < 150 -> handler.postDelayed({
+                    awaitRealtimeAheadSend(seq, task, jobKey, worker, n0, baseLen, attempt + 1)
+                }, 200L)
+                else -> failRealtimeAheadTranslation(seq, task, jobKey)
+            }
         }
     }
 
@@ -1762,9 +1789,18 @@ return t.length>=40?'TXT:'+t:'';
         text: String,
         doSend: Boolean,
         isValid: () -> Boolean,
+        allowDuringTranslation: Boolean = false,
         onResult: (String?) -> Unit
     ) {
         if (!isValid()) return
+        // The foreground translation owns the visible composer through the end of its reply.
+        // Other prompts must wait instead of replacing a live translation.
+        if (doSend && !allowDuringTranslation && (running != null || queue.isNotEmpty())) {
+            handler.postDelayed({
+                sendChatRequest(text, true, isValid, allowDuringTranslation) { result -> onResult(result) }
+            }, 500L)
+            return
+        }
         // Pasting without pressing Send is not a chatbot request.
         if (!doSend) {
             chatWv.evaluateJavascript(Js.send(text, false)) { raw -> onResult(raw) }
@@ -1774,7 +1810,9 @@ return t.length>=40?'TXT:'+t:'';
         val waitMs = nextChatbotRequestAtMs - now
         if (waitMs > 0L) {
             // Re-check at dispatch time; another send or a completed response may extend the cooldown.
-            handler.postDelayed({ sendChatRequest(text, true, isValid, onResult) }, waitMs)
+            handler.postDelayed({
+                sendChatRequest(text, true, isValid, allowDuringTranslation) { result -> onResult(result) }
+            }, waitMs)
             return
         }
         if (chatRolloverDue()) {
@@ -6137,7 +6175,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
                 markerInstruction + "\n\n" + imageRules + marked
         }
-        sendChatRequest(full, true, { tok == runToken }) { raw ->
+        sendChatRequest(full, true, { tok == runToken }, allowDuringTranslation = true) { raw ->
             if (tok != runToken) return@sendChatRequest
             val r = decode(raw)
             if (r.startsWith("ok:")) {
