@@ -22,7 +22,7 @@ function __prof(){var h=location.hostname;for(var k in __P){if(h===k||h.endsWith
 function __asst(p){var s=['[data-message-author-role="assistant"]','[data-message-role="assistant"]','[data-message-author="assistant"]','[data-role="assistant"]','article[data-turn="assistant"]','section[data-turn="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn',p.a,'[data-testid*="assistant" i]','model-response','.font-claude-message','.ds-markdown','message-content','[class*="response-content" i]','[class*="assistant-message" i]','[class*="assistant" i]'].filter(Boolean).join(',');var l=[].slice.call(document.querySelectorAll(s));return l.filter(function(e){var r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();return r.width>0&&r.height>0&&tx.length>0&&!l.some(function(o){return o!==e&&o.contains(e);});});}
 function __reply(p){var l=__asst(p);if(l.length){var z=l[l.length-1];var inner=z.querySelector&&z.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]');return inner||z;}var s=['article[data-turn="assistant"]','section[data-turn="assistant"]','[data-message-role="assistant"]','[data-testid^="conversation-turn-"][data-turn="assistant"]','[data-testid^="conversation-turn-"]:has([data-message-role="assistant"])','.agent-turn','.markdown','.prose','.ds-markdown','model-response','message-content','.font-claude-message','[class*="response-content" i]','[class*="markdown" i]'];var c=[];for(var i=0;i<s.length;i++){var a=[].slice.call(document.querySelectorAll(s[i]));for(var j=0;j<a.length;j++){var e=a[j],r=e.getBoundingClientRect(),tx=(e.innerText||e.textContent||'').trim();if(r.width>0&&r.height>0&&tx.length>=30&&!c.some(function(o){return o!==e&&o.contains(e);}))c.push(e);}}if(!c.length)return null;c.sort(function(a,b){return a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1;});return c[c.length-1];}
 function __stream(p){
- if(p.stop){try{if(document.querySelector(p.stop))return 1;}catch(e){}}
+ if(p.stop){try{var ss=[].slice.call(document.querySelectorAll(p.stop));for(var si=0;si<ss.length;si++){if(__vis(ss[si]))return 1;}}catch(e){}}
  // Claude can expose a textual thinking/responding status without a reliable stop button.
  if(/claude\.ai$/i.test(location.hostname)){
   var tail=(document.body.innerText||'').slice(-6000);
@@ -137,7 +137,7 @@ function __findSend(p,box,snap){
  }
  return null;
 }
-function __press(b){var ev=['pointerdown','mousedown','pointerup','mouseup','click'];try{for(var i=0;i<ev.length;i++){var C=ev[i].indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;b.dispatchEvent(new C(ev[i],{bubbles:true,cancelable:true,view:window}));}}catch(e){try{b.click();}catch(x){}}}
+function __press(b){try{if(!b||!b.isConnected||!__ok(b))return false;b.focus();b.click();return true;}catch(e){try{b.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return true;}catch(x){return false;}}}
 function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
 
@@ -199,7 +199,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       var r=boxText();
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
-    function keyEnter(){box.focus();var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
+    function keyEnter(){box.focus();try{var f=box.closest('form');if(f&&typeof f.requestSubmit==='function'){f.requestSubmit();return;}}catch(e){}var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
     var started=Date.now();
     var lastReadyBtn=null,stableReady=0;
     function confirmSend(method){
@@ -245,7 +245,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       }
     }
     // New/rolled-over chatbot threads need a little time for the composer and send control to settle.
-    setTimeout(waitUntilReady,480);
+    setTimeout(waitUntilReady,500);
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
@@ -254,6 +254,16 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     // type the text into the chat box (and press send if asked). Returns "ok:<assistant message count>" or "nobox"
     fun send(text: String, doSend: Boolean): String =
         run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
+
+    /** Send status plus elapsed milliseconds, so a queued job can wait for a just-submitted message. */
+    fun sendState(): String = run(
+        "(function(){var t=Number(window.__nsSentAt||0);return String(window.__nsSendState||'idle')+'|'+(t?Date.now()-t:-1);})()"
+    )
+
+    /** Clear only the send state after a reply is fully consumed; keep timestamps for readLen fallbacks. */
+    fun clearSendState(): String = run(
+        "(function(){window.__nsSendState='idle';return 'ok';})()"
+    )
 
     /** Returns 1 only after a live, visible composer exists; used before rollover/paste. */
     fun composerReady(): String = run(
