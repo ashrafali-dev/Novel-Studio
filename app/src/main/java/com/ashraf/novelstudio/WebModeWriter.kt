@@ -642,6 +642,15 @@ internal object WebModeWriter {
      */
     fun bubbleScript(layout: WebModeLayout, translated: List<String?>, font: String, pageId: String): String {
         val arr = JSONArray()
+        // The cleaner currently masks all confidently detected flat text regions in a source image.
+        // Only show that replacement if every flat text region from the same image has a translation;
+        // otherwise the original <img> remains visible so untranslated text cannot silently disappear.
+        val canShowCleanImage = layout.bubbles.withIndex()
+            .groupBy { WebModeLogic.normalizeUrl(it.value.src) }
+            .mapValues { (_, group) ->
+                group.filter { it.value.sourceText.isNotBlank() && !it.value.soft }
+                    .all { (index, _) -> !translated.getOrNull(index).isNullOrBlank() }
+            }
         for ((i, b) in layout.bubbles.withIndex()) {
             val t = WmSfx.fix(translated.getOrNull(i)?.trim().orEmpty())
             if (t.isEmpty()) continue
@@ -651,7 +660,8 @@ internal object WebModeWriter {
                 .put("a", r5(b.angle)).put("f", r5(b.font))
                 .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
                 // Transparent translations are safe only for the flat regions the cleaner can handle.
-                .put("cl", if (!b.soft) WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
+                .put("cl", if (!b.soft && canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
+                    WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
         return BUBBLES
