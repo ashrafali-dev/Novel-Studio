@@ -488,10 +488,9 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Hand each panel to the translation queue the moment its OCR is done, instead of
-                    // waiting for the whole read-ahead round: translation starts earlier and the queue
-                    // packs the bubbles into batches.
-                    queueRealtimeAheadTranslations(novelWv.url.orEmpty(), panels)
+                    // Collect the complete read-ahead window first. Do not submit a partial request
+                    // for each finished image: those small overlapping requests caused duplicate/too-small
+                    // chatbot messages and left later panels waiting in separate batches.
                 }
             },
             onAheadDone = {
@@ -500,8 +499,11 @@ class MainActivity : Activity() {
                     aheadOcrStage = ""
                     aheadOcrPct = -1
                     if (token == navToken) {
-                        // Panels were already queued one by one; this only nudges held-back bubbles.
-                        queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList())
+                        // One ordered batch from all successfully OCRed panels in this 9–10 panel window.
+                        queueRealtimeAheadTranslations(
+                            novelWv.url.orEmpty(),
+                            collectedPanels.values.sortedBy { it.top }
+                        )
                     }
                     collectedPanels.clear()
                 }
@@ -655,17 +657,16 @@ class MainActivity : Activity() {
         }
         if (batch.isEmpty()) return
 
-        // Several small requests instead of one big one: the nearest panels are translated (and ready)
-        // first, and the chatbot starts on the next chunk as soon as it is free. 3-15 bubbles per request
-        // (Prefs "rtAheadBatch", default 10). A lone trailing bubble joins the previous chunk.
-        val chunkSize = (Prefs.get(this, "rtAheadBatch", "10").toIntOrNull() ?: 10).coerceIn(5, 15)
+        // Prefer one complete request for the whole ahead window. A 10-panel comic usually fits in
+        // one 30-bubble request; only unusually dialogue-heavy windows are split into bounded chunks.
+        val chunkSize = (Prefs.get(this, "rtAheadBatch", "30").toIntOrNull() ?: 30).coerceIn(15, 40)
         val chunks = ArrayList<MutableList<Int>>()
         var i = 0
         while (i < batch.size) {
             chunks.add((i until minOf(i + chunkSize, batch.size)).toMutableList())
             i += chunkSize
         }
-        val minChunk = minOf(5, chunkSize)
+        val minChunk = minOf(10, chunkSize)
         if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
             if (!force) {
                 // Too small to be worth a request of its own: hold it for the next OCR round.
