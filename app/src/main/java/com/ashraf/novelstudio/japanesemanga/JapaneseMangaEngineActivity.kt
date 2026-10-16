@@ -365,12 +365,12 @@ class JapaneseMangaEngineActivity : Activity() {
             try {
                 val localPath = Uri.parse(panel.localUrl).path.orEmpty().removePrefix("/manga-engine/")
                 val originalPath = localPath.removeSuffix(".jpg") + ".original"
+                // Never substitute the recompressed OCR JPEG into the page; if original retention failed,
+                // simply skip cleaning for this panel.
                 val file = manager.resolve(originalPath)?.takeIf { it.isFile }
-                    ?: manager.resolve(localPath)
-                if (file != null && file.isFile && file.length() <= MAX_IMAGE_BYTES) {
+                if (file != null && file.length() <= MAX_IMAGE_BYTES) {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFile(file.absolutePath, bounds)
-                    // Prefer original bytes so the cleaner layer never replaces art with a recompressed OCR JPEG.
                     if (bounds.outWidth == panel.sourceWidth && bounds.outHeight == panel.sourceHeight &&
                         bounds.outWidth == w && bounds.outHeight == h) {
                         WebModeTextRemover.cleanAndCache(this@JapaneseMangaEngineActivity,
