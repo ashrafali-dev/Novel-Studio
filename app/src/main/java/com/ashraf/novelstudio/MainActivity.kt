@@ -29,6 +29,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
+import android.util.Log
 import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
@@ -1224,11 +1225,6 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 return
             }
             val pageKeyNow = cleanUrl(url)
-            if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
-                deepSeekStallRecoveryUrl = pageKeyNow
-                deepSeekStallRecoveryCount = 0
-                deepSeekStallBlockedSignature = ""
-            }
             // Normal realtime work advances in seconds. If no stage update arrives for 25 s,
             // invalidate stale job state so the app can recover without being force-closed.
             val monotonicNow = android.os.SystemClock.elapsedRealtime()
@@ -1261,6 +1257,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast("⚠️ OCR একই প্যানেলে আটকে আছে; বারবার retry বন্ধ করেছি। স্ক্রল বা reload করলে আবার চেষ্টা করবে।")
                 }
             }
+            if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
                 aheadOcrHandle?.cancel()
                 aheadOcrHandle = null
                 aheadOcrSeq++
