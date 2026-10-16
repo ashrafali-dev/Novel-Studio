@@ -114,7 +114,7 @@ internal class WebModeRequest(
 internal class WebModeExtractor(
     private val handler: Handler,
     private val userAgent: String,
-    private val engine: OcrEngine = MlKitOcrEngine()
+    private val engine: OcrEngine = RoutingOcrEngine()
 ) {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "ns-webmode") }
     // Read-ahead (real-time mode): its own low-priority thread, so it never queues in front of the job
@@ -943,6 +943,7 @@ internal class WebModeExtractor(
             fastMode: Boolean = false, crop: WebModeOcrRegion? = null,
             cropFallback: Boolean = false
         ): PanelOcr? {
+            com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.init(wv.context)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth

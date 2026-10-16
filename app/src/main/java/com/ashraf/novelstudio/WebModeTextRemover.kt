@@ -84,9 +84,11 @@ internal object WebModeTextRemover {
 
                 val fontPx = (bubble.font * width).takeIf { it.isFinite() && it > 0f }
                     ?.coerceIn(3f, 140f) ?: max(3f, min(rw, rh).toFloat() * 0.65f)
-                val maxComponentW = max(8, (fontPx * 5.2f).toInt())
-                val maxComponentH = max(8, (fontPx * 3.6f).toInt())
-                val maxComponentPixels = max(18, (fontPx * fontPx * 5.8f + fontPx * 7f).toInt())
+                // Dense/bold CJK glyphs (and vertical columns) often touch, so a "component" can be several
+                // glyphs long. Allow that, and protect bubble outlines by the border-contact rule below.
+                val maxComponentW = max(8, (fontPx * 6.5f).toInt())
+                val maxComponentH = max(8, (fontPx * 6.5f).toInt())
+                val maxComponentPixels = max(18, (fontPx * fontPx * 9f + fontPx * 10f).toInt())
 
                 val regionCount = regionSize.toInt()
                 val candidate = ByteArray(regionCount)
@@ -135,6 +137,10 @@ internal object WebModeTextRemover {
                     }
                     val cw = maxX - minX + 1
                     val ch = maxY - minY + 1
+                    // A big shape that reaches two sides of the region is the bubble outline, not lettering.
+                    val touches = (if (minX == 0) 1 else 0) + (if (maxX == rw - 1) 1 else 0) +
+                        (if (minY == 0) 1 else 0) + (if (maxY == rh - 1) 1 else 0)
+                    if (touches >= 2 && (cw > fontPx * 2.2f || ch > fontPx * 2.2f)) continue
                     // Large lines, bubble contours and art strokes are ambiguous: keep them.
                     if (componentPixels < max(3, (fontPx * 0.06f).toInt()) ||
                         cw > maxComponentW || ch > maxComponentH ||
@@ -151,12 +157,34 @@ internal object WebModeTextRemover {
                 // The connected-component/size checks above remain the stronger art-protection filters.
                 if (selectedCount < 4 || selectedCount > regionCount * 0.5f) continue
 
+                // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
+                // the core pixels, fall outside the strict candidate test, and used to stay as a ghost of the old
+                // text behind the translation. Only pixels that differ from the paper colour are taken.
+                val grow = (fontPx * 0.07f).toInt().coerceIn(1, 3)
+                val mask = selected.copyOf()
+                for (ry in 0 until rh) {
+                    for (rx in 0 until rw) {
+                        if (selected[ry * rw + rx].toInt() == 0) continue
+                        for (dy in -grow..grow) {
+                            val ny = ry + dy
+                            if (ny < 0 || ny >= rh) continue
+                            for (dx in -grow..grow) {
+                                val nx = rx + dx
+                                if (nx < 0 || nx >= rw) continue
+                                val ni = ny * rw + nx
+                                if (mask[ni].toInt() == 0 &&
+                                    distance(original[(y0 + ny) * width + x0 + nx], bg) >= 10f) mask[ni] = 1
+                            }
+                        }
+                    }
+                }
+
                 // Fill only selected glyph pixels from the nearest unmasked pixels. On flat speech-bubble
                 // backgrounds this retains the exact local paper/colour instead of repainting a big box.
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
                         val at = ry * rw + rx
-                        if (selected[at].toInt() == 0) continue
+                        if (mask[at].toInt() == 0) continue
                         var sampleN = 0
                         var sumR = 0; var sumG = 0; var sumB = 0
                         var radius = 1
@@ -167,7 +195,7 @@ internal object WebModeTextRemover {
                                     val nx = rx + dx; val ny = ry + dy
                                     if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) continue
                                     val ni = ny * rw + nx
-                                    if (selected[ni].toInt() != 0) continue
+                                    if (mask[ni].toInt() != 0) continue
                                     val p = original[(y0 + ny) * width + x0 + nx]
                                     if (distance(p, bg) > 72f) continue
                                     sumR += red(p); sumG += green(p); sumB += blue(p); sampleN++
