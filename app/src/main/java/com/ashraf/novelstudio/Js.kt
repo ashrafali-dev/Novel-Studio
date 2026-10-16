@@ -101,11 +101,42 @@ function __ok(b){return __vis(b)&&!b.disabled&&b.getAttribute('aria-disabled')!=
 function __ctls(box){var out=[],seen=new Set(),c=box.parentElement,prev=[];for(var up=0;c&&up<7;up++,c=c.parentElement){var l=[].slice.call(c.querySelectorAll('button,[role="button"]'));if(l.length>14)break;prev=l;}prev.forEach(function(x){if(!seen.has(x)){seen.add(x);out.push(x);}});return out;}
 function __snap(box){var m=new Map();__ctls(box).forEach(function(b){m.set(b,__ok(b));});return m;}
 function __diffSend(box,snap){var cand=__ctls(box).filter(function(b){if(!__ok(b)||b.querySelector('input[type="file"]'))return false;var was=snap&&snap.get(b);return was===undefined||was===false;});return cand.length?cand[cand.length-1]:null;}
-function __findSend(p,box,snap){var sels=[];if(p.send)sels.push(p.send);for(var i=0;i<sels.length;i++){var l=[];try{l=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}for(var j=0;j<l.length;j++){if(__ok(l[j]))return l[j];}}
+function __findSend(p,box,snap){
+ var sels=[];
+ if(p.send)sels.push(p.send);
+ sels.push('button[data-testid*="send" i]','button[aria-label*="send" i]','[role="button"][aria-label*="send" i]','button[type="submit"]');
+ var all=[],seen=new Set();
+ for(var i=0;i<sels.length;i++){
+  var l=[];try{l=[].slice.call(document.querySelectorAll(sels[i]));}catch(e){}
+  for(var j=0;j<l.length;j++){if(__ok(l[j])&&!seen.has(l[j])){seen.add(l[j]);all.push(l[j]);}}
+ }
+ // Some chat pages retain another visible composer (or toolbar). Prefer the send control
+ // physically associated with this exact textbox, not merely the first matching button.
+ function score(b){
+  var br=b.getBoundingClientRect(),xr=box.getBoundingClientRect();
+  var q=Math.abs((br.left+br.width/2)-(xr.left+xr.width/2))+
+        1.15*Math.abs((br.top+br.height/2)-(xr.top+xr.height/2));
+  try{var f=box.closest('form');if(f&&f.contains(b))q-=10000;}catch(e){}
+  try{var bf=b.closest('form');if(bf&&bf.contains(box))q-=10000;}catch(e){}
+  return q;
+ }
+ if(all.length){all.sort(function(a,b){return score(a)-score(b);});return all[0];}
+ // Last-resort: look for a newly enabled local control (useful for providers with icon-only send buttons).
  var d=__diffSend(box,snap);if(d)return d;
- var g=['button[data-testid*="send" i]','button[aria-label*="send" i]','[role="button"][aria-label*="send" i]','button[type="submit"]'];for(var k=0;k<g.length;k++){var m=[].slice.call(document.querySelectorAll(g[k]));for(var n=0;n<m.length;n++){if(__ok(m[n]))return m[n];}}
- if(/deepseek/i.test(location.hostname)){var c=box.parentElement;for(var up=0;c&&up<7;up++,c=c.parentElement){var b=[].slice.call(c.querySelectorAll('button,[role="button"]')).filter(function(x){return __ok(x)&&!(x.innerText||'').trim()&&!x.querySelector('input[type="file"]')&&(box.compareDocumentPosition(x)&Node.DOCUMENT_POSITION_FOLLOWING);});if(b.length)return b[b.length-1];}}
- return null;}
+ if(/deepseek/i.test(location.hostname)){
+  var c=box.parentElement;
+  for(var up=0;c&&up<7;up++,c=c.parentElement){
+   var b=[].slice.call(c.querySelectorAll('button,[role="button"]')).filter(function(x){
+    if(!__ok(x)||x.querySelector('input[type="file"]'))return false;
+    var r=x.getBoundingClientRect(),br=box.getBoundingClientRect();
+    return Math.abs((r.top+r.height/2)-(br.top+br.height/2))<160&&
+      (box.compareDocumentPosition(x)&Node.DOCUMENT_POSITION_FOLLOWING);
+   });
+   if(b.length){b.sort(function(a,b){return score(a)-score(b);});return b[0];}
+  }
+ }
+ return null;
+}
 function __press(b){var ev=['pointerdown','mousedown','pointerup','mouseup','click'];try{for(var i=0;i<ev.length;i++){var C=ev[i].indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;b.dispatchEvent(new C(ev[i],{bubbles:true,cancelable:true,view:window}));}}catch(e){try{b.click();}catch(x){}}}
 function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], div[contenteditable="plaintext-only"], [role="textbox"]')).filter(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;});if(!c.length)return null;c.sort(function(a,b){return b.getBoundingClientRect().bottom-a.getBoundingClientRect().bottom;});return c[0];}
 """
@@ -170,6 +201,7 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
     }
     function keyEnter(){box.focus();var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};box.dispatchEvent(new KeyboardEvent('keydown',o));box.dispatchEvent(new KeyboardEvent('keypress',o));box.dispatchEvent(new KeyboardEvent('keyup',o));}
     var started=Date.now();
+    var lastReadyBtn=null,stableReady=0;
     function confirmSend(method){
       setTimeout(function(){
         if(sentOk()){
@@ -188,11 +220,18 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
       var matches=composerMatches();
       var btn=matches?__findSend(p,box,snap):null;
       if(matches&&btn&&__ok(btn)){
-        __press(btn);
-        confirmSend('btn');
-        return;
+        if(lastReadyBtn===btn)stableReady++; else {lastReadyBtn=btn;stableReady=1;}
+        // Require the same enabled, visible button on two polls before clicking it.
+        if(stableReady>=2){
+          __press(btn);
+          confirmSend('btn');
+          return;
+        }
+      }else{
+        lastReadyBtn=null;
+        stableReady=0;
       }
-      if(Date.now()-started<1800){
+      if(Date.now()-started<2600){
         setTimeout(waitUntilReady,120);
         return;
       }
@@ -205,7 +244,8 @@ function __box(){var c=[].slice.call(document.querySelectorAll('#prompt-textarea
         window.__nsSendState='failed';
       }
     }
-    setTimeout(waitUntilReady,300);
+    // New/rolled-over chatbot threads need a little time for the composer and send control to settle.
+    setTimeout(waitUntilReady,480);
   }
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)

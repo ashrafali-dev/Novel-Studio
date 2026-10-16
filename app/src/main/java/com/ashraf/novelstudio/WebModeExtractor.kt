@@ -96,7 +96,13 @@ internal class WebModeRequest(
     /** When set, ignore OCR caches and re-read only this source image. */
     val forceOcrSrc: String? = null,
     /** Normalized rectangle to OCR within forceOcrSrc. */
-    val forceOcrRegion: WebModeOcrRegion? = null
+    val forceOcrRegion: WebModeOcrRegion? = null,
+    /**
+     * Real-time mode: inventory all image URLs currently present in the DOM (up to the page's
+     * bounded candidate limit), then process only the next ordered batch. Images not in the DOM
+     * yet, or whose URL download/OCR fails, are left to the existing viewport OCR fallback.
+     */
+    val fullChapterLinks: Boolean = false
 )
 
 /**
@@ -259,8 +265,14 @@ internal class WebModeExtractor(
                 // Look at up to 3x the batch size below the screen; the first aheadN panels that are still
                 // undone are read. As panels finish, the window moves on by itself (it used to stop after
                 // the first N, until the reader scrolled).
-                val aheadWindow = (aheadN * 3).coerceAtMost(30)
-                val js = wrap(LIB + JS_COLLECT_AHEAD.replace("__N__", aheadWindow.toString()))
+                // Full-chapter link inventory is bounded at 600 candidates; OCR remains
+                // sequential and is still limited to aheadN images per batch.
+                val aheadWindow = if (req.fullChapterLinks) 600 else (aheadN * 3).coerceAtMost(30)
+                val js = wrap(
+                    LIB + JS_COLLECT_AHEAD
+                        .replace("__N__", aheadWindow.toString())
+                        .replace("__ALL__", req.fullChapterLinks.toString())
+                )
                 wv.evaluateJavascript(js) { raw ->
                     if (!alive()) { aheadFinished(); return@evaluateJavascript }
                     val o = parseJson(raw)
@@ -277,6 +289,7 @@ internal class WebModeExtractor(
                         if (aheadDone.contains(nk) || aheadBlank.contains(nk)) continue
                         refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
                     }
+                    if (req.fullChapterLinks) refs.sortBy { it.top }
                     while (refs.size > aheadN) refs.removeAt(refs.size - 1)
                     if (refs.isEmpty()) { aheadFinished(); return@evaluateJavascript }
                     aheadWorker.execute {
@@ -290,7 +303,9 @@ internal class WebModeExtractor(
 
         private fun processAhead(refs: List<PanelRef>, pageUrl: String, lang: String) {
             val script = ScriptState(WebModeLogic.pickScript(lang, pageUrl))
-            if (aheadDone.size > 400) { aheadDone.clear(); aheadBlank.clear(); aheadFails.clear() }
+            // Full-chapter inventory may legitimately contain hundreds of panels. Do not
+            // reset its seen-set midway through the chapter or the batcher would start from panel 1 again.
+            if (aheadDone.size > 5000) { aheadDone.clear(); aheadBlank.clear(); aheadFails.clear() }
             val total = refs.size.coerceAtLeast(1)
             var cachedCount = 0
             fun emitReady(panel: WebModeAheadPanel) {
@@ -1626,8 +1641,10 @@ return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,
         private const val JS_COLLECT_AHEAD = """
 var sc=scroller(),c=cands(sc);
 var vpH=window.innerHeight||800;
-c=c.filter(function(p){return p.vt>=vpH-2;});
-c.sort(function(a,b){return a.vt-b.vt;});
+var all=__ALL__;
+if(!all)c=c.filter(function(p){return p.vt>=vpH-2;});
+// Use the page's document-space top for a stable reading order across batches.
+c.sort(function(a,b){return all?(a.t-b.t):(a.vt-b.vt);});
 return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:c.slice(0,__N__)});
 """
 

@@ -484,6 +484,7 @@ class MainActivity : Activity() {
             },
             onDone = { },
             ahead = n,
+            fullChapterLinks = true,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
                     for (panel in panels) {
