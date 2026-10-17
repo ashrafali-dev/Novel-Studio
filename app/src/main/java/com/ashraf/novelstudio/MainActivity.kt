@@ -452,8 +452,8 @@ class MainActivity : Activity() {
     private var rtVisibleOcrBatch: RtVisibleOcrBatch? = null
     private var rtVisibleOcrFlush: Runnable? = null
     private var rtVisibleOcrBatchSeq = 0
-    private val rtVisibleOcrBatchMin = 10
-    private val rtVisibleOcrIdleFlushMs = 1000L
+    private val rtVisibleOcrBatchMin = 4
+    private val rtVisibleOcrIdleFlushMs = 160L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
@@ -477,7 +477,7 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_PANEL_BATCH_SIZE = 10
+    private val REALTIME_AHEAD_MIN_BUBBLES = 10
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
@@ -485,11 +485,13 @@ class MainActivity : Activity() {
         if (n == 0) return
         val token = navToken
         val seq = ++aheadOcrSeq
-        // The OCR worker returns a completed image panel at a time. Batch bubble lines across panels,
-        // but start the chatbot as soon as 10+ bubbles are ready instead of waiting for all 10 images.
-        // A small remainder is flushed by queueRealtimeAheadTranslations after a short debounce.
-        // Treat ten image panels as one read-ahead unit, regardless of how many bubbles each contains.
+        // Keep collecting completed panels, but never wait for ten image downloads before translation.
+        // OCR bubbles are the useful unit here: a dialogue-heavy panel can fill a batch by itself,
+        // while quiet panels must not stall the first nearby text from being translated.
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
+        fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
+            panel.bubbles.count { it.sourceText.isNotBlank() }
+        }
         fun flushCollected() {
             if (collectedPanels.isEmpty()) return
             val ready = collectedPanels.values.sortedBy { it.top }
@@ -515,9 +517,9 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Once ten panels have OCR results, send that batch while the next OCR batch
-                    // can start as soon as this worker finishes. Panel count, not bubble count, controls it.
-                    if (collectedPanels.size >= REALTIME_AHEAD_PANEL_BATCH_SIZE) flushCollected()
+                    // Flush on ten recognized bubbles, without waiting for the remaining panel URLs.
+                    // WebModeExtractor continues scanning the read-ahead window after this callback.
+                    if (collectedBubbleCount() >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
                 }
             },
             onAheadDone = {
@@ -735,7 +737,7 @@ class MainActivity : Activity() {
         val batchTop = ArrayList<Int>()
         for (panel in panels.sortedBy { it.top }) {
             val ordered = panel.bubbles
-                .filter { it.sourceText.isNotBlank() }
+                .filter { it.sourceText.isNotBlank() && !isRealtimeUiChromeText(it.sourceText) }
                 .sortedWith(compareBy<WmBubble>({ it.cy }, { it.cx }))
             for (bubble in ordered) {
                 val cacheKey = rtAheadBubbleCacheKey(bubble)
@@ -987,9 +989,10 @@ A marker normally holds a WHOLE speech bubble (all its lines already joined): tr
 every word, and drop nothing. Only when a sentence clearly continues across consecutive markers
 (for example "...THE" / "HERO'S LIFE..."), read them together and translate each marker as only the
 part it carries.
-Website names, URLs and scan-group watermarks (anything like "something.com") are not dialogue:
-answer exactly ~ for them.
-If a marker is clearly meaningless OCR noise (random letters or symbols), answer exactly ~ for it.
+Website names, URLs, chatbot controls, app UI labels, and scan-group watermarks are not dialogue:
+keep their marker but leave the text after it empty.
+If a marker is meaningless OCR noise (random letters or symbols), keep the marker and leave its text empty.
+Never use "~", "-", or another placeholder to represent unreadable or non-dialogue text.
 Do not invent text. Keep each translation short enough to fit a speech bubble.
 """.trimIndent()
         // This is a separate chatbot page with no prior prompt in its conversation, so always include
@@ -4967,6 +4970,7 @@ return t.length>=40?'TXT:'+t:'';
                                     val usedTargets = ArrayList<RetrTarget>()
                                     synchronized(deepSeekInFlightTextHashes) {
                                         for (bubble in sourceBubbles) {
+                                            if (isRealtimeUiChromeText(bubble.sourceText)) continue
                                             val hash = WebModeLayout.fingerprint(bubble)
                                             if (hash in deepSeekInFlightTextHashes) continue
                                             // A bubble the reader long-pressed is sent again even though it was translated.
@@ -6148,7 +6152,12 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun stripInternalMarkers(text: String): String =
-        text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
+        text
+            // Never copy placeholder-only OCR replies such as "[001]~" to the reader or clipboard.
+            .replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*[~～]+\\s*$"), "")
+            .replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
 
     private fun splitInternalMarkedTranslation(text: String, preserveParagraphs: Boolean = false): List<String> {
         // Models sometimes keep [001][002] markers on the same physical line.
@@ -6319,9 +6328,10 @@ A marker normally holds a WHOLE speech bubble (all its lines already joined): tr
 every word, and drop nothing. Only when a sentence clearly continues across consecutive markers
 (for example "...THE" / "HERO'S LIFE..."), read them together and translate each marker as only the
 part it carries.
-Website names, URLs and scan-group watermarks (anything like "something.com") are not dialogue:
-answer exactly ~ for them.
-If a marker is clearly meaningless OCR noise (random letters or symbols), answer exactly ~ for it.
+Website names, URLs, chatbot controls, app UI labels, and scan-group watermarks are not dialogue:
+keep their marker but leave the text after it empty.
+If a marker is meaningless OCR noise (random letters or symbols), keep the marker and leave its text empty.
+Never use "~", "-", or another placeholder to represent unreadable or non-dialogue text.
 Do not invent text. Keep each translation short enough to fit a speech bubble.
 """.trimIndent() + "\n\n" else ""
         // Real-time OCR translation uses its own editable prompt.
@@ -6705,6 +6715,32 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
         !JapaneseMangaSession.isManaged(ch) &&
             DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
+
+    /**
+     * Safety net for a mis-cropped screenshot or reader UI rendered as image text.
+     * Filter exact UI labels or a cluster of multiple chatbot names; do not discard ordinary dialogue
+     * just because it happens to contain one of these names.
+     */
+    private fun isRealtimeUiChromeText(text: String): Boolean {
+        val normalized = text.lowercase()
+            .replace(Regex("\\[\\d{3,}\\]"), " ")
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim()
+        if (normalized.isBlank()) return true
+        val botNames = listOf("chatgpt", "claude", "deepseek", "gemini", "grok")
+        val botNameCount = botNames.count { name ->
+            Regex("(^|\\s)" + Regex.escape(name) + "($|\\s)").containsMatchIn(normalized)
+        }
+        if (botNameCount >= 2) return true
+        return normalized in setOf(
+            "chatgpt", "claude", "deepseek", "gemini", "grok",
+            "share", "share this", "just now", "copy", "regenerate", "retry",
+            "view original", "write a message", "write a message please",
+            "webtoon realtime", "haiku 5 5 low", "action completed or failed",
+            "please check the page and try again",
+            "শেয়ার করুন", "শেয়ার করুন", "একটি বার্তা লিখুন", "লিখুন"
+        )
+    }
 
     /** True only for an interactive OCR bubble batch, not a whole-chapter Web Mode scan. */
     private fun isRealtimeBubbleBatch(ch: Chapter): Boolean =

@@ -624,7 +624,7 @@ internal class WebModeExtractor(
         }
 
         /** Capture the visible WebView from the hardware-composited window surface. */
-        private fun captureByPixelCopy(): Bitmap? {
+        private fun captureByPixelCopy(allowWindowFallback: Boolean = true): Bitmap? {
             if (android.os.Build.VERSION.SDK_INT < 26) return null
             var act: android.app.Activity? = null
             var c: android.content.Context? = wv.context
@@ -707,15 +707,18 @@ internal class WebModeExtractor(
                                     latch.countDown()
                                 } else {
                                     tile.recycle()
-                                    Log.w(TAG, "PixelCopy WebView-crop failed/blank: result=$code; retrying whole window")
-                                    requestFullWindow()
+                                    Log.w(TAG, "PixelCopy WebView-crop failed/blank: result=$code")
+                                    // A full-window crop depends on native/window coordinates and can
+                                    // include the chatbot strip or system/app controls during split resize.
+                                    // Keep that fallback for manual full-page OCR only, never realtime OCR.
+                                    if (allowWindowFallback) requestFullWindow() else latch.countDown()
                                 }
                             }, handler
                         )
                     } catch (e: Throwable) {
                         tile.recycle()
-                        Log.w(TAG, "PixelCopy WebView-crop request failed: ${e.javaClass.simpleName}; retrying whole window")
-                        requestFullWindow()
+                        Log.w(TAG, "PixelCopy WebView-crop request failed: ${e.javaClass.simpleName}")
+                        if (allowWindowFallback) requestFullWindow() else latch.countDown()
                     }
                 } catch (e: Throwable) {
                     Log.w(TAG, "PixelCopy setup failed: ${e.javaClass.simpleName}")
@@ -730,7 +733,7 @@ internal class WebModeExtractor(
             val a = captureByDraw()
             if (a != null && !isBlank(a)) return a
             a?.recycle()
-            val b = captureByPixelCopy()
+            val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
             if (b != null && !isBlank(b)) return b
             b?.recycle()
             // Count only after both draw and PixelCopy (including full-window retry) failed.
