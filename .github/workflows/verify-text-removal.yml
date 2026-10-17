@@ -1,0 +1,35 @@
+name: Verify Web Mode text removal
+
+on:
+  push:
+    branches:
+      - fix/japanese-text-cleanup-box
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app/src/main/java/com/ashraf/novelstudio/WebMode*.kt"
+      - "app/build.gradle"
+      - "gradle/**"
+      - "gradlew"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Run unit tests
+        run: gradle testDebugUnitTest --no-daemon
+
+      - name: Compile debug APK
+        run: gradle assembleDebug --no-daemon
