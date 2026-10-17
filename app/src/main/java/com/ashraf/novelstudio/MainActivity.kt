@@ -7454,7 +7454,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Real-time Prompt", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
-            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
+            "🧠 OCR Engine Manager (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
