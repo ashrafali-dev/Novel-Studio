@@ -59,8 +59,15 @@
   }
 
   async function loadModels() {
+    // Initialize only the shared WASM runtime at page startup. Model files are optional and loaded
+    // lazily per engine, avoiding a slow failed request for absent Japanese weights.
     await ensureOrt();
-    // WASM is shared. Japanese weights are optional: Paddle-only installs must still be usable.
+    state.textContent = 'OCR runtime ready';
+    signalReady();
+  }
+
+  async function loadMangaModels() {
+    await ensureOrt();
     try {
       if (!mangaDetector) mangaDetector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
       if (!mangaRecognizer) mangaRecognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
@@ -73,9 +80,8 @@
       mangaDetector = null;
       mangaRecognizer = null;
       mangaDictionary = null;
-      state.textContent = 'OCR runtime ready; optional Japanese/Paddle models are not all installed.';
+      throw e;
     }
-    signalReady();
   }
 
   async function loadPaddleModels(language) {
@@ -284,9 +290,7 @@
     if(busy){bridge('onOcrError',id,'একটি OCR কাজ চলছে।');return;}
     busy=true;
     try{
-      await loadModels();
-      if(!mangaDetector||!mangaRecognizer||!mangaDictionary)throw new Error('Japanese Manga OCR model is not installed');
-      detector=mangaDetector;recognizer=mangaRecognizer;dictionary=mangaDictionary;
+      await loadMangaModels();
       const image=new Image();image.decoding='async';image.src=url;
       await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('Local panel image could not load'));});
       const boxes=await detect(image),regions=[];
