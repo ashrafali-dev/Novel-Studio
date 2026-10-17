@@ -483,6 +483,9 @@ class MainActivity : Activity() {
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
     private val REALTIME_AHEAD_MIN_BUBBLES = 10
+    // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
+    // the first usable panel arrives. Panels completed during that window are batched together.
+    private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 300L
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
@@ -490,18 +493,30 @@ class MainActivity : Activity() {
         if (n == 0) return
         val token = navToken
         val seq = ++aheadOcrSeq
-        // Keep collecting completed panels, but never wait for ten image downloads before translation.
-        // OCR bubbles are the useful unit here: a dialogue-heavy panel can fill a batch by itself,
-        // while quiet panels must not stall the first nearby text from being translated.
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
+        var collectedFlushRunnable: Runnable? = null
         fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
             panel.bubbles.count { it.sourceText.isNotBlank() }
         }
+        fun cancelCollectedFlush() {
+            collectedFlushRunnable?.let { handler.removeCallbacks(it) }
+            collectedFlushRunnable = null
+        }
         fun flushCollected() {
+            cancelCollectedFlush()
             if (collectedPanels.isEmpty()) return
             val ready = collectedPanels.values.sortedBy { it.top }
             collectedPanels.clear()
             queueRealtimeAheadTranslations(novelWv.url.orEmpty(), ready)
+        }
+        fun scheduleCollectedFlush() {
+            if (collectedPanels.isEmpty() || collectedFlushRunnable != null) return
+            val flush = Runnable {
+                collectedFlushRunnable = null
+                if (seq == aheadOcrSeq && token == navToken) flushCollected()
+            }
+            collectedFlushRunnable = flush
+            handler.postDelayed(flush, REALTIME_AHEAD_COLLECT_FLUSH_MS)
         }
         aheadOcrHandle = webMode.start(WebModeRequest(
             webView = novelWv,
@@ -523,9 +538,11 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Flush on ten recognized bubbles, without waiting for the remaining panel URLs.
-                    // WebModeExtractor continues scanning the read-ahead window after this callback.
-                    if (collectedBubbleCount() >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
+                    // Full batches go immediately; a smaller batch gets only one 300 ms chance
+                    // for more OCR results to join. Do not reset the timer on every slow panel.
+                    val bubblesReady = collectedBubbleCount()
+                    if (bubblesReady >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
+                    else if (bubblesReady > 0) scheduleCollectedFlush()
                 }
             },
             onAheadDone = {
@@ -1111,7 +1128,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 scheduleRealtimeAheadPump(900L)
                 return
             }
-            if (aheadChatRequestCount >= chatNewWindowEvery && aheadChatBaseUrl.startsWith("http", true)) {
+            if (autoFreshChatEnabled && aheadChatRequestCount >= chatNewWindowEvery && aheadChatBaseUrl.startsWith("http", true)) {
                 // Fresh chat window for the read-ahead worker; wait until its composer is really ready.
                 aheadChatRequestCount = 0
                 aheadChatReady = false
@@ -1943,23 +1960,37 @@ return t.length>=40?'TXT:'+t:'';
     // real-time OCR uses 0.8–1.4 s so upcoming panels can be pre-translated before the reader reaches them.
     // The gap applies after sends and completed replies; no delay is added once the gate has expired.
     private val chatbotRequestGapMs: Long
-        get() = if (DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
+        get() = (if (DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
             // Real-time batches contain multiple bubbles and use a separate read-ahead WebView.
             // Keep a brief randomized gap, not the multi-second normal-chapter pause.
             kotlin.random.Random.nextLong(800L, 1_401L)
         } else {
             kotlin.random.Random.nextLong(3_000L, 4_501L)
-        }
+        }) + chatExtraDelayMs
     private var nextChatbotRequestAtMs = 0L
 
-    // A long chatbot conversation gets slower and starts to forget the prompt, so after every
-    // chatNewWindowEvery requests a fresh chat window (the bot's base URL) is opened.
-    // Open a fresh chat after this many requests (Prefs "chatNewEvery", default 5). Applies to every chatbot.
+    // Automatic fresh-chat rollover is optional and OFF by default. The existing interval
+    // (Prefs "chatNewEvery", default 5) is preserved when enabled from the menu.
     private val chatNewWindowEvery: Int get() = (Prefs.get(this, "chatNewEvery", "5").toIntOrNull() ?: 5).coerceIn(2, 100)
+    private val autoFreshChatEnabled: Boolean get() = Prefs.bool(this, "autoNewChat", false)
+    private val chatExtraDelayMs: Long
+        get() = (Prefs.get(this, "chatExtraDelayMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 2_000L)
     private var chatRequestCount = 0          // visible chat WebView
     private var aheadChatRequestCount = 0     // hidden read-ahead chat WebView
     private var chatReloadPending: (() -> Unit)? = null
-    private fun chatRolloverDue() = chatRequestCount >= chatNewWindowEvery
+    private fun chatRolloverDue() = autoFreshChatEnabled && chatRequestCount >= chatNewWindowEvery
+
+    private fun menuAutoFreshChatLabel(): String =
+        "🔄 Auto new chat: " + if (autoFreshChatEnabled) "ON (every $chatNewWindowEvery requests)" else "OFF"
+
+    private fun menuExtraChatDelayLabel(): String =
+        "⏱ Extra request delay: " + when (chatExtraDelayMs) {
+            0L -> "OFF"
+            300L -> "+0.3 s"
+            600L -> "+0.6 s"
+            1_000L -> "+1.0 s"
+            else -> "+${chatExtraDelayMs} ms"
+        }
 
     /** Send through the shared rate gate so every selected chatbot follows the same spacing. */
     // Time of the last REAL finger touch on the chatbot pane. Automation (JS focus() while pasting the
@@ -7407,7 +7438,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Real-time Prompt", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
-            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel()
+            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
+            menuAutoFreshChatLabel(), menuExtraChatDelayLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -7415,11 +7447,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
+            39 to Ic.RELOAD, 40 to Ic.CLOCK
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40),
             "READER" to listOf(20, 23, 9, 37, 38),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35)
         )
@@ -7532,6 +7565,23 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         toast("🧽 Text Remover OFF — active cleaned overlay removed; original page remains intact.")
                     }
                     refresh(i, menuTextRemovalLabel())
+                }
+                39 -> {
+                    val on = !autoFreshChatEnabled
+                    Prefs.putBool(this, "autoNewChat", on)
+                    chatRequestCount = 0
+                    aheadChatRequestCount = 0
+                    refresh(i, menuAutoFreshChatLabel())
+                    toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
+                          else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                40 -> {
+                    val steps = longArrayOf(0L, 300L, 600L, 1_000L)
+                    val current = steps.indexOf(chatExtraDelayMs).let { if (it < 0) 0 else it }
+                    val next = steps[(current + 1) % steps.size]
+                    Prefs.put(this, "chatExtraDelayMs", next.toString())
+                    refresh(i, menuExtraChatDelayLabel())
+                    toast("⏱ Extra request delay: " + menuExtraChatDelayLabel().substringAfter(": "))
                 }
                 37 -> {
                     val sourceUrl = novelWv.url.orEmpty()
