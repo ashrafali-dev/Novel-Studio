@@ -112,7 +112,22 @@ internal object JapaneseMangaRuntime {
      * the bitmap that was scanned, divided by [Output.scale] when the picture had to be shrunk).
      * Throws on any failure so the caller can fall back to another engine.
      */
-    fun recognize(bitmap: Bitmap): Output {
+    fun recognize(bitmap: Bitmap): Output = recognizeWithJs(bitmap) { url, id ->
+        "window.runJapaneseMangaOcr(" + JSONObject.quote(url) + "," + JSONObject.quote(id) + ")"
+    }
+
+    /** Calls the multilingual Paddle OCR models through the same private WebView/WASM runtime. */
+    fun recognizePaddle(bitmap: Bitmap, language: String): Output {
+        require(language == "latin" || language == "chinese" || language == "korean") {
+            "Unsupported Paddle OCR language"
+        }
+        return recognizeWithJs(bitmap) { url, id ->
+            "window.runPaddleOcr(" + JSONObject.quote(url) + "," + JSONObject.quote(id) + "," +
+                JSONObject.quote(language) + ")"
+        }
+    }
+
+    private fun recognizeWithJs(bitmap: Bitmap, buildCall: (String, String) -> String): Output {
         val m = manager ?: throw IOException("manga runtime not initialised")
         return ocrLock.withLock {
             inFlight++
@@ -142,15 +157,14 @@ internal object JapaneseMangaRuntime {
                     FileOutputStream(file).use {
                         if (!work.compress(Bitmap.CompressFormat.JPEG, 92, it)) throw IOException("JPEG encode failed")
                     }
-                    val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
-                        "," + JSONObject.quote(id) + ")"
+                    val js = buildCall(INPUT_URL + id + ".jpg", id)
                     main.post { view?.evaluateJavascript(js, null) }
                     if (!pend.latch.await(OCR_TIMEOUT_S, TimeUnit.SECONDS)) {
-                        fail("manga OCR timeout")
-                        throw IOException("manga OCR timeout")
+                        fail("OCR timeout")
+                        throw IOException("OCR timeout")
                     }
                     pend.error?.let { throw IOException(it) }
-                    Output(pend.json ?: throw IOException("empty manga OCR result"), scale)
+                    Output(pend.json ?: throw IOException("empty OCR result"), scale)
                 } finally {
                     pending.remove(id)
                     file.delete()
