@@ -115,25 +115,17 @@ function __denyBtn(b){
 // Last-resort Send finder for sites whose Send button has no label (e.g. DeepSeek icon button):
 // 1) a control that became usable after the text was inserted, 2) the right-most usable control to the right of the editor's centre.
 function __guessSend(box,snap){
- if(!box||!box.isConnected)return null;
- var d=__diffSend(box,snap);if(d&&!__denyBtn(d))return d;
- var xr=box.getBoundingClientRect(),mid=xr.left+xr.width/2;
- var c=__ctls(box).filter(function(b){
-  if(!__ok(b)||b.querySelector('input[type="file"]')||__denyBtn(b))return false;
-  var r=b.getBoundingClientRect();
-  return r.left+r.width/2>mid&&r.width<=96&&r.height<=96;
- });
- if(!c.length)return null;
- c.sort(function(a,b){var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();return (rb.right+rb.bottom)-(ra.right+ra.bottom);});
- return c[0];
+ // Never infer Send from button position. On mobile chat composers the microphone,
+ // voice, and Send controls occupy the same location and can lack visible text.
+ // Only __findSend() may click a control with a positive Send/Submit identity.
+ return null;
 }
 function __pressFull(b){
  if(!b||!b.isConnected||!__ok(b))return false;
  try{b.scrollIntoView({block:'nearest'});}catch(e){}
  try{b.focus();}catch(e){}
- var r=b.getBoundingClientRect(),o={bubbles:true,cancelable:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2,button:0,pointerId:1,pointerType:'touch',isPrimary:true};
- try{['pointerdown','mousedown','pointerup','mouseup'].forEach(function(k){
-  var E=k.indexOf('pointer')===0&&window.PointerEvent?PointerEvent:MouseEvent;b.dispatchEvent(new E(k,o));});}catch(e){}
+ // A single semantic click avoids synthetic touch/mouse events being treated as
+ // a separate microphone/voice action by mobile composer controls.
  try{b.click();return true;}catch(e){return false;}
 }
 function __findSend(p,box,snap){
@@ -284,9 +276,9 @@ function __box(){
       // Fallback for editors where the browser editing command is unavailable.
       try{
         box.focus();
-        try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text.length>1000?null:text}));}catch(e){}
+        try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
         box.textContent=text;
-        try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+        try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}
         catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
         box.dispatchEvent(new Event('change',{bubbles:true}));
       }catch(e){}
@@ -308,7 +300,7 @@ function __box(){
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
     var started=Date.now();
-    var textRepairTried=false;
+    var textRepairAttempts=0;
     function keyEnter(){
       try{box.focus();}catch(e){}
       var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};
@@ -342,7 +334,7 @@ function __box(){
           var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
           var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
           setter.call(box,text);
-          try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+          try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}
           catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
           box.dispatchEvent(new Event('change',{bubbles:true}));
         }else{
@@ -353,9 +345,9 @@ function __box(){
             insertedAgain=document.execCommand('insertText',false,text)&&__nrm(boxText())===expected;
           }catch(e){}
           if(!insertedAgain){
-            try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text.length>1000?null:text}));}catch(e){}
+            try{box.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertText',data:text}));}catch(e){}
             box.textContent=text;
-            try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text.length>1000?null:text}));}
+            try{box.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));}
             catch(e){box.dispatchEvent(new Event('input',{bubbles:true}));}
             box.dispatchEvent(new Event('change',{bubbles:true}));
           }
@@ -368,18 +360,18 @@ function __box(){
       if(!box||!box.isConnected){
         var live=__box();
         if(live&&live.isConnected){box=live;snap=__snap(box);window.__nsSnap=snap;}
-        else if(Date.now()-started<3000){setTimeout(waitUntilReady,100);return;}
+        else if(Date.now()-started<7000){setTimeout(waitUntilReady,150);return;}
         else{window.__nsSendState='failed:composer-detached';return;}
       }
       // Hard gate: no send action until the full prompt is committed to the live editor.
       var matches=composerMatches();
       if(!matches){
-        if(!textRepairTried&&Date.now()-started>=650){
-          textRepairTried=true;
+        if(textRepairAttempts<3&&Date.now()-started>=650+textRepairAttempts*900){
+          textRepairAttempts++;
           repairComposerText();
-          setTimeout(waitUntilReady,250);
-        }else if(Date.now()-started<3000){
-          setTimeout(waitUntilReady,100);
+          setTimeout(waitUntilReady,300);
+        }else if(Date.now()-started<7000){
+          setTimeout(waitUntilReady,150);
         }else{
           window.__nsSendState='failed:text-not-committed';
         }

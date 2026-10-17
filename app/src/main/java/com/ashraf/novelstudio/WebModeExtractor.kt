@@ -765,7 +765,9 @@ internal class WebModeExtractor(
 
         private fun forceFail(e: WebModeError, msg: String = e.label) {
             evalWait(wrap(LIB + JS_RESTORE)) { null }
-            evalWait(wrap(JS_FORCE_SHOW)) { null }
+            // Visible-only recovery must not toggle the translation overlay. Hiding it
+            // for compositor capture caused the brief black flash during realtime OCR.
+            if (!req.visibleOnly) evalWait(wrap(JS_FORCE_SHOW)) { null }
             fail(e, msg)
         }
 
@@ -799,8 +801,9 @@ internal class WebModeExtractor(
                     "var sc=scroller(),c=cands(sc,true),vw="
                 )
             } else JS_FORCE_INFO
-            // the old translation overlay must not be in the picture
-            evalWait(wrap(JS_FORCE_HIDE)) { null }
+            // Hide the overlay only for full-chapter screenshot extraction. Realtime visible-only
+            // fallback leaves the reader DOM untouched to avoid on-screen flicker.
+            if (!req.visibleOnly) evalWait(wrap(JS_FORCE_HIDE)) { null }
             if (!req.visibleOnly) evalWait(wrap(LIB + JS_FORCE_TOP)) { null }
             var stable = 0
             var steps = 0
@@ -826,7 +829,7 @@ internal class WebModeExtractor(
                 steps++
             }
             evalWait(wrap(LIB + JS_RESTORE)) { null }
-            evalWait(wrap(JS_FORCE_SHOW)) { null }
+            if (!req.visibleOnly) evalWait(wrap(JS_FORCE_SHOW)) { null }
             if (!alive()) { fail(WebModeError.NAVIGATION_INVALIDATED); return }
 
             val panels = accs.values.sortedBy { it.top }
