@@ -455,9 +455,9 @@ class MainActivity : Activity() {
     // One request per SCREEN, not one per bubble: everything the scanner finds for the current viewport
     // is collected and sent together. A batch is flushed early only when it is already large; otherwise
     // it waits until the viewport OCR has gone quiet (and the chatbot is free).
-    private val rtVisibleOcrBatchMin = 14
-    private val rtVisibleOcrIdleFlushMs = 340L
-    private val rtVisibleOcrMaxHoldMs = 1600L
+    private val rtVisibleOcrBatchMin = 4
+    private val rtVisibleOcrIdleFlushMs = 1500L
+    private val rtVisibleOcrMaxHoldMs = 1800L
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -482,10 +482,10 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES = 10
+    private val REALTIME_AHEAD_MIN_BUBBLES = 4
     // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
     // the first usable panel arrives. Panels completed during that window are batched together.
-    private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 300L
+    private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 1800L
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
@@ -600,19 +600,29 @@ class MainActivity : Activity() {
             pending.hashes.add(fingerprint)
         }
 
-        rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
-        rtVisibleOcrFlush = null
+        // Flush at the target size, otherwise keep one deadline measured from the FIRST
+        // bubble in this batch. Do not restart the timer on every OCR result: doing so either
+        // starves the batch or repeatedly emits tiny one-bubble requests on slow pages.
         if (force || pending.bubbles.size >= rtVisibleOcrBatchMin) {
+            rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
+            rtVisibleOcrFlush = null
             flushRealtimeVisibleOcrBatch(token, page)
             return
         }
 
-        val seq = ++rtVisibleOcrBatchSeq
-        val flush = Runnable {
-            if (seq == rtVisibleOcrBatchSeq) flushRealtimeVisibleOcrBatch(token, page)
+        if (rtVisibleOcrFlush == null) {
+            val seq = ++rtVisibleOcrBatchSeq
+            val elapsedMs = (android.os.SystemClock.elapsedRealtime() - rtVisibleOcrFirstAtMs).coerceAtLeast(0L)
+            val delayMs = (rtVisibleOcrIdleFlushMs - elapsedMs).coerceAtLeast(0L)
+            val flush = Runnable {
+                if (seq == rtVisibleOcrBatchSeq) {
+                    rtVisibleOcrFlush = null
+                    flushRealtimeVisibleOcrBatch(token, page)
+                }
+            }
+            rtVisibleOcrFlush = flush
+            handler.postDelayed(flush, delayMs)
         }
-        rtVisibleOcrFlush = flush
-        handler.postDelayed(flush, rtVisibleOcrIdleFlushMs)
     }
 
     private fun flushRealtimeVisibleOcrBatch(expectedToken: Int? = null, expectedPage: String? = null) {
@@ -736,7 +746,7 @@ class MainActivity : Activity() {
     private var rtAheadHoldPage = ""
     private var rtAheadHoldFlushRunnable: Runnable? = null
     private var rtAheadHoldSince = 0L
-    private val rtAheadHoldFlushMs = 160L
+    private val rtAheadHoldFlushMs = 700L
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
@@ -837,7 +847,7 @@ class MainActivity : Activity() {
             chunks.add((i until minOf(i + chunkSize, batch.size)).toMutableList())
             i += chunkSize
         }
-        val minChunk = minOf(10, chunkSize)
+        val minChunk = minOf(4, chunkSize)
         if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
             if (!force) {
                 // Too small to be worth a request of its own: hold it for the next OCR round.
@@ -845,18 +855,20 @@ class MainActivity : Activity() {
                 for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
                 val nowMs = System.currentTimeMillis()
                 if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
-                // Give already-running nearby OCR a brief chance to join this request. Do not
-                // make real-time reading wait seconds for a full chunk; send the lines we have quickly.
-                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 450L - (nowMs - rtAheadHoldSince)))
-                rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
-                val flush = Runnable {
-                    rtAheadHoldFlushRunnable = null
-                    if (rtAheadHold.isNotEmpty()) {
-                        queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
+                // Keep ONE deadline from the first held bubble. Each later OCR result is allowed
+                // to join the same group; it must not reset the timer and flush a one-panel batch.
+                if (rtAheadHoldFlushRunnable == null) {
+                    val elapsedMs = (nowMs - rtAheadHoldSince).coerceAtLeast(0L)
+                    val delayMs = (rtAheadHoldFlushMs - elapsedMs).coerceAtLeast(35L)
+                    val flush = Runnable {
+                        rtAheadHoldFlushRunnable = null
+                        if (rtAheadHold.isNotEmpty()) {
+                            queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
+                        }
                     }
+                    rtAheadHoldFlushRunnable = flush
+                    handler.postDelayed(flush, delayMs)
                 }
-                rtAheadHoldFlushRunnable = flush
-                handler.postDelayed(flush, delayMs)
             } else if (chunks.size > 1 && chunks.last().size < 2) {
                 val last = chunks.removeAt(chunks.size - 1)
                 chunks.last().addAll(last)
@@ -872,7 +884,11 @@ class MainActivity : Activity() {
                 RtAheadTranslationTask(id, page, layout, chunk.minOf { batchTop[it] })
             )
         }
-        if (rtAheadHold.isEmpty()) rtAheadHoldSince = 0L
+        if (rtAheadHold.isEmpty()) {
+            rtAheadHoldSince = 0L
+            rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
+            rtAheadHoldFlushRunnable = null
+        }
         pumpRealtimeAheadTranslation()
     }
 
