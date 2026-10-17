@@ -60,24 +60,27 @@ internal class RoutingOcrEngine(
         return try {
             manga.recognize(bitmap, script).takeIf { it.blocks.isNotEmpty() }
         } catch (e: Exception) {
-            Log.w("NovelStudioManga", "Manga model failed, using ML Kit: " + e.message)
+            Log.w("NovelStudioManga", "Manga model failed, trying optional OCR fallback: " + e.message)
             null
         } catch (_: OutOfMemoryError) {
             null
         }
     }
 
+    private fun viaPaddle(bitmap: Bitmap, script: OcrScript): OcrResult? =
+        MultilingualPaddleOcr.recognize(bitmap, script)?.takeIf { it.blocks.isNotEmpty() }
+
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognize(bitmap, script)
+        viaManga(bitmap, script) ?: viaPaddle(bitmap, script) ?: general.recognize(bitmap, script)
 
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognizeFast(bitmap, script)
+        viaManga(bitmap, script) ?: viaPaddle(bitmap, script) ?: general.recognizeFast(bitmap, script)
 
     override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
         general.recognizeFallback(bitmap, script)
 
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognizeRegion(bitmap, script)
+        viaManga(bitmap, script) ?: viaPaddle(bitmap, script) ?: general.recognizeRegion(bitmap, script)
 
     override fun close() {
         general.close()
