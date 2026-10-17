@@ -48,7 +48,9 @@ internal object WebModeWriter {
 (function(items,sources,font,pid){
   try{
     if(window.__nsWmStop){try{window.__nsWmStop();}catch(e){}}
-    var old=document.getElementById('__ns_wm_overlay'); if(old&&old.parentNode)old.parentNode.removeChild(old);
+    // Keep the previous overlay visible while the replacement is constructed. Removing it here
+    // exposes the untranslated image for a frame and causes a noticeable flash during realtime.
+    var old=document.getElementById('__ns_wm_overlay');
     var de=document.scrollingElement||document.documentElement;
     // ABS: the page itself scrolls, so the bubbles live INSIDE the page (position:absolute) and the
     // browser scrolls them together with the images on its own thread: no lag, no shaking.
