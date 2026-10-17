@@ -355,6 +355,8 @@ function __box(){
     // The first readiness check happens 300 ms after insertion; retries only re-check readiness,
     // they never submit more than once.
     window.__nsSendState='pending';
+    // Show feedback for every auto-send, starting after text insertion and before the 300 ms gate.
+    __nsShowSendWait();
     var tailN=__nrm(text).slice(-60);
     function occ(){var a=__nrm(document.body.innerText||''),c=0,i=-1;while((i=a.indexOf(tailN,i+1))>=0)c++;return c;}
     var baseOcc=occ();
@@ -367,6 +369,8 @@ function __box(){
     }
     var started=Date.now();
     var textRepairAttempts=0;
+    // Never use Enter/form-submit as a blind fallback on chatbots whose empty composer exposes Voice/Mic.
+    var voiceCapable=/(^|\.)(chatgpt\.com|chat\.openai\.com|gemini\.google\.com|claude\.ai|grok\.com)$/.test(String(location.hostname||'').toLowerCase());
     function keyEnter(){
       try{box.focus();}catch(e){}
       var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};
@@ -435,8 +439,7 @@ function __box(){
         if(textRepairAttempts<3&&Date.now()-started>=650+textRepairAttempts*900){
           textRepairAttempts++;
           repairComposerText();
-          __nsShowSendWait();
-    setTimeout(waitUntilReady,180);
+          setTimeout(waitUntilReady,300);
         }else if(Date.now()-started<7000){
           setTimeout(waitUntilReady,150);
         }else{
@@ -454,7 +457,7 @@ function __box(){
       }
       // Send button has no usable label (DeepSeek and similar): the control that became enabled
       // once text was inserted, or the right-most control beside the editor.
-      var g=__guessSend(box,snap);
+      var g=voiceCapable?null:__guessSend(box,snap);
       if(g){
         if(__pressFull(g)){
           __nsHideSendWait();
@@ -462,14 +465,20 @@ function __box(){
           return;
         }
       }
-      // Last resort: the site's keyboard/form mechanism.
-      if(requestComposerSubmit()){
+      // Use a generic form/Enter fallback only on bots that do not expose a Voice/Mic control.
+      // On voice-capable bots, wait for a semantically identified, enabled Send button instead.
+      if(!voiceCapable&&requestComposerSubmit()){
         __nsHideSendWait();
         confirmSend('submit');
-      }else{
+      }else if(!voiceCapable){
         keyEnter();
         __nsHideSendWait();
         confirmSend('enter');
+      }else if(Date.now()-started<7000){
+        setTimeout(waitUntilReady,150);
+      }else{
+        __nsHideSendWait();
+        window.__nsSendState='failed:no-safe-send-button';
       }
     }
     // Wait 300 ms for controlled editors to commit the input before pressing Send.
@@ -491,8 +500,9 @@ function __box(){
     /** Centre of the best Send candidate in WebView pixels ("x|y"), or "none". Used for a trusted native tap. */
     fun sendButtonRect(): String = run(
         "(function(){try{var p=__prof(),box=__box();if(!box)return 'none';var snap=window.__nsSnap||null;" +
-        "var b=__findSend(p,box,snap)||__guessSend(box,snap);" +
-        "if(!b){var cur=String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();" +
+        "var h=String(location.hostname||'').toLowerCase(),vc=h==='chatgpt.com'||h.endsWith('.chatgpt.com')||h==='chat.openai.com'||h.endsWith('.chat.openai.com')||h==='gemini.google.com'||h.endsWith('.gemini.google.com')||h==='claude.ai'||h.endsWith('.claude.ai')||h==='grok.com'||h.endsWith('.grok.com');" +
+        "var b=__findSend(p,box,snap)||(vc?null:__guessSend(box,snap));" +
+        "if(!b&&!vc){var cur=String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();" +
         "var exp=String(window.__nsSentN||'');if(exp&&cur.length>=Math.min(exp.length,20))b=__guessSendLoose(box);}" +
         "if(!b)return 'none';" +
         "try{b.scrollIntoView({block:'nearest'});}catch(e){}" +

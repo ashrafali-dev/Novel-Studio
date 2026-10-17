@@ -2138,7 +2138,7 @@ return t.length>=40?'TXT:'+t:'';
         val gapMs = chatbotRequestGapMs
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
-        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
+        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> quietChatKeyboard(); onResult(raw) }
     }
 
     /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
@@ -6507,6 +6507,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     tok, ch,
                     "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
                 )
+                state.startsWith("failed:no-safe-send-button") -> failJob(
+                    tok, ch,
+                    "No safe Send button was found; auto-send stopped to avoid activating Voice/Mic. Please send manually."
+                )
                 state.startsWith("failed:") -> failJob(
                     tok, ch,
                     "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
@@ -6520,6 +6524,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 )
             }
         }
+    }
+
+    private fun isVoiceCapableChatbot(): Boolean {
+        val host = runCatching {
+            Uri.parse(chatWv.url ?: selectedBotBaseUrl()).host?.lowercase().orEmpty()
+        }.getOrDefault("")
+        return listOf("chatgpt.com", "chat.openai.com", "gemini.google.com", "claude.ai", "grok.com")
+            .any { host == it || host.endsWith(".$it") }
     }
 
     /**
@@ -6549,9 +6561,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     chatWv.dispatchTouchEvent(up)
                     down.recycle(); up.recycle()
                 } else {
-                    // No identifiable button: send a native Enter key press into the focused editor.
-                    // The editor already holds focus inside the page, so no requestFocus() here
-                    // (that is what used to pop the soft keyboard up).
+                    // On bots with Voice/Mic controls, an unidentified control or Enter fallback
+                    // can start voice mode. Fail safely instead of sending an ambiguous native event.
+                    if (isVoiceCapableChatbot()) {
+                        quietChatKeyboard()
+                        failJob(
+                            tok, ch,
+                            "No safe Send button was found; auto-send stopped to avoid opening Voice/Mic. Please send manually."
+                        )
+                        return@evaluateJavascript
+                    }
+                    // Non-voice bots may safely use Enter when no identifiable Send control exists.
                     val t = android.os.SystemClock.uptimeMillis()
                     chatWv.dispatchKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER, 0))
                     chatWv.dispatchKeyEvent(android.view.KeyEvent(t, t + 40, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER, 0))
