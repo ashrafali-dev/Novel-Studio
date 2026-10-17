@@ -256,7 +256,7 @@ internal object MultilingualPaddleOcr {
             val output = JapaneseMangaRuntime.recognizePaddle(bitmap, lang)
             val regions = JSONObject(output.json).optJSONArray("regions") ?: return null
             val scale = if (output.scale > 0f) 1f / output.scale else 1f
-            val blocks = ArrayList<OcrBlock>()
+            val orderedBlocks = ArrayList<Pair<Int, OcrBlock>>()
             for (i in 0 until regions.length()) {
                 val region = regions.optJSONObject(i) ?: continue
                 val text = region.optString("text").trim()
@@ -269,11 +269,30 @@ internal object MultilingualPaddleOcr {
                 val block = OcrBlock(
                     text = text, top = y.toInt(), left = x.toInt(),
                     cx = x + w / 2f, cy = y + h / 2f, w = w, h = h,
-                    angle = 0f, fontPx = minOf(w, h), vertical = false
+                    angle = 0f, fontPx = minOf(w, h),
+                    vertical = region.optBoolean("vertical", false)
                 )
-                if (!OcrPost.isNoise(block)) blocks.add(block)
+                if (!OcrPost.isNoise(block)) {
+                    orderedBlocks.add(region.optInt("order", i + 1) to block)
+                }
             }
-            OcrResult(OcrPost.mergeNeighbours(blocks))
+            // Merge split lines but restore the detector's language-aware reading order afterwards.
+            val merged = OcrPost.mergeNeighbours(orderedBlocks.map { it.second })
+            val ordered = merged.map { mergedBlock ->
+                val left = mergedBlock.cx - mergedBlock.w / 2f
+                val right = mergedBlock.cx + mergedBlock.w / 2f
+                val top = mergedBlock.cy - mergedBlock.h / 2f
+                val bottom = mergedBlock.cy + mergedBlock.h / 2f
+                val order = orderedBlocks.asSequence()
+                    .filter { (_, original) ->
+                        original.cx >= left && original.cx <= right &&
+                            original.cy >= top && original.cy <= bottom
+                    }
+                    .minOfOrNull { it.first } ?: Int.MAX_VALUE
+                order to mergedBlock
+            }.sortedWith(compareBy<Pair<Int, OcrBlock>>({ it.first }, { it.second.top }, { it.second.left }))
+                .map { it.second }
+            OcrResult(ordered)
         } catch (e: Exception) {
             Log.w("NovelStudioPaddle", "Optional Paddle OCR failed; falling back to ML Kit", e)
             null
