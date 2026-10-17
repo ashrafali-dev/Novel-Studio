@@ -31,7 +31,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     private data class Asset(val path: String, val url: String, val min: Long, val max: Long)
 
     fun isDownloading() = busy
-    fun hasFiles(): Boolean = root.exists() && (root.list()?.isNotEmpty() == true)
+    fun hasFiles(): Boolean = SPECS.any { spec -> !isSharedRuntime(spec.path) && safeFile(spec.path)?.exists() == true }
     fun packageBytes(): Long = SPECS.sumOf { safeFile(it.path)?.takeIf { file -> file.isFile }?.length() ?: 0L }
 
     @Synchronized fun isInstalled(): Boolean {
@@ -136,7 +136,23 @@ internal class JapaneseMangaModelManager(context: Context) {
     @Synchronized fun deleteEngine(): Boolean {
         if (busy) return false
         marker.delete()
-        return !root.exists() || root.deleteRecursively()
+        // Keep the sibling multilingual PaddleOCR pack intact under root/paddle.
+        SPECS.filterNot { isSharedRuntime(it.path) }.forEach { spec ->
+            safeFile(spec.path)?.let { file ->
+                file.delete()
+                File(file.parentFile, file.name + ".part").delete()
+            }
+        }
+        File(root, "engine_manifest.part").delete()
+        if (!File(root, "paddle/paddle_manifest.json").isFile) {
+            SPECS.filter { isSharedRuntime(it.path) }.forEach { spec ->
+                safeFile(spec.path)?.let { file ->
+                    file.delete()
+                    File(file.parentFile, file.name + ".part").delete()
+                }
+            }
+        }
+        return !marker.exists() && SPECS.none { !isSharedRuntime(it.path) && safeFile(it.path)?.exists() == true }
     }
 
     fun resolve(path: String): File? = safeFile(path)
@@ -150,10 +166,21 @@ internal class JapaneseMangaModelManager(context: Context) {
     }
 
     private fun cleanupPartial() {
-        SPECS.forEach { s -> safeFile(s.path)?.let { File(it.parentFile, it.name + ".part").delete() } }
+        SPECS.filterNot { isSharedRuntime(it.path) }.forEach { spec ->
+            safeFile(spec.path)?.let { File(it.parentFile, it.name + ".part").delete() }
+        }
         File(root, "engine_manifest.part").delete()
         marker.delete()
+        if (!File(root, "paddle/paddle_manifest.json").isFile) {
+            SPECS.filter { isSharedRuntime(it.path) }.forEach { spec ->
+                safeFile(spec.path)?.let { File(it.parentFile, it.name + ".part").delete() }
+            }
+        }
     }
+
+    private fun isSharedRuntime(path: String): Boolean =
+        path == "ort.wasm.min.js" || path == "ort-wasm-simd-threaded.mjs" ||
+            path == "ort-wasm-simd-threaded.wasm"
 
     private fun checkCancel() { if (cancelled.get() || Thread.currentThread().isInterrupted) throw CancelledException() }
     private class CancelledException : Exception()
