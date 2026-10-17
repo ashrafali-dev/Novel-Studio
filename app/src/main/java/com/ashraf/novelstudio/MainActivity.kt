@@ -2138,7 +2138,7 @@ return t.length>=40?'TXT:'+t:'';
         val gapMs = chatbotRequestGapMs
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
-        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
+        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> quietChatKeyboard(); onResult(raw) }
     }
 
     /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
