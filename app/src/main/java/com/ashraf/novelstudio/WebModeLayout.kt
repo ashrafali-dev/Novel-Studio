@@ -24,7 +24,12 @@ internal data class WmBubble(
     /** Exact normalized OCR text captured at this position; used to bind output to the right bubble. */
     val sourceText: String = "",
     /** Bengali text already translated for this position. Empty means not translated yet. */
-    val translatedText: String = ""
+    val translatedText: String = "",
+    /** Tight OCR glyph region used for source-text removal, separate from the translation placement box. */
+    val eraseCx: Float = cx,
+    val eraseCy: Float = cy,
+    val eraseW: Float = w,
+    val eraseH: Float = h
 )
 
 /**
@@ -39,7 +44,9 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             .put("s", b.src).put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
             .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
             .put("fg2", b.fg2).put("sf", b.soft)
-            .put("srcText", b.sourceText).put("tr", b.translatedText))
+            .put("srcText", b.sourceText).put("tr", b.translatedText)
+            .put("eraseCx", r5(b.eraseCx)).put("eraseCy", r5(b.eraseCy))
+            .put("eraseW", r5(b.eraseW)).put("eraseH", r5(b.eraseH)))
         return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
@@ -59,7 +66,11 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.getDouble("a").toFloat(), b.getDouble("f").toFloat(),
                     b.getInt("bg"), b.getInt("fg"),
                     b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false),
-                    b.optString("srcText", ""), b.optString("tr", "")
+                    b.optString("srcText", ""), b.optString("tr", ""),
+                    b.optDouble("eraseCx", b.getDouble("cx")).toFloat(),
+                    b.optDouble("eraseCy", b.getDouble("cy")).toFloat(),
+                    b.optDouble("eraseW", b.getDouble("w")).toFloat(),
+                    b.optDouble("eraseH", b.getDouble("h")).toFloat()
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
