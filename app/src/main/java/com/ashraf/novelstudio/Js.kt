@@ -87,7 +87,8 @@ function __meaningful(t){
  if(/action\s+completed\s+or\s+failed|please\s+check\s+the\s+page\s+and\s+try\s+again|finished\s+the\s+response|OCR\s*[:：]|screen\s+capture\s+came\s+back\s+blank|স্ক্রিন ক্যাপচার|খালি ফেরত এসেছে/i.test(raw))return false;
  var s=__uiClean(raw).replace(/\[\d{3,}\]/g,' ').replace(/[~～]+/g,' ').trim();
  s=s.replace(/[\s\-—:;,.!?(){}\[\]<>|*_]+/g,'');
- if(!s)return false;\n if(s.length<2)return false;
+ if(!s)return false;
+ if(s.length<2)return false;
  if(/^(?:chatgpt|claude|deepseek|gemini|grok|share|copy|regenerate|retry|justnow|vieworiginal|writemessage|haiku55low|webtoonrealtime)$/i.test(s))return false;
  return /[A-Za-z\u0980-\u09FF\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/.test(s);
 }
