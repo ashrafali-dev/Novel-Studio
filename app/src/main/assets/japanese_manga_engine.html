@@ -58,9 +58,28 @@
     }
   }
 
+  async function releasePaddleModels() {
+    for (const key of Object.keys(paddleCache)) {
+      const old = paddleCache[key];
+      try { if (old.detector) await old.detector.release(); } catch (_) {}
+      try { if (old.recognizer) await old.recognizer.release(); } catch (_) {}
+      delete paddleCache[key];
+    }
+    if (!mangaDetector) { detector = null; recognizer = null; dictionary = null; }
+  }
+
+  async function releaseMangaModels() {
+    try { if (mangaDetector) await mangaDetector.release(); } catch (_) {}
+    try { if (mangaRecognizer) await mangaRecognizer.release(); } catch (_) {}
+    mangaDetector = null;
+    mangaRecognizer = null;
+    mangaDictionary = null;
+    if (!paddleCache.active) { detector = null; recognizer = null; dictionary = null; }
+  }
+
   async function loadModels() {
-    // Initialize only the shared WASM runtime at page startup. Model files are optional and loaded
-    // lazily per engine, avoiding a slow failed request for absent Japanese weights.
+    // Initialize only the shared WASM runtime at page startup. Models are optional and loaded
+    // lazily, avoiding a slow failed request for absent Japanese weights.
     await ensureOrt();
     state.textContent = 'OCR runtime ready';
     signalReady();
@@ -68,6 +87,7 @@
 
   async function loadMangaModels() {
     await ensureOrt();
+    await releasePaddleModels();
     try {
       if (!mangaDetector) mangaDetector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
       if (!mangaRecognizer) mangaRecognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
@@ -77,9 +97,7 @@
       dictionary = mangaDictionary;
       state.textContent = 'Japanese manga OCR ready';
     } catch (e) {
-      mangaDetector = null;
-      mangaRecognizer = null;
-      mangaDictionary = null;
+      await releaseMangaModels();
       throw e;
     }
   }
@@ -87,22 +105,31 @@
   async function loadPaddleModels(language) {
     await ensureOrt();
     const lang = language === 'korean' ? 'korean' : (language === 'chinese' ? 'chinese' : 'latin');
-    if (!paddleCache[lang]) {
+    const modelKey = lang === 'korean' ? 'korean' : 'general';
+    if (mangaDetector || mangaRecognizer) await releaseMangaModels();
+    if (!paddleCache.active || paddleCache.active.modelKey !== modelKey) {
+      await releasePaddleModels();
       const prefix = BASE + 'paddle/';
       const detectorUrl = prefix + 'models/detection/ppocrv6_small_det.onnx';
-      const recognizerUrl = prefix + (lang === 'korean'
+      const recognizerUrl = prefix + (modelKey === 'korean'
         ? 'models/ocr/korean_ppocrv5_rec.onnx'
         : 'models/ocr/ppocrv6_small_rec.onnx');
-      const dictionaryUrl = prefix + (lang === 'korean' ? 'dicts/korean_dict.txt' : 'dicts/ppocrv6_dict.txt');
-      const loaded = {};
-      loaded.detector = await ort.InferenceSession.create(detectorUrl, { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
-      loaded.recognizer = await ort.InferenceSession.create(recognizerUrl, { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
-      loaded.dictionary = await readDictionary(dictionaryUrl, lang === 'korean' ? 1000 : 10000);
-      paddleCache[lang] = loaded;
+      const dictionaryUrl = prefix + (modelKey === 'korean' ? 'dicts/korean_dict.txt' : 'dicts/ppocrv6_dict.txt');
+      const loaded = { modelKey: modelKey, detector: null, recognizer: null, dictionary: null };
+      try {
+        loaded.detector = await ort.InferenceSession.create(detectorUrl, { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
+        loaded.recognizer = await ort.InferenceSession.create(recognizerUrl, { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
+        loaded.dictionary = await readDictionary(dictionaryUrl, modelKey === 'korean' ? 1000 : 10000);
+        paddleCache.active = loaded;
+      } catch (e) {
+        try { if (loaded.detector) await loaded.detector.release(); } catch (_) {}
+        try { if (loaded.recognizer) await loaded.recognizer.release(); } catch (_) {}
+        throw e;
+      }
     }
-    detector = paddleCache[lang].detector;
-    recognizer = paddleCache[lang].recognizer;
-    dictionary = paddleCache[lang].dictionary;
+    detector = paddleCache.active.detector;
+    recognizer = paddleCache.active.recognizer;
+    dictionary = paddleCache.active.dictionary;
     state.textContent = 'PaddleOCR ready (' + lang + ')';
   }
 
