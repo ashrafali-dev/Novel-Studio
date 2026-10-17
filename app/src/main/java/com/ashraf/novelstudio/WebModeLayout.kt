@@ -143,7 +143,7 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
  */
 internal object WebModeLayoutStore {
     private const val KEY = "wmLayouts"
-    private const val MAX = 16
+    private const val MAX = 8
 
     // Latest OCR batch (used to align this answer) and cumulative translated layout (kept while scrolling).
     private val scans = object : LinkedHashMap<String, WebModeLayout>(16, 0.75f, true) {

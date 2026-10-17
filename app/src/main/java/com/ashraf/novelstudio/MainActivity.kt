@@ -753,13 +753,18 @@ class MainActivity : Activity() {
     @Volatile private var rtScrollCssPx = 0
 
     /** Reader scroll position in CSS px (document, or the biggest scrolled inner container). Async: feeds the next call. */
+    private var rtScrollReadAtMs = 0L
+
     private fun refreshRtScroll() {
+        // At most once per 1.5 s and only reads three scroll offsets (no DOM scan, no forced layout),
+        // so it can never make scrolling stutter.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - rtScrollReadAtMs < 1_500L) return
+        rtScrollReadAtMs = now
         try {
             novelWv.evaluateJavascript(
-                "(function(){var m=0;try{var a=[document.scrollingElement||document.documentElement,document.body];" +
-                    "var d=document.querySelectorAll('div,main,section');" +
-                    "for(var i=0;i<d.length&&i<3000;i++){var e=d[i];if(e.scrollTop>0&&e.scrollHeight>e.clientHeight+300)a.push(e);}" +
-                    "for(var j=0;j<a.length;j++){var s=(a[j]&&a[j].scrollTop)||0;if(s>m)m=s;}}catch(e){}return Math.round(m);})()"
+                "(function(){try{var s=document.scrollingElement||document.documentElement;" +
+                    "return Math.round(Math.max(window.pageYOffset||0,s?s.scrollTop:0,document.body?document.body.scrollTop:0));}catch(e){return 0;}})()"
             ) { raw -> raw?.trim()?.toDoubleOrNull()?.let { rtScrollCssPx = it.toInt() } }
         } catch (_: Exception) { }
     }
@@ -2862,8 +2867,7 @@ return t.length>=40?'TXT:'+t:'';
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(9), 0, dp(6), 0)
-            background = Glass.panel(this@MainActivity, 26)
-            elevation = dp(8).toFloat()
+            // no backing panel: only the tab button and the address field are drawn
             addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
             addView(addressBox)
         }
@@ -3086,8 +3090,7 @@ return t.length>=40?'TXT:'+t:'';
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), 0, dp(8), 0)
-            background = Glass.panel(this@MainActivity, 34, strong = true)
-            elevation = dp(12).toFloat()
+            // no backing panel: only the dock buttons are drawn
             addView(modeChip, LinearLayout.LayoutParams(0, dp(42), 1.9f).also { it.setMargins(0, 0, dp(2), 0) })
             addView(modeBtn)
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
