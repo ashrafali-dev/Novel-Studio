@@ -569,7 +569,7 @@ class MainActivity : Activity() {
         }
 
         for (bubble in layout.bubbles) {
-            if (bubble.sourceText.isBlank()) continue
+            if (bubble.sourceText.isBlank() || isRealtimeUiChromeText(bubble.sourceText)) continue
             val fingerprint = WebModeLayout.fingerprint(bubble)
             if (fingerprint !in hashes || !pending.seen.add(fingerprint)) continue
             pending.bubbles.add(bubble)
@@ -1191,6 +1191,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val found = fields.getOrNull(3)?.toIntOrNull() ?: 0
                 val sendFailed = fields.getOrNull(5) == "failed"
                 val uiDone = fields.getOrNull(6) == "1"
+                val meaningfulReply = fields.getOrNull(7) == "1"
                 val got = fields.getOrNull(4) == "1" || count > n0
                 val effectiveLen = if (got) len else 0
                 val baseLen0 = if (firstLen >= 0) firstLen else if (got) effectiveLen else -1
@@ -1209,13 +1210,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val realtimeFast = RealtimeCompletionPolicy.enabled(this)
                 val deepSeek = realtimeFast && (host == "deepseek.com" || host.endsWith(".deepseek.com"))
                 val noSignalStable = if (deepSeek) 3 else RealtimeCompletionPolicy.noStopSignalThreshold(this, 8)
-                val completedByMarkers = got && effectiveLen >= minReplyLength &&
+                val completedByMarkers = got && meaningfulReply && effectiveLen >= minReplyLength &&
                     !streaming && allMarkers && stableNow >= markerStable
-                val completedByUi = got && effectiveLen >= minReplyLength &&
+                val completedByUi = got && meaningfulReply && effectiveLen >= minReplyLength &&
                     uiDone && !streaming && stableNow >= uiStable
-                val completedAfterStop = got && effectiveLen >= minReplyLength &&
+                val completedAfterStop = got && meaningfulReply && effectiveLen >= minReplyLength &&
                     streamEnded && stableNow >= stopStable
-                val completedWithoutStop = got && effectiveLen >= maxOf(minReplyLength, expectedFloor) &&
+                val completedWithoutStop = got && meaningfulReply && effectiveLen >= maxOf(minReplyLength, expectedFloor) &&
                     !streaming && stableNow >= noSignalStable &&
                     (deepSeek || allMarkers || effectiveLen >= expectedFloor)
                 val completed = completedByMarkers || completedByUi || completedAfterStop || completedWithoutStop
@@ -1231,7 +1232,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                             finishRealtimeAheadTranslation(jobKey, task, answer)
                         }
                     }
-                } else if ((sendFailed && !got) || (elapsed > 60_000L && !got) ||
+                } else if ((got && !meaningfulReply && !streaming && stableNow >= 8 && elapsed >= 12_000L) ||
+                    (sendFailed && !got) || (elapsed > 60_000L && !got) ||
                     elapsed > 6 * 60_000L) {
                     failRealtimeAheadTranslation(seq, task, jobKey)
                 } else {
@@ -1378,6 +1380,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         override fun run() {
             if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
                 deepSeekPollBusy = false
+                return
+            }
+            // The novel WebView stays alive under CHAT mode; never OCR this hidden pane.
+            if (mode == Mode.CHAT) {
+                handler.postDelayed(this, 500L)
                 return
             }
             // Never stack evaluateJavascript probes. Previously the 1.2 s watchdog launched a
@@ -3632,6 +3639,22 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun setMode(m: Mode) {
+        if (m == Mode.CHAT && mode != Mode.CHAT &&
+            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
+            // The novel WebView stays alive behind full-screen chat. Stop viewport capture before
+            // pane coordinates change, otherwise OCR can pick up chatbot controls and status toasts.
+            webModeJobSerial++
+            webModeHandle?.cancel()
+            webModeHandle = null
+            webModeLastProgressAtMs = 0L
+            clearRealtimeVisibleOcrBatch()
+            aheadOcrHandle?.cancel()
+            aheadOcrHandle = null
+            aheadOcrSeq++
+            aheadOcrStage = ""
+            aheadOcrPct = -1
+            clearWebModeProgress()
+        }
         val keepFrame = mode != m && beginModeTransition()
         mode = m
         modeBtn.setImageDrawable(IconDrawable(when (m) {
@@ -6477,6 +6500,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val found = parts.getOrNull(3)?.toIntOrNull() ?: 0
                 val sendFailed = parts.getOrNull(5) == "failed"
                 val uiDone = parts.getOrNull(6) == "1"
+                val meaningfulReply = parts.getOrNull(7) == "1"
                 val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
                 // Some chat pages (Claude) already report the echoed prompt as "reply text"
@@ -6525,13 +6549,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     RealtimeCompletionPolicy.noStopSignalThreshold(
                         this, if (livePanelBatch) 8 else 20
                     )
-                val completedByMarkers = got && effLen >= minReplyLength && !streaming &&
+                // A stable "[001]" without any translated body is not a completed answer.
+                val usableRealtimeReply = !livePanelBatch || meaningfulReply
+                val completedByMarkers = got && usableRealtimeReply && effLen >= minReplyLength && !streaming &&
                     allMarkers && st >= markerStableNeeded
-                val completedByUi = got && effLen >= minReplyLength && uiDone &&
+                val completedByUi = got && usableRealtimeReply && effLen >= minReplyLength && uiDone &&
                     !streaming && st >= uiStableNeeded
-                val completedAfterStop = got && effLen >= minReplyLength &&
+                val completedAfterStop = got && usableRealtimeReply && effLen >= minReplyLength &&
                     streamEnded && st >= stopStableNeeded
-                val completedWithoutStopSignal = got && effLen >= minReplyLength &&
+                val completedWithoutStopSignal = got && usableRealtimeReply && effLen >= minReplyLength &&
                     !sawStream && !streaming && st >= noSignalStableNeeded &&
                     (deepSeekRealtime || allMarkers || effLen >= expectedFloor)
                 val completed = completedByMarkers || completedByUi ||
@@ -6542,6 +6568,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
                 when {
                     completed -> finishJob(tok, ch)
+                    livePanelBatch && got && !meaningfulReply && !streaming && st >= 8 && elapsed >= 12_000L ->
+                        failJob(tok, ch, "The chatbot returned only paragraph markers, not a translation. Tap ⚡ to retry.")
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
@@ -6571,7 +6599,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             Regex("\\bWrite\\s+a\\s+message(?:\\.{3}|…)?", RegexOption.IGNORE_CASE),
             Regex("\\bHaiku\\s+5\\.5\\s+Low\\b", RegexOption.IGNORE_CASE),
             Regex("\\bDeepThink(?:\\s+Search)?\\b", RegexOption.IGNORE_CASE),
-            Regex("\\bSmart\\s+Search\\b", RegexOption.IGNORE_CASE)
+            Regex("\\bSmart\\s+Search\\b", RegexOption.IGNORE_CASE),
+            Regex("Action\\s+completed\\s+or\\s+failed\\.?\\s*Please\\s+check\\s+the\\s+page\\s+and\\s+try\\s+again\\.?", RegexOption.IGNORE_CASE),
+            Regex("Claude\\s+finished\\s+the\\s+response", RegexOption.IGNORE_CASE),
+            Regex("OCR\\s*[:：]?[^\\n]*(?:screen capture|স্ক্রিন ক্যাপচার|খালি ফেরত এসেছে)[^\\n]*", RegexOption.IGNORE_CASE),
+            Regex("(?:Force extract|জোর করে বের করা হয়েছে)[^\\n]*(?:screen capture|স্ক্রিন ক্যাপচার|খালি)[^\\n]*", RegexOption.IGNORE_CASE)
         )
         uiLabels.forEach { s = it.replace(s, " ") }
         return s.replace(Regex("[ \\t]+"), " ")
@@ -6585,6 +6617,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             if (tok != runToken) return@evaluateJavascript
             val livePanelBatch = isDeepSeekLivePanel(ch)
             val rawTranslation = cleanReply(decode(raw))
+            if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
+                failJob(tok, ch, "The chatbot returned no translated bubble text. Tap ⚡ to retry.")
+                return@evaluateJavascript
+            }
             if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
                 failJob(tok, ch, "Could not read the answer")
                 return@evaluateJavascript
@@ -6727,19 +6763,40 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
         if (normalized.isBlank()) return true
+        // Toasts and chatbot chrome can be composited on top of a screenshot.
+        if (normalized == "ocr" || normalized.startsWith("ocr ")) return true
+        val uiPhrases = listOf(
+            "finished the response", "action completed or failed",
+            "please check the page and try again", "screen capture came back blank",
+            "every screen capture came back blank", "force extract", "write a message",
+            "view original", "webtoon realtime", "haiku 5 5 low",
+            "claude is ai and can make mistakes", "claude is thinking",
+            "claude is responding", "message collapsed", "show more", "just now",
+            "deepthink search", "smart search", "স্ক্রিন ক্যাপচার খালি",
+            "প্রতিটি স্ক্রিন ক্যাপচার", "জোর করে বের করা হয়েছে",
+            "বার্তা লিখুন", "শেয়ার করুন", "শেয়ার করুন"
+        )
+        if (uiPhrases.any { normalized.contains(it) }) return true
         val botNames = listOf("chatgpt", "claude", "deepseek", "gemini", "grok")
         val botNameCount = botNames.count { name ->
             Regex("(^|\\s)" + Regex.escape(name) + "($|\\s)").containsMatchIn(normalized)
         }
         if (botNameCount >= 2) return true
-        return normalized in setOf(
-            "chatgpt", "claude", "deepseek", "gemini", "grok",
-            "share", "share this", "just now", "copy", "regenerate", "retry",
-            "view original", "write a message", "write a message please",
-            "webtoon realtime", "haiku 5 5 low", "action completed or failed",
-            "please check the page and try again",
-            "শেয়ার করুন", "শেয়ার করুন", "একটি বার্তা লিখুন", "লিখুন"
+        val uiOnly = setOf(
+            "chatgpt", "claude", "deepseek", "gemini", "grok", "share", "share this",
+            "copy", "regenerate", "retry", "like", "dislike", "edit", "read aloud",
+            "sources", "action completed", "view original", "send", "stop",
+            "ওসিআর", "এইমাত্র", "একটি বার্তা লিখুন", "লিখুন"
         )
+        if (normalized in uiOnly) return true
+        return normalized.replace(Regex("[\\p{Punct}\\d]+"), "").isBlank()
+    }
+
+    private fun hasMeaningfulRealtimeReply(text: String): Boolean {
+        val body = text.replace(Regex("\\[\\d{3,}\\]"), " ")
+            .replace(Regex("[~～]+"), " ").trim()
+        if (body.isBlank() || body.none { it.isLetter() }) return false
+        return !isRealtimeUiChromeText(body)
     }
 
     /** True only for an interactive OCR bubble batch, not a whole-chapter Web Mode scan. */

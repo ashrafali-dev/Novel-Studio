@@ -730,17 +730,21 @@ internal class WebModeExtractor(
         }
 
         private fun captureView(): Bitmap? {
-            val a = captureByDraw()
-            if (a != null && !isBlank(a)) return a
-            a?.recycle()
+            // WebView.draw() while a hardware-composited page is live can flash on some devices.
+            // Realtime recovery uses PixelCopy on the visible WebView rectangle only: no off-screen
+            // draw and no full-window fallback that could include chatbot controls or native toasts.
+            if (!req.visibleOnly) {
+                val a = captureByDraw()
+                if (a != null && !isBlank(a)) return a
+                a?.recycle()
+            }
             val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
             if (b != null && !isBlank(b)) return b
             b?.recycle()
-            // Count only after both draw and PixelCopy (including full-window retry) failed.
             forceBlank++
-            Log.w(TAG, "Visible screen capture returned blank after all paths; " +
-                "drawView=${wv.width}x${wv.height}, attached=${wv.isAttachedToWindow}, " +
-                "hardware=${wv.isHardwareAccelerated}")
+            Log.w(TAG, "Visible screen capture returned blank after safe capture paths; " +
+                "visibleOnly=${req.visibleOnly}, view=${wv.width}x${wv.height}, " +
+                "attached=${wv.isAttachedToWindow}, hardware=${wv.isHardwareAccelerated}")
             return null
         }
 
