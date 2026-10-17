@@ -447,13 +447,13 @@ class MainActivity : Activity() {
         var titleOffset: Int,
         val bubbles: MutableList<WmBubble> = ArrayList(),
         val hashes: LinkedHashSet<String> = LinkedHashSet(),
-        val seen: HashSet<String> = HashSet(),
-        val seenPanels: HashSet<String> = HashSet()
+        val seen: HashSet<String> = HashSet()
     )
     private var rtVisibleOcrBatch: RtVisibleOcrBatch? = null
     private var rtVisibleOcrFlush: Runnable? = null
     private var rtVisibleOcrBatchSeq = 0
-    private val rtVisibleOcrPanelBatchMin = 10
+    private val rtVisibleOcrBatchMin = 10
+    private val rtVisibleOcrIdleFlushMs = 1000L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
@@ -572,20 +572,21 @@ class MainActivity : Activity() {
             if (fingerprint !in hashes || !pending.seen.add(fingerprint)) continue
             pending.bubbles.add(bubble)
             pending.hashes.add(fingerprint)
-            pending.seenPanels.add(WebModeLogic.normalizeUrl(bubble.src).ifBlank { fingerprint })
         }
 
         rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
         rtVisibleOcrFlush = null
-        if (force || pending.seenPanels.size >= rtVisibleOcrPanelBatchMin) {
+        if (force || pending.bubbles.size >= rtVisibleOcrBatchMin) {
             flushRealtimeVisibleOcrBatch(token, page)
             return
         }
 
-        // Do not turn a single newly recognized bubble into its own chatbot request just
-        // because the reader pauses for a second. Keep collecting across viewport scans and
-        // submit when ten bubbles are ready (or when the user explicitly forces a re-translation).
-        Log.i("NovelStudioOCR", "Realtime viewport accumulating: panels=${pending.seenPanels.size}/$rtVisibleOcrPanelBatchMin, bubbles=${pending.bubbles.size}")
+        val seq = ++rtVisibleOcrBatchSeq
+        val flush = Runnable {
+            if (seq == rtVisibleOcrBatchSeq) flushRealtimeVisibleOcrBatch(token, page)
+        }
+        rtVisibleOcrFlush = flush
+        handler.postDelayed(flush, rtVisibleOcrIdleFlushMs)
     }
 
     private fun flushRealtimeVisibleOcrBatch(expectedToken: Int? = null, expectedPage: String? = null) {
@@ -636,7 +637,7 @@ class MainActivity : Activity() {
         )
         WebModeLayoutStore.setScan(chapter.url, WebModeLayout(pending.titleOffset, bubbles))
         deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
-        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, trigger=${if (pending.seenPanels.size >= rtVisibleOcrPanelBatchMin) "10-panels" else "forced"}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
+        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
@@ -702,26 +703,15 @@ class MainActivity : Activity() {
     // the next OCR round to fill the chunk, and are sent anyway after a short delay (never 1-line requests
     // just because one round found a single new bubble).
     private val rtAheadHold = ArrayList<Pair<WmBubble, Int>>()
-    private val rtAheadHoldPanelUrls = LinkedHashSet<String>()
     private var rtAheadHoldPage = ""
     private var rtAheadHoldFlushRunnable: Runnable? = null
     private var rtAheadHoldSince = 0L
-    private val rtAheadHoldFlushMs = 4500L
+    private val rtAheadHoldFlushMs = 160L
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         val page = cleanUrl(pageUrl)
-        if (page != rtAheadHoldPage) {
-            rtAheadHold.clear()
-            rtAheadHoldPanelUrls.clear()
-            rtAheadHoldSince = 0L
-            rtAheadHoldPage = page
-        }
-        // Remember distinct successfully OCRed panels across successive read-ahead passes.
-        // A panel may contain many bubbles or none; panel count, not bubble count, is the batch unit.
-        panels.forEach { panel -> WebModeLogic.normalizeUrl(panel.src).takeIf { it.isNotBlank() }?.let { rtAheadHoldPanelUrls.add(it) } }
-        val completePanelBatch = force || panels.map { WebModeLogic.normalizeUrl(it.src) }.filter { it.isNotBlank() }.toSet().size >= REALTIME_AHEAD_PANEL_BATCH_SIZE ||
-            rtAheadHoldPanelUrls.size >= REALTIME_AHEAD_PANEL_BATCH_SIZE
+        if (page != rtAheadHoldPage) { rtAheadHold.clear(); rtAheadHoldPage = page }
         if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty()) ||
             (panels.isEmpty() && rtAheadHold.isEmpty())) return
 
@@ -806,34 +796,10 @@ class MainActivity : Activity() {
             batch.addAll(0, heldBubbles)
             batchTop.addAll(0, heldTops)
         }
-        if (batch.isEmpty()) {
-            if (rtAheadHold.isEmpty()) { rtAheadHoldPanelUrls.clear(); rtAheadHoldSince = 0L }
-            return
-        }
-        Log.i("NovelStudioOCR", "Read-ahead batch: incomingPanels=${panels.size}, distinctPanels=${rtAheadHoldPanelUrls.size}, bubbles=${batch.size}, held=${rtAheadHold.size}, complete=$completePanelBatch, force=$force")
+        if (batch.isEmpty()) return
 
-        if (!completePanelBatch) {
-            // Hold the ENTIRE set, even when one panel has ten bubbles. The grouping boundary is
-            // ten distinct source panels, not ten extracted speech bubbles.
-            for (ix in batch.indices) rtAheadHold.add(batch[ix] to batchTop[ix])
-            val nowMs = System.currentTimeMillis()
-            if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
-            val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 6000L - (nowMs - rtAheadHoldSince)))
-            rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
-            val flush = Runnable {
-                rtAheadHoldFlushRunnable = null
-                if (rtAheadHold.isNotEmpty()) {
-                    queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
-                }
-            }
-            rtAheadHoldFlushRunnable = flush
-            handler.postDelayed(flush, delayMs)
-            Log.i("NovelStudioOCR", "Read-ahead accumulating: panels=${rtAheadHoldPanelUrls.size}/$REALTIME_AHEAD_PANEL_BATCH_SIZE, bubbles=${rtAheadHold.size}")
-            return
-        }
-
-        // Prefer one request for each complete ten-panel unit. Very dialogue-heavy units can
-        // be split, but a small tail is merged back into the same request when practical.
+        // Prefer one complete request for the whole ahead window. A 10-panel comic usually fits in
+        // one 30-bubble request; only unusually dialogue-heavy windows are split into bounded chunks.
         val chunkSize = (Prefs.get(this, "rtAheadBatch", "40").toIntOrNull() ?: 40).coerceIn(15, 40)
         val chunks = ArrayList<MutableList<Int>>()
         var i = 0
@@ -842,11 +808,29 @@ class MainActivity : Activity() {
             i += chunkSize
         }
         val minChunk = minOf(10, chunkSize)
-        if (chunks.size > 1 && chunks.last().size < minChunk) {
-            // The tail belongs to this complete ten-panel unit. Merge it rather than creating
-            // a second request for the last few bubbles.
-            val last = chunks.removeAt(chunks.size - 1)
-            chunks.last().addAll(last)
+        if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
+            if (!force) {
+                // Too small to be worth a request of its own: hold it for the next OCR round.
+                val rest = chunks.removeAt(chunks.size - 1)
+                for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
+                val nowMs = System.currentTimeMillis()
+                if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
+                // Give already-running nearby OCR a brief chance to join this request. Do not
+                // make real-time reading wait seconds for a full chunk; send the lines we have quickly.
+                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 450L - (nowMs - rtAheadHoldSince)))
+                rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
+                val flush = Runnable {
+                    rtAheadHoldFlushRunnable = null
+                    if (rtAheadHold.isNotEmpty()) {
+                        queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
+                    }
+                }
+                rtAheadHoldFlushRunnable = flush
+                handler.postDelayed(flush, delayMs)
+            } else if (chunks.size > 1 && chunks.last().size < 2) {
+                val last = chunks.removeAt(chunks.size - 1)
+                chunks.last().addAll(last)
+            }
         }
         for (chunk in chunks) {
             val layout = WebModeLayout(0, chunk.map { batch[it] })
@@ -858,7 +842,7 @@ class MainActivity : Activity() {
                 RtAheadTranslationTask(id, page, layout, chunk.minOf { batchTop[it] })
             )
         }
-        if (rtAheadHold.isEmpty()) { rtAheadHoldSince = 0L; rtAheadHoldPanelUrls.clear() }
+        if (rtAheadHold.isEmpty()) rtAheadHoldSince = 0L
         pumpRealtimeAheadTranslation()
     }
 
