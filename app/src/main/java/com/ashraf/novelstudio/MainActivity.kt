@@ -737,7 +737,7 @@ class MainActivity : Activity() {
         val batchTop = ArrayList<Int>()
         for (panel in panels.sortedBy { it.top }) {
             val ordered = panel.bubbles
-                .filter { it.sourceText.isNotBlank() }
+                .filter { it.sourceText.isNotBlank() && !isRealtimeUiChromeText(it.sourceText) }
                 .sortedWith(compareBy<WmBubble>({ it.cy }, { it.cx }))
             for (bubble in ordered) {
                 val cacheKey = rtAheadBubbleCacheKey(bubble)
@@ -4970,6 +4970,7 @@ return t.length>=40?'TXT:'+t:'';
                                     val usedTargets = ArrayList<RetrTarget>()
                                     synchronized(deepSeekInFlightTextHashes) {
                                         for (bubble in sourceBubbles) {
+                                            if (isRealtimeUiChromeText(bubble.sourceText)) continue
                                             val hash = WebModeLayout.fingerprint(bubble)
                                             if (hash in deepSeekInFlightTextHashes) continue
                                             // A bubble the reader long-pressed is sent again even though it was translated.
@@ -6714,6 +6715,32 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
         !JapaneseMangaSession.isManaged(ch) &&
             DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
+
+    /**
+     * Safety net for a mis-cropped screenshot or reader UI rendered as image text.
+     * Filter exact UI labels or a cluster of multiple chatbot names; do not discard ordinary dialogue
+     * just because it happens to contain one of these names.
+     */
+    private fun isRealtimeUiChromeText(text: String): Boolean {
+        val normalized = text.lowercase()
+            .replace(Regex("\\[\\d{3,}\\]"), " ")
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim()
+        if (normalized.isBlank()) return true
+        val botNames = listOf("chatgpt", "claude", "deepseek", "gemini", "grok")
+        val botNameCount = botNames.count { name ->
+            Regex("(^|\\s)" + Regex.escape(name) + "($|\\s)").containsMatchIn(normalized)
+        }
+        if (botNameCount >= 2) return true
+        return normalized in setOf(
+            "chatgpt", "claude", "deepseek", "gemini", "grok",
+            "share", "share this", "just now", "copy", "regenerate", "retry",
+            "view original", "write a message", "write a message please",
+            "webtoon realtime", "haiku 5 5 low", "action completed or failed",
+            "please check the page and try again",
+            "শেয়ার করুন", "শেয়ার করুন", "একটি বার্তা লিখুন", "লিখুন"
+        )
+    }
 
     /** True only for an interactive OCR bubble batch, not a whole-chapter Web Mode scan. */
     private fun isRealtimeBubbleBatch(ch: Chapter): Boolean =
