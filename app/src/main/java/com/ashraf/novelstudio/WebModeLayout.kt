@@ -377,6 +377,12 @@ internal object WebModeLayoutStore {
 }
 
 /**
+ * The interior of a closed, flat speech balloon. [bounds] is the safe placement area for a longer
+ * translation; [hasUncoveredInk] reports whether the first OCR pass left likely text unrecognised.
+ */
+internal data class WmBubbleInterior(val bounds: IntArray, val hasUncoveredInk: Boolean)
+
+/**
  * Looks at the artwork around a recognised text block: the background colour to cover the old text
  * with, a text colour that was really used, and how far the empty bubble interior reaches beyond
  * the tight text box (so a longer translation has room instead of overflowing).
@@ -404,13 +410,18 @@ internal object WmBubbleStyle {
         val bh = bmp.height
         var l = box[0]; var t = box[1]; var r = box[2]; var b = box[3]
         var bg = ringMedian(bmp, l, t, r, b, 3)
-        val soft = !ringFlat(bmp, l, t, r, b, bg)
+        var soft = !ringFlat(bmp, l, t, r, b, bg)
         if (soft) {
-            // Glow / shadow around the lettering tints the ring right next to it (that gave grey boxes on
-            // black). Read the cover colour from a ring OUTSIDE the glow instead, if that ring is flat.
+            // Letter glow / outline can make the immediate ring look textured even inside a plain
+            // speech balloon. Check a wider ring before deciding this is text printed over artwork.
             val rp = ((b - t) * 0.22f).toInt().coerceIn(6, 26)
             val outer = ringMedian(bmp, l - rp, t - rp, r + rp, b + rp, 3)
-            if (ringFlat(bmp, l - rp, t - rp, r + rp, b + rp, outer)) bg = outer
+            if (ringFlat(bmp, l - rp, t - rp, r + rp, b + rp, outer)) {
+                bg = outer
+                // A uniform outer ring is a safe local paper-colour candidate. The pixel-level
+                // remover still masks text-shaped pixels only; this does not paint the whole box.
+                soft = false
+            }
         }
         val mid = (t + b) / 2
         val fgTop = textColour(bmp, l, t, r, maxOf(t + 1, mid), bg)
@@ -459,14 +470,27 @@ internal object WmBubbleStyle {
     }
 
     /**
-     * Finds the whole inside of the speech bubble around [box] by flooding its fill colour (the text
-     * is just "holes" in that fill) and returns [l, t, r, b] of that inside, or null when this is not
-     * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
-     * recognised block ([allRects]) accounts for - i.e. text the OCR missed.
+     * Finds the whole inside of a closed speech balloon. It returns the interior for translation
+     * placement whether or not the first OCR pass read every glyph. [detectUncoveredInk] controls
+     * whether to check for missed lettering as well; the caller can use that signal for a slower OCR retry.
      */
-    fun bubbleInterior(bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true): IntArray? {
-        val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
-        if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
+    fun bubbleInterior(
+        bmp: Bitmap,
+        box: IntArray,
+        allRects: List<IntArray>,
+        detectUncoveredInk: Boolean = true
+    ): WmBubbleInterior? {
+        var bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
+        var seedPad = 3
+        if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) {
+            // Outlined/glowing lettering can contaminate the immediate ring. Accept a larger,
+            // uniform ring and start the flood outside the glow instead.
+            val rp = ((box[3] - box[1]) * 0.22f).toInt().coerceIn(6, 26)
+            val outer = ringMedian(bmp, box[0] - rp, box[1] - rp, box[2] + rp, box[3] + rp, 3)
+            if (!ringFlat(bmp, box[0] - rp, box[1] - rp, box[2] + rp, box[3] + rp, outer)) return null
+            bg = outer
+            seedPad = rp + 3
+        }
         val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
         val mx = maxOf(40, (bwid * 0.9f).toInt()); val my = maxOf(40, (bhei * 1.2f).toInt())
         val x0 = (box[0] - mx).coerceAtLeast(0); val y0 = (box[1] - my).coerceAtLeast(0)
@@ -484,8 +508,9 @@ internal object WmBubbleStyle {
             if (seen[i] || !near(px[i], bg)) return
             seen[i] = true; q[qt++] = i
         }
-        // seeds: a ring just outside the text box
-        val rl = box[0] - x0 - 3; val rt = box[1] - y0 - 3; val rr = box[2] - x0 + 3; val rb = box[3] - y0 + 3
+        // Seed just beyond the lettering and any narrow glow. The flood is stopped by the balloon outline.
+        val rl = box[0] - x0 - seedPad; val rt = box[1] - y0 - seedPad
+        val rr = box[2] - x0 + seedPad; val rb = box[3] - y0 + seedPad
         var sx = rl
         while (sx <= rr) { push(sx, rt); push(sx, rb); sx += 3 }
         var sy = rt
@@ -496,12 +521,12 @@ internal object WmBubbleStyle {
             val x = i % w; val y = i / w
             push(x + 1, y); push(x - 1, y); push(x, y + 1); push(x, y - 1)
         }
-        // bubbles are closed by their outline; a fill that reaches the window edges everywhere is just the page
+        // A true speech-balloon fill is enclosed; if it reaches the search-window edges this is just the page.
         var edge = 0
         for (x in 0 until w) { if (seen[x]) edge++; if (seen[(h - 1) * w + x]) edge++ }
         for (y in 0 until h) { if (seen[y * w]) edge++; if (seen[y * w + w - 1]) edge++ }
         if (edge * 100 > 2 * (w + h) * 15) return null
-        // extent of the fill, ignoring thin protrusions such as the bubble tail
+        // Extent of the fill, ignoring narrow protrusions such as the balloon tail.
         val rows = IntArray(h); val cols = IntArray(w)
         for (i in 0 until w * h) if (seen[i]) { rows[i / w]++; cols[i % w]++ }
         var maxRow = 0; for (v in rows) if (v > maxRow) maxRow = v
@@ -512,9 +537,9 @@ internal object WmBubbleStyle {
         var l = 0; while (l < w && cols[l] * 10 < maxCol * 3) l++
         var r = w - 1; while (r > l && cols[r] * 10 < maxCol * 3) r--
         if (r - l < 12 || b - t < 12) return null
-        // Real-time grouping only needs the bubble's inside, not proof of missed lettering.
-        if (!requireLeftover) return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
-        // leftover lettering: not background, not filled, not inside a recognised block
+        val bounds = intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
+        if (!detectUncoveredInk) return WmBubbleInterior(bounds, false)
+        // Look for non-background ink not covered by any recognised OCR block.
         var ink = 0
         for (y in t..b) for (x in l..r) {
             val i = y * w + x
@@ -526,8 +551,7 @@ internal object WmBubbleStyle {
             }
             if (!covered) ink++
         }
-        if (ink < 40) return null
-        return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
+        return WmBubbleInterior(bounds, ink >= 40)
     }
 
     private fun hits(others: List<IntArray>, x0: Int, y0: Int, x1: Int, y1: Int): Boolean {
