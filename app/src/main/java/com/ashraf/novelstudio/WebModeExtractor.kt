@@ -1891,12 +1891,35 @@ if(!window.__nsWmObs){
   }catch(e){}
 }
 var sc=window.__nsWmUseDocumentScroll?null:scroller(),vh=window.innerHeight||800,before,after,hh,bottom,step=__STEP__;
+var firstScanStep=!window.__nsWmScanStarted;
+if(firstScanStep){
+  window.__nsWmScanStarted=true;
+  // Save BOTH scroll positions before moving to the start. A full-page scan must not depend
+  // on where the reader happened to be when Scan was pressed (often near the chapter end).
+  if(window.__nsWmY===undefined)window.__nsWmY=window.pageYOffset||de.scrollTop||0;
+  if(window.__nsWmRootScrollBehavior===undefined)window.__nsWmRootScrollBehavior=document.documentElement.style.scrollBehavior||'';
+  if(window.__nsWmBodyScrollBehavior===undefined)window.__nsWmBodyScrollBehavior=document.body?(document.body.style.scrollBehavior||''):'';
+  document.documentElement.style.scrollBehavior='auto';
+  if(document.body)document.body.style.scrollBehavior='auto';
+  if(sc){
+    if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
+    if(window.__nsWmScrollerBehavior===undefined)window.__nsWmScrollerBehavior=sc.style.scrollBehavior||'';
+    sc.style.scrollBehavior='auto';
+    sc.scrollTop=0;
+  }
+  // Avoid CSS scroll-behavior:smooth turning each requested scan step into a tiny animation.
+  window.scrollTo(0,0);
+}
 if(sc){
   if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
-  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*step);after=sc.scrollTop;hh=sc.scrollHeight;
-  // If the selected inner pane refuses to move before its real bottom, fall back to document
+  before=sc.scrollTop;vh=sc.clientHeight;
+  // The first call intentionally uses step=0 to sample the top viewport; do not mistake
+  // that deliberate no-op for a broken inner scroller and switch to document scrolling.
+  if(step>0)sc.scrollTop=before+Math.round(vh*step);
+  after=sc.scrollTop;hh=sc.scrollHeight;
+  // If the selected inner pane refuses a requested move before its real bottom, fall back to document
   // scrolling rather than falsely claiming that discovery reached the end.
-  if(after===before&&before+vh<hh-4){
+  if(step>0&&after===before&&before+vh<hh-4){
     var docBefore=window.pageYOffset||de.scrollTop||0;
     if(window.__nsWmY===undefined)window.__nsWmY=docBefore;
     window.scrollBy(0,Math.round((window.innerHeight||vh)*step));
@@ -1971,10 +1994,24 @@ var e=document.getElementById('__ns_wm_overlay');if(e)e.style.visibility='';retu
 """
 
         private const val JS_RESTORE = """
+var root=document.documentElement,body=document.body;
+if(root)root.style.scrollBehavior='auto';
+if(body)body.style.scrollBehavior='auto';
 var sc=scroller();
-if(sc&&window.__nsWmS!==undefined)sc.scrollTop=window.__nsWmS;
+if(sc){
+  sc.style.scrollBehavior='auto';
+  if(window.__nsWmS!==undefined)sc.scrollTop=window.__nsWmS;
+}
 if(window.__nsWmY!==undefined)window.scrollTo(0,window.__nsWmY);
-try{delete window.__nsWmY;delete window.__nsWmS;delete window.__nsWmUseDocumentScroll;}catch(e){}
+// Restore the site's original inline scroll behavior only after the saved position is restored.
+if(root&&window.__nsWmRootScrollBehavior!==undefined)root.style.scrollBehavior=window.__nsWmRootScrollBehavior;
+if(body&&window.__nsWmBodyScrollBehavior!==undefined)body.style.scrollBehavior=window.__nsWmBodyScrollBehavior;
+if(sc&&window.__nsWmScrollerBehavior!==undefined)sc.style.scrollBehavior=window.__nsWmScrollerBehavior;
+try{
+  delete window.__nsWmY;delete window.__nsWmS;delete window.__nsWmUseDocumentScroll;
+  delete window.__nsWmScanStarted;delete window.__nsWmRootScrollBehavior;
+  delete window.__nsWmBodyScrollBehavior;delete window.__nsWmScrollerBehavior;
+}catch(e){}
 return '1';
 """
 
