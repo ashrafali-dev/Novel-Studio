@@ -116,7 +116,9 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                 seenNumbers.add(no)
                 val end = if (k + 1 < ms.size) ms[k + 1].range.first else text.length
                 val body = text.substring(m.range.last + 1, end).trim()
-                if (body.isNotEmpty()) byNo[no] = body
+                // Older prompts/models used a tilde as a fake translation for skipped OCR.
+                // Treat it as an empty answer so it is never painted over a comic bubble.
+                if (body.isNotEmpty() && !body.matches(Regex("[~～]+"))) byNo[no] = body
             }
 
             // Full-chapter replies include the title as [001], so a response that starts at [001]
