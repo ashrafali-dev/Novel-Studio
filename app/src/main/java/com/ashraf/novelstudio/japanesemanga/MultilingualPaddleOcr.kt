@@ -42,7 +42,7 @@ internal class MultilingualPaddleModelManager(context: Context) {
 
     fun isDownloading() = busy
     fun hasFiles(): Boolean = SPECS.any { it.path.startsWith("paddle/") && safeFile(it.path)?.exists() == true }
-    fun packageBytes(): Long = SPECS.sumOf { safeFile(it.path)?.takeIf(File::isFile)?.length() ?: 0L }
+    fun packageBytes(): Long = SPECS.sumOf { safeFile(it.path)?.takeIf { file -> file.isFile }?.length() ?: 0L }
 
     @Synchronized fun isInstalled(): Boolean {
         if (!marker.isFile) return false
