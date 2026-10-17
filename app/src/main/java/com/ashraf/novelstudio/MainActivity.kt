@@ -812,8 +812,28 @@ class MainActivity : Activity() {
         }
         Log.i("NovelStudioOCR", "Read-ahead batch: incomingPanels=${panels.size}, distinctPanels=${rtAheadHoldPanelUrls.size}, bubbles=${batch.size}, held=${rtAheadHold.size}, complete=$completePanelBatch, force=$force")
 
-        // Prefer one complete request for the whole ahead window. A 10-panel comic usually fits in
-        // one 30-bubble request; only unusually dialogue-heavy windows are split into bounded chunks.
+        if (!completePanelBatch) {
+            // Hold the ENTIRE set, even when one panel has ten bubbles. The grouping boundary is
+            // ten distinct source panels, not ten extracted speech bubbles.
+            for (ix in batch.indices) rtAheadHold.add(batch[ix] to batchTop[ix])
+            val nowMs = System.currentTimeMillis()
+            if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
+            val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 6000L - (nowMs - rtAheadHoldSince)))
+            rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
+            val flush = Runnable {
+                rtAheadHoldFlushRunnable = null
+                if (rtAheadHold.isNotEmpty()) {
+                    queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
+                }
+            }
+            rtAheadHoldFlushRunnable = flush
+            handler.postDelayed(flush, delayMs)
+            Log.i("NovelStudioOCR", "Read-ahead accumulating: panels=${rtAheadHoldPanelUrls.size}/$REALTIME_AHEAD_PANEL_BATCH_SIZE, bubbles=${rtAheadHold.size}")
+            return
+        }
+
+        // Prefer one request for each complete ten-panel unit. Very dialogue-heavy units can
+        // be split, but a small tail is merged back into the same request when practical.
         val chunkSize = (Prefs.get(this, "rtAheadBatch", "40").toIntOrNull() ?: 40).coerceIn(15, 40)
         val chunks = ArrayList<MutableList<Int>>()
         var i = 0
@@ -822,30 +842,11 @@ class MainActivity : Activity() {
             i += chunkSize
         }
         val minChunk = minOf(10, chunkSize)
-        if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
-            if (!completePanelBatch) {
-                // Too small to be worth a request of its own: hold it for the next OCR round.
-                val rest = chunks.removeAt(chunks.size - 1)
-                for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
-                val nowMs = System.currentTimeMillis()
-                if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
-                // Leave a partial group open while the next OCR pass looks for more panels.
-                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 6000L - (nowMs - rtAheadHoldSince)))
-                rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
-                val flush = Runnable {
-                    rtAheadHoldFlushRunnable = null
-                    if (rtAheadHold.isNotEmpty()) {
-                        queueRealtimeAheadTranslations(novelWv.url.orEmpty(), emptyList(), force = true)
-                    }
-                }
-                rtAheadHoldFlushRunnable = flush
-                handler.postDelayed(flush, delayMs)
-            } else if (chunks.size > 1) {
-                // The tail belongs to this complete ten-panel unit. Merge it rather than
-                // creating a second request for the last few bubbles.
-                val last = chunks.removeAt(chunks.size - 1)
-                chunks.last().addAll(last)
-            }
+        if (chunks.size > 1 && chunks.last().size < minChunk) {
+            // The tail belongs to this complete ten-panel unit. Merge it rather than creating
+            // a second request for the last few bubbles.
+            val last = chunks.removeAt(chunks.size - 1)
+            chunks.last().addAll(last)
         }
         for (chunk in chunks) {
             val layout = WebModeLayout(0, chunk.map { batch[it] })
