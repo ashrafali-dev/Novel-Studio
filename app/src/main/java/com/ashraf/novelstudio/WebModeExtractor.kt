@@ -1467,7 +1467,18 @@ internal class WebModeExtractor(
                     cx = (rb[0] + rb[2]) / 2f; cy = (rb[1] + rb[3]) / 2f
                     bw = (rb[2] - rb[0]) - 4f; bh = (rb[3] - rb[1]) - 4f
                 }
-                val eraseBox = refinedRemovalBox[i] ?: rects[i]
+                val rawEraseBox = refinedRemovalBox[i] ?: rects[i]
+                // Keep a small ring around the recognized glyphs so antialiasing and tiny shadows
+                // can be cleaned too. Pixel masking still removes only text-like pixels inside this
+                // tight area; this is deliberately not the enlarged speech-bubble placement box.
+                val erasePad = (((refinedFont[i] ?: b.fontPx).takeIf { it > 0f }
+                    ?: minOf(b.w, b.h)) * 0.12f).toInt().coerceIn(1, 4)
+                val eraseBox = intArrayOf(
+                    (rawEraseBox[0] - erasePad).coerceAtLeast(0),
+                    (rawEraseBox[1] - erasePad).coerceAtLeast(0),
+                    (rawEraseBox[2] + erasePad).coerceAtMost(bmp.width),
+                    (rawEraseBox[3] + erasePad).coerceAtMost(bmp.height)
+                )
                 val nb = WmBubble(
                     src = src,
                     cx = (x0 + cx * k) / fullW, cy = (y0 + cy * k) / fullH,
