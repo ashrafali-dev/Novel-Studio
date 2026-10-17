@@ -3,6 +3,7 @@ package com.ashraf.novelstudio
 import android.graphics.Bitmap
 import android.util.Log
 import com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime
+import com.ashraf.novelstudio.japanesemanga.MultilingualPaddleOcr
 import org.json.JSONObject
 
 /**
