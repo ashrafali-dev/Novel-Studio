@@ -1331,6 +1331,8 @@ internal class WebModeExtractor(
             // Keep the recognised text and geometry aligned with every remaining block.
             val refinedText = arrayOfNulls<String>(blocks.size)
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
+            // Full interior of a safe speech balloon, used only for translation placement.
+            val placementBox = arrayOfNulls<IntArray>(blocks.size)
             // Translation boxes may expand to a whole speech bubble. Keep source-glyph bounds
             // separately so TextRemover never has to scan/erase the oversized placement box.
             val refinedRemovalBox = arrayOfNulls<IntArray>(blocks.size)
@@ -1341,11 +1343,22 @@ internal class WebModeExtractor(
             for (i in blocks.indices) {
                 if (consumed[i]) continue
                 val b = blocks[i]
-                if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
+                if (Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
-                val inter: IntArray = (try {
-                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = !fastMode)
-                } catch (_: Exception) { null }) ?: continue
+                // Find a closed balloon even when OCR read every glyph. This area is for placement;
+                // source cleanup continues to use the tight OCR rectangles stored separately below.
+                val interior = try {
+                    WmBubbleStyle.bubbleInterior(
+                        bmp, rects[i], rects, detectUncoveredInk = !fastMode
+                    )
+                } catch (_: Exception) { null } ?: continue
+                val inter = interior.bounds
+                placementBox[i] = inter
+                // Vertical Japanese/Korean columns need the bubble placement, but must not be joined
+                // using horizontal line-reading heuristics.
+                if (b.vertical) continue
+                if (!fastMode && !interior.hasUncoveredInk) continue
+
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
 
@@ -1462,10 +1475,15 @@ internal class WebModeExtractor(
                 }
                 val text = (refinedText[i] ?: b.text).replace(NEWLINES, " ").trim()
                 val rb = refinedBox[i]
-                if (rb != null) {
-                    // the bubble's whole inside (kept a little off its outline)
-                    cx = (rb[0] + rb[2]) / 2f; cy = (rb[1] + rb[3]) / 2f
-                    bw = (rb[2] - rb[0]) - 4f; bh = (rb[3] - rb[1]) - 4f
+                val pb = placementBox[i]
+                val targetBox = rb ?: pb
+                if (targetBox != null) {
+                    // Keep translated text inside the detected balloon, not inside the much smaller
+                    // original-glyph box. Two-pixel inset leaves the balloon outline visible.
+                    cx = (targetBox[0] + targetBox[2]) / 2f
+                    cy = (targetBox[1] + targetBox[3]) / 2f
+                    bw = (targetBox[2] - targetBox[0]) - 4f
+                    bh = (targetBox[3] - targetBox[1]) - 4f
                 }
                 val rawEraseBox = refinedRemovalBox[i] ?: rects[i]
                 // Keep a small ring around the recognized glyphs so antialiasing and tiny shadows
