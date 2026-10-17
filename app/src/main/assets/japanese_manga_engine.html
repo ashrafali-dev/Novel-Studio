@@ -321,9 +321,10 @@
         if(text)regions.push({order:0,text,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
       }
       const vertical=regions.filter(r=>r.vertical).length>regions.length*0.45;
+      const rtl=language==='chinese';
       regions.sort((a,b)=>{
-        if(vertical){const dx=b.x-a.x;return Math.abs(dx)>Math.max(a.w,b.w)*0.55?dx:a.y-b.y;}
-        const dy=a.y-b.y;return Math.abs(dy)>Math.max(a.h,b.h)*0.7?dy:b.x-a.x;
+        if(vertical){const dx=rtl?b.x-a.x:a.x-b.x;return Math.abs(dx)>Math.max(a.w,b.w)*0.55?dx:a.y-b.y;}
+        const dy=a.y-b.y;return Math.abs(dy)>Math.max(a.h,b.h)*0.7?dy:(rtl?b.x-a.x:a.x-b.x);
       });
       regions.forEach((r,i)=>r.order=i+1);
       bridge('onOcrResult',id,JSON.stringify({width:image.naturalWidth,height:image.naturalHeight,verticalReading:vertical,regions:regions}));
