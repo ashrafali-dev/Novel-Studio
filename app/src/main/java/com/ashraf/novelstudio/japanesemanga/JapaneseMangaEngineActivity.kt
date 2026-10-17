@@ -93,7 +93,7 @@ class JapaneseMangaEngineActivity : Activity() {
             setBackgroundColor(0xFF10131C.toInt())
         }
         root.addView(TextView(this).apply {
-            text = "日本語 Manga Engine"
+            text = "Manga OCR Engines"
             textSize = 20f
             setTextColor(0xFFF2F4FA.toInt())
             gravity = Gravity.CENTER_VERTICAL
@@ -103,7 +103,7 @@ class JapaneseMangaEngineActivity : Activity() {
             textSize = 12f
             setTextColor(0xFFBEC7D8.toInt())
             setPadding(0, dp(2), 0, dp(7))
-            text = "ঐচ্ছিক মাঙ্গা OCR ইঞ্জিন"
+            text = "ঐচ্ছিক OCR প্যাক · Japanese Manga + Multilingual PaddleOCR"
         }
         root.addView(status, LinearLayout.LayoutParams(-1, -2))
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
