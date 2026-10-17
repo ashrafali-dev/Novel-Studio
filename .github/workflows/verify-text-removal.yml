@@ -28,8 +28,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      # The app checks release-signing configuration during Gradle configuration,
-      # even for debug tasks, so validation must prepare the same credentials as build.yml.
+      # The app requires release-signing config even when configuring debug tasks.
       - name: Prepare release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -57,7 +56,15 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleDebug --no-daemon
 
+      - name: Build signed release APK
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/novelstudio-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon
+
       - uses: actions/upload-artifact@v4
         with:
-          name: NovelStudio-text-removal-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: NovelStudio-text-removal-signed-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
