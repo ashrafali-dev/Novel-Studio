@@ -2037,7 +2037,7 @@ return t.length>=40?'TXT:'+t:'';
         (Prefs.get(this, "scanStepMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
 
     private fun menuScanIntervalLabel(): String =
-        "📸 Scan capture interval: " + scanStepMsPref().let { if (it == 0L) "Auto (fast)" else "$it ms" }
+        "📸 Scan capture interval: " + scanStepMsPref().let { if (it == 0L) "Auto (fast, learns per site)" else "max $it ms" }
 
     private fun menuExtraChatDelayLabel(): String =
         "⏱ Extra request delay: " + when (chatExtraDelayMs) {
@@ -7559,22 +7559,23 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "📝 Edit Real-time Prompt", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
-            menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel()
+            menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
+            "🖼 Scan Report: images (Copy)"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
-        val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
+        val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
         val icons = mapOf(
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -7695,6 +7696,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
                 }
+                22 -> { dlg.dismiss(); diagnosePage() }
+                42 -> { dlg.dismiss(); diagnoseScanImages() }
                 41 -> {
                     // Wait after every scroll step of a full scan. Raise it for sites whose images only
                     // load once they reach the screen; Auto keeps the fast built-in cadence.
@@ -7831,6 +7834,57 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 rep.ifBlank { "(Empty — did the chatbot page finish loading?)" }
             copy(report)
             toast("🔍 Chatbot report copied — paste it here")
+        }
+    }
+
+    // ---------------------------------------------------------------- image / scan diagnosis
+    // Copies what the scanner can see about the images of a webtoon page: how each one is loaded
+    // (src, lazy attributes, loading=lazy), sizes, whether it has finished, and the current scan interval.
+    private fun diagnoseScanImages() {
+        val js = """
+            (function(){
+              var out=[];
+              var ims=Array.from(document.images);
+              var vh=window.innerHeight||0,wy=window.pageYOffset||0;
+              out.push('URL: '+location.href);
+              out.push('title: '+document.title);
+              out.push('readyState: '+document.readyState+' | viewport h='+vh+' | scrollY='+Math.round(wy)+' | doc h='+Math.round(document.documentElement.scrollHeight));
+              var lazyAttr=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-echo','data-actualsrc','data-orig-src','data-pc-src'];
+              var nLoaded=0,nEmpty=0,nLazyNative=0,nLazyAttr=0,nPending=0;
+              ims.forEach(function(im){
+                var cs=im.currentSrc||im.src||'';
+                if(im.complete&&im.naturalWidth>0)nLoaded++;
+                if(!cs)nEmpty++;
+                if((im.getAttribute('loading')||'')==='lazy')nLazyNative++;
+                for(var i=0;i<lazyAttr.length;i++){if(im.getAttribute(lazyAttr[i])){nLazyAttr++;break;}}
+                if(cs&&!im.complete)nPending++;
+              });
+              out.push('images: '+ims.length+' | loaded: '+nLoaded+' | no src yet: '+nEmpty+' | still loading: '+nPending+' | loading=lazy: '+nLazyNative+' | with data-src style attr: '+nLazyAttr);
+              out.push('iframes: '+document.querySelectorAll('iframe').length+', canvas: '+document.querySelectorAll('canvas').length+', picture: '+document.querySelectorAll('picture').length);
+              out.push('IntersectionObserver: '+(typeof IntersectionObserver!=='undefined'));
+              var scripts=Array.from(document.scripts).map(function(s){return s.src||'';}).filter(function(u){return /lazy|intersect|observer|lozad|unveil|echo|reader|viewer/i.test(u);}).slice(0,8);
+              out.push('lazy/reader scripts: '+(scripts.length?scripts.join(' , '):'none found'));
+              out.push('app scan counters: mutations='+(window.__nsWmMut||0)+' loads='+(window.__nsWmLoad||0));
+              out.push('--- images that are big enough to be panels (first 40) ---');
+              var n=0;
+              for(var k=0;k<ims.length&&n<40;k++){
+                var im=ims[k],r=im.getBoundingClientRect();
+                if(r.width<120&&(im.naturalWidth||0)<120)continue;
+                n++;
+                var attrs=[];
+                lazyAttr.forEach(function(a){var v=im.getAttribute(a);if(v)attrs.push(a+'='+v.slice(-60));});
+                out.push('#'+n+' top='+Math.round(r.top+wy)+' '+Math.round(r.width)+'x'+Math.round(r.height)+' nat='+(im.naturalWidth||0)+'x'+(im.naturalHeight||0)+' complete='+im.complete+' loading='+(im.getAttribute('loading')||'-')+' src=...'+(im.currentSrc||im.src||'(empty)').slice(-60)+(attrs.length?' | '+attrs.join(' | '):'')+' | class='+String(im.className).slice(0,40));
+              }
+              return out.join('\n');
+            })()
+        """.trimIndent()
+        novelWv.evaluateJavascript(js) { r ->
+            val page = try { JSONArray("[" + (r ?: "null") + "]").optString(0, "") } catch (e: Exception) { "" }
+            val host = try { Uri.parse(novelWv.url ?: "").host.orEmpty().removePrefix("www.") } catch (e: Exception) { "" }
+            val state = "app: WebView " + webViewVer() + " | scanStepMs(menu)=" + scanStepMsPref() +
+                " | learned for site=" + Prefs.get(this, "scanStepHost:" + host, "-") + " | webMode=" + webModeOn()
+            copy(state + "\n" + page.ifBlank { "(Empty — did the page finish loading?)" })
+            toast("🖼 Scan report copied — paste it here")
         }
     }
 

@@ -424,19 +424,83 @@ internal class WebModeExtractor(
                         else -> 250L
                     }
                     val waitMs = if (userStepMs > 0L) userStepMs else autoWaitMs
-                    handler.postDelayed({ tick(n + 1, count, st) }, waitMs)
+                    // Event-based: leave early once the page's images reacted and went quiet, wait the full
+                    // interval if nothing happened, and linger (bounded) while visible images are still loading.
+                    settleThen(waitMs, o.optInt("m", 0), o.optInt("l", 0)) { tick(n + 1, count, st) }
                 }
             }
         }
 
-        private fun scanStepMs(): Long =
-            (Prefs.get(wv.context, "scanStepMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
+        private var slowTicks = 0
+        private var capHits = 0
+
+        private fun scanHost(): String = try {
+            android.net.Uri.parse(wv.url.orEmpty()).host.orEmpty().removePrefix("www.")
+        } catch (_: Exception) { "" }
+
+        /** Menu value if set; otherwise the interval learned for this site; otherwise 0 (automatic). */
+        private fun scanStepMs(): Long {
+            val global = (Prefs.get(wv.context, "scanStepMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
+            if (global > 0L) return global
+            val host = scanHost()
+            if (host.isBlank()) return 0L
+            return (Prefs.get(wv.context, "scanStepHost:$host", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
+        }
+
+        /** A site that kept needing extra time during this scan gets a longer default next time (Auto mode only). */
+        private fun learnScanInterval() {
+            try {
+                val global = (Prefs.get(wv.context, "scanStepMs", "0").toLongOrNull() ?: 0L)
+                val host = scanHost()
+                if (global > 0L || host.isBlank() || slowTicks < 3) return
+                val presets = longArrayOf(150L, 300L, 500L, 800L, 1_200L, 2_000L)
+                val cur = scanStepMs()
+                val next = presets.firstOrNull { it > cur } ?: return
+                Prefs.put(wv.context, "scanStepHost:$host", next.toString())
+            } catch (_: Exception) { }
+        }
+
+        private fun settleThen(baseMs: Long, startMut: Int, startLoad: Int, next: () -> Unit) {
+            val t0 = android.os.SystemClock.uptimeMillis()
+            val extra = if (capHits >= 3) 0L else 1_200L
+            val hardCap = baseMs + extra
+            var lastM = startMut
+            var lastL = startLoad
+            var activity = false
+            var lastAct = t0
+            var counted = false
+            fun probe() {
+                if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return }
+                wv.evaluateJavascript(wrap(JS_SETTLE)) { raw ->
+                    if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val el = now - t0
+                    val o = parseJson(raw)
+                    if (o == null) {
+                        handler.postDelayed({ next() }, (baseMs - el).coerceAtLeast(0L))
+                        return@evaluateJavascript
+                    }
+                    val m = o.optInt("m", 0); val l = o.optInt("l", 0); val p = o.optInt("p", 0)
+                    if (m != lastM || l != lastL) { activity = true; lastAct = now; lastM = m; lastL = l }
+                    val quiet = now - lastAct >= 100L
+                    if (el >= baseMs && !counted && (p > 0 || (activity && !quiet))) { counted = true; slowTicks++ }
+                    when {
+                        el >= hardCap -> { if (p > 0 || (activity && !quiet)) capHits++; next() }
+                        activity && quiet && p == 0 -> next()
+                        el >= baseMs && p == 0 && !activity -> next()
+                        else -> handler.postDelayed({ probe() }, 60L)
+                    }
+                }
+            }
+            handler.postDelayed({ probe() }, 50L)
+        }
 
         private fun restoreScroll() {
             try { wv.evaluateJavascript(wrap(LIB + JS_RESTORE), null) } catch (_: Exception) {}
         }
 
         private fun finishDiscovery() {
+            learnScanInterval()
             val collectScript = if (req.visibleOnly) JS_COLLECT_VISIBLE else JS_COLLECT
             wv.evaluateJavascript(wrap(LIB + collectScript)) { raw ->
                 restoreScroll()
@@ -1811,6 +1875,21 @@ function cands(sc, includeBackgrounds){
 """
 
         private const val JS_STEP = """
+if(!window.__nsWmObs){
+  window.__nsWmObs=1;window.__nsWmMut=0;window.__nsWmLoad=0;
+  try{
+    // Activity signals for the scan: an <img> being added, an image attribute changing, an image finishing its load.
+    new MutationObserver(function(ms){
+      for(var i=0;i<ms.length;i++){var m=ms[i];
+        if(m.type==='attributes'){window.__nsWmMut++;continue;}
+        for(var j=0;j<m.addedNodes.length;j++){var nd=m.addedNodes[j];
+          if(nd.nodeType===1&&(nd.tagName==='IMG'||(nd.querySelector&&nd.querySelector('img')))){window.__nsWmMut++;break;}}
+      }
+    }).observe(document.documentElement,{subtree:true,childList:true,attributes:true,
+      attributeFilter:['src','srcset','data-src','data-original','data-lazy-src','data-lazy','data-url']});
+    window.addEventListener('load',function(e){if(e&&e.target&&e.target.tagName==='IMG')window.__nsWmLoad++;},true);
+  }catch(e){}
+}
 var sc=window.__nsWmUseDocumentScroll?null:scroller(),vh=window.innerHeight||800,before,after,hh,bottom,step=__STEP__;
 if(sc){
   if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
@@ -1840,7 +1919,18 @@ if(probeBg)window.__nsWmStepBgProbeAt=now;
 var c=cands(sc,probeBg),p=0;
 for(var i=0;i<c.length;i++)if(!c[i].d)p++;
 var scanRefs=c.slice(0,600).map(function(x){return {s:x.s,t:x.t,l:x.l,w:x.w,h:x.h};});
-return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,imgs:scanRefs});
+return JSON.stringify({n:c.length,p:p,bottom:bottom,ready:document.readyState,imgs:scanRefs,m:window.__nsWmMut||0,l:window.__nsWmLoad||0});
+"""
+
+        // Cheap probe used between scroll steps: activity counters + images near the viewport still loading.
+        private const val JS_SETTLE = """
+var vhh=window.innerHeight||800,p=0,ims=document.images;
+for(var i=0;i<ims.length;i++){var im=ims[i];
+  if(!(im.currentSrc||im.src)||im.complete)continue;
+  var r=im.getBoundingClientRect();
+  if(r.bottom>-vhh*0.5&&r.top<vhh*1.5)p++;
+}
+return JSON.stringify({m:window.__nsWmMut||0,l:window.__nsWmLoad||0,p:p});
 """
 
         private const val JS_FORCE_INFO = """
