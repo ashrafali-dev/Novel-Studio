@@ -3655,6 +3655,16 @@ return t.length>=40?'TXT:'+t:'';
             aheadOcrPct = -1
             clearWebModeProgress()
         }
+        if (m != Mode.CHAT && mode == Mode.CHAT &&
+            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
+            // Re-arm visible OCR immediately when returning from full-screen chat; do not wait for
+            // the ten-second periodic recheck because the visible scan was cancelled on entry.
+            deepSeekVisibleSignature = ""
+            deepSeekPendingSig = ""
+            deepSeekPendingSince = 0L
+            deepSeekLastOcrAtMs = 0L
+            deepSeekNoImageTriedUrl = ""
+        }
         val keepFrame = mode != m && beginModeTransition()
         mode = m
         modeBtn.setImageDrawable(IconDrawable(when (m) {
