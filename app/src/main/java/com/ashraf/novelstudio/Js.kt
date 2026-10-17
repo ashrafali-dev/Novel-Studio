@@ -2,6 +2,52 @@ package com.ashraf.novelstudio
 
 // All the JavaScript we inject into pages lives here.
 object Js {
+    /** Extra wait (ms) between the text landing in the chat box and the Send click. 0 = click as soon as Send is enabled. */
+    @Volatile var sendHoldMs: Long = 0L
+
+    /**
+     * Document-start script for the novel/webtoon pane ("Force-load images" menu switch, off by default).
+     * Makes lazy image loaders think every image is already on screen, so a scan does not need the page
+     * to be scrolled before images get their real URL: loading=lazy is forced to eager and every
+     * IntersectionObserver reports its targets as intersecting. Written defensively: any failure leaves the page untouched.
+     */
+    const val FORCE_LOAD = """
+(function(){
+  if(window.__nsForceLoad)return; window.__nsForceLoad=1;
+  try{
+    var d=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'loading');
+    if(d&&d.set){Object.defineProperty(HTMLImageElement.prototype,'loading',{get:function(){return 'eager';},set:function(){},configurable:true});}
+    var sa=Element.prototype.setAttribute;
+    Element.prototype.setAttribute=function(n,v){
+      if(this instanceof HTMLImageElement&&String(n).toLowerCase()==='loading')v='eager';
+      return sa.call(this,n,v);
+    };
+  }catch(e){}
+  try{
+    var IO=window.IntersectionObserver;
+    if(IO){
+      var Fake=function(cb,opts){
+        var real=new IO(cb,opts),self=this;
+        function entry(el){
+          var r=el.getBoundingClientRect();
+          return {target:el,isIntersecting:true,intersectionRatio:1,time:performance.now(),
+            boundingClientRect:r,intersectionRect:r,rootBounds:null};
+        }
+        this.root=real.root;this.rootMargin=real.rootMargin;this.thresholds=real.thresholds;
+        this.observe=function(el){
+          real.observe(el);
+          setTimeout(function(){try{cb([entry(el)],self);}catch(e){}},0);
+        };
+        this.unobserve=function(el){real.unobserve(el);};
+        this.disconnect=function(){real.disconnect();};
+        this.takeRecords=function(){return real.takeRecords();};
+      };
+      Fake.prototype=IO.prototype;
+      window.IntersectionObserver=Fake;
+    }
+  }catch(e){}
+})();
+"""
     val DARK_ON = "(function(){var id='__nsdark';if(document.getElementById(id))return;var s=document.createElement('style');s.id=id;" +
         "s.textContent='html{filter:invert(1) hue-rotate(180deg)!important;background:#fff}img,video,picture,canvas{filter:invert(1) hue-rotate(180deg)!important}';" +
         "(document.head||document.documentElement).appendChild(s);})();"
@@ -290,6 +336,9 @@ function __box(){
   var old=__reply(p);
   if(old){var ob=p.b?(old.querySelector(p.b)||old):old;len0=((ob.innerText||ob.textContent||'').trim().length);}
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
+  // Never put a new text into the composer while this chat is still producing an answer.
+  var holdMs=__HOLD__, forceSend=__FORCE__;
+  if(doSend&&!forceSend){try{if(__stream(p))return 'busy';}catch(e){}}
   var box=__box();
   if(!box) return 'nobox';
   // Keep the soft keyboard down: while the app drives the composer it is marked inputmode=none,
@@ -374,7 +423,8 @@ function __box(){
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
     var started=Date.now();
-    var readyDeadline=started+300;   // same worst case as before, but Send is pressed the moment it is enabled
+    var readyDeadline=started+300;
+    var landedAt=0;                  // when the text was first seen committed in the editor (start of the hold)   // same worst case as before, but Send is pressed the moment it is enabled
     var textRepairAttempts=0;
     function keyEnter(){
       try{box.focus();}catch(e){}
@@ -454,6 +504,9 @@ function __box(){
         }
         return;
       }
+      // User-set pause between "text is in the box" and the Send click (0 = no pause).
+      if(!landedAt){landedAt=Date.now();readyDeadline=Math.max(readyDeadline,landedAt+holdMs+300);}
+      if(holdMs>0&&Date.now()-landedAt<holdMs){setTimeout(waitUntilReady,Math.max(5,Math.min(40,holdMs-(Date.now()-landedAt)+1)));return;}
       var btn=__findSend(p,box,snap);
       if(btn&&__ok(btn)){
         if(__pressFull(btn)){
@@ -494,8 +547,11 @@ function __box(){
 """
 
     // type the text into the chat box (and press send if asked). Returns "ok:<assistant message count>" or "nobox"
-    fun send(text: String, doSend: Boolean): String =
-        run(SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString()))
+    fun send(text: String, doSend: Boolean, force: Boolean = false): String =
+        run(
+            SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString())
+                .replace("__HOLD__", sendHoldMs.coerceIn(0L, 15_000L).toString()).replace("__FORCE__", force.toString())
+        )
 
     /** Send status plus elapsed milliseconds, so a queued job can wait for a just-submitted message. */
     fun sendState(): String = run(

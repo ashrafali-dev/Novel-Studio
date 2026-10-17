@@ -43,7 +43,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import android.widget.AbsListView
 import android.widget.ArrayAdapter
@@ -748,7 +750,50 @@ class MainActivity : Activity() {
     private var rtAheadHoldSince = 0L
     private val rtAheadHoldFlushMs = 700L
 
+    @Volatile private var rtScrollCssPx = 0
+
+    /** Reader scroll position in CSS px (document, or the biggest scrolled inner container). Async: feeds the next call. */
+    private fun refreshRtScroll() {
+        try {
+            novelWv.evaluateJavascript(
+                "(function(){var m=0;try{var a=[document.scrollingElement||document.documentElement,document.body];" +
+                    "var d=document.querySelectorAll('div,main,section');" +
+                    "for(var i=0;i<d.length&&i<3000;i++){var e=d[i];if(e.scrollTop>0&&e.scrollHeight>e.clientHeight+300)a.push(e);}" +
+                    "for(var j=0;j<a.length;j++){var s=(a[j]&&a[j].scrollTop)||0;if(s>m)m=s;}}catch(e){}return Math.round(m);})()"
+            ) { raw -> raw?.trim()?.toDoubleOrNull()?.let { rtScrollCssPx = it.toInt() } }
+        } catch (_: Exception) { }
+    }
+
+    /**
+     * Read-ahead queue order follows the reader: retries first, then panels at / below the screen nearest
+     * first, then the ones behind. Tasks that have not started and are more than ~4 screens behind the
+     * reader are dropped (cached OCR queues them again if the user scrolls back).
+     */
+    private fun reprioritizeAheadQueue() {
+        refreshRtScroll()
+        val ref = rtScrollCssPx
+        if (ref <= 0 || rtAheadTranslationQueue.isEmpty()) return
+        val farBehind = ref - 3000
+        val qi = rtAheadTranslationQueue.iterator()
+        while (qi.hasNext()) {
+            val t = qi.next()
+            if (t.attempts == 0 && !t.id.endsWith("-r") && t.top < farBehind) {
+                rtAheadTranslationQueuedIds.remove(t.id)
+                qi.remove()
+            }
+        }
+        if (rtAheadTranslationQueue.size < 2) return
+        rtAheadTranslationQueue.sortWith(
+            compareBy<RtAheadTranslationTask>(
+                { if (it.attempts > 0 || it.id.endsWith("-r")) 0 else 1 },
+                { if (it.top >= ref - 400) 0 else 1 },
+                { kotlin.math.abs(it.top - ref) }
+            )
+        )
+    }
+
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
+        refreshRtScroll()
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         val page = cleanUrl(pageUrl)
         if (page != rtAheadHoldPage) { rtAheadHold.clear(); rtAheadHoldPage = page }
@@ -1089,6 +1134,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             scheduleRealtimeAheadPump(earliestSend - now)
             return
         }
+        reprioritizeAheadQueue()
         while (rtAheadTranslationQueue.isNotEmpty()) {
             val queued = rtAheadTranslationQueue.removeAt(0)
             rtAheadTranslationQueuedIds.remove(queued.id)
@@ -1172,19 +1218,30 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             updateProgressUi()
             chatSendingAtMs = System.currentTimeMillis()
             suppressImeForAutoSend()
-            worker.evaluateJavascript(Js.send(prompt, true)) { raw ->
-                quietChatKeyboard()
-                if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy) return@evaluateJavascript
-                val sent = decode(raw)
-                if (!sent.startsWith("ok:")) {
-                    failRealtimeAheadTranslation(seq, task, jobKey)
-                    return@evaluateJavascript
+            fun dispatchAheadSend(busyTries: Int) {
+                worker.evaluateJavascript(Js.send(prompt, true, force = busyTries >= 120)) { raw ->
+                    quietChatKeyboard()
+                    if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy) return@evaluateJavascript
+                    val sent = decode(raw)
+                    if (sent.trim().startsWith("busy")) {
+                        // This chat is still answering: wait, never type a second text over it.
+                        chatSendingAtMs = 0L
+                        handler.postDelayed({
+                            if (seq == rtAheadWorkerSeq && rtAheadWorkerBusy) dispatchAheadSend(busyTries + 1)
+                        }, 500L)
+                        return@evaluateJavascript
+                    }
+                    if (!sent.startsWith("ok:")) {
+                        failRealtimeAheadTranslation(seq, task, jobKey)
+                        return@evaluateJavascript
+                    }
+                    val parts = sent.substring(3).split(":")
+                    val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                    val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                    awaitRealtimeAheadSend(seq, task, jobKey, worker, n0, baseLen, 0)
                 }
-                val parts = sent.substring(3).split(":")
-                val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
-                val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                awaitRealtimeAheadSend(seq, task, jobKey, worker, n0, baseLen, 0)
             }
+            dispatchAheadSend(0)
             return
         }
     }
@@ -2036,6 +2093,59 @@ return t.length>=40?'TXT:'+t:'';
     private fun scanStepMsPref(): Long =
         (Prefs.get(this, "scanStepMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
 
+    private var forceLoadHandler: ScriptHandler? = null
+
+    private fun sendHoldPref(): Long =
+        (Prefs.get(this, "sendHoldMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 15_000L)
+
+    private fun menuSendHoldLabel(): String =
+        "⏱ Pause before Send click: " + sendHoldPref().let { if (it == 0L) "Instant" else "$it ms" }
+
+    /** Realtime: how long to wait after the text lands in the chat box before pressing Send (0 = instant). */
+    private fun editSendHold(onChanged: () -> Unit) {
+        val et = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(sendHoldPref().toString())
+            hint = "milliseconds (0 = instant)"
+            setSelection(text.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pause before Send click (ms)")
+            .setMessage("0 = press Send as soon as the text is in the box and the button is enabled. Higher = wait that long first. Max 15000.")
+            .setView(et)
+            .setPositiveButton("Save") { _, _ ->
+                val v = (et.text.toString().trim().toLongOrNull() ?: 0L).coerceIn(0L, 15_000L)
+                Prefs.put(this, "sendHoldMs", v.toString())
+                Js.sendHoldMs = v
+                onChanged()
+                toast(if (v == 0L) "⏱ Send: instant" else "⏱ Send after $v ms")
+            }
+            .setNeutralButton("Instant") { _, _ ->
+                Prefs.put(this, "sendHoldMs", "0")
+                Js.sendHoldMs = 0L
+                onChanged()
+                toast("⏱ Send: instant")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun forceLoadOn(): Boolean = Prefs.get(this, "forceLoadImages", "0") == "1"
+
+    /** (Re)installs or removes the document-start script on the novel pane. Takes effect on the next page load. */
+    private fun applyForceLoadImages() {
+        try {
+            forceLoadHandler?.remove()
+            forceLoadHandler = null
+            if (forceLoadOn() && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                forceLoadHandler = WebViewCompat.addDocumentStartJavaScript(novelWv, Js.FORCE_LOAD, setOf("*"))
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun menuForceLoadLabel(): String =
+        "⚡ Force-load images (experimental): " + if (forceLoadOn()) "ON" else "OFF"
+
     private fun menuScanIntervalLabel(): String =
         "📸 Scan capture interval: " + scanStepMsPref().let { if (it == 0L) "Auto (fast, learns per site)" else "max $it ms" }
 
@@ -2114,6 +2224,7 @@ return t.length>=40?'TXT:'+t:'';
         doSend: Boolean,
         isValid: () -> Boolean,
         allowDuringTranslation: Boolean = false,
+        busyTries: Int = 0,
         onResult: (String?) -> Unit
     ) {
         if (!isValid()) return
@@ -2197,7 +2308,19 @@ return t.length>=40?'TXT:'+t:'';
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
         chatSendingAtMs = System.currentTimeMillis()
-        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> quietChatKeyboard(); onResult(raw) }
+        chatWv.evaluateJavascript(Js.send(text, true, force = busyTries >= 120)) { raw ->
+            quietChatKeyboard()
+            if (decode(raw).trim().startsWith("busy")) {
+                // The chat is still producing an answer: never put another text into the composer.
+                // Try again shortly (the page-side check is bypassed only after ~60 s, so a stuck "Stop"
+                // indicator can not freeze the queue for ever).
+                chatSendingAtMs = 0L
+                chatRequestCount = (chatRequestCount - 1).coerceAtLeast(0)
+                handler.postDelayed({
+                    sendChatRequest(text, true, isValid, allowDuringTranslation, busyTries + 1, onResult)
+                }, 500L)
+            } else onResult(raw)
+        }
     }
 
     /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
@@ -2420,6 +2543,8 @@ return t.length>=40?'TXT:'+t:'';
         novelWv.settings.javaScriptCanOpenWindowsAutomatically = false
         novelWv.webViewClient = NovelClient()
         novelWv.webChromeClient = NovelChrome()
+        applyForceLoadImages()
+        Js.sendHoldMs = sendHoldPref()
         chatWv.webViewClient = ChatClient()
         chatWv.settings.setSupportMultipleWindows(true)
         chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
@@ -2870,12 +2995,6 @@ return t.length>=40?'TXT:'+t:'';
         }
 
         content = FrameLayout(this).apply {
-            clipToOutline = true
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(20).toFloat())
-                }
-            }
             // Off-screen reader for prefetch: a real-size view UNDER the visible pages. A 1x1
             // WebView never triggers the lazy/IntersectionObserver rendering that WTR-LAB
             // and WebNovel use, so their chapter text never appeared.
@@ -2915,7 +3034,6 @@ return t.length>=40?'TXT:'+t:'';
             }
         }
         val contentHolder = FrameLayout(this).apply {
-            setPadding(dp(8), dp(4), dp(8), dp(2))
             addView(content, FrameLayout.LayoutParams(MP, MP))
         }
         contentHolderView = contentHolder
@@ -7070,6 +7188,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 wmScript = WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
             } else {
                 if (wmLayout != null) toast("⚠️ Translation could not be matched to the bubbles; showing the reader view")
+                else toast("⚠️ Bubble layout not found for this page (" + ch.url.takeLast(40) + "); showing the reader view")
                 val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
                 wmScript = WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
             }
@@ -7560,7 +7679,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
-            "🖼 Scan Report: images (Copy)"
+            "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -7569,13 +7688,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -7695,6 +7814,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                44 -> editSendHold { refresh(i, menuSendHoldLabel()) }
+                43 -> {
+                    Prefs.put(this, "forceLoadImages", if (forceLoadOn()) "0" else "1")
+                    applyForceLoadImages()
+                    refresh(i, menuForceLoadLabel())
+                    toast(if (forceLoadOn()) "⚡ ON — reload the page for it to take effect" else "Force-load OFF — reload the page")
                 }
                 22 -> { dlg.dismiss(); diagnosePage() }
                 42 -> { dlg.dismiss(); diagnoseScanImages() }

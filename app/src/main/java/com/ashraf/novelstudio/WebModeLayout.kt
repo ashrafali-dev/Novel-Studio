@@ -143,7 +143,7 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
  */
 internal object WebModeLayoutStore {
     private const val KEY = "wmLayouts"
-    private const val MAX = 8
+    private const val MAX = 16
 
     // Latest OCR batch (used to align this answer) and cumulative translated layout (kept while scrolling).
     private val scans = object : LinkedHashMap<String, WebModeLayout>(16, 0.75f, true) {
@@ -153,7 +153,12 @@ internal object WebModeLayoutStore {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, WebModeLayout>?): Boolean = size > MAX
     }
 
-    private fun key(url: String) = WebModeLogic.normalizeUrl(url)
+    // Reader SPAs (MangaDex) rewrite the trailing page number while the page is scrolled:
+    // /chapter/<uuid>/1 -> /chapter/<uuid>/8. The layout saved during the scan and the chapter that later
+    // receives the translation must still map to the same entry, so that page number is dropped from the key.
+    private val READER_PAGE_SUFFIX = Regex("(/chapter/[0-9a-fA-F-]{36})/\\d+/?$")
+
+    private fun key(url: String) = WebModeLogic.normalizeUrl(url).replace(READER_PAGE_SUFFIX, "\$1")
 
     @Synchronized
     fun put(url: String, layout: WebModeLayout) {
