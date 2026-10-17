@@ -482,10 +482,10 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES = 4
+    private val REALTIME_AHEAD_MIN_BUBBLES = 10
     // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
     // the first usable panel arrives. Panels completed during that window are batched together.
-    private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 1800L
+    private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 3500L
 
     private fun startAheadOcr() {
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)

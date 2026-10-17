@@ -473,7 +473,7 @@ function __box(){
         }
       }
       // Text is in but no enabled Send control yet: re-check every 40 ms until the old 300 ms mark.
-      if(Date.now()<readyDeadline){setTimeout(waitUntilReady,40);return;}
+      if(Date.now()<readyDeadline){setTimeout(waitUntilReady,20);return;}
       // Last resort: the site's keyboard/form mechanism.
       if(requestComposerSubmit()){
         __nsHideSendWait();
@@ -486,7 +486,7 @@ function __box(){
     }
     // First readiness check after 40 ms (was a blind 300 ms wait); waitUntilReady keeps polling until
     // the editor has committed the text and Send is enabled.
-    setTimeout(waitUntilReady,40);
+    setTimeout(waitUntilReady,10);
   }
   if(!doSend)__nsImeLater(1200);
   return 'ok:'+n0+':'+len0;
