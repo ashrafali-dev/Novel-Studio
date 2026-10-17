@@ -218,12 +218,15 @@ class MainActivity : Activity() {
         requestForceOcrArea(src, x, y, rw, rh)
     }
 
-    private fun requestForceOcrArea(src: String, x: Float, y: Float, w: Float, h: Float) {
+    private fun requestForceOcrArea(
+        src: String, x: Float, y: Float, w: Float, h: Float,
+        fromReOcr: Boolean = false, onFinished: (() -> Unit)? = null
+    ) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
             toast("🔎 Force OCR needs Web Mode + Real-time translation enabled")
             return
         }
-        if (webModeHandle != null || running != null || queue.isNotEmpty()) {
+        if (!fromReOcr && (webModeHandle != null || running != null || queue.isNotEmpty())) {
             toast("⏳ Current OCR/translation is busy. Try again when it finishes")
             return
         }
@@ -305,10 +308,84 @@ class MainActivity : Activity() {
                         }
                     }
                 }
+                onFinished?.invoke()
             },
             forceOcrSrc = source,
             forceOcrRegion = region
         ))
+    }
+
+    /**
+     * "OCR this screen again" (Real-time). Re-reads the panel(s) that are on screen right now even though they
+     * were read before (a bubble that OCR missed stays missing otherwise). All background work is held back
+     * meanwhile: no new read-ahead OCR, no new read-ahead translation, no automatic visible scan. A reply that
+     * is already streaming is allowed to finish, then the screen's panels are re-read and translated one by
+     * one, and finally everything resumes.
+     */
+    private fun reOcrVisiblePanels() {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
+            toast("⟳ এই বাটন Real-time মোডে কাজ করে")
+            return
+        }
+        if (reOcrBusy) { toast("⟳ আগের OCR এখনো চলছে"); return }
+        val pageUrl = novelWv.url.orEmpty()
+        if (!pageUrl.startsWith("http", ignoreCase = true)) return
+        reOcrBusy = true
+        val run = ++reOcrRun
+        rtPausedForReOcr = true
+        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+        aheadOcrStage = ""; aheadOcrPct = -1
+        toast("⟳ এই স্ক্রিনের প্যানেল আবার OCR হচ্ছে — বাকি কাজ থেমে আছে")
+
+        fun finish(msg: String?) {
+            if (run != reOcrRun) return
+            reOcrBusy = false
+            rtPausedForReOcr = false
+            deepSeekVisibleSignature = ""
+            scheduleRealtimeAheadPump(0L)
+            if (msg != null) toast(msg)
+        }
+        fun stillHere() = run == reOcrRun && cleanUrl(novelWv.url.orEmpty()) == cleanUrl(pageUrl)
+        fun whenIdle(attempt: Int, block: () -> Unit) {
+            if (!stillHere()) { finish(null); return }
+            // A read-ahead translation that is streaming right now is stopped in favour of this screen.
+            if (attempt == 0 && running?.let { rtAheadTranslationTasksByJobKey.containsKey(keyOf(it)) } == true) {
+                interruptRealtimeAheadForVisiblePanel()
+            }
+            if (webModeHandle == null && running == null && queue.isEmpty()) { block(); return }
+            if (attempt >= 300) { finish("⚠️ চ্যাটবট ব্যস্ত ছিল, আবার চেষ্টা কর"); return }
+            handler.postDelayed({ whenIdle(attempt + 1, block) }, 400L)
+        }
+        // Safety net: background work must never stay paused for good.
+        handler.postDelayed({ if (run == reOcrRun && reOcrBusy) finish("⟳ থেমে থাকা কাজ আবার চালু") }, 240_000L)
+
+        val js = "(function(){var vh=window.innerHeight||0,vw=window.innerWidth||0,out=[],ims=document.images;" +
+            "for(var i=0;i<ims.length;i++){var im=ims[i],r=im.getBoundingClientRect();" +
+            "if(r.width<120||r.height<120)continue;" +
+            "var t=Math.max(0,r.top),b=Math.min(vh,r.bottom),vis=b-t;if(vis<=0)continue;" +
+            "if(vis<Math.min(r.height*0.3,vh*0.25))continue;" +
+            "var w=Math.max(0,Math.min(vw,r.right)-Math.max(0,r.left));" +
+            "out.push({s:(im.currentSrc||im.src||''),a:vis*w});}" +
+            "out.sort(function(x,y){return y.a-x.a;});" +
+            "return JSON.stringify(out.slice(0,3).map(function(o){return o.s;}));})()"
+        novelWv.evaluateJavascript(js) { raw ->
+            val srcs = ArrayList<String>()
+            try {
+                val arr = JSONArray(decode(raw))
+                for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let { srcs.add(it) }
+            } catch (_: Exception) { }
+            if (srcs.isEmpty()) { finish("⚠️ স্ক্রিনে কোনো প্যানেল পাওয়া যায়নি"); return@evaluateJavascript }
+            fun step(i: Int) {
+                whenIdle(0) {
+                    if (i >= srcs.size) { finish("✅ OCR শেষ — বাকি কাজ আবার চলছে"); return@whenIdle }
+                    requestForceOcrArea(srcs[i], 0f, 0f, 1f, 1f, fromReOcr = true) {
+                        // OCR is done; its translation (if any text was found) is now with the chatbot.
+                        handler.postDelayed({ step(i + 1) }, 700L)
+                    }
+                }
+            }
+            step(0)
+        }
     }
 
     private fun requestBubbleRetranslate(src: String, cx: Float, cy: Float, w: Float, h: Float) {
@@ -490,6 +567,7 @@ class MainActivity : Activity() {
     private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 3500L
 
     private fun startAheadOcr() {
+        if (rtPausedForReOcr) return
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
         deepSeekAheadAtMs = System.currentTimeMillis()
         if (n == 0) return
@@ -1110,6 +1188,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     private fun pumpRealtimeAheadTranslation() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
+        if (rtPausedForReOcr) { scheduleRealtimeAheadPump(400L); return }
         // Read-ahead uses its own WebView and can overlap with a foreground bubble batch. The shorter,
         // randomized real-time request gap still prevents rapid-fire submissions.
         if (rtAheadWorkerBusy) return
@@ -1224,6 +1303,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             chatSendingAtMs = System.currentTimeMillis()
             suppressImeForAutoSend()
             fun dispatchAheadSend(busyTries: Int) {
+                if (deferWhileReaderScrolls {
+                        if (seq == rtAheadWorkerSeq && rtAheadWorkerBusy) dispatchAheadSend(busyTries)
+                    }) return
                 worker.evaluateJavascript(Js.send(prompt, true, force = busyTries >= 120)) { raw ->
                     quietChatKeyboard()
                     if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy) return@evaluateJavascript
@@ -1504,6 +1586,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 deepSeekPollBusy = false
                 return
             }
+            if (rtPausedForReOcr) { handler.postDelayed(this, 250L); return }
             // Never stack evaluateJavascript probes. Previously the 1.2 s watchdog launched a
             // second DOM sweep while the first was still running; slow CSS-heavy readers could then
             // accumulate main-thread work and make touch scrolling stutter.
@@ -1905,12 +1988,18 @@ return t.length>=40?'TXT:'+t:'';
      */
     private fun updateActivityChip(statuses: List<ActivityDotStatus>) {
         val chip = activityChip ?: return
+        reOcrBtn?.let { b ->
+            val show = webModeOn() && mode == Mode.NOVEL && DeepSeekRealtimeTranslation.isEnabled(this)
+            val want = if (show) View.VISIBLE else View.GONE
+            if (b.visibility != want) b.visibility = want
+        }
         if (!webModeOn()) { chip.update(null, 0); return }
         val sending = chatSendingAtMs > 0L && System.currentTimeMillis() - chatSendingAtMs < 15_000L
         val keys = statuses.map { it.key }
         val text: String?
         val color: Int
         when {
+            reOcrBusy -> { text = "এই স্ক্রিন আবার OCR হচ্ছে"; color = 0xFF64B5F6.toInt() }
             sending -> { text = "চ্যাটবটে পাঠানো হচ্ছে"; color = 0xFFFFAB40.toInt() }
             keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
                 { text = "OCR হচ্ছে"; color = 0xFFB388FF.toInt() }
@@ -2168,6 +2257,17 @@ return t.length>=40?'TXT:'+t:'';
     // prompt) must never pop the soft keyboard: adjustResize would shrink both panes, move the Send
     // button out of view and change the novel viewport that the real-time scanner is reading.
     @Volatile private var chatUserTouchAtMs = 0L
+    // Last finger / scroll activity on the reader pane. Pasting into the chatbot box is a long task on the
+    // shared WebView renderer, so in Web Mode it is held back until the reader stops scrolling.
+    @Volatile private var novelActivityAtMs = 0L
+    private var idleDeferSince = 0L
+    // "OCR this screen again": while true, every background job (read-ahead OCR, read-ahead translation,
+    // the automatic visible-panel scan) is held back; they resume when the screen's panels are done.
+    @Volatile private var rtPausedForReOcr = false
+    private var reOcrBusy = false
+    private var reOcrRun = 0
+    private var reOcrBtn: android.widget.ImageView? = null
+    private var autoSendImeFlagOn = false
     // True while the app itself dispatches a MotionEvent into the chatbot pane (Send rescue tap).
     // Such a tap is NOT the user touching the pane, so it must not disable keyboard suppression.
     @Volatile private var syntheticChatTouch = false
@@ -2183,14 +2283,22 @@ return t.length>=40?'TXT:'+t:'';
     // during auto-send. Restore the normal window behavior shortly after the Send tap.
     private fun suppressImeForAutoSend() {
         try {
-            window.setFlags(
-                android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
-                android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
-            )
+            // Changing a window flag makes the window manager re-layout the whole window, so it is only
+            // touched when the state really changes (it used to be rewritten on every single send).
+            if (!autoSendImeFlagOn) {
+                window.setFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
+                    android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+                )
+                autoSendImeFlagOn = true
+            }
             autoSendImeRestore?.let { handler.removeCallbacks(it) }
             val restore = Runnable {
                 try {
-                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+                    if (autoSendImeFlagOn) {
+                        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+                        autoSendImeFlagOn = false
+                    }
                 } catch (_: Exception) { }
                 autoSendImeRestore = null
             }
@@ -2201,16 +2309,36 @@ return t.length>=40?'TXT:'+t:'';
 
     /** A real finger on the screen ends the keyboard suppression immediately, so typing still works. */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN &&
-            (ev.source and android.view.InputDevice.SOURCE_TOUCHSCREEN) == android.view.InputDevice.SOURCE_TOUCHSCREEN
+        if (autoSendImeRestore != null && ev.actionMasked == MotionEvent.ACTION_DOWN &&
+            (ev.source and android.view.InputDevice.SOURCE_TOUCHSCREEN) == android.view.InputDevice.SOURCE_TOUCHSCREEN &&
+            ::chromeTopView.isInitialized
         ) {
-            autoSendImeRestore?.let { handler.removeCallbacks(it); it.run() }
+            // Only a tap on the address bar needs the keyboard back at once; the chat pane does it in its own
+            // touch listener. Scrolling the reader must not touch the window at all.
+            val loc = IntArray(2)
+            chromeTopView.getLocationOnScreen(loc)
+            if (ev.rawY <= loc[1] + chromeTopView.height) autoSendImeRestore?.let { handler.removeCallbacks(it); it.run() }
         }
         return super.dispatchTouchEvent(ev)
     }
 
+    /**
+     * Web Mode only: while the reader is being scrolled (finger down or page still moving) the paste into
+     * the chatbot box is postponed in 150 ms steps, for at most 3 s, so the heavy editor work does not land
+     * in the middle of a scroll. Returns true when [retry] has been scheduled and the caller must stop.
+     */
+    private fun deferWhileReaderScrolls(retry: () -> Unit): Boolean {
+        if (!webModeOn()) { idleDeferSince = 0L; return false }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - novelActivityAtMs >= 450L) { idleDeferSince = 0L; return false }
+        if (idleDeferSince == 0L) idleDeferSince = now
+        if (now - idleDeferSince > 3_000L) { idleDeferSince = 0L; return false }
+        handler.postDelayed(retry, 150L)
+        return true
+    }
+
     private fun quietChatKeyboard() {
-        val delays = longArrayOf(0L, 90L, 250L, 600L, 1200L, 2200L)
+        val delays = longArrayOf(0L, 300L, 1200L)
         for (d in delays) {
             handler.postDelayed({
                 try {
@@ -2246,6 +2374,7 @@ return t.length>=40?'TXT:'+t:'';
             chatWv.evaluateJavascript(Js.send(text, false)) { raw -> quietChatKeyboard(); onResult(raw) }
             return
         }
+        if (deferWhileReaderScrolls { sendChatRequest(text, true, isValid, allowDuringTranslation, busyTries, onResult) }) return
         val now = System.currentTimeMillis()
         val waitMs = nextChatbotRequestAtMs - now
         if (waitMs > 0L) {
@@ -2727,8 +2856,10 @@ return t.length>=40?'TXT:'+t:'';
         var pullDownStartX = 0f
         var barMoveLastY = 0f
         var barMoveAccum = 0f
+        novelWv.setOnScrollChangeListener { _, _, _, _, _ -> novelActivityAtMs = android.os.SystemClock.elapsedRealtime() }
         novelWv.setOnTouchListener { view, event ->
             activeWv = novelWv
+            novelActivityAtMs = android.os.SystemClock.elapsedRealtime()
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     pullDownStartY = event.y
@@ -2773,6 +2904,7 @@ return t.length>=40?'TXT:'+t:'';
                 activeWv = chatWv
                 chatUserTouchAtMs = android.os.SystemClock.elapsedRealtime()
                 if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                    autoSendImeRestore?.let { handler.removeCallbacks(it); it.run() }
                     // The page marks its composer inputmode=none during automation; give the user the keyboard back.
                     chatWv.evaluateJavascript("(function(){try{window.__nsImeRestoreNow&&window.__nsImeRestoreNow();}catch(e){}})()", null)
                 }
@@ -2867,7 +2999,8 @@ return t.length>=40?'TXT:'+t:'';
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(9), 0, dp(6), 0)
-            // no backing panel: only the tab button and the address field are drawn
+            background = floatingBarBg(26)
+            elevation = dp(8).toFloat()
             addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
             addView(addressBox)
         }
@@ -3020,6 +3153,23 @@ return t.length>=40?'TXT:'+t:'';
             addView(scanDot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.TOP or Gravity.END).also {
                 it.setMargins(0, dp(10), dp(10), 0)
             })
+            reOcrBtn = android.widget.ImageView(this@MainActivity).apply {
+                setImageDrawable(IconDrawable(Ic.RELOAD, UiTheme.iconIdle))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(0xEE232739.toInt())
+                    setStroke(dp(1), UiTheme.stroke)
+                }
+                val pad = dp(10)
+                setPadding(pad, pad, pad, pad)
+                elevation = dp(10).toFloat()
+                contentDescription = "OCR this screen again"
+                visibility = View.GONE
+                setOnClickListener { reOcrVisiblePanels() }
+            }
+            addView(reOcrBtn, FrameLayout.LayoutParams(dp(42), dp(42), Gravity.BOTTOM or Gravity.END).also {
+                it.setMargins(0, 0, dp(12), dp(60))
+            })
             activityChip = ActivityChip(this@MainActivity)
             addView(activityChip, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.START).also {
                 it.setMargins(dp(12), 0, 0, dp(14))
@@ -3090,7 +3240,8 @@ return t.length>=40?'TXT:'+t:'';
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(8), 0, dp(8), 0)
-            // no backing panel: only the dock buttons are drawn
+            background = floatingBarBg(34)
+            elevation = dp(12).toFloat()
             addView(modeChip, LinearLayout.LayoutParams(0, dp(42), 1.9f).also { it.setMargins(0, 0, dp(2), 0) })
             addView(modeBtn)
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
@@ -3104,6 +3255,12 @@ return t.length>=40?'TXT:'+t:'';
         }
         dockBar = dock
         dockWrapView = dockWrap
+        // The bars float over the page in Web Mode; their size can change (tab rail, shortcuts), so follow it.
+        val barSizeWatcher = View.OnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
+            if (b - t != ob - ot) handler.post { applyFloatingBars() }
+        }
+        chromeTopView.addOnLayoutChangeListener(barSizeWatcher)
+        dockWrap.addOnLayoutChangeListener(barSizeWatcher)
 
         snackView = TextView(this).apply {
             textSize = 13f
@@ -3961,6 +4118,7 @@ return t.length>=40?'TXT:'+t:'';
         applyLayout()
         if (m != Mode.NOVEL) refreshChatViewport()
         updatePill()
+        applyFloatingBars()
         if (keepFrame) {
             modeTransitionCover.bringToFront()
             progressBox.bringToFront()
@@ -4343,6 +4501,45 @@ return t.length>=40?'TXT:'+t:'';
             if (barsAnimating) handler.postDelayed({ syncToonBars() }, 120L)
             else setBarsHidden(false)
         }
+        applyFloatingBars()
+    }
+
+    /** Dark translucent pill used behind the top bar and the dock (readable over any page). */
+    private fun floatingBarBg(radiusDp: Int): GradientDrawable =
+        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xEE232739.toInt(), 0xEE141726.toInt())).apply {
+            cornerRadius = dp(radiusDp).toFloat()
+            setStroke(dp(1), UiTheme.stroke)
+        }
+
+    /**
+     * Web Mode, reader pane: the page fills the whole screen and the top bar / dock float on top of it
+     * (no strip behind them). Everywhere else the bars take their own rows as before. The on-page controls
+     * (chip, "View original", progress) are moved clear of the bars.
+     */
+    private fun applyFloatingBars() {
+        try {
+            if (!::chromeTopView.isInitialized || !::dockWrapView.isInitialized || !::contentHolderView.isInitialized) return
+            if (barsHidden || barsAnimating) return
+            val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
+            val botLp = dockWrapView.layoutParams as? LinearLayout.LayoutParams ?: return
+            val want = barsLockedForToon && mode == Mode.NOVEL
+            val topH = if (want) chromeTopView.height else 0
+            val botH = if (want) dockWrapView.height else 0
+            if (want && (topH <= 0 || botH <= 0)) return
+            if (topLp.bottomMargin == -topH && botLp.topMargin == -botH) return
+            topLp.bottomMargin = -topH
+            botLp.topMargin = -botH
+            chromeTopView.layoutParams = topLp
+            dockWrapView.layoutParams = botLp
+            val z = if (want) dp(16).toFloat() else 0f
+            chromeTopView.elevation = z
+            dockWrapView.elevation = z
+            (togglePill.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(12) + botH; togglePill.layoutParams = it }
+            reOcrBtn?.let { b -> (b.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(60) + botH; b.layoutParams = it } }
+            activityChip?.let { c -> (c.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(14) + botH; c.layoutParams = it } }
+            (progressBox.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; progressBox.layoutParams = it }
+            (scanDot.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; scanDot.layoutParams = it }
+        } catch (_: Exception) { }
     }
 
     private fun cycleMode() {

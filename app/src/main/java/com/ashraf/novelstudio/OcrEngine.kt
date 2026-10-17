@@ -149,7 +149,7 @@ internal object OcrPost {
      * Blocks that sit right under each other, overlap horizontally and have the same text size and
      * tilt are one sentence: join them into one block.
      */
-    fun mergeNeighbours(blocks: List<OcrBlock>): List<OcrBlock> {
+    fun mergeNeighbours(blocks: List<OcrBlock>, image: Bitmap? = null): List<OcrBlock> {
         if (blocks.size < 2) return blocks
         val work = ArrayList(blocks.sortedWith(compareBy({ it.cy }, { it.cx })))
         var changed = true
@@ -159,6 +159,9 @@ internal object OcrPost {
                 for (j in i + 1 until work.size) {
                     val a = work[i]; val b = work[j]
                     if (!joinable(a, b)) continue
+                    // Two stacked speech bubbles are close enough to look like one paragraph by geometry alone.
+                    // If the picture shows a bubble outline / artwork between the two texts they are separate.
+                    if (image != null && outlineBetween(image, a, b)) continue
                     work[i] = join(a, b)
                     work.removeAt(j)
                     changed = true
@@ -167,6 +170,50 @@ internal object OcrPost {
             }
         }
         return work.sortedWith(compareBy({ it.top }, { it.left }))
+    }
+
+    /**
+     * Looks at the strip of the picture between the lower edge of the upper text and the upper edge of the
+     * lower one. Lines of one bubble have clean bubble fill between them; two bubbles have an outline and
+     * often artwork in that strip. Works for white and black bubbles because it measures how much of the
+     * strip differs from the strip's own typical brightness. Returns false (= keep the geometry decision)
+     * whenever the strip cannot be sampled.
+     */
+    private fun outlineBetween(img: Bitmap, a: OcrBlock, b: OcrBlock): Boolean {
+        try {
+            val top = if (a.cy <= b.cy) a else b
+            val bot = if (top === a) b else a
+            val y0 = (top.cy + top.h / 2f).toInt()
+            val y1 = (bot.cy - bot.h / 2f).toInt()
+            if (y1 - y0 < 3) return false
+            val l = Math.max(a.cx - a.w / 2f, b.cx - b.w / 2f)
+            val r = Math.min(a.cx + a.w / 2f, b.cx + b.w / 2f)
+            val x0 = l.toInt().coerceIn(0, img.width - 1)
+            val x1 = r.toInt().coerceIn(x0 + 1, img.width)
+            val ya = y0.coerceIn(0, img.height - 1)
+            val yb = y1.coerceIn(ya + 1, img.height)
+            if (x1 - x0 < 6 || yb - ya < 3) return false
+            val stepX = Math.max(1, (x1 - x0) / 48)
+            val stepY = Math.max(1, (yb - ya) / 24)
+            val lumas = ArrayList<Int>()
+            var y = ya
+            while (y < yb) {
+                var x = x0
+                while (x < x1) {
+                    val p = img.getPixel(x, y)
+                    lumas.add((((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10)
+                    x += stepX
+                }
+                y += stepY
+            }
+            if (lumas.size < 12) return false
+            val sorted = lumas.sorted()
+            val med = sorted[sorted.size / 2]
+            val off = lumas.count { Math.abs(it - med) > 70 }
+            return off * 100 >= lumas.size * 8
+        } catch (_: Exception) {
+            return false
+        }
     }
 
     private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
@@ -255,7 +302,7 @@ internal class MlKitOcrEngine : OcrEngine {
             val result = Tasks.await(
                 recognizer(script).process(InputImage.fromBitmap(bitmap, 0))
             )
-            return OcrResult(OcrPost.mergeNeighbours(toBlocks(result).filterNot { OcrPost.isNoise(it) }))
+            return OcrResult(OcrPost.mergeNeighbours(toBlocks(result).filterNot { OcrPost.isNoise(it) }, bitmap))
         } catch (e: ExecutionException) {
             val c = e.cause
             if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
@@ -359,7 +406,7 @@ internal class MlKitOcrEngine : OcrEngine {
                         all.add(big)
                     }
                 }
-                val merged = OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) })
+                val merged = OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) }, bitmap)
                 return OcrResult(merged)
             } finally {
                 for (m in mine) if (m !== bitmap) m.recycle()
