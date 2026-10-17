@@ -10,11 +10,11 @@ object Js {
     // ---------------------------------------------------------------- chatbot helpers (per-site profiles)
     private val PRELUDE = """
 var __P={
- 'chatgpt.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'[data-testid="send-button"],button[aria-label*="Send" i]'},
- 'chat.openai.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'[data-testid="send-button"],button[aria-label*="Send" i]'},
- 'gemini.google.com':{a:'model-response,.model-response-text,message-content',b:'.markdown',stop:'button[aria-label*="Stop response" i],button[aria-label*="Stop generating" i],button[aria-label*="Stop" i],[data-testid*="stop" i],[data-test-id*="stop" i]',send:'button[aria-label*="Send" i],button.send-button'},
- 'claude.ai':{a:'.font-claude-message,[data-testid="assistant-message"]',b:'',stop:'button[aria-label*="Stop" i],[data-is-streaming="true"]',send:'button[aria-label*="Send" i]'},
- 'deepseek.com':{a:'.ds-markdown',b:'',stop:'',send:''},
+ 'chatgpt.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'button#composer-submit-button,button[data-testid="send-button"],button[aria-label*="Send prompt" i],button[aria-label*="Send" i]'},
+ 'chat.openai.com':{a:'[data-message-author-role="assistant"],[data-message-role="assistant"],article[data-turn="assistant"]',b:'.markdown',stop:'[data-testid="stop-button"],button[aria-label*="Stop" i]',send:'button#composer-submit-button,button[data-testid="send-button"],button[aria-label*="Send prompt" i],button[aria-label*="Send" i]'},
+ 'gemini.google.com':{a:'model-response,.model-response-text,message-content',b:'.markdown',stop:'button[aria-label*="Stop response" i],button[aria-label*="Stop generating" i],button[aria-label*="Stop" i],[data-testid*="stop" i],[data-test-id*="stop" i]',send:'button[aria-label="Send message" i],button[aria-label*="Send" i],button.send-button'},
+ 'claude.ai':{a:'.font-claude-message,[data-testid="assistant-message"]',b:'',stop:'button[aria-label*="Stop" i],[data-is-streaming="true"]',send:'button[data-testid="chat-input-send"],button[aria-label*="Send message" i],button[aria-label*="Send" i]'},
+ 'deepseek.com':{a:'.ds-markdown',b:'',stop:'',send:'[role="button"].ds-button--primary'},
  'grok.com':{a:'[class*="message-bubble"],[class*="response-content-markdown"]',b:'',stop:'button[aria-label*="Stop" i]',send:'button[type="submit"],button[aria-label*="Submit" i]'}
 };
 var __D={a:'[data-message-author-role="assistant"],.markdown,.prose',b:'',stop:'button[aria-label*="Stop" i]',send:'button[aria-label*="Send" i],button[type="submit"]'};
