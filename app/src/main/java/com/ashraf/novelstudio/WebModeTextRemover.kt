@@ -93,6 +93,11 @@ internal object WebModeTextRemover {
                 val maxComponentPixels = max(18, (fontPx * fontPx * 9f + fontPx * 10f).toInt())
 
                 val regionCount = regionSize.toInt()
+                // Japanese kanji/kana and Korean Hangul often occupy much more of their OCR box
+                // than Latin letters. Use a higher ink-density ceiling for those scripts; the
+                // component-size and foreground/background checks still reject large artwork strokes.
+                val denseCjk = isCjkText(bubble.sourceText)
+                val maxInkFraction = if (denseCjk) 0.76f else 0.50f
                 val candidate = ByteArray(regionCount)
                 val seen = ByteArray(regionCount)
                 val selected = ByteArray(regionCount)
@@ -157,12 +162,12 @@ internal object WebModeTextRemover {
                 // If the inferred mask covers too much of a region, it is probably art rather than text.
                 // Tight OCR boxes around dense CJK glyphs can legitimately contain more ink than Latin boxes.
                 // The connected-component/size checks above remain the stronger art-protection filters.
-                if (selectedCount < 4 || selectedCount > regionCount * 0.5f) continue
+                if (selectedCount < 4 || selectedCount > regionCount * maxInkFraction) continue
 
                 // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
                 // the core pixels, fall outside the strict candidate test, and used to stay as a ghost of the old
                 // text behind the translation. Only pixels that differ from the paper colour are taken.
-                val grow = (fontPx * 0.07f).toInt().coerceIn(1, 3)
+                val grow = (fontPx * (if (denseCjk) 0.10f else 0.07f)).toInt().coerceIn(1, 4)
                 val mask = selected.copyOf()
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
@@ -248,6 +253,13 @@ internal object WebModeTextRemover {
             if (marker == "ANIM" || marker == "ANMF") return true
         }
         return false
+    }
+
+    private fun isCjkText(text: String): Boolean = text.any { c ->
+        c in '\u2E80'..'\u2EFF' || c in '\u3000'..'\u30FF' ||
+            c in '\u31F0'..'\u31FF' || c in '\u3400'..'\u4DBF' ||
+            c in '\u4E00'..'\u9FFF' || c in '\uAC00'..'\uD7AF' ||
+            c in '\uF900'..'\uFAFF' || c in '\uFF00'..'\uFFEF'
     }
 
     private fun opaque(color: Int): Int = color or (0xFF000000.toInt())
