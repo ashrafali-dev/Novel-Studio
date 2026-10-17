@@ -1203,8 +1203,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val streamEnded = sawStream && !streaming
                 val minReplyLength = 2
                 val expectedFloor = maxOf(2, minOf(120, (rtAheadWorkerSourceLength * 0.55).toInt()))
-                val markerStable = RealtimeCompletionPolicy.stableThreshold(this, 4, realtimeThreshold = 1)
-                val uiStable = RealtimeCompletionPolicy.stableThreshold(this, 8, realtimeThreshold = 1)
+                val markerStable = RealtimeCompletionPolicy.stableThreshold(this, 4, realtimeThreshold = 2)
+                val uiStable = RealtimeCompletionPolicy.stableThreshold(this, 8, realtimeThreshold = 2)
                 val stopStable = RealtimeCompletionPolicy.stableThreshold(this, 8)
                 val host = Uri.parse(worker.url.orEmpty()).host?.lowercase().orEmpty()
                 val realtimeFast = RealtimeCompletionPolicy.enabled(this)
@@ -6537,9 +6537,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     120,
                     minOf((expectedLen(ch) * 0.55).toInt(), (ch.text.length * 0.85).toInt())
                 )
-                val markerStableNeeded = if (livePanelBatch) RealtimeCompletionPolicy.stableThreshold(this, 4, realtimeThreshold = 1) else 4
-                val uiStableNeeded = if (livePanelBatch) RealtimeCompletionPolicy.stableThreshold(this, 8, realtimeThreshold = 1) else 8
-                val stopStableNeeded = if (livePanelBatch) RealtimeCompletionPolicy.stableThreshold(this, 8, realtimeThreshold = 1) else 8
+                val markerStableNeeded = if (livePanelBatch) RealtimeCompletionPolicy.stableThreshold(this, 4, realtimeThreshold = 2) else 4
+                val uiStableNeeded = if (livePanelBatch) RealtimeCompletionPolicy.stableThreshold(this, 8, realtimeThreshold = 2) else 8
+                val stopStableNeeded = if (livePanelBatch) RealtimeCompletionPolicy.stableThreshold(this, 8, realtimeThreshold = 2) else 8
                 val chatHost = Uri.parse(chatWv.url.orEmpty()).host?.lowercase().orEmpty()
                 val deepSeekRealtime = realtimeFast &&
                     (chatHost == "deepseek.com" || chatHost.endsWith(".deepseek.com"))
