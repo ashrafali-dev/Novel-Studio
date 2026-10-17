@@ -1170,7 +1170,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             webModeStage = "Pre-translating upcoming panel"
             webModePct = 1
             updateProgressUi()
+            chatSendingAtMs = System.currentTimeMillis()
+            suppressImeForAutoSend()
             worker.evaluateJavascript(Js.send(prompt, true)) { raw ->
+                quietChatKeyboard()
                 if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy) return@evaluateJavascript
                 val sent = decode(raw)
                 if (!sent.startsWith("ok:")) {
@@ -1199,6 +1202,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         worker.evaluateJavascript(Js.sendState()) { raw ->
             if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy || rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
             val state = decode(raw).substringBefore("|").trim()
+            if (state.startsWith("sent:") || state.startsWith("failed")) { chatSendingAtMs = 0L; quietChatKeyboard() }
             when {
                 state.startsWith("sent:") -> {
                     handler.postDelayed({
@@ -1832,6 +1836,35 @@ return t.length>=40?'TXT:'+t:'';
         return statuses
     }
 
+    /**
+     * Web Mode status pill: shows what the app is doing right now, in priority order
+     * (sending to the chatbot > OCR > placing text > translating). It lingers ~1 s after the last
+     * stage ends so quick stages do not flicker.
+     */
+    private fun updateActivityChip(statuses: List<ActivityDotStatus>) {
+        val chip = activityChip ?: return
+        if (!webModeOn()) { chip.update(null, 0); return }
+        val sending = chatSendingAtMs > 0L && System.currentTimeMillis() - chatSendingAtMs < 15_000L
+        val keys = statuses.map { it.key }
+        val text: String?
+        val color: Int
+        when {
+            sending -> { text = "চ্যাটবটে পাঠানো হচ্ছে"; color = 0xFFFFAB40.toInt() }
+            keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
+                { text = "OCR হচ্ছে"; color = 0xFFB388FF.toInt() }
+            keys.contains("placement") -> { text = "লেখা বসানো হচ্ছে"; color = 0xFF64FFDA.toInt() }
+            keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } ->
+                { text = "অনুবাদ হচ্ছে"; color = 0xFFFF80AB.toInt() }
+            else -> { text = null; color = 0 }
+        }
+        if (text != null) {
+            chipIdleTicks = 0
+            chip.update(text, color)
+        } else if (++chipIdleTicks >= 2) {
+            chip.update(null, 0)
+        }
+    }
+
     private val scanIndicatorRunnable = object : Runnable {
         override fun run() {
             if (::scanDot.isInitialized) {
@@ -1866,6 +1899,7 @@ return t.length>=40?'TXT:'+t:'';
                 (scanDot.background as? GradientDrawable)?.setColor(status.color)
                 if (::modeChipDot.isInitialized) (modeChipDot.background as? GradientDrawable)?.setColor(status.color)
                 refreshModeChip()
+                updateActivityChip(statuses)
                 if (status.blinking) {
                     scanDotPhase = !scanDotPhase
                     scanDot.alpha = if (scanDotPhase) 1f else 0.22f
@@ -1999,6 +2033,12 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuAutoFreshChatLabel(): String =
         "🔄 Auto new chat: " + if (autoFreshChatEnabled) "ON (every $chatNewWindowEvery requests)" else "OFF"
 
+    private fun scanStepMsPref(): Long =
+        (Prefs.get(this, "scanStepMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
+
+    private fun menuScanIntervalLabel(): String =
+        "📸 Scan capture interval: " + scanStepMsPref().let { if (it == 0L) "Auto (fast)" else "$it ms" }
+
     private fun menuExtraChatDelayLabel(): String =
         "⏱ Extra request delay: " + when (chatExtraDelayMs) {
             0L -> "OFF"
@@ -2013,6 +2053,14 @@ return t.length>=40?'TXT:'+t:'';
     // prompt) must never pop the soft keyboard: adjustResize would shrink both panes, move the Send
     // button out of view and change the novel viewport that the real-time scanner is reading.
     @Volatile private var chatUserTouchAtMs = 0L
+    // True while the app itself dispatches a MotionEvent into the chatbot pane (Send rescue tap).
+    // Such a tap is NOT the user touching the pane, so it must not disable keyboard suppression.
+    @Volatile private var syntheticChatTouch = false
+    // Set when a prompt is handed to the chatbot, cleared once the page confirms Send went through.
+    // Drives the "sending" step of the Web Mode status chip.
+    @Volatile private var chatSendingAtMs = 0L
+    private var activityChip: ActivityChip? = null
+    private var chipIdleTicks = 0
 
     private var autoSendImeRestore: Runnable? = null
 
@@ -2032,8 +2080,18 @@ return t.length>=40?'TXT:'+t:'';
                 autoSendImeRestore = null
             }
             autoSendImeRestore = restore
-            handler.postDelayed(restore, 2200L)
+            handler.postDelayed(restore, 8000L)
         } catch (_: Exception) { }
+    }
+
+    /** A real finger on the screen ends the keyboard suppression immediately, so typing still works. */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN &&
+            (ev.source and android.view.InputDevice.SOURCE_TOUCHSCREEN) == android.view.InputDevice.SOURCE_TOUCHSCREEN
+        ) {
+            autoSendImeRestore?.let { handler.removeCallbacks(it); it.run() }
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     private fun quietChatKeyboard() {
@@ -2138,7 +2196,8 @@ return t.length>=40?'TXT:'+t:'';
         val gapMs = chatbotRequestGapMs
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
-        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
+        chatSendingAtMs = System.currentTimeMillis()
+        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> quietChatKeyboard(); onResult(raw) }
     }
 
     /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
@@ -2579,7 +2638,17 @@ return t.length>=40?'TXT:'+t:'';
             }
             false
         }
-        chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; chatUserTouchAtMs = android.os.SystemClock.elapsedRealtime(); false }
+        chatWv.setOnTouchListener { _, ev ->
+            if (!syntheticChatTouch) {
+                activeWv = chatWv
+                chatUserTouchAtMs = android.os.SystemClock.elapsedRealtime()
+                if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                    // The page marks its composer inputmode=none during automation; give the user the keyboard back.
+                    chatWv.evaluateJavascript("(function(){try{window.__nsImeRestoreNow&&window.__nsImeRestoreNow();}catch(e){}})()", null)
+                }
+            }
+            false
+        }
 
         // Long-press a link: Chrome-style menu (new tab / background tab / copy).
         novelWv.setOnLongClickListener {
@@ -2827,6 +2896,10 @@ return t.length>=40?'TXT:'+t:'';
             }
             addView(scanDot, FrameLayout.LayoutParams(dp(7), dp(7), Gravity.TOP or Gravity.END).also {
                 it.setMargins(0, dp(10), dp(10), 0)
+            })
+            activityChip = ActivityChip(this@MainActivity)
+            addView(activityChip, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.START).also {
+                it.setMargins(dp(12), 0, 0, dp(14))
             })
             addOnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
                 if (b - t != ob - ot) {
@@ -6491,6 +6564,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         chatWv.evaluateJavascript(Js.sendState()) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val state = decode(raw).substringBefore("|").trim()
+            if (state.startsWith("sent:")) { chatSendingAtMs = 0L; quietChatKeyboard() }
+            else if (state.startsWith("failed:") || (state == "failed" && tapTried)) chatSendingAtMs = 0L
             when {
                 state.startsWith("sent:") -> {
                     handler.postDelayed({
@@ -6545,8 +6620,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val t = android.os.SystemClock.uptimeMillis()
                     val down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0)
                     val up = MotionEvent.obtain(t, t + 70, MotionEvent.ACTION_UP, x, y, 0)
-                    chatWv.dispatchTouchEvent(down)
-                    chatWv.dispatchTouchEvent(up)
+                    suppressImeForAutoSend()
+                    syntheticChatTouch = true
+                    try {
+                        chatWv.dispatchTouchEvent(down)
+                        chatWv.dispatchTouchEvent(up)
+                    } finally {
+                        syntheticChatTouch = false
+                    }
                     down.recycle(); up.recycle()
                 } else {
                     // No identifiable button: send a native Enter key press into the focused editor.
@@ -7478,7 +7559,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "📝 Edit Real-time Prompt", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
-            menuAutoFreshChatLabel(), menuExtraChatDelayLabel()
+            menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 22, 25)
@@ -7487,11 +7568,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
             "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35)
         )
@@ -7613,6 +7694,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                41 -> {
+                    // Wait after every scroll step of a full scan. Raise it for sites whose images only
+                    // load once they reach the screen; Auto keeps the fast built-in cadence.
+                    val steps = longArrayOf(0L, 150L, 300L, 500L, 800L, 1_200L, 2_000L)
+                    val cur = steps.indexOf(scanStepMsPref()).let { if (it < 0) 0 else it }
+                    Prefs.put(this, "scanStepMs", steps[(cur + 1) % steps.size].toString())
+                    refresh(i, menuScanIntervalLabel())
+                    toast(menuScanIntervalLabel())
                 }
                 40 -> {
                     val steps = longArrayOf(0L, 300L, 600L, 1_000L)

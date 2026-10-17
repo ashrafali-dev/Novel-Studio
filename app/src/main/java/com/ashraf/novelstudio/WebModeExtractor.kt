@@ -371,7 +371,10 @@ internal class WebModeExtractor(
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
         private fun tick(n: Int, lastCount: Int, stable: Int) {
             if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return }
-            if (elapsed() > DISCOVERY_MAX_MS || n > MAX_TICKS) { finishDiscovery(); return }
+            // User-set "scan capture interval" (menu): wait this long after each scroll step so slow
+            // lazy loaders can set their image URLs. 0 = automatic (the fast built-in cadence).
+            val userStepMs = scanStepMs()
+            if (elapsed() > DISCOVERY_MAX_MS + userStepMs * 150L || n > MAX_TICKS) { finishDiscovery(); return }
             // Read the current viewport before moving; virtualized readers can recycle the first panels on scroll.
             // Then use overlapping steps so lazy-loaded panels are less likely to be skipped.
             val stepSize = if (n == 0 && lastCount < 0) "0" else if (lastCount >= 8) "0.85" else "0.70"
@@ -414,16 +417,20 @@ internal class WebModeExtractor(
                 else {
                     // Many ordinary IMG-based readers can scroll faster once the image list is visible.
                     // Keep a slower cadence for unknown/virtualized readers so their lazy loaders can react.
-                    val waitMs = when {
+                    val autoWaitMs = when {
                         bottom -> 220L
                         count >= 8 -> 90L
                         count >= 3 -> 120L
                         else -> 250L
                     }
+                    val waitMs = if (userStepMs > 0L) userStepMs else autoWaitMs
                     handler.postDelayed({ tick(n + 1, count, st) }, waitMs)
                 }
             }
         }
+
+        private fun scanStepMs(): Long =
+            (Prefs.get(wv.context, "scanStepMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 5_000L)
 
         private fun restoreScroll() {
             try { wv.evaluateJavascript(wrap(LIB + JS_RESTORE), null) } catch (_: Exception) {}

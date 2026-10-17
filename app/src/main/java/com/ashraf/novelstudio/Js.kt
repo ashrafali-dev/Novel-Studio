@@ -292,6 +292,14 @@ function __box(){
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
   var box=__box();
   if(!box) return 'nobox';
+  // Keep the soft keyboard down: while the app drives the composer it is marked inputmode=none,
+  // so the focus() calls below cannot open the IME. It is restored when the send is over or on a real touch.
+  var __imeGen=(window.__nsImeGen=(window.__nsImeGen||0)+1);
+  function __nsImeOff(el){try{if(!el||el.__nsImeSaved!==undefined)return;el.__nsImeSaved=el.getAttribute('inputmode');el.setAttribute('inputmode','none');window.__nsImeEl=el;}catch(e){}}
+  function __nsImeOn(el){try{if(!el||el.__nsImeSaved===undefined)return;var sv=el.__nsImeSaved;el.__nsImeSaved=undefined;if(sv===null)el.removeAttribute('inputmode');else el.setAttribute('inputmode',sv);}catch(e){}}
+  window.__nsImeRestoreNow=function(){try{__nsImeOn(window.__nsImeEl);__nsImeOn(box);}catch(e){}};
+  function __nsImeLater(ms){setTimeout(function(){if(window.__nsImeGen===__imeGen)window.__nsImeRestoreNow();},ms);}
+  __nsImeOff(box);
   box.focus();
   var snap=__snap(box);window.__nsSnap=snap;
   window.__nsSentN=__nrm(text);
@@ -366,6 +374,7 @@ function __box(){
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
     }
     var started=Date.now();
+    var readyDeadline=started+300;   // same worst case as before, but Send is pressed the moment it is enabled
     var textRepairAttempts=0;
     function keyEnter(){
       try{box.focus();}catch(e){}
@@ -383,9 +392,9 @@ function __box(){
       var t0=Date.now();
       (function chk(){
         var streaming=0;try{streaming=__stream(p);}catch(e){}
-        if(sentOk()||streaming){window.__nsSendState='sent:'+method;return;}
-        if(Date.now()-t0<7000){setTimeout(chk,350);return;}
-        __nsHideSendWait();window.__nsSendState='failed';
+        if(sentOk()||streaming){window.__nsSendState='sent:'+method;__nsImeLater(1500);return;}
+        if(Date.now()-t0<3500){setTimeout(chk,120);return;}
+        __nsHideSendWait();window.__nsSendState='failed';__nsImeLater(6000);
       })();
     }
     // A freshly opened conversation can remount its editor after the first input event.
@@ -395,6 +404,7 @@ function __box(){
         var live=__box();
         if(live&&live.isConnected)box=live;
         if(!box||!box.isConnected)return false;
+        __nsImeOff(box);
         box.focus();
         if(box.tagName==='TEXTAREA'||box.tagName==='INPUT'){
           var proto=box.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
@@ -427,7 +437,7 @@ function __box(){
         var live=__box();
         if(live&&live.isConnected){box=live;snap=__snap(box);window.__nsSnap=snap;}
         else if(Date.now()-started<7000){setTimeout(waitUntilReady,150);return;}
-        else{__nsHideSendWait();window.__nsSendState='failed:composer-detached';return;}
+        else{__nsHideSendWait();window.__nsSendState='failed:composer-detached';__nsImeLater(6000);return;}
       }
       // Hard gate: no send action until the full prompt is committed to the live editor.
       var matches=composerMatches();
@@ -440,7 +450,7 @@ function __box(){
         }else if(Date.now()-started<7000){
           setTimeout(waitUntilReady,150);
         }else{
-          __nsHideSendWait();window.__nsSendState='failed:text-not-committed';
+          __nsHideSendWait();window.__nsSendState='failed:text-not-committed';__nsImeLater(6000);
         }
         return;
       }
@@ -462,6 +472,8 @@ function __box(){
           return;
         }
       }
+      // Text is in but no enabled Send control yet: re-check every 40 ms until the old 300 ms mark.
+      if(Date.now()<readyDeadline){setTimeout(waitUntilReady,40);return;}
       // Last resort: the site's keyboard/form mechanism.
       if(requestComposerSubmit()){
         __nsHideSendWait();
@@ -472,9 +484,11 @@ function __box(){
         confirmSend('enter');
       }
     }
-    // Wait 300 ms for controlled editors to commit the input before pressing Send.
-    setTimeout(waitUntilReady,300);
+    // First readiness check after 40 ms (was a blind 300 ms wait); waitUntilReady keeps polling until
+    // the editor has committed the text and Send is enabled.
+    setTimeout(waitUntilReady,40);
   }
+  if(!doSend)__nsImeLater(1200);
   return 'ok:'+n0+':'+len0;
 })(__TEXT__,__SEND__)
 """
