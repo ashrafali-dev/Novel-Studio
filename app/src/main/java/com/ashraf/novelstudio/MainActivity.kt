@@ -453,7 +453,6 @@ class MainActivity : Activity() {
     private var rtVisibleOcrFlush: Runnable? = null
     private var rtVisibleOcrBatchSeq = 0
     private val rtVisibleOcrBatchMin = 10
-    private val rtVisibleOcrIdleFlushMs = 2600L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
@@ -581,12 +580,10 @@ class MainActivity : Activity() {
             return
         }
 
-        val seq = ++rtVisibleOcrBatchSeq
-        val flush = Runnable {
-            if (seq == rtVisibleOcrBatchSeq) flushRealtimeVisibleOcrBatch(token, page)
-        }
-        rtVisibleOcrFlush = flush
-        handler.postDelayed(flush, rtVisibleOcrIdleFlushMs)
+        // Do not turn a single newly recognized bubble into its own chatbot request just
+        // because the reader pauses for a second. Keep collecting across viewport scans and
+        // submit when ten bubbles are ready (or when the user explicitly forces a re-translation).
+        Log.i("NovelStudioOCR", "Realtime viewport accumulating: bubbles=${pending.bubbles.size}/$rtVisibleOcrBatchMin")
     }
 
     private fun flushRealtimeVisibleOcrBatch(expectedToken: Int? = null, expectedPage: String? = null) {
@@ -703,15 +700,26 @@ class MainActivity : Activity() {
     // the next OCR round to fill the chunk, and are sent anyway after a short delay (never 1-line requests
     // just because one round found a single new bubble).
     private val rtAheadHold = ArrayList<Pair<WmBubble, Int>>()
+    private val rtAheadHoldPanelUrls = LinkedHashSet<String>()
     private var rtAheadHoldPage = ""
     private var rtAheadHoldFlushRunnable: Runnable? = null
     private var rtAheadHoldSince = 0L
-    private val rtAheadHoldFlushMs = 1800L
+    private val rtAheadHoldFlushMs = 4500L
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
         val page = cleanUrl(pageUrl)
-        if (page != rtAheadHoldPage) { rtAheadHold.clear(); rtAheadHoldPage = page }
+        if (page != rtAheadHoldPage) {
+            rtAheadHold.clear()
+            rtAheadHoldPanelUrls.clear()
+            rtAheadHoldSince = 0L
+            rtAheadHoldPage = page
+        }
+        // Remember distinct successfully OCRed panels across successive read-ahead passes.
+        // A panel may contain many bubbles or none; panel count, not bubble count, is the batch unit.
+        panels.forEach { panel -> WebModeLogic.normalizeUrl(panel.src).takeIf { it.isNotBlank() }?.let { rtAheadHoldPanelUrls.add(it) } }
+        val completePanelBatch = force || panels.map { WebModeLogic.normalizeUrl(it.src) }.filter { it.isNotBlank() }.toSet().size >= REALTIME_AHEAD_PANEL_BATCH_SIZE ||
+            rtAheadHoldPanelUrls.size >= REALTIME_AHEAD_PANEL_BATCH_SIZE
         if (page.isBlank() || page != cleanUrl(novelWv.url.orEmpty()) ||
             (panels.isEmpty() && rtAheadHold.isEmpty())) return
 
@@ -796,8 +804,11 @@ class MainActivity : Activity() {
             batch.addAll(0, heldBubbles)
             batchTop.addAll(0, heldTops)
         }
-        if (batch.isEmpty()) return
-        Log.i("NovelStudioOCR", "Read-ahead batch: incomingPanels=${panels.size}, bubbles=${batch.size}, held=${rtAheadHold.size}, force=$force")
+        if (batch.isEmpty()) {
+            if (rtAheadHold.isEmpty()) { rtAheadHoldPanelUrls.clear(); rtAheadHoldSince = 0L }
+            return
+        }
+        Log.i("NovelStudioOCR", "Read-ahead batch: incomingPanels=${panels.size}, distinctPanels=${rtAheadHoldPanelUrls.size}, bubbles=${batch.size}, held=${rtAheadHold.size}, complete=$completePanelBatch, force=$force")
 
         // Prefer one complete request for the whole ahead window. A 10-panel comic usually fits in
         // one 30-bubble request; only unusually dialogue-heavy windows are split into bounded chunks.
@@ -810,7 +821,7 @@ class MainActivity : Activity() {
         }
         val minChunk = minOf(10, chunkSize)
         if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
-            if (!force) {
+            if (!completePanelBatch) {
                 // Too small to be worth a request of its own: hold it for the next OCR round.
                 val rest = chunks.removeAt(chunks.size - 1)
                 for (ix in rest) rtAheadHold.add(batch[ix] to batchTop[ix])
@@ -818,7 +829,7 @@ class MainActivity : Activity() {
                 if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
                 // Give already-running nearby OCR a brief chance to join this request. Do not
                 // make real-time reading wait seconds for a full chunk; send the lines we have quickly.
-                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 2500L - (nowMs - rtAheadHoldSince)))
+                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 6000L - (nowMs - rtAheadHoldSince)))
                 rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
                 val flush = Runnable {
                     rtAheadHoldFlushRunnable = null
@@ -828,7 +839,9 @@ class MainActivity : Activity() {
                 }
                 rtAheadHoldFlushRunnable = flush
                 handler.postDelayed(flush, delayMs)
-            } else if (chunks.size > 1 && chunks.last().size < 2) {
+            } else if (chunks.size > 1) {
+                // The tail belongs to this complete ten-panel unit. Merge it rather than
+                // creating a second request for the last few bubbles.
                 val last = chunks.removeAt(chunks.size - 1)
                 chunks.last().addAll(last)
             }
@@ -843,7 +856,7 @@ class MainActivity : Activity() {
                 RtAheadTranslationTask(id, page, layout, chunk.minOf { batchTop[it] })
             )
         }
-        if (rtAheadHold.isEmpty()) rtAheadHoldSince = 0L
+        if (rtAheadHold.isEmpty()) { rtAheadHoldSince = 0L; rtAheadHoldPanelUrls.clear() }
         pumpRealtimeAheadTranslation()
     }
 
