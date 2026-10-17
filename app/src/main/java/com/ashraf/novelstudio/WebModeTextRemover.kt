@@ -99,7 +99,7 @@ internal object WebModeTextRemover {
                 // component-size and foreground/background checks still reject large artwork strokes.
                 val denseCjk = isCjkText(bubble.sourceText)
                 val maxInkFraction = if (denseCjk) 0.76f else 0.50f
-                val minMaskCoverage = if (denseCjk) 0.70f else 0.78f
+                val minMaskCoverage = if (denseCjk) 0.82f else 0.88f
                 var candidateCount = 0
                 val candidate = ByteArray(regionCount)
                 val seen = ByteArray(regionCount)
