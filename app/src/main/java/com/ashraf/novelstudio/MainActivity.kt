@@ -2014,6 +2014,28 @@ return t.length>=40?'TXT:'+t:'';
     // button out of view and change the novel viewport that the real-time scanner is reading.
     @Volatile private var chatUserTouchAtMs = 0L
 
+    private var autoSendImeRestore: Runnable? = null
+
+    // Temporarily prevent WebView's programmatic editor focus from opening the Android IME
+    // during auto-send. Restore the normal window behavior shortly after the Send tap.
+    private fun suppressImeForAutoSend() {
+        try {
+            window.setFlags(
+                android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
+                android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+            )
+            autoSendImeRestore?.let { handler.removeCallbacks(it) }
+            val restore = Runnable {
+                try {
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+                } catch (_: Exception) { }
+                autoSendImeRestore = null
+            }
+            autoSendImeRestore = restore
+            handler.postDelayed(restore, 2200L)
+        } catch (_: Exception) { }
+    }
+
     private fun quietChatKeyboard() {
         val delays = longArrayOf(0L, 90L, 250L, 600L, 1200L, 2200L)
         for (d in delays) {
@@ -2112,10 +2134,11 @@ return t.length>=40?'TXT:'+t:'';
             }
         }
         chatRequestCount++
+        suppressImeForAutoSend()
         val gapMs = chatbotRequestGapMs
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
-        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> quietChatKeyboard(); onResult(raw) }
+        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
     }
 
     /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
