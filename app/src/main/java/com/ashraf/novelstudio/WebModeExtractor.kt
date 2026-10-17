@@ -1140,6 +1140,7 @@ internal class WebModeExtractor(
             cropFallback: Boolean = false
         ): PanelOcr? {
             com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.init(wv.context)
+            com.ashraf.novelstudio.japanesemanga.MultilingualPaddleOcr.init(wv.context)
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth
