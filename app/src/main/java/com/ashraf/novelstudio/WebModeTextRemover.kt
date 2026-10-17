@@ -32,24 +32,24 @@ internal object WebModeTextRemover {
         sourceUrl: String,
         encoded: ByteArray,
         bubbles: List<WmBubble>
-    ): Boolean {
-        if (!Prefs.bool(context, "wmTextRemoval", false)) return false
-        if (sourceUrl.isBlank() || encoded.size !in 1..MAX_BYTES || bubbles.isEmpty()) return false
-        if (isAnimatedOrUnsupported(encoded)) return false
+    ): Set<Int> {
+        if (!Prefs.bool(context, "wmTextRemoval", false)) return emptySet()
+        if (sourceUrl.isBlank() || encoded.size !in 1..MAX_BYTES || bubbles.isEmpty()) return emptySet()
+        if (isAnimatedOrUnsupported(encoded)) return emptySet()
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(encoded, 0, encoded.size, bounds)
         val width = bounds.outWidth
         val height = bounds.outHeight
         if (width !in 1..MAX_WIDTH || height !in 1..MAX_HEIGHT ||
-            width.toLong() * height.toLong() > MAX_PIXELS) return false
+            width.toLong() * height.toLong() > MAX_PIXELS) return emptySet()
 
         val decoded = BitmapFactory.decodeByteArray(encoded, 0, encoded.size,
             BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 })
-            ?: return false
+            ?: return emptySet()
         val bitmap = if (decoded.config == Bitmap.Config.ARGB_8888 && decoded.isMutable) decoded
             else decoded.copy(Bitmap.Config.ARGB_8888, true).also { decoded.recycle() }
-                ?: run { decoded.recycle(); return false }
+                ?: run { decoded.recycle(); return emptySet() }
 
         try {
             val count = width * height
@@ -57,12 +57,13 @@ internal object WebModeTextRemover {
             bitmap.getPixels(original, 0, width, 0, 0, width, height)
             val output = original.copyOf()
             var totalRemoved = 0
-            val boundedBubbles = bubbles.asSequence()
-                .filter { it.sourceText.isNotBlank() && !it.soft && it.eraseW > 0f && it.eraseH > 0f }
+            val cleanedIndices = LinkedHashSet<Int>()
+            val boundedBubbles = bubbles.withIndex().asSequence()
+                .filter { it.value.sourceText.isNotBlank() && !it.value.soft && it.value.eraseW > 0f && it.value.eraseH > 0f }
                 .take(500)
                 .toList()
 
-            for (bubble in boundedBubbles) {
+            for ((bubbleIndex, bubble) in boundedBubbles) {
                 // Erase only the OCR-confirmed source glyph region. The translation box may
                 // intentionally span the full speech bubble to fit longer Bengali text.
                 val cx = bubble.eraseCx * width
@@ -219,8 +220,9 @@ internal object WebModeTextRemover {
                     }
                 }
                 totalRemoved += selectedCount
+                cleanedIndices.add(bubbleIndex)
             }
-            if (totalRemoved < 8) return false
+            if (totalRemoved < 8) return emptySet()
 
             bitmap.setPixels(output, 0, width, 0, 0, width, height)
             val bytesOut = ByteArrayOutputStream()
@@ -228,15 +230,19 @@ internal object WebModeTextRemover {
             // of re-encoding the whole comic page with lossy WebP.
             val modern = Build.VERSION.SDK_INT >= 30
             val format = if (modern) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.PNG
-            if (!bitmap.compress(format, 100, bytesOut)) return false
+            if (!bitmap.compress(format, 100, bytesOut)) return emptySet()
             val cleaned = bytesOut.toByteArray()
-            if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return false
-            return WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
+            if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return emptySet()
+            val stored = WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
                 if (modern) "image/webp" else "image/png")
+            // The cached image may contain a mix of cleaned and untouched text regions. Tell the
+            // renderer exactly which OCR boxes were erased so every other translation keeps an
+            // opaque speech-balloon background instead of revealing the original glyphs behind it.
+            return if (stored) cleanedIndices else emptySet()
         } catch (_: OutOfMemoryError) {
-            return false
+            return emptySet()
         } catch (_: Exception) {
-            return false
+            return emptySet()
         } finally {
             bitmap.recycle()
         }
