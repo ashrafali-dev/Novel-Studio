@@ -1230,11 +1230,17 @@ internal class WebModeExtractor(
                 if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
                     (src.startsWith("https://", true) || src.startsWith("http://", true))) {
                     try {
-                        WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                        val cleaned = WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                        // The cached image can have some successful erasures and some untouched regions.
+                        // Preserve the result per bubble so the writer uses transparency only where the
+                        // original glyphs were actually removed; other bubbles get an opaque cover.
+                        for (i in bubbles.indices) {
+                            if (i in cleaned) bubbles[i] = bubbles[i].copy(eraseCleaned = true)
+                        }
                     } catch (_: OutOfMemoryError) {
                         // Optional cleanup must never turn a successful OCR result into a failed panel.
                     } catch (_: Exception) {
-                        // If cleanup is uncertain, retain the original panel and normal overlay.
+                        // If cleanup is uncertain, retain the original page and normal overlay.
                     }
                 }
                 return PanelOcr(texts.joinToString("\n\n"), bubbles)
@@ -1331,6 +1337,11 @@ internal class WebModeExtractor(
             // Keep the recognised text and geometry aligned with every remaining block.
             val refinedText = arrayOfNulls<String>(blocks.size)
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
+            // Full interior of a safe speech balloon, used only for translation placement.
+            val placementBox = arrayOfNulls<IntArray>(blocks.size)
+            // Translation boxes may expand to a whole speech bubble. Keep source-glyph bounds
+            // separately so TextRemover never has to scan/erase the oversized placement box.
+            val refinedRemovalBox = arrayOfNulls<IntArray>(blocks.size)
             val refinedFont = arrayOfNulls<Float>(blocks.size)
             val consumed = BooleanArray(blocks.size)
             // Cache interiors so multi-line text in the same balloon triggers only one retry.
@@ -1338,11 +1349,22 @@ internal class WebModeExtractor(
             for (i in blocks.indices) {
                 if (consumed[i]) continue
                 val b = blocks[i]
-                if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
+                if (Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
-                val inter: IntArray = (try {
-                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = !fastMode)
-                } catch (_: Exception) { null }) ?: continue
+                // Find a closed balloon even when OCR read every glyph. This area is for placement;
+                // source cleanup continues to use the tight OCR rectangles stored separately below.
+                val interior = try {
+                    WmBubbleStyle.bubbleInterior(
+                        bmp, rects[i], rects, detectUncoveredInk = !fastMode
+                    )
+                } catch (_: Exception) { null } ?: continue
+                val inter = interior.bounds
+                placementBox[i] = inter
+                // Vertical Japanese/Korean columns need the bubble placement, but must not be joined
+                // using horizontal line-reading heuristics.
+                if (b.vertical) continue
+                if (!fastMode && !interior.hasUncoveredInk) continue
+
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
 
@@ -1369,6 +1391,7 @@ internal class WebModeExtractor(
                     val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
                     refinedText[i] = joinedText
                     refinedBox[i] = inter
+                    refinedRemovalBox[i] = unionRectIndices(rects, members)
                     refinedFont[i] = if (fonts.isEmpty()) null else fonts[fonts.size / 2]
                     for (j in members) if (j != i) consumed[j] = true
                     continue
@@ -1405,6 +1428,13 @@ internal class WebModeExtractor(
                     // This checks original, resized and contrast/outlined variants without retrying
                     // every already-complete balloon.
                     val res = engine.recognize(crop, st.current)
+                    val joinedRects = res.blocks.mapNotNull { block ->
+                        try {
+                            val r = WmBubbleStyle.rectOf(block, cw, ch)
+                            intArrayOf(r[0] + inter[0], r[1] + inter[1],
+                                r[2] + inter[0], r[3] + inter[1])
+                        } catch (_: Exception) { null }
+                    }
                     val joined = res.blocks.sortedWith(compareBy({ it.top }, { it.left }))
                         .joinToString(" ") { it.text.replace(NEWLINES, " ").trim() }.trim()
                     val joinedKey = WebModeLayout.normalizeOcrText(joined)
@@ -1418,6 +1448,9 @@ internal class WebModeExtractor(
                         joinedKey.length > sourceKey.length + minGain) {
                         refinedText[i] = joined
                         refinedBox[i] = inter
+                        // Include every source glyph found by the recovery OCR, but not the whole
+                        // empty speech-bubble interior used for Bengali placement.
+                        refinedRemovalBox[i] = unionRect(joinedRects) ?: unionRectIndices(rects, group)
                         for (j in group) if (j != i) consumed[j] = true
                     }
                 } catch (_: Exception) {
@@ -1448,11 +1481,28 @@ internal class WebModeExtractor(
                 }
                 val text = (refinedText[i] ?: b.text).replace(NEWLINES, " ").trim()
                 val rb = refinedBox[i]
-                if (rb != null) {
-                    // the bubble's whole inside (kept a little off its outline)
-                    cx = (rb[0] + rb[2]) / 2f; cy = (rb[1] + rb[3]) / 2f
-                    bw = (rb[2] - rb[0]) - 4f; bh = (rb[3] - rb[1]) - 4f
+                val pb = placementBox[i]
+                val targetBox = rb ?: pb
+                if (targetBox != null) {
+                    // Keep translated text inside the detected balloon, not inside the much smaller
+                    // original-glyph box. Two-pixel inset leaves the balloon outline visible.
+                    cx = (targetBox[0] + targetBox[2]) / 2f
+                    cy = (targetBox[1] + targetBox[3]) / 2f
+                    bw = (targetBox[2] - targetBox[0]) - 4f
+                    bh = (targetBox[3] - targetBox[1]) - 4f
                 }
+                val rawEraseBox = refinedRemovalBox[i] ?: rects[i]
+                // Keep a small ring around the recognized glyphs so antialiasing and tiny shadows
+                // can be cleaned too. Pixel masking still removes only text-like pixels inside this
+                // tight area; this is deliberately not the enlarged speech-bubble placement box.
+                val erasePad = (((refinedFont[i] ?: b.fontPx).takeIf { it > 0f }
+                    ?: minOf(b.w, b.h)) * 0.12f).toInt().coerceIn(1, 4)
+                val eraseBox = intArrayOf(
+                    (rawEraseBox[0] - erasePad).coerceAtLeast(0),
+                    (rawEraseBox[1] - erasePad).coerceAtLeast(0),
+                    (rawEraseBox[2] + erasePad).coerceAtMost(bmp.width),
+                    (rawEraseBox[3] + erasePad).coerceAtMost(bmp.height)
+                )
                 val nb = WmBubble(
                     src = src,
                     cx = (x0 + cx * k) / fullW, cy = (y0 + cy * k) / fullH,
@@ -1460,7 +1510,11 @@ internal class WebModeExtractor(
                     angle = if (rotated) tilt else 0f,
                     font = (refinedFont[i] ?: b.fontPx) * k / fullW,
                     bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft,
-                    sourceText = text
+                    sourceText = text,
+                    eraseCx = (x0 + ((eraseBox[0] + eraseBox[2]) / 2f) * k) / fullW,
+                    eraseCy = (y0 + ((eraseBox[1] + eraseBox[3]) / 2f) * k) / fullH,
+                    eraseW = (eraseBox[2] - eraseBox[0]) * k / fullW,
+                    eraseH = (eraseBox[3] - eraseBox[1]) * k / fullH
                 )
                 // Same text seen by two overlapping slices: keep the bigger box once.
                 var dup = -1
@@ -1468,16 +1522,24 @@ internal class WebModeExtractor(
                     if (out[j].src == src && sameSpot(out[j], nb)) { dup = j; break }
                 }
                 if (dup >= 0) {
+                    val prior = out[dup]
                     if (sameOcrText(texts[dup], text)) {
-                        if (nb.w * nb.h > out[dup].w * out[dup].h * 1.15f) { out[dup] = nb; texts[dup] = text }
+                        // Overlap between image slices can produce the same text twice. Merge the
+                        // tight erase bounds too, regardless of which placement box is retained.
+                        out[dup] = if (nb.w * nb.h > prior.w * prior.h * 1.15f) {
+                            includeEraseRegion(nb, prior)
+                        } else {
+                            includeEraseRegion(prior, nb)
+                        }
+                        if (nb.w * nb.h > prior.w * prior.h * 1.15f) texts[dup] = text
                     } else {
                         // DIFFERENT text on the same spot: two lines of one speech bubble that OCR did not
-                        // join (both boxes grew to the same bubble interior). Dropping one lost a whole
-                        // line (e.g. the first line stayed untranslated). Keep both, top to bottom: blocks
-                        // arrive in reading order, so the new one is the lower line.
+                        // join (both translation boxes grew to the same bubble interior). Preserve both lines
+                        // and union their separate source-text regions so neither original line remains behind.
                         val merged = (texts[dup] + " " + text).replace(Regex("\\s+"), " ").trim()
-                        val base = if (nb.w * nb.h > out[dup].w * out[dup].h) nb else out[dup]
-                        out[dup] = base.copy(sourceText = merged)
+                        val base = if (nb.w * nb.h > prior.w * prior.h) nb else prior
+                        val other = if (base === nb) prior else nb
+                        out[dup] = includeEraseRegion(base, other).copy(sourceText = merged)
                         texts[dup] = merged
                     }
                     continue
@@ -1485,6 +1547,34 @@ internal class WebModeExtractor(
                 texts.add(text)
                 out.add(nb)
             }
+        }
+
+        /** Bounding rectangle around text regions; never use the larger translation placement box here. */
+        private fun unionRect(rectangles: List<IntArray>): IntArray? {
+            if (rectangles.isEmpty()) return null
+            var left = Int.MAX_VALUE; var top = Int.MAX_VALUE
+            var right = Int.MIN_VALUE; var bottom = Int.MIN_VALUE
+            for (r in rectangles) {
+                if (r.size < 4 || r[2] <= r[0] || r[3] <= r[1]) continue
+                left = minOf(left, r[0]); top = minOf(top, r[1])
+                right = maxOf(right, r[2]); bottom = maxOf(bottom, r[3])
+            }
+            return if (left == Int.MAX_VALUE) null else intArrayOf(left, top, right, bottom)
+        }
+
+        private fun unionRectIndices(rectangles: List<IntArray>, indices: Iterable<Int>): IntArray? =
+            unionRect(indices.mapNotNull { rectangles.getOrNull(it) })
+
+        /** Merge only source-erasure geometry; translation placement stays with [base]. */
+        private fun includeEraseRegion(base: WmBubble, other: WmBubble): WmBubble {
+            val left = minOf(base.eraseCx - base.eraseW / 2f, other.eraseCx - other.eraseW / 2f)
+            val top = minOf(base.eraseCy - base.eraseH / 2f, other.eraseCy - other.eraseH / 2f)
+            val right = maxOf(base.eraseCx + base.eraseW / 2f, other.eraseCx + other.eraseW / 2f)
+            val bottom = maxOf(base.eraseCy + base.eraseH / 2f, other.eraseCy + other.eraseH / 2f)
+            return base.copy(
+                eraseCx = (left + right) / 2f, eraseCy = (top + bottom) / 2f,
+                eraseW = right - left, eraseH = bottom - top
+            )
         }
 
         /** True when two OCR readings are (nearly) the same text; false when they are different lines. */

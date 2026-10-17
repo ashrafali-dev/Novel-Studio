@@ -32,24 +32,24 @@ internal object WebModeTextRemover {
         sourceUrl: String,
         encoded: ByteArray,
         bubbles: List<WmBubble>
-    ): Boolean {
-        if (!Prefs.bool(context, "wmTextRemoval", false)) return false
-        if (sourceUrl.isBlank() || encoded.size !in 1..MAX_BYTES || bubbles.isEmpty()) return false
-        if (isAnimatedOrUnsupported(encoded)) return false
+    ): Set<Int> {
+        if (!Prefs.bool(context, "wmTextRemoval", false)) return emptySet()
+        if (sourceUrl.isBlank() || encoded.size !in 1..MAX_BYTES || bubbles.isEmpty()) return emptySet()
+        if (isAnimatedOrUnsupported(encoded)) return emptySet()
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(encoded, 0, encoded.size, bounds)
         val width = bounds.outWidth
         val height = bounds.outHeight
         if (width !in 1..MAX_WIDTH || height !in 1..MAX_HEIGHT ||
-            width.toLong() * height.toLong() > MAX_PIXELS) return false
+            width.toLong() * height.toLong() > MAX_PIXELS) return emptySet()
 
         val decoded = BitmapFactory.decodeByteArray(encoded, 0, encoded.size,
             BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 })
-            ?: return false
+            ?: return emptySet()
         val bitmap = if (decoded.config == Bitmap.Config.ARGB_8888 && decoded.isMutable) decoded
             else decoded.copy(Bitmap.Config.ARGB_8888, true).also { decoded.recycle() }
-                ?: run { decoded.recycle(); return false }
+                ?: run { decoded.recycle(); return emptySet() }
 
         try {
             val count = width * height
@@ -57,16 +57,19 @@ internal object WebModeTextRemover {
             bitmap.getPixels(original, 0, width, 0, 0, width, height)
             val output = original.copyOf()
             var totalRemoved = 0
-            val boundedBubbles = bubbles.asSequence()
-                .filter { it.sourceText.isNotBlank() && !it.soft && it.w > 0f && it.h > 0f }
+            val cleanedIndices = LinkedHashSet<Int>()
+            val boundedBubbles = bubbles.withIndex().asSequence()
+                .filter { it.value.sourceText.isNotBlank() && !it.value.soft && it.value.eraseW > 0f && it.value.eraseH > 0f }
                 .take(500)
                 .toList()
 
-            for (bubble in boundedBubbles) {
-                val cx = bubble.cx * width
-                val cy = bubble.cy * height
-                val bw = bubble.w * width
-                val bh = bubble.h * height
+            for ((bubbleIndex, bubble) in boundedBubbles) {
+                // Erase only the OCR-confirmed source glyph region. The translation box may
+                // intentionally span the full speech bubble to fit longer Bengali text.
+                val cx = bubble.eraseCx * width
+                val cy = bubble.eraseCy * height
+                val bw = bubble.eraseW * width
+                val bh = bubble.eraseH * height
                 if (!cx.isFinite() || !cy.isFinite() || !bw.isFinite() || !bh.isFinite()) continue
                 val x0 = (cx - bw / 2f).toInt().coerceIn(0, width - 1)
                 val y0 = (cy - bh / 2f).toInt().coerceIn(0, height - 1)
@@ -91,6 +94,13 @@ internal object WebModeTextRemover {
                 val maxComponentPixels = max(18, (fontPx * fontPx * 9f + fontPx * 10f).toInt())
 
                 val regionCount = regionSize.toInt()
+                // Japanese kanji/kana and Korean Hangul often occupy much more of their OCR box
+                // than Latin letters. Use a higher ink-density ceiling for those scripts; the
+                // component-size and foreground/background checks still reject large artwork strokes.
+                val denseCjk = isCjkText(bubble.sourceText)
+                val maxInkFraction = if (denseCjk) 0.76f else 0.50f
+                val minMaskCoverage = if (denseCjk) 0.82f else 0.88f
+                var candidateCount = 0
                 val candidate = ByteArray(regionCount)
                 val seen = ByteArray(regionCount)
                 val selected = ByteArray(regionCount)
@@ -103,7 +113,10 @@ internal object WebModeTextRemover {
                         if (fromBg < 46) continue
                         val fromFg = min(distance(p, fg1), distance(p, fg2))
                         // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
-                        if (fromFg <= max(82f, fromBg * 1.08f)) candidate[row + rx] = 1
+                        if (fromFg <= max(82f, fromBg * 1.08f)) {
+                            candidate[row + rx] = 1
+                            candidateCount++
+                        }
                     }
                 }
 
@@ -155,12 +168,16 @@ internal object WebModeTextRemover {
                 // If the inferred mask covers too much of a region, it is probably art rather than text.
                 // Tight OCR boxes around dense CJK glyphs can legitimately contain more ink than Latin boxes.
                 // The connected-component/size checks above remain the stronger art-protection filters.
-                if (selectedCount < 4 || selectedCount > regionCount * 0.5f) continue
+                // A region is made transparent only when most candidate ink belongs to components
+                // we actually removed. If the mask was partial, keep the regular opaque translation
+                // box over this original text rather than expose a half-erased result.
+                if (selectedCount < 4 || selectedCount > regionCount * maxInkFraction ||
+                    candidateCount < 4 || selectedCount.toFloat() / candidateCount < minMaskCoverage) continue
 
                 // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
                 // the core pixels, fall outside the strict candidate test, and used to stay as a ghost of the old
                 // text behind the translation. Only pixels that differ from the paper colour are taken.
-                val grow = (fontPx * 0.07f).toInt().coerceIn(1, 3)
+                val grow = (fontPx * (if (denseCjk) 0.10f else 0.07f)).toInt().coerceIn(1, 4)
                 val mask = selected.copyOf()
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
@@ -212,8 +229,9 @@ internal object WebModeTextRemover {
                     }
                 }
                 totalRemoved += selectedCount
+                cleanedIndices.add(bubbleIndex)
             }
-            if (totalRemoved < 8) return false
+            if (totalRemoved < 8 || cleanedIndices.isEmpty()) return emptySet()
 
             bitmap.setPixels(output, 0, width, 0, 0, width, height)
             val bytesOut = ByteArrayOutputStream()
@@ -221,15 +239,19 @@ internal object WebModeTextRemover {
             // of re-encoding the whole comic page with lossy WebP.
             val modern = Build.VERSION.SDK_INT >= 30
             val format = if (modern) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.PNG
-            if (!bitmap.compress(format, 100, bytesOut)) return false
+            if (!bitmap.compress(format, 100, bytesOut)) return emptySet()
             val cleaned = bytesOut.toByteArray()
-            if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return false
-            return WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
+            if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return emptySet()
+            val stored = WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
                 if (modern) "image/webp" else "image/png")
+            // The cached image may contain a mix of cleaned and untouched text regions. Tell the
+            // renderer exactly which OCR boxes were erased so every other translation keeps an
+            // opaque speech-balloon background instead of revealing the original glyphs behind it.
+            return if (stored) cleanedIndices else emptySet()
         } catch (_: OutOfMemoryError) {
-            return false
+            return emptySet()
         } catch (_: Exception) {
-            return false
+            return emptySet()
         } finally {
             bitmap.recycle()
         }
@@ -246,6 +268,13 @@ internal object WebModeTextRemover {
             if (marker == "ANIM" || marker == "ANMF") return true
         }
         return false
+    }
+
+    private fun isCjkText(text: String): Boolean = text.any { c ->
+        c in '\u2E80'..'\u2EFF' || c in '\u3000'..'\u30FF' ||
+            c in '\u31F0'..'\u31FF' || c in '\u3400'..'\u4DBF' ||
+            c in '\u4E00'..'\u9FFF' || c in '\uAC00'..'\uD7AF' ||
+            c in '\uF900'..'\uFAFF' || c in '\uFF00'..'\uFFEF'
     }
 
     private fun opaque(color: Int): Int = color or (0xFF000000.toInt())
