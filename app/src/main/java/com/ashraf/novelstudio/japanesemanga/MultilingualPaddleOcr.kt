@@ -243,13 +243,13 @@ internal object MultilingualPaddleOcr {
     fun isAvailable(): Boolean = try { manager?.isInstalled() == true } catch (_: Exception) { false }
 
     fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult? {
-        if (script !in setOf(OcrScript.LATIN, OcrScript.CHINESE, OcrScript.KOREAN)) return null
+        if (script !in setOf(OcrScript.LATIN, OcrScript.CHINESE, OcrScript.JAPANESE, OcrScript.KOREAN)) return null
         if (!isAvailable()) return null
         return try {
             val lang = when (script) {
                 OcrScript.KOREAN -> "korean"
                 OcrScript.CHINESE -> "chinese"
-                else -> "latin"
+                OcrScript.LATIN, OcrScript.JAPANESE -> "latin"
             }
             val output = JapaneseMangaRuntime.recognizePaddle(bitmap, lang)
             val regions = JSONObject(output.json).optJSONArray("regions") ?: return null
