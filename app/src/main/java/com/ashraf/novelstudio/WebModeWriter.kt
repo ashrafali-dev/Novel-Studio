@@ -711,7 +711,8 @@ internal object WebModeWriter {
                 .put("a", r5(b.angle)).put("f", r5(b.font))
                 .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
                 // Transparent translations are safe only for the flat regions the cleaner can handle.
-                .put("cl", if (!b.soft && canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
+                .put("cl", if (!b.soft && b.eraseCleaned &&
+                    canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
                     WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
