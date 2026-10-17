@@ -693,15 +693,9 @@ internal object WebModeWriter {
      */
     fun bubbleScript(layout: WebModeLayout, translated: List<String?>, font: String, pageId: String): String {
         val arr = JSONArray()
-        // A cached replacement can have only some glyph regions cleaned. Show it only when every
-        // flat region in that source image has a translation, then make each bubble transparent only
-        // when TextRemover confirmed that bubble's own glyph mask was applied.
-        val canShowCleanImage = layout.bubbles.withIndex()
-            .groupBy { WebModeLogic.normalizeUrl(it.value.src) }
-            .mapValues { (_, group) ->
-                group.filter { it.value.sourceText.isNotBlank() && !it.value.soft }
-                    .all { (index, _) -> !translated.getOrNull(index).isNullOrBlank() }
-            }
+        // The cleaned bitmap is a per-pixel overlay for this source image. One untranslated
+        // OCR item must not disable it for every other bubble: only bubbles whose own glyph masks
+        // were confirmed cleaned become transparent, while all other translations keep their covers.
         for ((i, b) in layout.bubbles.withIndex()) {
             val t = WmSfx.fix(translated.getOrNull(i)?.trim().orEmpty())
             if (t.isEmpty()) continue
@@ -711,8 +705,7 @@ internal object WebModeWriter {
                 .put("a", r5(b.angle)).put("f", r5(b.font))
                 .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
                 // Transparent translations are safe only for the flat regions the cleaner can handle.
-                .put("cl", if (!b.soft && b.eraseCleaned &&
-                    canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
+                .put("cl", if (!b.soft && b.eraseCleaned)
                     WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
