@@ -249,7 +249,9 @@ internal object MultilingualPaddleOcr {
             val lang = when (script) {
                 OcrScript.KOREAN -> "korean"
                 OcrScript.CHINESE -> "chinese"
-                OcrScript.LATIN, OcrScript.JAPANESE -> "latin"
+                OcrScript.LATIN -> "latin"
+                // The general model is the same; the language tag selects manga-style right-to-left ordering.
+                OcrScript.JAPANESE -> "chinese"
             }
             val output = JapaneseMangaRuntime.recognizePaddle(bitmap, lang)
             val regions = JSONObject(output.json).optJSONArray("regions") ?: return null
