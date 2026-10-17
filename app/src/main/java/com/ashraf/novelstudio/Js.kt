@@ -332,6 +332,24 @@ function __box(){
       }catch(e){}
     }
   }
+  function __nsShowSendWait(){
+    try{
+      var old=document.getElementById('__ns_send_wait');
+      if(old)old.remove();
+      var box=__box();if(!box)return;
+      var wrap=document.createElement('div');wrap.id='__ns_send_wait';
+      wrap.setAttribute('aria-hidden','true');
+      wrap.style.cssText='position:fixed;z-index:2147483647;right:14px;bottom:calc(env(safe-area-inset-bottom,0px) + 86px);display:flex;align-items:center;gap:8px;padding:7px 11px;border-radius:18px;background:rgba(25,25,28,.92);color:#fff;font:500 12px system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.22);pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .12s ease,transform .12s ease';
+      wrap.innerHTML='<span>Sending</span><span style="display:flex;gap:3px"><i style="display:block;width:4px;height:4px;border-radius:50%;background:#fff;animation:__ns_send_dot .8s infinite ease-in-out"></i><i style="display:block;width:4px;height:4px;border-radius:50%;background:#fff;animation:__ns_send_dot .8s .15s infinite ease-in-out"></i><i style="display:block;width:4px;height:4px;border-radius:50%;background:#fff;animation:__ns_send_dot .8s .3s infinite ease-in-out"></i></span>';
+      if(!document.getElementById('__ns_send_wait_css')){
+        var css=document.createElement('style');css.id='__ns_send_wait_css';css.textContent='@keyframes __ns_send_dot{0%,60%,100%{opacity:.35;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}';(document.head||document.documentElement).appendChild(css);
+      }
+      (document.body||document.documentElement).appendChild(wrap);
+      requestAnimationFrame(function(){wrap.style.opacity='1';wrap.style.transform='translateY(0)';});
+      window.__nsHideSendWait=function(){try{var x=document.getElementById('__ns_send_wait');if(x){x.style.opacity='0';x.style.transform='translateY(4px)';setTimeout(function(){if(x.isConnected)x.remove();},140);}}catch(e){}};
+    }catch(e){}
+  }
+  function __nsHideSendWait(){try{if(window.__nsHideSendWait)window.__nsHideSendWait();else{var x=document.getElementById('__ns_send_wait');if(x)x.remove();}}catch(e){}}
   if(doSend){
     // Do not press Send until the editor has committed the full text and the control is enabled.
     // The first readiness check happens 300 ms after insertion; retries only re-check readiness,
@@ -367,7 +385,7 @@ function __box(){
         var streaming=0;try{streaming=__stream(p);}catch(e){}
         if(sentOk()||streaming){window.__nsSendState='sent:'+method;return;}
         if(Date.now()-t0<7000){setTimeout(chk,350);return;}
-        window.__nsSendState='failed';
+        __nsHideSendWait();window.__nsSendState='failed';
       })();
     }
     // A freshly opened conversation can remount its editor after the first input event.
@@ -409,7 +427,7 @@ function __box(){
         var live=__box();
         if(live&&live.isConnected){box=live;snap=__snap(box);window.__nsSnap=snap;}
         else if(Date.now()-started<7000){setTimeout(waitUntilReady,150);return;}
-        else{window.__nsSendState='failed:composer-detached';return;}
+        else{__nsHideSendWait();window.__nsSendState='failed:composer-detached';return;}
       }
       // Hard gate: no send action until the full prompt is committed to the live editor.
       var matches=composerMatches();
@@ -417,17 +435,19 @@ function __box(){
         if(textRepairAttempts<3&&Date.now()-started>=650+textRepairAttempts*900){
           textRepairAttempts++;
           repairComposerText();
-          setTimeout(waitUntilReady,300);
+          __nsShowSendWait();
+    setTimeout(waitUntilReady,180);
         }else if(Date.now()-started<7000){
           setTimeout(waitUntilReady,150);
         }else{
-          window.__nsSendState='failed:text-not-committed';
+          __nsHideSendWait();window.__nsSendState='failed:text-not-committed';
         }
         return;
       }
       var btn=__findSend(p,box,snap);
       if(btn&&__ok(btn)){
         if(__pressFull(btn)){
+          __nsHideSendWait();
           confirmSend('btn');
           return;
         }
@@ -437,15 +457,18 @@ function __box(){
       var g=__guessSend(box,snap);
       if(g){
         if(__pressFull(g)){
+          __nsHideSendWait();
           confirmSend('guess');
           return;
         }
       }
       // Last resort: the site's keyboard/form mechanism.
       if(requestComposerSubmit()){
+        __nsHideSendWait();
         confirmSend('submit');
       }else{
         keyEnter();
+        __nsHideSendWait();
         confirmSend('enter');
       }
     }
