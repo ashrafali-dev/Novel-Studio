@@ -36,7 +36,7 @@ import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
 
-/** Optional, isolated test screen. It does not call or modify the app's existing OCR/Webtoon pipeline. */
+/** Optional model manager and OCR test screen for the Japanese manga and multilingual PaddleOCR engines. */
 class JapaneseMangaEngineActivity : Activity() {
     private lateinit var manager: JapaneseMangaModelManager
     private lateinit var paddleManager: MultilingualPaddleModelManager
@@ -82,7 +82,7 @@ class JapaneseMangaEngineActivity : Activity() {
         setupRuntime()
         val firstUrl = intent.getStringExtra(EXTRA_PAGE_URL).orEmpty()
         if (firstUrl.startsWith("https://") || firstUrl.startsWith("http://")) page.loadUrl(firstUrl)
-        else status.text = "প্রথমে NovelStudio-তে একটি মাঙ্গা পেজ খুলে Menu → Japanese Manga Engine নির্বাচন করো।"
+        else status.text = "প্রথমে NovelStudio-তে একটি মাঙ্গা পেজ খুলে Menu → OCR Engine Manager নির্বাচন করো।"
         controls()
     }
 
