@@ -6151,7 +6151,12 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun stripInternalMarkers(text: String): String =
-        text.replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "").trim()
+        text
+            // Never copy placeholder-only OCR replies such as "[001]~" to the reader or clipboard.
+            .replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*[~～]+\\s*$"), "")
+            .replace(Regex("(?m)^\\s*\\[\\d{3,}\\]\\s*"), "")
+            .replace(Regex("\\n{3,}"), "\\n\\n")
+            .trim()
 
     private fun splitInternalMarkedTranslation(text: String, preserveParagraphs: Boolean = false): List<String> {
         // Models sometimes keep [001][002] markers on the same physical line.
