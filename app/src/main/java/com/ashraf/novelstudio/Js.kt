@@ -457,7 +457,7 @@ function __box(){
       }
       // Send button has no usable label (DeepSeek and similar): the control that became enabled
       // once text was inserted, or the right-most control beside the editor.
-      var g=__guessSend(box,snap);
+      var g=voiceCapable?null:__guessSend(box,snap);
       if(g){
         if(__pressFull(g)){
           __nsHideSendWait();
@@ -500,8 +500,9 @@ function __box(){
     /** Centre of the best Send candidate in WebView pixels ("x|y"), or "none". Used for a trusted native tap. */
     fun sendButtonRect(): String = run(
         "(function(){try{var p=__prof(),box=__box();if(!box)return 'none';var snap=window.__nsSnap||null;" +
-        "var b=__findSend(p,box,snap)||__guessSend(box,snap);" +
-        "if(!b){var cur=String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();" +
+        "var h=String(location.hostname||'').toLowerCase(),vc=h==='chatgpt.com'||h.endsWith('.chatgpt.com')||h==='chat.openai.com'||h.endsWith('.chat.openai.com')||h==='gemini.google.com'||h.endsWith('.gemini.google.com')||h==='claude.ai'||h.endsWith('.claude.ai')||h==='grok.com'||h.endsWith('.grok.com');" +
+        "var b=__findSend(p,box,snap)||(vc?null:__guessSend(box,snap));" +
+        "if(!b&&!vc){var cur=String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();" +
         "var exp=String(window.__nsSentN||'');if(exp&&cur.length>=Math.min(exp.length,20))b=__guessSendLoose(box);}" +
         "if(!b)return 'none';" +
         "try{b.scrollIntoView({block:'nearest'});}catch(e){}" +
