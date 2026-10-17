@@ -693,9 +693,9 @@ internal object WebModeWriter {
      */
     fun bubbleScript(layout: WebModeLayout, translated: List<String?>, font: String, pageId: String): String {
         val arr = JSONArray()
-        // The cleaner currently masks all confidently detected flat text regions in a source image.
-        // Only show that replacement if every flat text region from the same image has a translation;
-        // otherwise the original <img> remains visible so untranslated text cannot silently disappear.
+        // A cached replacement can have only some glyph regions cleaned. Show it only when every
+        // flat region in that source image has a translation, then make each bubble transparent only
+        // when TextRemover confirmed that bubble's own glyph mask was applied.
         val canShowCleanImage = layout.bubbles.withIndex()
             .groupBy { WebModeLogic.normalizeUrl(it.value.src) }
             .mapValues { (_, group) ->
