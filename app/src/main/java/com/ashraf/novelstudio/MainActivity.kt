@@ -453,7 +453,7 @@ class MainActivity : Activity() {
     private var rtVisibleOcrFlush: Runnable? = null
     private var rtVisibleOcrBatchSeq = 0
     private val rtVisibleOcrBatchMin = 10
-    private val rtVisibleOcrIdleFlushMs = 1000L
+    private val rtVisibleOcrIdleFlushMs = 2600L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
@@ -637,7 +637,7 @@ class MainActivity : Activity() {
         )
         WebModeLayoutStore.setScan(chapter.url, WebModeLayout(pending.titleOffset, bubbles))
         deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
-        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
+        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, trigger=${if (bubbles.size >= rtVisibleOcrBatchMin) "min-size" else "idle-fallback"}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
@@ -706,7 +706,7 @@ class MainActivity : Activity() {
     private var rtAheadHoldPage = ""
     private var rtAheadHoldFlushRunnable: Runnable? = null
     private var rtAheadHoldSince = 0L
-    private val rtAheadHoldFlushMs = 160L
+    private val rtAheadHoldFlushMs = 1800L
 
     private fun queueRealtimeAheadTranslations(pageUrl: String, panels: List<WebModeAheadPanel>, force: Boolean = false) {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
@@ -797,6 +797,7 @@ class MainActivity : Activity() {
             batchTop.addAll(0, heldTops)
         }
         if (batch.isEmpty()) return
+        Log.i("NovelStudioOCR", "Read-ahead batch: incomingPanels=${panels.size}, bubbles=${batch.size}, held=${rtAheadHold.size}, force=$force")
 
         // Prefer one complete request for the whole ahead window. A 10-panel comic usually fits in
         // one 30-bubble request; only unusually dialogue-heavy windows are split into bounded chunks.
@@ -817,7 +818,7 @@ class MainActivity : Activity() {
                 if (rtAheadHoldSince == 0L) rtAheadHoldSince = nowMs
                 // Give already-running nearby OCR a brief chance to join this request. Do not
                 // make real-time reading wait seconds for a full chunk; send the lines we have quickly.
-                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 450L - (nowMs - rtAheadHoldSince)))
+                val delayMs = maxOf(35L, minOf(rtAheadHoldFlushMs, 2500L - (nowMs - rtAheadHoldSince)))
                 rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
                 val flush = Runnable {
                     rtAheadHoldFlushRunnable = null
