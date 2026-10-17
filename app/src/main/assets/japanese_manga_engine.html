@@ -13,6 +13,9 @@
   'use strict';
   const BASE = 'https://appassets.androidplatform.net/manga-engine/';
   let detector = null, recognizer = null, dictionary = null, busy = false, readySignalled = false;
+  let mangaDetector = null, mangaRecognizer = null, mangaDictionary = null;
+  const paddleCache = Object.create(null);
+  let wasmReady = false;
   const state = document.getElementById('state');
   function bridge(name, id, message) {
     try {
@@ -24,31 +27,77 @@
     } catch (_) {}
   }
 
-  async function loadModels() {
+  async function ensureOrt() {
     if (!window.ort) throw new Error('ONNX Runtime WASM could not load');
+    if (wasmReady) return;
     ort.env.wasm.wasmPaths = {
       mjs: BASE + 'ort-wasm-simd-threaded.mjs',
       wasm: BASE + 'ort-wasm-simd-threaded.wasm'
     };
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
-    if (!detector) detector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
-    if (!recognizer) recognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
-    if (!dictionary) {
-      const response = await fetch(BASE + 'ppocrv6_dict.txt');
-      if (!response.ok) throw new Error('Character dictionary unavailable (' + response.status + ')');
-      const rows = (await response.text()).replace(/^\uFEFF/, '').split(/\r?\n/);
-      while (rows.length && rows[rows.length - 1] === '') rows.pop();
-      dictionary = [''];
-      for (const row of rows) dictionary.push(row.replace(/\r$/, ''));
-      dictionary.push(' ');
-      if (dictionary.length < 10000) throw new Error('Character dictionary is incomplete');
-    }
-    state.textContent = 'Japanese manga OCR ready';
+    wasmReady = true;
+  }
+
+  async function readDictionary(path, minimumSize) {
+    const response = await fetch(path);
+    if (!response.ok) throw new Error('Character dictionary unavailable (' + response.status + '): ' + path);
+    const rows = (await response.text()).replace(/^\uFEFF/, '').split(/\r?\n/);
+    while (rows.length && rows[rows.length - 1] === '') rows.pop();
+    const result = [''];
+    for (const row of rows) result.push(row.replace(/\r$/, ''));
+    if (result[result.length - 1] !== ' ') result.push(' ');
+    if (result.length < minimumSize) throw new Error('Character dictionary looks incomplete: ' + path);
+    return result;
+  }
+
+  function signalReady() {
     if (!readySignalled) {
       readySignalled = true;
       try { if (window.NsJapaneseMangaBridge) window.NsJapaneseMangaBridge.onReady(); } catch (_) {}
     }
+  }
+
+  async function loadModels() {
+    await ensureOrt();
+    // WASM is shared. Japanese weights are optional: Paddle-only installs must still be usable.
+    try {
+      if (!mangaDetector) mangaDetector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+      if (!mangaRecognizer) mangaRecognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+      if (!mangaDictionary) mangaDictionary = await readDictionary(BASE + 'ppocrv6_dict.txt', 10000);
+      detector = mangaDetector;
+      recognizer = mangaRecognizer;
+      dictionary = mangaDictionary;
+      state.textContent = 'Japanese manga OCR ready';
+    } catch (e) {
+      mangaDetector = null;
+      mangaRecognizer = null;
+      mangaDictionary = null;
+      state.textContent = 'OCR runtime ready; optional Japanese/Paddle models are not all installed.';
+    }
+    signalReady();
+  }
+
+  async function loadPaddleModels(language) {
+    await ensureOrt();
+    const lang = language === 'korean' ? 'korean' : (language === 'chinese' ? 'chinese' : 'latin');
+    if (!paddleCache[lang]) {
+      const prefix = BASE + 'paddle/';
+      const detectorUrl = prefix + 'models/detection/ppocrv6_small_det.onnx';
+      const recognizerUrl = prefix + (lang === 'korean'
+        ? 'models/ocr/korean_ppocrv5_rec.onnx'
+        : 'models/ocr/ppocrv6_small_rec.onnx');
+      const dictionaryUrl = prefix + (lang === 'korean' ? 'dicts/korean_dict.txt' : 'dicts/ppocrv6_dict.txt');
+      const loaded = {};
+      loaded.detector = await ort.InferenceSession.create(detectorUrl, { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
+      loaded.recognizer = await ort.InferenceSession.create(recognizerUrl, { executionProviders: ['wasm'], graphOptimizationLevel: 'basic' });
+      loaded.dictionary = await readDictionary(dictionaryUrl, lang === 'korean' ? 1000 : 10000);
+      paddleCache[lang] = loaded;
+    }
+    detector = paddleCache[lang].detector;
+    recognizer = paddleCache[lang].recognizer;
+    dictionary = paddleCache[lang].dictionary;
+    state.textContent = 'PaddleOCR ready (' + lang + ')';
   }
 
   function canvasOf(width, height) {
@@ -236,6 +285,8 @@
     busy=true;
     try{
       await loadModels();
+      if(!mangaDetector||!mangaRecognizer||!mangaDictionary)throw new Error('Japanese Manga OCR model is not installed');
+      detector=mangaDetector;recognizer=mangaRecognizer;dictionary=mangaDictionary;
       const image=new Image();image.decoding='async';image.src=url;
       await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('Local panel image could not load'));});
       const boxes=await detect(image),regions=[];
@@ -255,9 +306,35 @@
     finally{busy=false;}
   }
 
+
+  async function runPaddle(url,id,language) {
+    if(busy){bridge('onOcrError',id,'একটি OCR কাজ চলছে।');return;}
+    busy=true;
+    try{
+      await loadPaddleModels(language);
+      const image=new Image();image.decoding='async';image.src=url;
+      await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('Local panel image could not load'));});
+      const boxes=await detect(image),regions=[];
+      for(const b of boxes){
+        let text='';
+        try{text=await recognize(image,b);}catch(e){/* Continue with remaining detected text lines. */}
+        if(text)regions.push({order:0,text,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
+      }
+      const vertical=regions.filter(r=>r.vertical).length>regions.length*0.45;
+      regions.sort((a,b)=>{
+        if(vertical){const dx=b.x-a.x;return Math.abs(dx)>Math.max(a.w,b.w)*0.55?dx:a.y-b.y;}
+        const dy=a.y-b.y;return Math.abs(dy)>Math.max(a.h,b.h)*0.7?dy:b.x-a.x;
+      });
+      regions.forEach((r,i)=>r.order=i+1);
+      bridge('onOcrResult',id,JSON.stringify({width:image.naturalWidth,height:image.naturalHeight,verticalReading:vertical,regions:regions}));
+    }catch(e){bridge('onOcrError',id,e&&e.message?e.message:String(e));}
+    finally{busy=false;if(mangaDetector&&mangaRecognizer&&mangaDictionary){detector=mangaDetector;recognizer=mangaRecognizer;dictionary=mangaDictionary;}}
+  }
+  window.runPaddleOcr=runPaddle;
+
   window.runJapaneseMangaOcr=run;
   loadModels().catch(e=>{
-    state.textContent='Runtime/model initialization failed: '+(e&&e.message?e.message:String(e));
+    state.textContent='Runtime initialization failed: '+(e&&e.message?e.message:String(e));
     try{if(window.NsJapaneseMangaBridge)window.NsJapaneseMangaBridge.onRuntimeError(state.textContent);}catch(_){}
   });
 })();
