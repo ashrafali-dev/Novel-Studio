@@ -452,8 +452,13 @@ class MainActivity : Activity() {
     private var rtVisibleOcrBatch: RtVisibleOcrBatch? = null
     private var rtVisibleOcrFlush: Runnable? = null
     private var rtVisibleOcrBatchSeq = 0
-    private val rtVisibleOcrBatchMin = 4
-    private val rtVisibleOcrIdleFlushMs = 160L
+    // One request per SCREEN, not one per bubble: everything the scanner finds for the current viewport
+    // is collected and sent together. A batch is flushed early only when it is already large; otherwise
+    // it waits until the viewport OCR has gone quiet (and the chatbot is free).
+    private val rtVisibleOcrBatchMin = 14
+    private val rtVisibleOcrIdleFlushMs = 340L
+    private val rtVisibleOcrMaxHoldMs = 1600L
+    private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
@@ -501,6 +506,7 @@ class MainActivity : Activity() {
         aheadOcrHandle = webMode.start(WebModeRequest(
             webView = novelWv,
             visibleOnly = true,
+            isOccluded = { mode == Mode.CHAT },
             isValid = { token == navToken && DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() },
             onProgress = { stage, pct ->
                 if (seq == aheadOcrSeq) {
@@ -563,6 +569,7 @@ class MainActivity : Activity() {
         if (pending == null) {
             pending = RtVisibleOcrBatch(page, token, chapter, layout.titleOffset)
             rtVisibleOcrBatch = pending
+            rtVisibleOcrFirstAtMs = android.os.SystemClock.elapsedRealtime()
         } else {
             pending.baseChapter = chapter
             pending.titleOffset = layout.titleOffset
@@ -599,9 +606,13 @@ class MainActivity : Activity() {
         val pending = rtVisibleOcrBatch ?: return
         if (expectedPage != null && expectedPage != pending.pageUrl) return
 
+        // Another viewport OCR job is still reading the same screen: let its bubbles join this request
+        // (bounded, so real-time never waits long). This is what keeps three bubbles in ONE request.
+        val heldFor = android.os.SystemClock.elapsedRealtime() - rtVisibleOcrFirstAtMs
+        val ocrStillReading = webModeHandle != null && heldFor < rtVisibleOcrMaxHoldMs
         // Scan geometry and lastChapter are shared across page writes. Wait for the visible
         // chatbot job queue and any async overlay insertion to finish before replacing either.
-        if (running != null || queue.isNotEmpty() || activePlacementIds.isNotEmpty()) {
+        if (ocrStillReading || running != null || queue.isNotEmpty() || activePlacementIds.isNotEmpty()) {
             rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
             val seq = ++rtVisibleOcrBatchSeq
             val retry = Runnable {
@@ -848,6 +859,9 @@ class MainActivity : Activity() {
         pumpRealtimeAheadTranslation()
     }
 
+    private fun runningIsAheadJob(): Boolean =
+        running?.let { rtAheadTranslationTasksByJobKey.containsKey(keyOf(it)) } == true
+
     private fun queueRtAheadTask(task: RtAheadTranslationTask, front: Boolean = false) {
         if (task.id in rtAheadTranslationQueuedIds || task.id in rtAheadTranslationSuppressedIds ||
             rtAheadTranslationTasksByJobKey.values.any { it.id == task.id }) return
@@ -1025,6 +1039,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         val queuedNormalJob = queue.any { !isRealtimeBubbleBatch(it) }
         if (foregroundNormalJob || queuedNormalJob) {
             scheduleRealtimeAheadPump(250L)
+            return
+        }
+        // Read-ahead translation only uses the chatbot while the chat is FREE: the visible screen always
+        // goes first. If a reply is still being generated, a visible batch is queued/being collected, or
+        // the viewport OCR is still reading, wait and re-check shortly (the OCR cache keeps filling meanwhile).
+        val visibleChatBusy = (running != null && !runningIsAheadJob()) || queue.isNotEmpty() ||
+            rtVisibleOcrBatch != null || webModeHandle != null
+        if (visibleChatBusy) {
+            scheduleRealtimeAheadPump(220L)
             return
         }
         val now = System.currentTimeMillis()
@@ -1380,11 +1403,6 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         override fun run() {
             if (!DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) || !webModeOn()) {
                 deepSeekPollBusy = false
-                return
-            }
-            // The novel WebView stays alive under CHAT mode; never OCR this hidden pane.
-            if (mode == Mode.CHAT) {
-                handler.postDelayed(this, 500L)
                 return
             }
             // Never stack evaluateJavascript probes. Previously the 1.2 s watchdog launched a
@@ -1944,6 +1962,26 @@ return t.length>=40?'TXT:'+t:'';
     private fun chatRolloverDue() = chatRequestCount >= chatNewWindowEvery
 
     /** Send through the shared rate gate so every selected chatbot follows the same spacing. */
+    // Time of the last REAL finger touch on the chatbot pane. Automation (JS focus() while pasting the
+    // prompt) must never pop the soft keyboard: adjustResize would shrink both panes, move the Send
+    // button out of view and change the novel viewport that the real-time scanner is reading.
+    @Volatile private var chatUserTouchAtMs = 0L
+
+    private fun quietChatKeyboard() {
+        val delays = longArrayOf(0L, 90L, 250L, 600L, 1200L, 2200L)
+        for (d in delays) {
+            handler.postDelayed({
+                try {
+                    if (android.os.SystemClock.elapsedRealtime() - chatUserTouchAtMs < 4000L) return@postDelayed
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.hideSoftInputFromWindow(chatWv.windowToken, 0)
+                    aheadChatWv?.let { imm.hideSoftInputFromWindow(it.windowToken, 0) }
+                    if (chatWv.hasFocus()) chatWv.clearFocus()
+                } catch (_: Exception) { }
+            }, d)
+        }
+    }
+
     private fun sendChatRequest(
         text: String,
         doSend: Boolean,
@@ -1962,7 +2000,7 @@ return t.length>=40?'TXT:'+t:'';
         }
         // Pasting without pressing Send is not a chatbot request.
         if (!doSend) {
-            chatWv.evaluateJavascript(Js.send(text, false)) { raw -> onResult(raw) }
+            chatWv.evaluateJavascript(Js.send(text, false)) { raw -> quietChatKeyboard(); onResult(raw) }
             return
         }
         val now = System.currentTimeMillis()
@@ -2030,7 +2068,7 @@ return t.length>=40?'TXT:'+t:'';
         val gapMs = chatbotRequestGapMs
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
-        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> onResult(raw) }
+        chatWv.evaluateJavascript(Js.send(text, true)) { raw -> quietChatKeyboard(); onResult(raw) }
     }
 
     /** Leave a short (3.0-4.5 s, random) pause after a response ends (or is interrupted). */
@@ -2471,7 +2509,7 @@ return t.length>=40?'TXT:'+t:'';
             }
             false
         }
-        chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; false }
+        chatWv.setOnTouchListener { _, _ -> activeWv = chatWv; chatUserTouchAtMs = android.os.SystemClock.elapsedRealtime(); false }
 
         // Long-press a link: Chrome-style menu (new tab / background tab / copy).
         novelWv.setOnLongClickListener {
@@ -3639,32 +3677,9 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun setMode(m: Mode) {
-        if (m == Mode.CHAT && mode != Mode.CHAT &&
-            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
-            // The novel WebView stays alive behind full-screen chat. Stop viewport capture before
-            // pane coordinates change, otherwise OCR can pick up chatbot controls and status toasts.
-            webModeJobSerial++
-            webModeHandle?.cancel()
-            webModeHandle = null
-            webModeLastProgressAtMs = 0L
-            clearRealtimeVisibleOcrBatch()
-            aheadOcrHandle?.cancel()
-            aheadOcrHandle = null
-            aheadOcrSeq++
-            aheadOcrStage = ""
-            aheadOcrPct = -1
-            clearWebModeProgress()
-        }
-        if (m != Mode.CHAT && mode == Mode.CHAT &&
-            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn()) {
-            // Re-arm visible OCR immediately when returning from full-screen chat; do not wait for
-            // the ten-second periodic recheck because the visible scan was cancelled on entry.
-            deepSeekVisibleSignature = ""
-            deepSeekPendingSig = ""
-            deepSeekPendingSince = 0L
-            deepSeekLastOcrAtMs = 0L
-            deepSeekNoImageTriedUrl = ""
-        }
+        // Both WebViews are always alive: switching Novel / Split / Chatbot-only only changes what is
+        // visible. The real-time scanner keeps reading the novel pane (it captures from the WebView
+        // itself, not from the screen) while the chatbot pane is enlarged.
         val keepFrame = mode != m && beginModeTransition()
         mode = m
         modeBtn.setImageDrawable(IconDrawable(when (m) {
@@ -4279,6 +4294,11 @@ return t.length>=40?'TXT:'+t:'';
             }
             if (Prefs.adblock(this@MainActivity) && !r.isForMainFrame && AdBlock.shouldBlockRequest(r.url, r.requestHeaders)) {
                 return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+            }
+            // Image-OCR modes: keep the bytes of every image the page loads, so OCR reads the very same
+            // download instead of fetching it again (which many sites block). See ImageTap.kt.
+            if (!r.isForMainFrame && webModeOn()) {
+                ImageTap.intercept(this@MainActivity, r)?.let { return it }
             }
             return null
         }
@@ -4967,6 +4987,7 @@ return t.length>=40?'TXT:'+t:'';
             webView = novelWv,
             // DeepSeek real-time mode OCRs only the currently visible panel; never auto-scroll.
             visibleOnly = realtimeViewport,
+            isOccluded = { mode == Mode.CHAT },
             // Force Extract may scroll the screen; real-time OCR must stay viewport-only.
             force = Prefs.bool(this, "wmForce") && !realtimeViewport,
             isValid = { token == navToken && jobSeq == webModeJobSerial },
@@ -6459,11 +6480,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     down.recycle(); up.recycle()
                 } else {
                     // No identifiable button: send a native Enter key press into the focused editor.
-                    chatWv.requestFocus()
+                    // The editor already holds focus inside the page, so no requestFocus() here
+                    // (that is what used to pop the soft keyboard up).
                     val t = android.os.SystemClock.uptimeMillis()
                     chatWv.dispatchKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_ENTER, 0))
                     chatWv.dispatchKeyEvent(android.view.KeyEvent(t, t + 40, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_ENTER, 0))
                 }
+                quietChatKeyboard()
                 handler.postDelayed({
                     if (tok != runToken) return@postDelayed
                     chatWv.evaluateJavascript(Js.sendLanded()) { r2 ->

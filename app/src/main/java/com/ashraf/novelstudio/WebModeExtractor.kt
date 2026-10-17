@@ -102,7 +102,9 @@ internal class WebModeRequest(
      * bounded candidate limit), then process only the next ordered batch. Images not in the DOM
      * yet, or whose URL download/OCR fails, are left to the existing viewport OCR fallback.
      */
-    val fullChapterLinks: Boolean = false
+    val fullChapterLinks: Boolean = false,
+    /** True while another pane (full-screen chatbot) is drawn over this WebView: capture from the view itself. */
+    val isOccluded: () -> Boolean = { false }
 )
 
 /**
@@ -232,8 +234,10 @@ internal class WebModeExtractor(
             // preference is OFF. Cross-origin/CDN images can render in WebView while HttpURLConnection,
             // fetch(), and canvas export all fail; capture the already-visible pixels once instead.
             // processForce() does not scroll when visibleOnly=true, so this remains safe for real-time mode.
-            if (req.visibleOnly && !fellBackToForce &&
+            if (!fellBackToForce && req.ahead <= 0 && req.forceOcrSrc.isNullOrBlank() &&
                 (e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
+                // Full-chapter Web Mode scan too: when no image can be downloaded (hotlink protection,
+                // CORS, TLS blocking) read what the WebView itself draws, scrolling through the page.
                 fellBackToForce = true
                 diag.error = null
                 Log.i(TAG, "visible OCR falling back to viewport capture after $e: ${diag.summary()}")
@@ -370,7 +374,7 @@ internal class WebModeExtractor(
             if (elapsed() > DISCOVERY_MAX_MS || n > MAX_TICKS) { finishDiscovery(); return }
             // Read the current viewport before moving; virtualized readers can recycle the first panels on scroll.
             // Then use overlapping steps so lazy-loaded panels are less likely to be skipped.
-            val stepSize = if (n == 0 && lastCount < 0) "0" else "0.70"
+            val stepSize = if (n == 0 && lastCount < 0) "0" else if (lastCount >= 8) "0.85" else "0.70"
             wv.evaluateJavascript(wrap(LIB + JS_STEP.replace("__STEP__", stepSize))) { raw ->
                 if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
                 val o = parseJson(raw)
@@ -381,7 +385,10 @@ internal class WebModeExtractor(
                 val count = o.optInt("n", 0)
                 val pending = o.optInt("p", 0)
                 val bottom = o.optBoolean("bottom", false)
-                val ready = o.optString("ready") == "complete"
+                // Many sites (ads, trackers, long-polling) never reach readyState 'complete'; waiting for it
+                // made scanning crawl until the 120 s discovery limit. 'interactive' is enough after 4 s.
+                val rs = o.optString("ready")
+                val ready = rs == "complete" || (rs == "interactive" && elapsed() > 4000L)
                 // Collect panels at every scroll position, not just the final viewport.
                 o.optJSONArray("imgs")?.let { seenImgs ->
                     for (si in 0 until minOf(seenImgs.length(), MAX_PANELS)) {
@@ -403,15 +410,15 @@ internal class WebModeExtractor(
                 // A reader that has not drawn anything yet gets a longer grace period.
                 if (count == 0 && elapsed() < EMPTY_GRACE_MS) st = 0
                 progress("Discovering panels: ${discoveredDuringScroll.size} collected · $pending loading", 1 + minOf(8, n / 4))
-                if ((st >= 8 && pending == 0) || st >= 12) finishDiscovery()
+                if ((st >= 3 && pending == 0) || st >= 6) finishDiscovery()
                 else {
                     // Many ordinary IMG-based readers can scroll faster once the image list is visible.
                     // Keep a slower cadence for unknown/virtualized readers so their lazy loaders can react.
                     val waitMs = when {
-                        bottom -> 350L
-                        count >= 8 -> 140L
-                        count >= 3 -> 190L
-                        else -> 350L
+                        bottom -> 220L
+                        count >= 8 -> 90L
+                        count >= 3 -> 120L
+                        else -> 250L
                     }
                     handler.postDelayed({ tick(n + 1, count, st) }, waitMs)
                 }
@@ -484,8 +491,32 @@ internal class WebModeExtractor(
         }
 
         // ---- phase 2 (worker thread): fetch -> decode -> OCR, one panel at a time (bounded memory)
+        private var fetchPool: ExecutorService? = null
+
         private fun process(panels: List<PanelRef>, meta: PageMeta) {
+            try { processInner(panels, meta) } finally {
+                try { fetchPool?.shutdownNow() } catch (_: Throwable) {}
+                fetchPool = null
+            }
+        }
+
+        private fun processInner(panels: List<PanelRef>, meta: PageMeta) {
             val total = panels.size
+            // Download in parallel (a few images ahead of the OCR) instead of one at a time: OCR of panel N
+            // now overlaps the download of panels N+1..N+FETCH_AHEAD. Real-time viewport jobs stay serial
+            // because they only ever read 1-3 panels.
+            val pool: ExecutorService? = if (!req.visibleOnly && total > 1) {
+                Executors.newFixedThreadPool(FETCH_THREADS) { r -> Thread(r, "ns-webmode-fetch") }
+            } else null
+            fetchPool = pool
+            val futures = arrayOfNulls<java.util.concurrent.Future<ByteArray?>>(total)
+            fun submitFetch(i: Int) {
+                if (pool == null || i < 0 || i >= total || futures[i] != null) return
+                futures[i] = pool.submit(java.util.concurrent.Callable<ByteArray?> {
+                    try { fetchWithRetry(panels[i], meta.url) } catch (_: Throwable) { null }
+                })
+            }
+            for (k in 0 until minOf(FETCH_AHEAD, total)) submitFetch(k)
             val texts = arrayOfNulls<String>(total)
             val layouts = arrayOfNulls<List<WmBubble>>(total)
             val seen = HashSet<String>()
@@ -509,8 +540,22 @@ internal class WebModeExtractor(
                     }
                 }
                 progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
-                val bytes = fetchWithRetry(p, meta.url)
-                if (bytes == null) { fetchFailed++; diag.failed++; continue }
+                submitFetch(i)
+                submitFetch(i + FETCH_AHEAD)
+                val bytes = if (pool != null) {
+                    try { futures[i]?.get(JOB_MAX_MS, TimeUnit.MILLISECONDS) } catch (_: Throwable) { null }
+                } else fetchWithRetry(p, meta.url)
+                futures[i] = null
+                if (bytes == null) {
+                    fetchFailed++; diag.failed++
+                    // The first panels all refuse to download (hotlink / CORS / TLS block): do not burn
+                    // minutes on the other panels, switch to reading the WebView's own pixels right away.
+                    if (diag.downloaded == 0 && fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed) {
+                        fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
+                        return
+                    }
+                    continue
+                }
                 if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
                 diag.downloaded++
                 try {
@@ -733,10 +778,15 @@ internal class WebModeExtractor(
             // WebView.draw() while a hardware-composited page is live can flash on some devices.
             // Realtime recovery uses PixelCopy on the visible WebView rectangle only: no off-screen
             // draw and no full-window fallback that could include chatbot controls or native toasts.
-            if (!req.visibleOnly) {
+            if (!req.visibleOnly || req.isOccluded()) {
                 val a = captureByDraw()
                 if (a != null && !isBlank(a)) return a
                 a?.recycle()
+                if (req.isOccluded()) {
+                    // PixelCopy would return the chatbot pane that covers this WebView: never use it.
+                    forceBlank++
+                    return null
+                }
             }
             val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
             if (b != null && !isBlank(b)) return b
@@ -912,6 +962,9 @@ internal class WebModeExtractor(
             // Local / page-owned sources never need HTTP retry loops.
             if (u.startsWith("data:", true)) return try { decodeDataUrl(u) } catch (_: Exception) { null }
             if (u.startsWith("blob:", true)) return try { fetchViaPage(u, timeoutMs = 7000L) } catch (_: Exception) { null }
+            // The WebView already downloaded this exact image for display (same headers, cookies, TLS):
+            // reuse those bytes. No second download, so hotlink/CORS/Cloudflare rules cannot block it.
+            ImageTap.get(u)?.let { return it }
 
             if (req.ahead > 0) {
                 // Read-ahead panels are often BELOW the viewport and are not loaded by the page yet.
@@ -973,7 +1026,32 @@ internal class WebModeExtractor(
             }
         }
 
+        /**
+         * Hotlink-protected CDNs answer 401/403 for the wrong Referer. Try the page URL, then the page's
+         * origin ("https://site/"), then no Referer at all, before giving up on direct HTTP.
+         */
         private fun httpGet(url: String, referer: String, quick: Boolean = false, medium: Boolean = false): ByteArray {
+            try {
+                return httpGetOnce(url, referer, quick, medium)
+            } catch (e: IOException) {
+                val msg = e.message.orEmpty()
+                if (!Regex("http\\s+(401|403)").containsMatchIn(msg)) throw e
+                val origin = try {
+                    val u = URL(referer)
+                    u.protocol + "://" + u.authority + "/"
+                } catch (_: Exception) { "" }
+                val alternatives = ArrayList<String>()
+                if (origin.isNotBlank() && origin != referer) alternatives.add(origin)
+                alternatives.add("")
+                var last: IOException = e
+                for (alt in alternatives) {
+                    try { return httpGetOnce(url, alt, quick, medium) } catch (e2: IOException) { last = e2 }
+                }
+                throw last
+            }
+        }
+
+        private fun httpGetOnce(url: String, referer: String, quick: Boolean = false, medium: Boolean = false): ByteArray {
             val c = URL(url).openConnection() as HttpURLConnection
             try {
                 c.connectTimeout = if (quick) 2500 else if (medium) 6000 else 15000
@@ -985,7 +1063,13 @@ internal class WebModeExtractor(
                 c.setRequestProperty("Cache-Control", "no-cache")
                 c.setRequestProperty("Pragma", "no-cache")
                 c.setRequestProperty("User-Agent", userAgent)
-                c.setRequestProperty("Accept", "image/avif,image/webp,image/*,*/*;q=0.8")
+                c.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+                c.setRequestProperty("Accept-Encoding", "identity")
+                // Look like the browser's own <img> sub-request.
+                c.setRequestProperty("Sec-Fetch-Dest", "image")
+                c.setRequestProperty("Sec-Fetch-Mode", "no-cors")
+                c.setRequestProperty("Sec-Fetch-Site", "cross-site")
                 if (referer.isNotBlank()) c.setRequestProperty("Referer", referer)
                 val cookie = CookieManager.getInstance().getCookie(url)
                 if (!cookie.isNullOrBlank()) c.setRequestProperty("Cookie", cookie)
@@ -1502,8 +1586,11 @@ internal class WebModeExtractor(
         private const val MAX_PANELS = 400
         private const val MAX_TICKS = 400
         private const val MAX_BYTES = 25 * 1024 * 1024
+        private const val FETCH_THREADS = 4
+        private const val FETCH_AHEAD = 4
+        private const val EARLY_ABORT_FAILS = 4
         private const val DISCOVERY_MAX_MS = 120_000L
-        private const val EMPTY_GRACE_MS = 15_000L
+        private const val EMPTY_GRACE_MS = 8_000L
         private const val JOB_MAX_MS = 12 * 60_000L
         private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120

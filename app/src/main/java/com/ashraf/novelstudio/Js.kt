@@ -129,10 +129,44 @@ function __denyBtn(b){
 // Last-resort Send finder for sites whose Send button has no label (e.g. DeepSeek icon button):
 // 1) a control that became usable after the text was inserted, 2) the right-most usable control to the right of the editor's centre.
 function __guessSend(box,snap){
- // Never infer Send from button position. On mobile chat composers the microphone,
- // voice, and Send controls occupy the same location and can lack visible text.
- // Only __findSend() may click a control with a positive Send/Submit identity.
- return null;
+ // Unlabelled Send buttons (DeepSeek and similar icon-only controls).
+ // Safe rule: only a control that APPEARED or became ENABLED after the text was inserted can be
+ // Send. A microphone/voice/attach control was already usable before, so it is never picked.
+ try{
+  if(!box||!box.isConnected||!snap)return null;
+  var c=__ctls(box).filter(function(b){
+   if(!__ok(b)||b.querySelector('input[type=\"file\"]')||__denyBtn(b))return false;
+   var was=snap.get(b);
+   return was===undefined||was===false;
+  });
+  if(!c.length)return null;
+  var xr=box.getBoundingClientRect();
+  c.sort(function(a,b){
+   var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();
+   return (Math.abs(ra.right-xr.right)+Math.abs(ra.bottom-xr.bottom))-(Math.abs(rb.right-xr.right)+Math.abs(rb.bottom-xr.bottom));
+  });
+  return c[0];
+ }catch(e){return null;}
+}
+// Last resort, used ONLY for a native tap after the composer is proven to hold the full text:
+// the right-most, bottom-most icon control of the composer that is not a known utility control.
+function __guessSendLoose(box){
+ try{
+  if(!box||!box.isConnected)return null;
+  var xr=box.getBoundingClientRect();
+  var c=__ctls(box).filter(function(b){
+   if(!__ok(b)||b.querySelector('input[type=\"file\"]')||__denyBtn(b))return false;
+   var r=b.getBoundingClientRect();
+   if(r.width>96||r.height>96)return false;
+   return r.left>=xr.left+xr.width*0.5-8;
+  });
+  if(!c.length)return null;
+  c.sort(function(a,b){
+   var ra=a.getBoundingClientRect(),rb=b.getBoundingClientRect();
+   return (rb.right+rb.bottom*0.25)-(ra.right+ra.bottom*0.25);
+  });
+  return c[0];
+ }catch(e){return null;}
 }
 function __pressFull(b){
  if(!b||!b.isConnected||!__ok(b))return false;
@@ -366,7 +400,7 @@ function __box(){
             box.dispatchEvent(new Event('change',{bubbles:true}));
           }
         }
-        snap=__snap(box);window.__nsSnap=snap;
+        if(!snap){snap=__snap(box);window.__nsSnap=snap;}
         return composerMatches();
       }catch(e){return false;}
     }
@@ -434,7 +468,10 @@ function __box(){
     /** Centre of the best Send candidate in WebView pixels ("x|y"), or "none". Used for a trusted native tap. */
     fun sendButtonRect(): String = run(
         "(function(){try{var p=__prof(),box=__box();if(!box)return 'none';var snap=window.__nsSnap||null;" +
-        "var b=__findSend(p,box,snap)||__guessSend(box,snap);if(!b)return 'none';" +
+        "var b=__findSend(p,box,snap)||__guessSend(box,snap);" +
+        "if(!b){var cur=String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();" +
+        "var exp=String(window.__nsSentN||'');if(exp&&cur.length>=Math.min(exp.length,20))b=__guessSendLoose(box);}" +
+        "if(!b)return 'none';" +
         "try{b.scrollIntoView({block:'nearest'});}catch(e){}" +
         "var r=b.getBoundingClientRect(),vv=window.visualViewport,dpr=window.devicePixelRatio||1;" +
         "var x=(r.left+r.width/2-(vv?vv.offsetLeft:0))*dpr,y=(r.top+r.height/2-(vv?vv.offsetTop:0))*dpr;" +
