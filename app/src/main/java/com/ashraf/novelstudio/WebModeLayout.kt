@@ -29,7 +29,9 @@ internal data class WmBubble(
     val eraseCx: Float = cx,
     val eraseCy: Float = cy,
     val eraseW: Float = w,
-    val eraseH: Float = h
+    val eraseH: Float = h,
+    /** True only when these source glyph pixels were removed from the cached source image. */
+    val eraseCleaned: Boolean = false
 )
 
 /**
@@ -46,7 +48,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             .put("fg2", b.fg2).put("sf", b.soft)
             .put("srcText", b.sourceText).put("tr", b.translatedText)
             .put("eraseCx", r5(b.eraseCx)).put("eraseCy", r5(b.eraseCy))
-            .put("eraseW", r5(b.eraseW)).put("eraseH", r5(b.eraseH)))
+            .put("eraseW", r5(b.eraseW)).put("eraseH", r5(b.eraseH))
+            .put("eraseCleaned", b.eraseCleaned))
         return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
@@ -70,7 +73,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.optDouble("eraseCx", b.getDouble("cx")).toFloat(),
                     b.optDouble("eraseCy", b.getDouble("cy")).toFloat(),
                     b.optDouble("eraseW", b.getDouble("w")).toFloat(),
-                    b.optDouble("eraseH", b.getDouble("h")).toFloat()
+                    b.optDouble("eraseH", b.getDouble("h")).toFloat(),
+                    b.optBoolean("eraseCleaned", false)
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
