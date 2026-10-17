@@ -370,7 +370,7 @@ function __box(){
     var started=Date.now();
     var textRepairAttempts=0;
     // Never use Enter/form-submit as a blind fallback on chatbots whose empty composer exposes Voice/Mic.
-    var voiceCapable=/(^|\\.)(chatgpt\\.com|chat\\.openai\\.com|gemini\\.google\\.com|claude\\.ai|grok\\.com)$/.test(String(location.hostname||'').toLowerCase());
+    var voiceCapable=/(^|\.)(chatgpt\.com|chat\.openai\.com|gemini\.google\.com|claude\.ai|grok\.com)$/.test(String(location.hostname||'').toLowerCase());
     function keyEnter(){
       try{box.focus();}catch(e){}
       var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};
