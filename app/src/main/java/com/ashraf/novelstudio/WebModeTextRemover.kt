@@ -58,15 +58,17 @@ internal object WebModeTextRemover {
             val output = original.copyOf()
             var totalRemoved = 0
             val boundedBubbles = bubbles.asSequence()
-                .filter { it.sourceText.isNotBlank() && !it.soft && it.w > 0f && it.h > 0f }
+                .filter { it.sourceText.isNotBlank() && !it.soft && it.eraseW > 0f && it.eraseH > 0f }
                 .take(500)
                 .toList()
 
             for (bubble in boundedBubbles) {
-                val cx = bubble.cx * width
-                val cy = bubble.cy * height
-                val bw = bubble.w * width
-                val bh = bubble.h * height
+                // Erase only the OCR-confirmed source glyph region. The translation box may
+                // intentionally span the full speech bubble to fit longer Bengali text.
+                val cx = bubble.eraseCx * width
+                val cy = bubble.eraseCy * height
+                val bw = bubble.eraseW * width
+                val bh = bubble.eraseH * height
                 if (!cx.isFinite() || !cy.isFinite() || !bw.isFinite() || !bh.isFinite()) continue
                 val x0 = (cx - bw / 2f).toInt().coerceIn(0, width - 1)
                 val y0 = (cy - bh / 2f).toInt().coerceIn(0, height - 1)
