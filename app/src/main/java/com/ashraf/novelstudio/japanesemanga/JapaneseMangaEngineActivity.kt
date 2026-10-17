@@ -39,6 +39,7 @@ import java.util.concurrent.Executors
 /** Optional, isolated test screen. It does not call or modify the app's existing OCR/Webtoon pipeline. */
 class JapaneseMangaEngineActivity : Activity() {
     private lateinit var manager: JapaneseMangaModelManager
+    private lateinit var paddleManager: MultilingualPaddleModelManager
     private lateinit var assetLoader: JapaneseMangaAssetLoader
     private lateinit var page: WebView
     private lateinit var runtime: WebView
@@ -47,6 +48,8 @@ class JapaneseMangaEngineActivity : Activity() {
     private lateinit var progress: ProgressBar
     private lateinit var installButton: Button
     private lateinit var deleteButton: Button
+    private lateinit var paddleInstallButton: Button
+    private lateinit var paddleDeleteButton: Button
     private lateinit var scanButton: Button
     private lateinit var cancelButton: Button
     private lateinit var translateButton: Button
@@ -71,6 +74,8 @@ class JapaneseMangaEngineActivity : Activity() {
         JapaneseMangaRuntime.init(this)
         JapaneseMangaRuntime.release()
         manager = JapaneseMangaModelManager(this)
+        paddleManager = MultilingualPaddleModelManager(this)
+        MultilingualPaddleOcr.init(this)
         assetLoader = JapaneseMangaAssetLoader(this, manager)
         buildUi()
         setupPage()
@@ -107,6 +112,16 @@ class JapaneseMangaEngineActivity : Activity() {
         row1.addView(installButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
         row1.addView(deleteButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(4) })
         root.addView(row1)
+        val paddleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        paddleInstallButton = button("PaddleOCR ডাউনলোড (≈50 MB)") { confirmPaddleInstall() }
+        paddleDeleteButton = button("PaddleOCR মুছুন") { confirmPaddleDelete() }
+        paddleRow.addView(paddleInstallButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+            topMargin = dp(5); rightMargin = dp(4)
+        })
+        paddleRow.addView(paddleDeleteButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+            topMargin = dp(5); leftMargin = dp(4)
+        })
+        root.addView(paddleRow)
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         scanButton = button("এই পেজ OCR স্ক্যান") { scanPage() }
         cancelButton = button("বাতিল") { cancelWork() }
@@ -207,10 +222,13 @@ class JapaneseMangaEngineActivity : Activity() {
 
     private fun controls() {
         val installed = manager.isInstalled()
-        installButton.isEnabled = !manager.isDownloading() && !scanning && !scanWhenReady
-        deleteButton.isEnabled = manager.hasFiles() && !manager.isDownloading() && !scanning && !scanWhenReady
+        val anyDownload = manager.isDownloading() || paddleManager.isDownloading()
+        installButton.isEnabled = !anyDownload && !scanning && !scanWhenReady
+        deleteButton.isEnabled = manager.hasFiles() && !anyDownload && !scanning && !scanWhenReady
+        paddleInstallButton.isEnabled = !anyDownload && !scanning && !scanWhenReady
+        paddleDeleteButton.isEnabled = paddleManager.hasFiles() && !anyDownload && !scanning && !scanWhenReady
         scanButton.isEnabled = installed && page.url?.startsWith("http") == true && !scanning && !scanWhenReady
-        cancelButton.isEnabled = manager.isDownloading() || scanning || scanWhenReady
+        cancelButton.isEnabled = anyDownload || scanning || scanWhenReady
         translateButton.isEnabled = lastResultJson.isNotBlank() && !scanning
     }
 
@@ -247,6 +265,66 @@ class JapaneseMangaEngineActivity : Activity() {
             }
             controls()
         } })
+    }
+
+    private fun confirmPaddleInstall() {
+        if (paddleManager.isInstalled()) {
+            Toast.makeText(this, "PaddleOCR আগেই ইনস্টল আছে", Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Multilingual PaddleOCR")
+            .setMessage("প্রায় ৫০ MB OCR মডেল ও WASM runtime ডাউনলোড হবে। APK-র আকার বাড়বে না। এটি ইংরেজি/চীনা/জাপানি ও কোরিয়ান টেক্সটের জন্য আলাদা OCR; ইনস্টল না করলে আগের ML Kit চলবে। ফাইলগুলো অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে। PaddleOCR মডেল Apache-2.0, ONNX Runtime Web MIT।")
+            .setNegativeButton("পরে", null)
+            .setPositiveButton("ডাউনলোড") { _, _ -> installPaddle() }
+            .show()
+    }
+
+    private fun installPaddle() {
+        progress.visibility = View.VISIBLE
+        progress.isIndeterminate = true
+        status.text = "Multilingual PaddleOCR ডাউনলোড হচ্ছে…"
+        controls()
+        paddleManager.download(onProgress = { p -> main.post {
+            if (isFinishing || isDestroyed) return@post
+            status.text = "PaddleOCR ${p.index}/${p.count}  ${p.name} · ${p.read / (1024 * 1024)} MB"
+            if (p.total > 0L) {
+                progress.isIndeterminate = false
+                progress.progress = (100L * p.read / p.total).toInt().coerceIn(0, 100)
+            }
+        } }, onComplete = { result -> main.post {
+            if (isFinishing || isDestroyed) return@post
+            progress.visibility = View.GONE
+            when (result) {
+                MultilingualPaddleModelManager.Result.Success -> {
+                    MultilingualPaddleOcr.init(this)
+                    JapaneseMangaRuntime.invalidate()
+                    status.text = "Multilingual PaddleOCR ইনস্টল হয়েছে। এখন Web Mode/Realtime-এ চীনা, ইংরেজি, জাপানি ও কোরিয়ানে মডেলটি ব্যবহার হবে; অন্য সমস্যা হলে ML Kit fallback থাকবে।"
+                    resultView.text = "✅ PaddleOCR প্যাক ইনস্টল সম্পন্ন। ডাউনলোড করা মডেল পরে এই স্ক্রিন থেকে মুছে ফেলা যাবে।"
+                }
+                MultilingualPaddleModelManager.Result.Cancelled -> status.text = "PaddleOCR ডাউনলোড বাতিল করা হয়েছে।"
+                is MultilingualPaddleModelManager.Result.Failure -> status.text = "PaddleOCR ডাউনলোড ব্যর্থ: " + result.message
+            }
+            controls()
+        } })
+    }
+
+    private fun confirmPaddleDelete() {
+        if (paddleManager.isDownloading() || scanning) return
+        AlertDialog.Builder(this)
+            .setTitle("PaddleOCR মুছে ফেলবে?")
+            .setMessage("Multilingual PaddleOCR মডেল ও runtime-এর শেয়ার করা ফাইল নিরাপদভাবে মুছে ফেলা হবে। জাপানি Manga Engine ইনস্টল থাকলে তার প্রয়োজনীয় runtime রেখে দেওয়া হবে।")
+            .setNegativeButton("না", null)
+            .setPositiveButton("মুছে ফেলো") { _, _ ->
+                JapaneseMangaRuntime.release()
+                val ok = paddleManager.deleteEngine()
+                JapaneseMangaRuntime.invalidate()
+                if (ok) {
+                    status.text = "PaddleOCR সরানো হয়েছে। Web Mode আবার আগের ML Kit OCR ব্যবহার করবে।"
+                    resultView.text = "PaddleOCR প্যাক মুছে ফেলা হয়েছে।"
+                } else status.text = "PaddleOCR প্যাক মুছে ফেলা যায়নি।"
+                controls()
+            }.show()
     }
 
     private fun confirmDelete() {
@@ -543,7 +621,10 @@ class JapaneseMangaEngineActivity : Activity() {
     private fun cancelWork() {
         if (manager.isDownloading()) {
             manager.cancel()
-            status.text = "ডাউনলোড বাতিল হচ্ছে…"
+            status.text = "Japanese OCR ডাউনলোড বাতিল হচ্ছে…"
+        } else if (paddleManager.isDownloading()) {
+            paddleManager.cancel()
+            status.text = "PaddleOCR ডাউনলোড বাতিল হচ্ছে…"
         } else if (scanning || scanWhenReady) {
             scanWhenReady = false
             finishScan("স্ক্যান বাতিল করা হয়েছে।")
@@ -554,7 +635,7 @@ class JapaneseMangaEngineActivity : Activity() {
     private fun dp(v: Int) = (resources.displayMetrics.density * v).toInt()
 
     override fun onBackPressed() {
-        if (scanning || scanWhenReady || manager.isDownloading()) cancelWork() else super.onBackPressed()
+        if (scanning || scanWhenReady || manager.isDownloading() || paddleManager.isDownloading()) cancelWork() else super.onBackPressed()
     }
 
     override fun onDestroy() {
@@ -562,6 +643,7 @@ class JapaneseMangaEngineActivity : Activity() {
         images.forEach { deleteLocal(it.localUrl) }
         pending.values.forEach { deleteLocal(it.localUrl) }
         manager.shutdown()
+        paddleManager.shutdown()
         worker.shutdownNow()
         runtime.removeJavascriptInterface("NsJapaneseMangaBridge")
         runtime.stopLoading(); page.stopLoading()
