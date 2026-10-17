@@ -1230,11 +1230,17 @@ internal class WebModeExtractor(
                 if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
                     (src.startsWith("https://", true) || src.startsWith("http://", true))) {
                     try {
-                        WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                        val cleaned = WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
+                        // The cached image can have some successful erasures and some untouched regions.
+                        // Preserve the result per bubble so the writer uses transparency only where the
+                        // original glyphs were actually removed; other bubbles get an opaque cover.
+                        for (i in bubbles.indices) {
+                            if (i in cleaned) bubbles[i] = bubbles[i].copy(eraseCleaned = true)
+                        }
                     } catch (_: OutOfMemoryError) {
                         // Optional cleanup must never turn a successful OCR result into a failed panel.
                     } catch (_: Exception) {
-                        // If cleanup is uncertain, retain the original panel and normal overlay.
+                        // If cleanup is uncertain, retain the original page and normal overlay.
                     }
                 }
                 return PanelOcr(texts.joinToString("\n\n"), bubbles)
