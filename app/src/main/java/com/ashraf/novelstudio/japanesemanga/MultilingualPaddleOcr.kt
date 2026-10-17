@@ -41,7 +41,7 @@ internal class MultilingualPaddleModelManager(context: Context) {
     private data class Asset(val path: String, val url: String, val min: Long, val max: Long)
 
     fun isDownloading() = busy
-    fun hasFiles(): Boolean = SPECS.any { safeFile(it.path)?.let { f -> f.exists() } == true }
+    fun hasFiles(): Boolean = SPECS.any { it.path.startsWith("paddle/") && safeFile(it.path)?.exists() == true }
     fun packageBytes(): Long = SPECS.sumOf { safeFile(it.path)?.takeIf(File::isFile)?.length() ?: 0L }
 
     @Synchronized fun isInstalled(): Boolean {
@@ -149,14 +149,25 @@ internal class MultilingualPaddleModelManager(context: Context) {
     @Synchronized fun deleteEngine(): Boolean {
         if (busy) return false
         marker.delete()
-        SPECS.forEach { spec -> safeFile(spec.path)?.let { f ->
-            f.delete()
-            File(f.parentFile, f.name + ".part").delete()
-        } }
+        SPECS.filter { it.path.startsWith("paddle/") }.forEach { spec ->
+            safeFile(spec.path)?.let { file ->
+                file.delete()
+                File(file.parentFile, file.name + ".part").delete()
+            }
+        }
         File(base, "paddle_manifest.part").delete()
-        // Keep the Japanese engine and its files intact.
-        base.walkBottomUp().filter { it.isDirectory && it != root }.forEach { runCatching { it.delete() } }
-        return !marker.exists() && SPECS.none { safeFile(it.path)?.exists() == true }
+        // The WASM files are shared with the Japanese engine. Only remove them if its model pack
+        // is not installed, so removing one optional pack cannot break the other.
+        if (!File(root, "engine_manifest.json").isFile) {
+            SPECS.filter { !it.path.startsWith("paddle/") }.forEach { spec ->
+                safeFile(spec.path)?.let { file ->
+                    file.delete()
+                    File(file.parentFile, file.name + ".part").delete()
+                }
+            }
+        }
+        base.walkBottomUp().filter { it.isDirectory && it != base }.forEach { runCatching { it.delete() } }
+        return !marker.exists() && SPECS.none { it.path.startsWith("paddle/") && safeFile(it.path)?.exists() == true }
     }
 
     fun resolve(path: String): File? = safeFile(path)
@@ -170,9 +181,16 @@ internal class MultilingualPaddleModelManager(context: Context) {
     }
 
     private fun cleanupPartial() {
-        SPECS.forEach { spec -> safeFile(spec.path)?.let { File(it.parentFile, it.name + ".part").delete() } }
+        SPECS.filter { it.path.startsWith("paddle/") }.forEach { spec ->
+            safeFile(spec.path)?.let { File(it.parentFile, it.name + ".part").delete() }
+        }
         File(base, "paddle_manifest.part").delete()
         marker.delete()
+        if (!File(root, "engine_manifest.json").isFile) {
+            SPECS.filter { !it.path.startsWith("paddle/") }.forEach { spec ->
+                safeFile(spec.path)?.let { File(it.parentFile, it.name + ".part").delete() }
+            }
+        }
     }
 
     private fun checkCancel() {
@@ -195,9 +213,9 @@ internal class MultilingualPaddleModelManager(context: Context) {
         private const val HF = "https://huggingface.co/"
         private const val PADDLE_DICT = "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/dict/"
         private val SPECS = listOf(
-            Asset("paddle/ort.wasm.min.js", ORT + "ort.wasm.min.js", 10000, 500000),
-            Asset("paddle/ort-wasm-simd-threaded.wasm", ORT + "ort-wasm-simd-threaded.wasm", 5000000, 40000000),
-            Asset("paddle/ort-wasm-simd-threaded.mjs", ORT + "ort-wasm-simd-threaded.mjs", 5000, 500000),
+            Asset("ort.wasm.min.js", ORT + "ort.wasm.min.js", 10000, 500000),
+            Asset("ort-wasm-simd-threaded.wasm", ORT + "ort-wasm-simd-threaded.wasm", 5000000, 40000000),
+            Asset("ort-wasm-simd-threaded.mjs", ORT + "ort-wasm-simd-threaded.mjs", 5000, 500000),
             Asset("paddle/models/detection/ppocrv6_small_det.onnx", HF + "PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx", 8000000, 15000000),
             Asset("paddle/models/ocr/ppocrv6_small_rec.onnx", HF + "PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx", 18000000, 27000000),
             Asset("paddle/models/ocr/korean_ppocrv5_rec.onnx", HF + "PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx", 12000000, 18000000),
