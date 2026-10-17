@@ -99,6 +99,8 @@ internal object WebModeTextRemover {
                 // component-size and foreground/background checks still reject large artwork strokes.
                 val denseCjk = isCjkText(bubble.sourceText)
                 val maxInkFraction = if (denseCjk) 0.76f else 0.50f
+                val minMaskCoverage = if (denseCjk) 0.70f else 0.78f
+                var candidateCount = 0
                 val candidate = ByteArray(regionCount)
                 val seen = ByteArray(regionCount)
                 val selected = ByteArray(regionCount)
@@ -111,7 +113,10 @@ internal object WebModeTextRemover {
                         if (fromBg < 46) continue
                         val fromFg = min(distance(p, fg1), distance(p, fg2))
                         // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
-                        if (fromFg <= max(82f, fromBg * 1.08f)) candidate[row + rx] = 1
+                        if (fromFg <= max(82f, fromBg * 1.08f)) {
+                            candidate[row + rx] = 1
+                            candidateCount++
+                        }
                     }
                 }
 
@@ -163,7 +168,11 @@ internal object WebModeTextRemover {
                 // If the inferred mask covers too much of a region, it is probably art rather than text.
                 // Tight OCR boxes around dense CJK glyphs can legitimately contain more ink than Latin boxes.
                 // The connected-component/size checks above remain the stronger art-protection filters.
-                if (selectedCount < 4 || selectedCount > regionCount * maxInkFraction) continue
+                // A region is made transparent only when most candidate ink belongs to components
+                // we actually removed. If the mask was partial, keep the regular opaque translation
+                // box over this original text rather than expose a half-erased result.
+                if (selectedCount < 4 || selectedCount > regionCount * maxInkFraction ||
+                    candidateCount < 4 || selectedCount.toFloat() / candidateCount < minMaskCoverage) continue
 
                 // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
                 // the core pixels, fall outside the strict candidate test, and used to stay as a ghost of the old
@@ -222,7 +231,7 @@ internal object WebModeTextRemover {
                 totalRemoved += selectedCount
                 cleanedIndices.add(bubbleIndex)
             }
-            if (totalRemoved < 8) return emptySet()
+            if (totalRemoved < 8 || cleanedIndices.isEmpty()) return emptySet()
 
             bitmap.setPixels(output, 0, width, 0, 0, width, height)
             val bytesOut = ByteArrayOutputStream()
