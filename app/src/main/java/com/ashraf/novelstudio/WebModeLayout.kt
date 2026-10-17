@@ -438,8 +438,8 @@ internal object WmBubbleStyle {
         // Only speech-bubble-like (light) interiors are grown; on black pages the cover stays on the text itself.
         if (expand && lum(bg) > 70) {
             val buf = IntArray(maxOf(bw, bh) + 4)
-            val maxX = maxOf(12, ((r - l) * 0.8f).toInt())
-            val maxY = maxOf(12, ((b - t) * 0.8f).toInt())
+            val maxX = maxOf(12, ((r - l) * 2.0f).toInt())
+            val maxY = maxOf(12, ((b - t) * 2.0f).toInt())
             var gl = 0; var gr = 0; var gt = 0; var gb = 0
             var okL = true; var okR = true; var okT = true; var okB = true
             while (okL || okR || okT || okB) {
