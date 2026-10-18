@@ -434,6 +434,8 @@ internal class WebModeExtractor(
         private var slowTicks = 0
         private var capHits = 0
 
+        private fun scanFastFirst(): Boolean = Prefs.get(wv.context, "scanFastFirst", "1") == "1"
+
         private fun scanHost(): String = try {
             android.net.Uri.parse(wv.url.orEmpty()).host.orEmpty().removePrefix("www.")
         } catch (_: Exception) { "" }
@@ -1335,14 +1337,60 @@ internal class WebModeExtractor(
             val consumed = BooleanArray(blocks.size)
             // Cache interiors so multi-line text in the same balloon triggers only one retry.
             val triedInteriors = HashSet<String>()
+
+            // Lines stacked under each other (touching ranges, centred or left aligned) are ONE sentence.
+            // The merged text is placed in the union box of its lines.
+            fun joinAdjacentLines(i: Int, pool: List<Int>) {
+                fun aligned(a: OcrBlock, b: OcrBlock): Boolean {
+                    val overlap = Math.min(a.cx + a.w / 2f, b.cx + b.w / 2f) - Math.max(a.cx - a.w / 2f, b.cx - b.w / 2f)
+                    return overlap >= Math.min(a.w, b.w) * 0.3f || Math.abs(a.cx - b.cx) <= Math.max(a.w, b.w) * 0.6f
+                }
+                val grp = linkedSetOf(i)
+                var grow = true
+                while (grow) {
+                    grow = false
+                    for (j in pool) {
+                        if (j in grp || consumed[j]) continue
+                        if (grp.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.0f) && aligned(blocks[p], blocks[j]) }) {
+                            grp.add(j); grow = true
+                        }
+                    }
+                }
+                if (grp.size < 2) return
+                val ordered = grp.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
+                val text = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
+                    .replace(Regex("\\s+"), " ").trim()
+                if (text.isBlank()) return
+                var l = Int.MAX_VALUE; var t = Int.MAX_VALUE; var r = Int.MIN_VALUE; var bt = Int.MIN_VALUE
+                for (j in ordered) {
+                    val rc = rects[j]
+                    l = Math.min(l, rc[0]); t = Math.min(t, rc[1]); r = Math.max(r, rc[2]); bt = Math.max(bt, rc[3])
+                }
+                val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
+                val pad = Math.max(4, ((if (fonts.isEmpty()) 12f else fonts[fonts.size / 2]) * 0.25f).toInt())
+                refinedText[i] = text
+                refinedBox[i] = intArrayOf(
+                    (l - pad).coerceAtLeast(0), (t - pad).coerceAtLeast(0),
+                    (r + pad).coerceAtMost(bmp.width), (bt + pad).coerceAtMost(bmp.height)
+                )
+                refinedFont[i] = if (fonts.isEmpty()) null else fonts[fonts.size / 2]
+                for (j in grp) if (j != i) consumed[j] = true
+            }
+
             for (i in blocks.indices) {
                 if (consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
-                val inter: IntArray = (try {
+                val inter: IntArray? = try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = !fastMode)
-                } catch (_: Exception) { null }) ?: continue
+                } catch (_: Exception) { null }
+                if (inter == null) {
+                    // No closed outline found (tail leaks into the artwork, thick outline ...). Lines that sit
+                    // right under each other are still one sentence: never send them as separate fragments.
+                    if (fastMode) joinAdjacentLines(i, blocks.indices.filter { !consumed[it] })
+                    continue
+                }
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
 
@@ -1375,7 +1423,12 @@ internal class WebModeExtractor(
                             }
                         }
                     }
-                    if (members.any { it !in sameText }) continue
+                    if (members.any { it !in sameText }) {
+                        // Something else is inside the same outline (second lobe, a stray mark): join only the
+                        // lines that belong together, the rest keeps its own box.
+                        joinAdjacentLines(i, members)
+                        continue
+                    }
                     val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
                     val joinedText = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
                         .replace(Regex("\\s+"), " ").trim()
@@ -1549,7 +1602,13 @@ internal class WebModeExtractor(
         }
 
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            val first = if (fastMode) engine.recognizeFast(bmp, st.current) else engine.recognize(bmp, st.current)
+            val first = if (fastMode) engine.recognizeFast(bmp, st.current)
+            else if (scanFastFirst()) {
+                // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
+                // multi-pass engine; bubbles that still hide ink are re-read one by one afterwards.
+                val quick = engine.recognizeFast(bmp, st.current)
+                if (quick.text.count { it.isLetterOrDigit() } >= 12) quick else engine.recognize(bmp, st.current)
+            } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
             val result = if (needsOcrRetry(bmp, first)) {

@@ -2231,6 +2231,9 @@ return t.length>=40?'TXT:'+t:'';
     private fun sendHoldPref(): Long =
         (Prefs.get(this, "sendHoldMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 15_000L)
 
+    private fun menuScanFastLabel(): String =
+        "⚡ Scan OCR: " + if (Prefs.get(this, "scanFastFirst", "1") == "1") "fast first (quick)" else "full passes (slow, thorough)"
+
     private fun menuBatchLabel(): String =
         "📦 Realtime batching: " + listOf("Small (fast text)", "Balanced", "Big", "Max (fewest requests)")[rtBatchLevel()]
 
@@ -4855,6 +4858,17 @@ return t.length>=40?'TXT:'+t:'';
         override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean =
             handleRendererGone(detail)
 
+        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+            super.doUpdateVisitedHistory(view, url, isReload)
+            if (isReload || url.isNullOrBlank()) return
+            handler.postDelayed({
+                try {
+                    novelWv.evaluateJavascript(Js.NAV_LEARN, null)
+                    learnNavFromLastClick(url)
+                } catch (_: Exception) { }
+            }, 700L)
+        }
+
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             val r = request ?: return null
             // Only the marked image requests for a cached, OCR-cleaned panel are intercepted.
@@ -5345,7 +5359,21 @@ return t.length>=40?'TXT:'+t:'';
         return body.hashCode()
     }
 
-    private fun cleanUrl(u: String): String = u.substringBefore('#').trimEnd('/')
+    // Cloudflare challenge tokens (__cf_chl_*), tracking ids and the like change on every load; they must never
+    // make two addresses of the same chapter look different (or a "next" address look like the current page).
+    private fun cleanUrl(u: String): String {
+        var s = u.substringBefore('#')
+        val q = s.indexOf('?')
+        if (q >= 0) {
+            val kept = s.substring(q + 1).split('&').filter { kv ->
+                val k = kv.substringBefore('=').lowercase()
+                k.isNotEmpty() && !(k.startsWith("__cf_chl") || k.startsWith("cf_chl") || k.startsWith("utm_") ||
+                    k == "fbclid" || k == "gclid" || k == "_ga")
+            }
+            s = s.substring(0, q) + (if (kept.isEmpty()) "" else "?" + kept.joinToString("&"))
+        }
+        return s.trimEnd('/')
+    }
 
     private fun adjacentUrlIsSafe(current: String, target: String): Boolean {
         return try {
@@ -5418,6 +5446,17 @@ return t.length>=40?'TXT:'+t:'';
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("novel", text))
         lastCopied = text
+    }
+
+    /** Marks text as "what the app itself produced" without touching the clipboard. */
+    private fun remember(text: String) { lastCopied = text }
+
+    /** Puts text into the chatbot's input box (no Send). onDone(false) = box not found, caller may copy instead. */
+    private fun insertIntoChatBox(text: String, onDone: (Boolean) -> Unit) {
+        lastCopied = text
+        try {
+            chatWv.evaluateJavascript(Js.send(text, false)) { raw -> onDone(decode(raw).trim().startsWith("ok:")) }
+        } catch (_: Exception) { onDone(false) }
     }
 
     private fun clearClipboard() {
@@ -5657,7 +5696,7 @@ return t.length>=40?'TXT:'+t:'';
                                             val cachedMarked = cachedValues.mapIndexed { index, value ->
                                                 "[${(index + 1).toString().padStart(3, '0')}] $value"
                                             }.joinToString("\n\n")
-                                            copy(stripInternalMarkers(cachedMarked))
+                                            remember(stripInternalMarkers(cachedMarked))
                                             shownTrRaw = cachedMarked
                                             webModeStage = "Applying cached ahead translation"
                                             placeCachedBubbles(liveChapter.url, selected, cachedValues, hashes)
@@ -5957,6 +5996,10 @@ return t.length>=40?'TXT:'+t:'';
         showNavLoading()
         val token = navToken
 
+        // The site's own Next/Prev control learned from the user's earlier taps (works for script buttons
+        // and for ids in the address that cannot be counted up).
+        if (tryLearnedNav(dir, currentUrl, cached, token)) return
+
         // Numbered chapter URLs are deterministic. Do not extract the current
         // chapter first just to discover a URL that can be calculated directly.
         // This keeps /chapter-1 -> /chapter-2 sites fast while catalog-based
@@ -6077,6 +6120,112 @@ return t.length>=40?'TXT:'+t:'';
             } else {
                 navigate(base)
             }
+        }
+    }
+
+    private fun navHost(u: String): String = try {
+        Uri.parse(u).host.orEmpty().lowercase().removePrefix("www.")
+    } catch (_: Exception) { "" }
+
+    /** Chapter number from the address path (chapter-18, /ep/7, episode_3 ...), or null. */
+    private fun chapterNo(url: String): Double? {
+        val path = try { Uri.parse(url).path.orEmpty() } catch (_: Exception) { return null }
+        val m = Regex("(?i)(?:chapter|chap|episode|ep|ch)[-_/=.]?(\\d+(?:\\.\\d+)?)").findAll(path).lastOrNull() ?: return null
+        return m.groupValues[1].toDoubleOrNull()
+    }
+
+    /** Uses a control learned for this site. Returns true when it took over (answer arrives asynchronously). */
+    private fun tryLearnedNav(dir: String, currentUrl: String, cached: Chapter?, token: Int): Boolean {
+        if (wtrLabSystem.matches(currentUrl)) return false
+        val host = navHost(currentUrl)
+        val sig = Prefs.get(this, "navSig:$host:$dir", "")
+        if (host.isEmpty() || sig.isEmpty()) return false
+        val base = cached?.takeIf { cleanUrl(it.url) == currentUrl } ?: Chapter(
+            title = "", text = "", next = null, prev = null, url = currentUrl,
+            novel = "", number = "", contentSel = ""
+        )
+        novelWv.evaluateJavascript(Js.clickLearned(sig)) { raw ->
+            if (token != navToken) return@evaluateJavascript
+            val r = decode(raw).trim()
+            when {
+                r.startsWith("href:") -> {
+                    val target = r.removePrefix("href:")
+                    if (adjacentUrlIsSafe(currentUrl, target)) {
+                        wipeStale(clearNovelDom = true)
+                        navToken = token
+                        loadAndWait(target, token, base)
+                    } else {
+                        Prefs.put(this, "navSig:$host:$dir", "")
+                        step(dir)
+                    }
+                }
+                r.startsWith("clicked") -> followNavClick(currentUrl, base, token)
+                else -> {
+                    // the learned control is not on this page any more: forget it, use the normal ways
+                    Prefs.put(this, "navSig:$host:$dir", "")
+                    step(dir)
+                }
+            }
+        }
+        return true
+    }
+
+    private fun followNavClick(oldUrl: String, base: Chapter, token: Int) {
+        val autoExtract = Prefs.bool(this, "autoExtractNext", true)
+        if (webModeOn()) {
+            // Image chapters: wait until the address really changed (full load or script navigation) and the
+            // page finished, then read the new chapter once.
+            fun waitUrl(n: Int) {
+                handler.postDelayed({
+                    if (token != navToken) return@postDelayed
+                    val cur = cleanUrl(novelWv.url.orEmpty())
+                    if (cur != oldUrl && novelWv.progress >= 100) {
+                        hideNavLoading()
+                        if (autoExtract) handler.postDelayed({ if (token == navToken) extractCopy() }, 700L)
+                    } else if (n < 50) {
+                        waitUrl(n + 1)
+                    } else {
+                        hideNavLoading()
+                        toast("⚠️ The next chapter did not load")
+                    }
+                }, 250L)
+            }
+            waitUrl(0)
+            return
+        }
+        pendHash = bodyHash(base)
+        pendUrl = ""
+        autoCopy = autoExtract
+        polling = false
+        refreshPending = false
+        refreshToken = 0
+        if (autoExtract) handler.postDelayed({ if (token == navToken) pollExtract(0, token) }, 120) else hideNavLoading()
+    }
+
+    /**
+     * Called after every address change of the reader pane. If the user tapped a control a moment ago and the
+     * chapter number went up (or down) by a small step on the same site, that control IS the site's Next
+     * (or Prev): its signature is stored per host and used by [tryLearnedNav] from then on.
+     */
+    private fun learnNavFromLastClick(newUrl: String) {
+        novelWv.evaluateJavascript("(function(){try{return localStorage.getItem('__ns_lastclick')||''}catch(e){return ''}})()") { raw ->
+            val s = decode(raw).trim()
+            if (s.isEmpty()) return@evaluateJavascript
+            val o = try { org.json.JSONObject(s) } catch (_: Exception) { return@evaluateJavascript }
+            val age = System.currentTimeMillis() - o.optLong("t")
+            val oldUrl = o.optString("u")
+            if (age < 0 || age > 8_000 || cleanUrl(oldUrl) == cleanUrl(newUrl)) return@evaluateJavascript
+            val host = navHost(newUrl)
+            if (host.isEmpty() || host != navHost(oldUrl)) return@evaluateJavascript
+            val a = chapterNo(oldUrl) ?: return@evaluateJavascript
+            val b = chapterNo(newUrl) ?: return@evaluateJavascript
+            if (a == b || Math.abs(b - a) > 3.0) return@evaluateJavascript
+            val dir = if (b > a) "next" else "prev"
+            val sig = o.optJSONObject("sig")?.toString() ?: return@evaluateJavascript
+            val had = Prefs.get(this, "navSig:$host:$dir", "")
+            Prefs.put(this, "navSig:$host:$dir", sig)
+            novelWv.evaluateJavascript("try{localStorage.removeItem('__ns_lastclick')}catch(e){}", null)
+            if (had != sig) toast("🧠 Learned the $dir button of $host")
         }
     }
 
@@ -6850,18 +6999,26 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun deliver(full: String, label: String) {
-        copy(full)
-        toast("📋 Copied: $label (${full.length} characters)")
         if (Prefs.bool(this, "autoPaste")) {
+            // Straight into the chatbot's input box: nothing is written to the clipboard unless the box is
+            // not found (then the text is copied as a fallback so nothing is lost).
+            lastCopied = full
             val send = Prefs.bool(this, "autoSend")
             val token = navToken
+            toast("✍️ $label (${full.length} characters) → chatbot box")
             handler.postDelayed({
                 if (token != navToken) return@postDelayed
                 sendChatRequest(full, send, { token == navToken }) { r ->
-                    if (decode(r).startsWith("nobox")) toast("⚠️ Chat input not found. Text is copied; paste it manually.")
+                    if (decode(r).startsWith("nobox")) {
+                        copy(full)
+                        toast("⚠️ Chat input not found. Text is copied; paste it manually.")
+                    }
                 }
             }, 400)
+            return
         }
+        copy(full)
+        toast("📋 Copied: $label (${full.length} characters)")
     }
 
     // ================================================================== auto mode (⚡ on)
@@ -7271,7 +7428,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 return@evaluateJavascript
             }
             deferNextChatbotRequest()
-            copy(t)
+            remember(t)
             // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
             // would overwrite the library entry with a partial translation.
             val savedTranslation = if (livePanelBatch) null else Store.save(this, ch, rawTranslation)
@@ -7345,10 +7502,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         }
         queue.clear()
         running = null
-        copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
+        val manualText = promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text
         val willRetry = retryList.isNotEmpty() && (failedRetryTries[keyOf(ch)] ?: 0) < 2
-        toast("❌ $msg\n📋 Chapter copied. Paste it into the chatbot and tap Copy → 💾." +
-            if (willRetry) "\n🔁 Retrying automatically in 15 s…" else "")
+        val retryNote = if (willRetry) "\n⏳ Retrying automatically in 15 s…" else ""
+        // The chapter goes straight into the chatbot box (just press Send); the clipboard is the fallback only.
+        insertIntoChatBox(manualText) { ok ->
+            if (!ok) copy(manualText)
+            toast("❌ $msg\n" + (if (ok) "✍️ Chapter text is in the chatbot box — press Send, then Copy → 💾." else "📋 Chapter copied. Paste it into the chatbot and tap Copy → 💾.") + retryNote)
+        }
         if (retryList.isNotEmpty()) scheduleFailedRetry(retryList)
         updateProgressUi()
         restoreChapterAfterBubbleJob()
@@ -7882,10 +8043,22 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
     // ================================================================== save answer by hand (copy mode)
     private fun saveAnswer() {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim() ?: ""
-        if (t.length < 30) return toast("❌ No translation in clipboard. Copy the chatbot answer first.")
-        if (t == lastCopied.trim()) return toast("❌ This is source text. Copy the chatbot answer instead.")
+        // The answer is read straight from the chatbot page; the clipboard is only the fallback.
+        chatWv.evaluateJavascript(Js.readText()) { raw ->
+            val direct = decode(raw).trim()
+            if (direct.length >= 30 && direct != lastCopied.trim()) {
+                commitSavedAnswer(direct)
+                return@evaluateJavascript
+            }
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val t = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim() ?: ""
+            if (t.length < 30) return@evaluateJavascript toast("⚠️ No answer found in the chatbot page or the clipboard.")
+            if (t == lastCopied.trim()) return@evaluateJavascript toast("⚠️ This is source text. Copy the chatbot answer instead.")
+            commitSavedAnswer(t)
+        }
+    }
+
+    private fun commitSavedAnswer(t: String) {
         val tr = Store.save(this, lastChapter, t)
         toast("💾 Saved to library: ${tr.novel} — ${tr.label()}")
         if (!Prefs.bool(this, "noSaveNext")) step("next")
@@ -8035,7 +8208,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
-            "🐞 Copy crash / freeze log", menuBatchLabel()
+            "🐞 Copy crash / freeze log", menuBatchLabel(),
+            "✨ Apply recommended settings", menuScanFastLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8044,13 +8218,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45, 46)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45, 46, 47, 48)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -8170,6 +8344,21 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                48 -> {
+                    Prefs.put(this, "scanFastFirst", if (Prefs.get(this, "scanFastFirst", "1") == "1") "0" else "1")
+                    refresh(i, menuScanFastLabel())
+                    toast(menuScanFastLabel())
+                }
+                47 -> {
+                    // One tap back to the settings that work best for reading webtoons.
+                    Prefs.put(this, "rtBatchLevel", "2")
+                    Prefs.put(this, "sendHoldMs", "0"); Js.sendHoldMs = 0L
+                    Prefs.put(this, "scanStepMs", "0")
+                    Prefs.put(this, "scanFastFirst", "1")
+                    Prefs.put(this, "forceLoadImages", "0"); applyForceLoadImages()
+                    dlg.dismiss()
+                    toast("✨ Recommended: batching Big · Send instant · scan interval Auto · fast-first OCR · force-load OFF")
                 }
                 46 -> {
                     Prefs.put(this, "rtBatchLevel", ((rtBatchLevel() + 1) % 4).toString())

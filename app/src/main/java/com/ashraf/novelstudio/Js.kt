@@ -1047,7 +1047,85 @@ function __box(){
             "prev|previous|prev chapter|previous chapter|prev page|‹|«|←|上一頁|上一页|上一章|上一节|上一節|上一话|上一話|上一回|이전|이전화|前へ|前の話|আগের|পূর্ববর্তী"
         val word = if (dir == "next") "next" else "prev(?!iew)"
         return CLICK_BODY.replace("__ALTS__", alts).replace("__WORD__", word).replace("__DIR__", dir)
-    }    // WebNovel navigation based on the open-source WebnovelReader crawler.
+    }
+    /**
+     * Installed on every page of the reader pane. Remembers (in the site's own localStorage, so it survives
+     * the navigation) a signature of the last control the USER tapped. The app compares the address before and
+     * after: if it moved to the next / previous chapter, that signature is what "Next" / "Prev" looks like on
+     * this site (also when it is a script button without any href).
+     */
+    const val NAV_LEARN = """
+(function(){
+  if(window.__nsNavLearn)return; window.__nsNavLearn=1;
+  document.addEventListener('click',function(ev){
+    try{
+      if(!ev.isTrusted)return;
+      var t=ev.target; if(!t||!t.closest)return;
+      var el=t.closest('a,button,[role="button"],[onclick]')||t;
+      var cl=[];
+      try{cl=String(el.getAttribute('class')||'').split(/\s+/).filter(function(x){return x&&x.length<28&&!/[0-9]{3,}/.test(x)&&!/^[a-z]{1,3}[-_][A-Za-z0-9_-]{6,}$/.test(x);}).slice(0,4);}catch(e){}
+      var par=el.parentElement,idx=0;
+      if(par){var ch=par.children;for(var i=0;i<ch.length;i++){if(ch[i]===el){idx=i;break;}}}
+      var sv=el.querySelector?el.querySelector('svg path'):null;
+      var sig={tag:(el.tagName||'').toLowerCase(),
+        aria:(el.getAttribute('aria-label')||'').slice(0,40),title:(el.getAttribute('title')||'').slice(0,40),
+        testid:(el.getAttribute('data-testid')||el.getAttribute('data-test')||'').slice(0,40),
+        text:((el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).slice(0,24),
+        cls:cl,role:el.getAttribute('role')||'',idx:idx,
+        svg:sv?(sv.getAttribute('d')||'').slice(0,60):'',
+        href:(el.getAttribute('href')||'').replace(/[0-9]+/g,'#').slice(0,80)};
+      localStorage.setItem('__ns_lastclick',JSON.stringify({t:Date.now(),u:location.href,sig:sig}));
+    }catch(e){}
+  },true);
+})();
+"""
+
+    /** Finds the control described by [sig] (a signature saved by NAV_LEARN) and uses it. */
+    fun clickLearned(sigJson: String): String = ("""
+(function(sig){
+  try{
+    var vis=function(e){var r=e.getBoundingClientRect();return r.width>2&&r.height>2;};
+    var nodes=document.querySelectorAll('a,button,[role="button"],[onclick],li,div,span');
+    var best=null,bs=0,n=Math.min(nodes.length,4000);
+    for(var i=0;i<n;i++){
+      var e=nodes[i];
+      if(sig.tag&&(e.tagName||'').toLowerCase()!==sig.tag)continue;
+      if(!vis(e))continue;
+      var sc=0,strong=0;
+      var aria=e.getAttribute('aria-label')||'',title=e.getAttribute('title')||'';
+      var tid=e.getAttribute('data-testid')||e.getAttribute('data-test')||'';
+      var txt=((e.innerText||e.textContent||'').replace(/\s+/g,' ').trim()).slice(0,24);
+      if(sig.aria&&aria.slice(0,40)===sig.aria){sc+=4;strong++;}
+      if(sig.title&&title.slice(0,40)===sig.title){sc+=3;strong++;}
+      if(sig.testid&&tid.slice(0,40)===sig.testid){sc+=5;strong++;}
+      if(sig.text&&txt===sig.text){sc+=3;strong++;}
+      var sv=e.querySelector?e.querySelector('svg path'):null;
+      if(sig.svg&&sv&&(sv.getAttribute('d')||'').slice(0,60)===sig.svg){sc+=4;strong++;}
+      var ec=String(e.getAttribute('class')||'').split(/\s+/),hit=0;
+      for(var k=0;k<(sig.cls||[]).length;k++){if(ec.indexOf(sig.cls[k])>=0)hit++;}
+      sc+=hit;
+      if(sig.role&&(e.getAttribute('role')||'')===sig.role)sc+=1;
+      var par=e.parentElement,idx=0;
+      if(par){var ch=par.children;for(var j=0;j<ch.length;j++){if(ch[j]===e){idx=j;break;}}}
+      if(idx===sig.idx)sc+=1;
+      if(sig.href&&(e.getAttribute('href')||'').replace(/[0-9]+/g,'#').slice(0,80)===sig.href){sc+=3;strong++;}
+      // must match on something specific (label / icon / id / text / link shape), or on several class names
+      if(!(strong>0||hit>=2))continue;
+      if(sc>bs){bs=sc;best=e;}
+    }
+    if(!best||bs<5)return 'none';
+    var a=best.closest?best.closest('a[href]'):null;
+    if(a&&a.href&&/^https?:/i.test(a.href))return 'href:'+a.href;
+    var types=['pointerdown','mousedown','pointerup','mouseup','click'];
+    for(var q=0;q<types.length;q++){
+      try{best.dispatchEvent(new MouseEvent(types[q],{bubbles:true,cancelable:true,view:window}));}catch(x){}
+    }
+    return 'clicked';
+  }catch(err){return 'none';}
+})(__SIG__)
+""").replace("__SIG__", sigJson)
+
+    // WebNovel navigation based on the open-source WebnovelReader crawler.
     // That project uses the site's stable chapter catalog selector:
     //   .j_catalog_list .volume-item li a
     // and opens <book-path>/catalog, then walks the adjacent chapter.

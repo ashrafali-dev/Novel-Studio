@@ -185,36 +185,56 @@ internal object OcrPost {
             val bot = if (top === a) b else a
             val y0 = (top.cy + top.h / 2f).toInt()
             val y1 = (bot.cy - bot.h / 2f).toInt()
-            if (y1 - y0 < 3) return false
+            val gap = y1 - y0
+            // Lines of ONE bubble sit tight together (comic lettering has almost no leading). Two bubbles are
+            // further apart because two outlines and some padding fit between them. A small gap is therefore
+            // never an outline: looking at it only finds the tops/bottoms of the letters themselves.
+            val font = Math.max(
+                if (a.fontPx > 0f) a.fontPx else Math.min(a.w, a.h),
+                if (b.fontPx > 0f) b.fontPx else Math.min(b.w, b.h)
+            )
+            if (gap < Math.max(10f, font * 0.5f)) return false
             val l = Math.max(a.cx - a.w / 2f, b.cx - b.w / 2f)
             val r = Math.min(a.cx + a.w / 2f, b.cx + b.w / 2f)
             val x0 = l.toInt().coerceIn(0, img.width - 1)
             val x1 = r.toInt().coerceIn(x0 + 1, img.width)
-            val ya = y0.coerceIn(0, img.height - 1)
-            val yb = y1.coerceIn(ya + 1, img.height)
-            if (x1 - x0 < 6 || yb - ya < 3) return false
+            // only the middle of the gap: the edges still touch the letters
+            val ya = (y0 + gap * 0.2f).toInt().coerceIn(0, img.height - 1)
+            val yb = (y1 - gap * 0.2f).toInt().coerceIn(ya + 1, img.height)
+            if (x1 - x0 < 6 || yb - ya < 2) return false
             val stepX = Math.max(1, (x1 - x0) / 48)
-            val stepY = Math.max(1, (yb - ya) / 24)
-            val lumas = ArrayList<Int>()
+            // brightness of the strip's own background
+            val all = ArrayList<Int>()
+            var yy = ya
+            while (yy < yb) {
+                var xx = x0
+                while (xx < x1) { all.add(luma(img.getPixel(xx, yy))); xx += stepX }
+                yy += Math.max(1, (yb - ya) / 12)
+            }
+            if (all.size < 12) return false
+            val med = all.sorted()[all.size / 2]
+            // an outline is a (nearly) continuous dark/light line across the strip: one ROW that differs
+            // strongly from the background over most of its width. Scattered ink never does that.
             var y = ya
             while (y < yb) {
+                var off = 0
+                var n = 0
                 var x = x0
                 while (x < x1) {
-                    val p = img.getPixel(x, y)
-                    lumas.add((((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10)
+                    if (Math.abs(luma(img.getPixel(x, y)) - med) > 70) off++
+                    n++
                     x += stepX
                 }
-                y += stepY
+                if (n >= 6 && off * 100 >= n * 60) return true
+                y++
             }
-            if (lumas.size < 12) return false
-            val sorted = lumas.sorted()
-            val med = sorted[sorted.size / 2]
-            val off = lumas.count { Math.abs(it - med) > 70 }
-            return off * 100 >= lumas.size * 8
+            return false
         } catch (_: Exception) {
             return false
         }
     }
+
+    private fun luma(p: Int): Int = (((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10
 
     private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
         if (a.vertical || b.vertical) return false
