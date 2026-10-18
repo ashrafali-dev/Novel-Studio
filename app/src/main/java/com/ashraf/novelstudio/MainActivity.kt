@@ -1299,13 +1299,13 @@ for UI/watermark/OCR noise). Keep sound effects in Bengali script.
             val ids = (1..markerCount).joinToString(", ") {
                 "[${it.toString().padStart(3, '0')}]"
             }
-            "\\n\\n[Correction retry] The complete required ID sequence is: $ids. " +
+            "\n\n[Correction retry] The complete required ID sequence is: $ids. " +
                 "Return all $markerCount IDs exactly once and in order; do not stop early."
         } else ""
         // This is a separate chatbot page with no prior prompt in its conversation, so always include
         // the active translation prompt. The marker contract is short to reduce repeated prompt noise.
         val full = promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
-            markerInstruction + retryInstruction + "\\n\\n" + marked
+            markerInstruction + retryInstruction + "\n\n" + marked
         return full to markerCount
     }
 
@@ -1582,7 +1582,7 @@ for UI/watermark/OCR noise). Keep sound effects in Bengali script.
                         if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy ||
                             rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
                         val answer = cleanReply(decode(answerRaw))
-                        val returnedIds = Regex("""\\[\\d{3,}\\]""").findAll(answer)
+                        val returnedIds = Regex("""\[\d{3,}\]""").findAll(answer)
                             .map { it.value }.toList()
                         val expectedIds = (1..markerCount).map {
                             "[${it.toString().padStart(3, '0')}]"
