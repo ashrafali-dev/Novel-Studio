@@ -2369,7 +2369,7 @@ return t.length>=40?'TXT:'+t:'';
 
         fun attemptPaste(method: Int, prepareAttempt: Int) {
             if (!isValid()) return
-            chatWv.evaluateJavascript(Js.prepareNativePaste()) { prepRaw ->
+            chatWv.evaluateJavascript(Js.prepareNativePaste(text)) { prepRaw ->
                 if (!isValid()) return@evaluateJavascript
                 if (decode(prepRaw).trim() != "ok") {
                     if (prepareAttempt < 2) {
@@ -7021,8 +7021,19 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
                 // Real-time mode starts checking almost immediately; normal jobs keep the old startup delay.
                 awaitChatSend(tok, ch, n0, baseLen, full, 0, false)
+            } else if (r.startsWith("nobox")) {
+                // A composer can mount a moment after the first probe. Read the prior reply
+                // baseline, then give native clipboard paste the same one-shot recovery path.
+                chatWv.evaluateJavascript(Js.readLen()) { beforeRaw ->
+                    if (tok != runToken) return@evaluateJavascript
+                    val beforeParts = decode(beforeRaw).split("|")
+                    val n0 = beforeParts.getOrNull(0)?.toIntOrNull() ?: 0
+                    val baseLen = beforeParts.getOrNull(2)?.toIntOrNull() ?: 0
+                    rescueInputWithNativePaste(tok, ch, n0, baseLen, full)
+                }
             } else {
                 failJob(tok, ch, "Chat input not found — check that you are logged in to the chatbot")
+                copy(full)
             }
         }
     }
@@ -7049,23 +7060,32 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     }, RealtimeCompletionPolicy.firstPollDelayMs(this))
                 }
                 state == "failed" && !tapTried -> rescueSendWithTap(tok, ch, n0, baseLen, requestText)
-                state == "failed" -> failJob(
-                    tok, ch,
-                    "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
-                )
+                state == "failed" -> {
+                    failJob(
+                        tok, ch,
+                        "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
+                    )
+                    copy(requestText)
+                }
                 state.startsWith("failed:") && !tapTried ->
                     rescueInputWithNativePaste(tok, ch, n0, baseLen, requestText)
-                state.startsWith("failed:") -> failJob(
-                    tok, ch,
-                    "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
-                )
+                state.startsWith("failed:") -> {
+                    failJob(
+                        tok, ch,
+                        "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
+                    )
+                    copy(requestText)
+                }
                 attempt < 150 -> handler.postDelayed({
                     if (tok == runToken) awaitChatSend(tok, ch, n0, baseLen, requestText, attempt + 1, tapTried)
                 }, 200L)
-                else -> failJob(
-                    tok, ch,
-                    "Could not confirm the chatbot Send action. The next text was not inserted."
-                )
+                else -> {
+                    failJob(
+                        tok, ch,
+                        "Could not confirm the chatbot Send action. The next text was not inserted."
+                    )
+                    copy(requestText)
+                }
             }
         }
     }
@@ -7123,6 +7143,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                                 tok, ch,
                                 "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
                             )
+                            copy(requestText)
                         }
                     }
                 }, 2500L)
