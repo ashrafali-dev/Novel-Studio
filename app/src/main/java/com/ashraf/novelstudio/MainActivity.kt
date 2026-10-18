@@ -7317,6 +7317,32 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         return (t.length * ratio).toInt().coerceAtLeast(200)
     }
 
+    private fun retryIncompleteLiveBubbleJob(tok: Int, ch: Chapter, reason: String) {
+        if (tok != runToken) return
+        val k = keyOf(ch)
+        val attempts = failedRetryTries[k] ?: 0
+        if (attempts >= 1) {
+            failedRetryTries.remove(k)
+            failJob(tok, ch, "$reason Retry was still incomplete; no partial translation was placed.")
+            return
+        }
+        failedRetryTries[k] = attempts + 1
+        // Preserve the exact active batch layout/hash snapshot while retrying this same request.
+        // Only invalidate this poll loop; the queued copy gets a new run token in startNext().
+        runToken++
+        try { chatWv.evaluateJavascript(Js.stop(), null) } catch (_: Exception) {}
+        try { chatWv.evaluateJavascript(Js.clearSendState(), null) } catch (_: Exception) {}
+        running = null
+        queue.removeAll { keyOf(it) == k }
+        queue.add(0, ch)
+        progress = 0
+        toast("⚠️ $reason আবার একবার চেষ্টা করছি…")
+        updateProgressUi()
+        handler.postDelayed({
+            if (running == null && queue.isNotEmpty()) startNext()
+        }, chatbotRequestGapMs.coerceAtLeast(900L))
+    }
+
     private fun pollJob(
         tok: Int, ch: Chapter, n0: Int, baseLen: Int, started: Long,
         lastLen: Int, stable: Int, sawStream: Boolean = false, firstLen: Int = -1,
@@ -7390,24 +7416,30 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val usableRealtimeReply = !livePanelBatch || meaningfulReply || (filledReply && allMarkers)
                 val completedByMarkers = got && usableRealtimeReply && effLen >= minReplyLength && !streaming &&
                     allMarkers && st >= markerStableNeeded
+                // In live bubble mode, UI-done/Stop/length heuristics cannot override missing markers.
+                // Claude may expose an echoed prompt or a short partial reply while the UI looks finished.
                 val completedByUi = got && usableRealtimeReply && effLen >= minReplyLength && uiDone &&
-                    (!livePanelBatch || effLen >= 50 || allMarkers) &&
-                    !streaming && st >= uiStableNeeded
+                    (!livePanelBatch || allMarkers) && !streaming && st >= uiStableNeeded
                 val completedAfterStop = got && usableRealtimeReply && effLen >= minReplyLength &&
-                    streamEnded && st >= stopStableNeeded
+                    streamEnded && !streaming && (!livePanelBatch || allMarkers) && st >= stopStableNeeded
                 val completedWithoutStopSignal = got && usableRealtimeReply && effLen >= minReplyLength &&
-                    !sawStream && !streaming && st >= noSignalStableNeeded &&
+                    !sawStream && !streaming && (!livePanelBatch || allMarkers) && st >= noSignalStableNeeded &&
                     (deepSeekRealtime || allMarkers || effLen >= expectedFloor)
                 val completed = completedByMarkers || completedByUi ||
                     completedAfterStop || completedWithoutStopSignal
+                val incompleteLiveMarkers = livePanelBatch && got && meaningfulReply &&
+                    !streaming && !allMarkers && st >= uiStableNeeded && elapsed >= 12_000L
 
                 progress = if (completed) 100 else if (!got) 3 else maxOf(progress, pct)
                 updateProgressUi()
 
                 when {
                     completed -> finishJob(tok, ch)
+                    incompleteLiveMarkers -> retryIncompleteLiveBubbleJob(
+                        tok, ch, "The chatbot stopped before returning every bubble marker."
+                    )
                     livePanelBatch && got && !meaningfulReply && !(filledReply && allMarkers) && !streaming && st >= 8 && elapsed >= 12_000L ->
-                        failJob(tok, ch, "The chatbot returned only paragraph markers, not a translation. Tap ⚡ to retry.")
+                        retryIncompleteLiveBubbleJob(tok, ch, "The chatbot returned markers without usable translated text.")
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
                     !got && elapsed > 60_000 -> failJob(tok, ch, "The chatbot did not start responding — was the message sent?")
@@ -7455,6 +7487,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             if (tok != runToken) return@evaluateJavascript
             val livePanelBatch = isDeepSeekLivePanel(ch)
             val rawTranslation = cleanReply(decode(raw))
+            if (livePanelBatch) {
+                val returnedIds = Regex("""\[\d{3,}\]""").findAll(rawTranslation)
+                    .map { it.value }.toList()
+                val expectedIds = (1..jobMarkers).map { "[\${it.toString().padStart(3, '0')}]" }
+                if (jobMarkers <= 0 || returnedIds != expectedIds) {
+                    retryIncompleteLiveBubbleJob(tok, ch, "The returned marker sequence was missing, duplicated, or out of order.")
+                    return@evaluateJavascript
+                }
+            }
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
                 failJob(tok, ch, "The chatbot returned no translated bubble text. Tap ⚡ to retry.")
                 return@evaluateJavascript
