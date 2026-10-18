@@ -7060,7 +7060,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
                 )
                 attempt < 150 -> handler.postDelayed({
-                    if (tok == runToken) awaitChatSend(tok, ch, n0, baseLen, attempt + 1, tapTried)
+                    if (tok == runToken) awaitChatSend(tok, ch, n0, baseLen, requestText, attempt + 1, tapTried)
                 }, 200L)
                 else -> failJob(
                     tok, ch,
