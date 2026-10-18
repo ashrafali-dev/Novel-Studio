@@ -6851,8 +6851,17 @@ return t.length>=40?'TXT:'+t:'';
         return parts
     }
 
+    /**
+     * Keep prompt selection consistent across auto-send, clipboard copy, and failure recovery.
+     * Plain-text novel chapters use the Novel Prompt; image/OCR chapters use the Real-time Prompt.
+     */
+    private fun translationPromptFor(ch: Chapter): String {
+        val imageMode = (webModeOn() && ch.contentSel.isBlank()) || JapaneseMangaSession.isManaged(ch)
+        return if (imageMode) Prefs.activeTranslationPrompt(this) else Prefs.prompt(this)
+    }
+
     private fun copyChapter(ch: Chapter) {
-        val p = Prefs.prompt(this)
+        val p = translationPromptFor(ch)
         val full = if (Prefs.bool(this, "withPrompt") && p.isNotBlank()) promptWithGlossary(p, ch.text) + ch.text else ch.text
         val tag = (if (ch.number.isNotEmpty()) "Ch ${ch.number} — " else "") + ch.title
         deliver(full, tag)
@@ -6999,11 +7008,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         val skipPrompt = imageMode && !Prefs.bool(this, "rtSendPrompt", true) && !chatRolloverDue()   // a fresh chat window needs the full prompt again
         // Keep novel prose on the Novel Prompt even when AI Real-time Translation is enabled.
         // The separate Real-time Prompt is for image/OCR chapters only.
-        val translationPrompt = if (imageMode) {
-            Prefs.activeTranslationPrompt(this)
-        } else {
-            Prefs.prompt(this)
-        }
+        val translationPrompt = translationPromptFor(ch)
         val full = if (skipPrompt) {
             // Prompt OFF: only the text goes to the chatbot (the prompt already lives in the chat).
             // One short line keeps the [001] markers, because the reply is matched to bubbles by them.
@@ -7395,7 +7400,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         }
         queue.clear()
         running = null
-        copy(promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text)
+        copy(promptWithGlossary(translationPromptFor(ch), ch.text) + ch.text)
         val willRetry = retryList.isNotEmpty() && (failedRetryTries[keyOf(ch)] ?: 0) < 2
         toast("❌ $msg\n📋 Chapter copied. Paste it into the chatbot and tap Copy → 💾." +
             if (willRetry) "\n🔁 Retrying automatically in 15 s…" else "")
