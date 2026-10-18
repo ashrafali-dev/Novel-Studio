@@ -2354,6 +2354,103 @@ return t.length>=40?'TXT:'+t:'';
         }
     }
 
+    /**
+     * Last-resort input path: put the exact request on Android's clipboard, select the current
+     * composer contents, then ask WebView to perform a native paste. Try KEYCODE_PASTE first
+     * and Ctrl+V second, verifying the editor's real value after each attempt.
+     */
+    private fun nativePasteIntoChat(
+        text: String,
+        isValid: () -> Boolean = { true },
+        onResult: (Boolean) -> Unit
+    ) {
+        if (!isValid()) { onResult(false); return }
+        copy(text)
+
+        fun attemptPaste(method: Int, prepareAttempt: Int) {
+            if (!isValid()) return
+            chatWv.evaluateJavascript(Js.prepareNativePaste()) { prepRaw ->
+                if (!isValid()) return@evaluateJavascript
+                if (decode(prepRaw).trim() != "ok") {
+                    if (prepareAttempt < 2) {
+                        handler.postDelayed({ attemptPaste(method, prepareAttempt + 1) }, 250L)
+                    } else if (method == 0) {
+                        attemptPaste(1, 0)
+                    } else {
+                        onResult(false)
+                    }
+                    return@evaluateJavascript
+                }
+
+                suppressImeForAutoSend()
+                val t = android.os.SystemClock.uptimeMillis()
+                if (method == 0) {
+                    val down = android.view.KeyEvent(
+                        t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_PASTE, 0
+                    )
+                    val up = android.view.KeyEvent(
+                        t, t + 40, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_PASTE, 0
+                    )
+                    chatWv.dispatchKeyEvent(down)
+                    chatWv.dispatchKeyEvent(up)
+                } else {
+                    val down = android.view.KeyEvent(
+                        t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_V, 0,
+                        android.view.KeyEvent.META_CTRL_ON
+                    )
+                    val up = android.view.KeyEvent(
+                        t, t + 40, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_V, 0,
+                        android.view.KeyEvent.META_CTRL_ON
+                    )
+                    chatWv.dispatchKeyEvent(down)
+                    chatWv.dispatchKeyEvent(up)
+                }
+                quietChatKeyboard()
+
+                handler.postDelayed({
+                    if (!isValid()) return@postDelayed
+                    chatWv.evaluateJavascript(Js.nativePasteMatches(text)) { matchRaw ->
+                        if (!isValid()) return@evaluateJavascript
+                        if (decode(matchRaw).trim() == "1") {
+                            onResult(true)
+                        } else if (method == 0) {
+                            attemptPaste(1, 0)
+                        } else {
+                            onResult(false)
+                        }
+                    }
+                }, if (method == 0) 450L else 600L)
+            }
+        }
+
+        attemptPaste(0, 0)
+    }
+
+    /**
+     * Recover from framework editors that reject scripted text assignment. The native paste is
+     * verified before the normal trusted-touch Send rescue is allowed to run.
+     */
+    private fun rescueInputWithNativePaste(
+        tok: Int, ch: Chapter, n0: Int, baseLen: Int, requestText: String
+    ) {
+        if (tok != runToken) return
+        toast("⌨️ Scripted input failed; trying native clipboard paste…")
+        nativePasteIntoChat(requestText, { tok == runToken }) { pasted ->
+            if (tok != runToken) return@nativePasteIntoChat
+            if (pasted) {
+                rescueSendWithTap(tok, ch, n0, baseLen, requestText)
+            } else {
+                failJob(
+                    tok, ch,
+                    "The chatbot editor rejected scripted input and native paste could not be verified. The request has been copied for manual paste."
+                )
+                // failJob keeps a chapter fallback, but restore the exact request including the
+                // prompt/glossary so the clipboard always matches what this job tried to send.
+                copy(requestText)
+            }
+        }
+    }
+
     private fun sendChatRequest(
         text: String,
         doSend: Boolean,
@@ -2373,7 +2470,24 @@ return t.length>=40?'TXT:'+t:'';
         }
         // Pasting without pressing Send is not a chatbot request.
         if (!doSend) {
-            chatWv.evaluateJavascript(Js.send(text, false)) { raw -> quietChatKeyboard(); onResult(raw) }
+            chatWv.evaluateJavascript(Js.send(text, false)) { raw ->
+                quietChatKeyboard()
+                handler.postDelayed({
+                    if (!isValid()) return@postDelayed
+                    chatWv.evaluateJavascript(Js.nativePasteMatches(text)) { matchRaw ->
+                        if (!isValid()) return@evaluateJavascript
+                        if (decode(matchRaw).trim() == "1") {
+                            onResult(raw)
+                        } else {
+                            nativePasteIntoChat(text, isValid) { pasted ->
+                                if (!isValid()) return@nativePasteIntoChat
+                                quietChatKeyboard()
+                                onResult(if (pasted) "ok:native-paste" else "nobox")
+                            }
+                        }
+                    }
+                }, 350L)
+            }
             return
         }
         if (deferWhileReaderScrolls { sendChatRequest(text, true, isValid, allowDuringTranslation, busyTries, onResult) }) return
@@ -6883,12 +6997,19 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         // text with the marker/page rules (when the prompt already lives in the chat).
         // The switch applies to every image-chapter translation (Web Mode scan, prefetch and real-time).
         val skipPrompt = imageMode && !Prefs.bool(this, "rtSendPrompt", true) && !chatRolloverDue()   // a fresh chat window needs the full prompt again
+        // Keep novel prose on the Novel Prompt even when AI Real-time Translation is enabled.
+        // The separate Real-time Prompt is for image/OCR chapters only.
+        val translationPrompt = if (imageMode) {
+            Prefs.activeTranslationPrompt(this)
+        } else {
+            Prefs.prompt(this)
+        }
         val full = if (skipPrompt) {
             // Prompt OFF: only the text goes to the chatbot (the prompt already lives in the chat).
             // One short line keeps the [001] markers, because the reply is matched to bubbles by them.
             "Keep every [NNN] marker exactly once, in order.\n\n" + marked
         } else {
-            promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
+            promptWithGlossary(translationPrompt, marked) +
                 markerInstruction + "\n\n" + imageRules + marked
         }
         sendChatRequest(full, true, { tok == runToken }, allowDuringTranslation = true) { raw ->
@@ -6899,14 +7020,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val n0 = parts.getOrNull(0)?.toIntOrNull() ?: 0
                 val baseLen = parts.getOrNull(1)?.toIntOrNull() ?: 0
                 // Real-time mode starts checking almost immediately; normal jobs keep the old startup delay.
-                awaitChatSend(tok, ch, n0, baseLen, 0, false)
+                awaitChatSend(tok, ch, n0, baseLen, full, 0, false)
             } else {
                 failJob(tok, ch, "Chat input not found — check that you are logged in to the chatbot")
             }
         }
     }
 
-    private fun awaitChatSend(tok: Int, ch: Chapter, n0: Int, baseLen: Int, attempt: Int, tapTried: Boolean) {
+    private fun awaitChatSend(
+        tok: Int, ch: Chapter, n0: Int, baseLen: Int, requestText: String,
+        attempt: Int, tapTried: Boolean
+    ) {
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.sendState()) { raw ->
             if (tok != runToken) return@evaluateJavascript
@@ -6924,11 +7048,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         }
                     }, RealtimeCompletionPolicy.firstPollDelayMs(this))
                 }
-                state == "failed" && !tapTried -> rescueSendWithTap(tok, ch, n0, baseLen)
+                state == "failed" && !tapTried -> rescueSendWithTap(tok, ch, n0, baseLen, requestText)
                 state == "failed" -> failJob(
                     tok, ch,
                     "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
                 )
+                state.startsWith("failed:") && !tapTried ->
+                    rescueInputWithNativePaste(tok, ch, n0, baseLen, requestText)
                 state.startsWith("failed:") -> failJob(
                     tok, ch,
                     "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
@@ -6948,14 +7074,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
      * Web-side clicks are "untrusted" events and some chatbots (DeepSeek, Claude on mobile) ignore them.
      * As a rescue we tap the Send button with a real, native touch event, then re-check that the message left the composer.
      */
-    private fun rescueSendWithTap(tok: Int, ch: Chapter, n0: Int, baseLen: Int) {
+    private fun rescueSendWithTap(tok: Int, ch: Chapter, n0: Int, baseLen: Int, requestText: String) {
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.sendLanded()) { landedRaw ->
             if (tok != runToken) return@evaluateJavascript
             // The message may have gone out late (slow editor): then do NOT send it a second time.
             if (decode(landedRaw).trim() == "1") {
                 chatWv.evaluateJavascript("window.__nsSendState='sent:late';'ok'", null)
-                awaitChatSend(tok, ch, n0, baseLen, 0, true)
+                awaitChatSend(tok, ch, n0, baseLen, requestText, 0, true)
                 return@evaluateJavascript
             }
             chatWv.evaluateJavascript(Js.sendButtonRect()) { rectRaw ->
@@ -6991,7 +7117,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         if (tok != runToken) return@evaluateJavascript
                         if (decode(r2).trim() == "1") {
                             chatWv.evaluateJavascript("window.__nsSendState='sent:tap';'ok'", null)
-                            awaitChatSend(tok, ch, n0, baseLen, 0, true)
+                            awaitChatSend(tok, ch, n0, baseLen, requestText, 0, true)
                         } else {
                             failJob(
                                 tok, ch,
