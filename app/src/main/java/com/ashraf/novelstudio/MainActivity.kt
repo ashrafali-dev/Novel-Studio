@@ -577,7 +577,7 @@ class MainActivity : Activity() {
     // Keeps read-ahead OCR advancing through the chapter after each successful ten-panel round.
     private var rtAheadAutoContinueRunnable: Runnable? = null
     private var rtAheadStatusRefreshRunnable: Runnable? = null
-    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
+    private val REALTIME_AHEAD_MIN_PANELS: Int get() = intArrayOf(2, 3, 4, 4)[rtBatchLevel()]
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr || aheadOcrHandle != null) return
@@ -597,9 +597,6 @@ class MainActivity : Activity() {
         val seq = ++aheadOcrSeq
         var hadAheadPanels = false
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
-        fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
-            panel.bubbles.count { it.sourceText.isNotBlank() }
-        }
         fun flushCollected() {
             if (collectedPanels.isEmpty()) return
             val ready = collectedPanels.values.sortedBy { it.top }
@@ -628,12 +625,10 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Do not timer-flush a partial group while this OCR round is still reading
-                    // images sequentially. That split related bubbles into separate chatbot requests
-                    // whenever one image took longer than the collection timer. Flush only at the
-                    // batch target; onAheadDone() sends any remaining bubbles together at round end.
-                    val bubblesReady = collectedBubbleCount()
-                    if (bubblesReady >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
+                    // Flush after four distinct comic panel images, not after a huge bubble count.
+                    // WebModeExtractor now OCRs panels in bounded parallel groups of four, so the first
+                    // translation request can start without waiting for the full 10-panel look-ahead run.
+                    if (collectedPanels.size >= REALTIME_AHEAD_MIN_PANELS) flushCollected()
                 }
             },
             onAheadDone = {
