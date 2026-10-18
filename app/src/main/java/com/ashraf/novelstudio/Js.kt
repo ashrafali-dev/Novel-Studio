@@ -582,11 +582,17 @@ function __box(){
      * trusted clipboard paste. This is the last-resort path when scripted input does not
      * become the editor's actual value/state.
      */
-    fun prepareNativePaste(): String = run(
-        "(function(){try{var b=__box();if(!b)return 'nobox';try{b.focus();}catch(e){}" +
+    fun prepareNativePaste(expected: String): String = run(
+        "(function(expected){try{var b=__box();if(!b)return 'nobox';" +
+        "var p=__prof(),before=__asst(p);window.__nsBase=before.map(function(e){return {el:e,t:(e.innerText||e.textContent||'').trim()};});" +
+        "window.__nsSentN=__nrm(expected);window.__nsSentAt=Date.now();" +
+        "try{var __bs=new WeakSet(),__bt=new Set(),__tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),__nn;while(__nn=__tw.nextNode()){__bs.add(__nn);var __x=__nrm(__nn.nodeValue);if(__x.length>=20)__bt.add(__x);}window.__nsBaseNodes=__bs;window.__nsBaseTexts=__bt;}catch(e){window.__nsBaseNodes=null;window.__nsBaseTexts=null;}" +
+        "try{var me=__markEls();window.__nsBaseM=new Set(me);window.__nsBaseT=new Set(me.map(function(e){return __nrm(e.innerText||e.textContent);}));}catch(e){window.__nsBaseM=new Set();window.__nsBaseT=new Set();}" +
+        "try{b.focus();}catch(e){}window.__nsSnap=__snap(b);" +
         "if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){try{b.setSelectionRange(0,String(b.value||'').length);}catch(e){}}" +
         "else{var r=document.createRange();r.selectNodeContents(b);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}" +
-        "return 'ok';}catch(e){return 'err';}})()"
+        "window.__nsSendState='pending';return 'ok';}catch(e){return 'err';}})(" +
+        org.json.JSONObject.quote(expected) + ")"
     )
 
     /** Verify that a trusted native paste reached the framework-backed composer. */
