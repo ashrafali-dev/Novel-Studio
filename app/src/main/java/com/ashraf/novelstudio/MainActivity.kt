@@ -2362,6 +2362,7 @@ return t.length>=40?'TXT:'+t:'';
     private fun nativePasteIntoChat(
         text: String,
         isValid: () -> Boolean = { true },
+        shouldSend: Boolean = false,
         onResult: (Boolean) -> Unit
     ) {
         if (!isValid()) { onResult(false); return }
@@ -2369,7 +2370,7 @@ return t.length>=40?'TXT:'+t:'';
 
         fun attemptPaste(method: Int, prepareAttempt: Int) {
             if (!isValid()) return
-            chatWv.evaluateJavascript(Js.prepareNativePaste(text)) { prepRaw ->
+            chatWv.evaluateJavascript(Js.prepareNativePaste(text, shouldSend)) { prepRaw ->
                 if (!isValid()) return@evaluateJavascript
                 if (decode(prepRaw).trim() != "ok") {
                     if (prepareAttempt < 2) {
@@ -2435,7 +2436,7 @@ return t.length>=40?'TXT:'+t:'';
     ) {
         if (tok != runToken) return
         toast("⌨️ Scripted input failed; trying native clipboard paste…")
-        nativePasteIntoChat(requestText, { tok == runToken }) { pasted ->
+        nativePasteIntoChat(requestText, { tok == runToken }, shouldSend = true) { pasted ->
             if (tok != runToken) return@nativePasteIntoChat
             if (pasted) {
                 rescueSendWithTap(tok, ch, n0, baseLen, requestText)
