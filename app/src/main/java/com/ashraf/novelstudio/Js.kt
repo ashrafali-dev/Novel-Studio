@@ -577,6 +577,26 @@ function __box(){
         "var exp=String(window.__nsSentN||'');if(!box||t.length<Math.min(exp.length,20)||__stream(p))return '1';return '0';}catch(e){return '0';}})()"
     )
 
+    /**
+     * Focus the live chatbot composer and select its contents before Android performs a
+     * trusted clipboard paste. This is the last-resort path when scripted input does not
+     * become the editor's actual value/state.
+     */
+    fun prepareNativePaste(): String = run(
+        "(function(){try{var b=__box();if(!b)return 'nobox';try{b.focus();}catch(e){}" +
+        "if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){try{b.setSelectionRange(0,String(b.value||'').length);}catch(e){}}" +
+        "else{var r=document.createRange();r.selectNodeContents(b);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}" +
+        "return 'ok';}catch(e){return 'err';}})()"
+    )
+
+    /** Verify that a trusted native paste reached the framework-backed composer. */
+    fun nativePasteMatches(expected: String): String = run(
+        "(function(expected){try{var b=__box();if(!b)return '0';" +
+        "var t=String((b.tagName==='TEXTAREA'||b.tagName==='INPUT')?b.value:(b.innerText||b.textContent)||'').trim();" +
+        "return __nrm(t)===__nrm(expected)?'1':'0';}catch(e){return '0';}})(" +
+        org.json.JSONObject.quote(expected) + ")"
+    )
+
     /** Clear only the send state after a reply is fully consumed; keep timestamps for readLen fallbacks. */
     fun clearSendState(): String = run(
         "(function(){window.__nsSendState='idle';return 'ok';})()"
