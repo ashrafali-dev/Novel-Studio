@@ -1707,6 +1707,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         rtAheadWarmupPage = ""
         rtAheadWarmupUntilMs = 0L
         clearRealtimeVisibleOcrBatch()
+        rtVisibleActiveLayout = null
+        rtVisibleActiveHashes = emptySet()
         cancelRealtimeAheadWorker(requeue = false)
         rtAheadTranslationQueue.clear()
         rtAheadTranslationQueuedIds.clear()
@@ -7636,12 +7638,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 deepSeekTranslatedTextHashes.remove(deepSeekTranslatedTextHashes.first())
             }
         }
+        if (reserved.isNotEmpty() && reserved == rtVisibleActiveHashes) {
+            rtVisibleActiveLayout = null
+            rtVisibleActiveHashes = emptySet()
+        }
     }
 
     private fun releaseDeepSeekHashBatch(ch: Chapter) {
         val reserved = deepSeekTextHashByChapter.remove(keyOf(ch)) ?: emptySet()
         synchronized(deepSeekInFlightTextHashes) {
             deepSeekInFlightTextHashes.removeAll(reserved)
+        }
+        if (reserved.isNotEmpty() && reserved == rtVisibleActiveHashes) {
+            rtVisibleActiveLayout = null
+            rtVisibleActiveHashes = emptySet()
         }
     }
 
