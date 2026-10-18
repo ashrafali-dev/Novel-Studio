@@ -544,8 +544,7 @@ class MainActivity : Activity() {
     // Menu "Realtime batching": 0 Small (fastest first text) .. 3 Max (fewest requests). Default 2 = Big.
     private fun rtBatchLevel(): Int = (Prefs.get(this, "rtBatchLevel", "2").toIntOrNull() ?: 2).coerceIn(0, 3)
     private val rtVisibleOcrBatchMin: Int get() = intArrayOf(3, 3, 4, 4)[rtBatchLevel()]
-    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(500L, 800L, 1200L, 1500L)[rtBatchLevel()]
-    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(2500L, 3000L, 3500L, 4000L)[rtBatchLevel()]
+    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(1500L, 1900L, 2300L, 2600L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -818,7 +817,7 @@ class MainActivity : Activity() {
         }
 
         // Batch by distinct comic images, not OCR text blocks: one panel may contain many bubbles.
-        // Flush at 2/3/4 source panels, otherwise keep one deadline measured from the FIRST panel.
+        // Flush at 3/3/4 source panels, otherwise keep one deadline measured from the FIRST panel.
         if (force || pending.panelKeys.size >= rtVisibleOcrBatchMin) {
             rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
             rtVisibleOcrFlush = null
@@ -829,7 +828,9 @@ class MainActivity : Activity() {
         if (rtVisibleOcrFlush == null) {
             val seq = ++rtVisibleOcrBatchSeq
             val elapsedMs = (android.os.SystemClock.elapsedRealtime() - rtVisibleOcrFirstAtMs).coerceAtLeast(0L)
-            val delayMs = (rtVisibleOcrIdleFlushMs - elapsedMs).coerceAtLeast(0L)
+            // Do not flush merely because the viewport was briefly quiet; let the next OCR
+            // pass add panels until the target is met or the bounded maximum hold expires.
+            val delayMs = (rtVisibleOcrMaxHoldMs - elapsedMs).coerceAtLeast(0L)
             val flush = Runnable {
                 if (seq == rtVisibleOcrBatchSeq) {
                     rtVisibleOcrFlush = null
