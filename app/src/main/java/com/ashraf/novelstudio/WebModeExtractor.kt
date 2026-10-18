@@ -938,8 +938,8 @@ internal class WebModeExtractor(
             return Triple(fetchFailed, decodeFailed, lastCrash)
         }
 
-        private const val VISIBLE_OCR_BATCH_SIZE = 4
-        private const val VISIBLE_OCR_PARALLELISM = 3
+        private val VISIBLE_OCR_BATCH_SIZE = 4
+        private val VISIBLE_OCR_PARALLELISM = 3
 
         // ---- FORCE mode: no image is downloaded. The page is scrolled from the top and the WebView's own
         // pixels (exactly what the user sees) are OCR'd per image. Works for blob:/encrypted/CORS/hot-link images.
