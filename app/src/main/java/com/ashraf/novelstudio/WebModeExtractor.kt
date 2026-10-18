@@ -2018,9 +2018,9 @@ return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,
 
         // Real-time read-ahead: the next images that are completely below the screen (nothing is scrolled).
         private const val JS_COLLECT_AHEAD = """
-var sc=scroller(),c=cands(sc);
-var vpH=window.innerHeight||800,vpBottom=vpH;
 var all=__ALL__;
+var sc=scroller(),c=all?cands(sc,true):cands(sc);
+var vpH=window.innerHeight||800,vpBottom=vpH;
 // "Full chapter links" means we may inspect every URL already present in the DOM, not that
 // we should OCR from panel 1 again. Upcoming-panel OCR must always start strictly below the
 // reader's current viewport, otherwise its answers arrive late and duplicate the foreground OCR.
