@@ -74,6 +74,9 @@ internal object CrashLog {
         } catch (_: Throwable) { }
     }
 
+    /** A short remark (renderer died, memory pressure ...) that did not come from an exception. */
+    fun note(msg: String) { try { append("NOTE " + msg) } catch (_: Throwable) { } }
+
     fun read(): String = try { file?.takeIf { it.exists() }?.readText().orEmpty() } catch (_: Throwable) { "" }
 
     fun clear() { try { file?.writeText("") } catch (_: Throwable) { } }

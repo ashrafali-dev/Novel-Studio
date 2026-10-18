@@ -534,9 +534,11 @@ class MainActivity : Activity() {
     // One request per SCREEN, not one per bubble: everything the scanner finds for the current viewport
     // is collected and sent together. A batch is flushed early only when it is already large; otherwise
     // it waits until the viewport OCR has gone quiet (and the chatbot is free).
-    private val rtVisibleOcrBatchMin = 4
-    private val rtVisibleOcrIdleFlushMs = 1500L
-    private val rtVisibleOcrMaxHoldMs = 1800L
+    // Menu "Realtime batching": 0 Small (fastest first text) .. 3 Max (fewest requests). Default 2 = Big.
+    private fun rtBatchLevel(): Int = (Prefs.get(this, "rtBatchLevel", "2").toIntOrNull() ?: 2).coerceIn(0, 3)
+    private val rtVisibleOcrBatchMin: Int get() = intArrayOf(2, 4, 8, 12)[rtBatchLevel()]
+    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
+    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -561,10 +563,10 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES = 10
+    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
     // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
     // the first usable panel arrives. Panels completed during that window are batched together.
-    private val REALTIME_AHEAD_COLLECT_FLUSH_MS = 3500L
+    private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr) return
@@ -2006,8 +2008,15 @@ return t.length>=40?'TXT:'+t:'';
             keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
                 { text = "OCR হচ্ছে"; color = 0xFFB388FF.toInt() }
             keys.contains("placement") -> { text = "লেখা বসানো হচ্ছে"; color = 0xFF64FFDA.toInt() }
-            keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } ->
-                { text = "অনুবাদ হচ্ছে"; color = 0xFFFF80AB.toInt() }
+            keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } -> {
+                val fresh = android.os.SystemClock.elapsedRealtime() - chatPhaseAtMs < 2_500L
+                text = when (if (fresh) chatPhase else 2) {
+                    1 -> "চ্যাটবটের উত্তরের অপেক্ষা"
+                    3 -> "উত্তর যাচাই হচ্ছে"
+                    else -> "অনুবাদ হচ্ছে"
+                }
+                color = 0xFFFF80AB.toInt()
+            }
             else -> { text = null; color = 0 }
         }
         if (text != null) {
@@ -2191,8 +2200,39 @@ return t.length>=40?'TXT:'+t:'';
 
     private var forceLoadHandler: ScriptHandler? = null
 
+    // ---- Auto chatbot adapter: remembers, per chatbot site, that script clicks are ignored and only a real
+    // touch sends. The first time costs one failed click + a rescue tap; from then on the tap comes straight away.
+    private fun chatHost(): String = try {
+        Uri.parse(chatWv.url.orEmpty()).host.orEmpty().lowercase().removePrefix("www.")
+    } catch (_: Exception) { "" }
+
+    private fun nativeTapHosts(): MutableSet<String> =
+        Prefs.get(this, "nativeTapHosts", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+
+    private fun isNativeTapHost(): Boolean = chatHost().let { it.isNotEmpty() && it in nativeTapHosts() }
+
+    private fun learnNativeTap() {
+        val h = chatHost()
+        if (h.isEmpty()) return
+        val set = nativeTapHosts()
+        if (set.add(h)) {
+            Prefs.put(this, "nativeTapHosts", set.joinToString(","))
+            toast("🧠 Learned: $h needs a real tap to send — next sends skip the script click")
+        }
+    }
+
+    /** The learned tap stopped working (site changed): go back to trying the normal ways first. */
+    private fun forgetNativeTap() {
+        val h = chatHost()
+        val set = nativeTapHosts()
+        if (h.isNotEmpty() && set.remove(h)) Prefs.put(this, "nativeTapHosts", set.joinToString(","))
+    }
+
     private fun sendHoldPref(): Long =
         (Prefs.get(this, "sendHoldMs", "0").toLongOrNull() ?: 0L).coerceIn(0L, 15_000L)
+
+    private fun menuBatchLabel(): String =
+        "📦 Realtime batching: " + listOf("Small (fast text)", "Balanced", "Big", "Max (fewest requests)")[rtBatchLevel()]
 
     private fun menuSendHoldLabel(): String =
         "⏱ Pause before Send click: " + sendHoldPref().let { if (it == 0L) "Instant" else "$it ms" }
@@ -2276,6 +2316,10 @@ return t.length>=40?'TXT:'+t:'';
     // Set when a prompt is handed to the chatbot, cleared once the page confirms Send went through.
     // Drives the "sending" step of the Web Mode status chip.
     @Volatile private var chatSendingAtMs = 0L
+    // What the foreground chat is really doing right now (set by pollJob): 1 waiting for the first words,
+    // 2 reply is being written, 3 reply looks finished and is being verified.
+    @Volatile private var chatPhase = 0
+    @Volatile private var chatPhaseAtMs = 0L
     private var activityChip: ActivityChip? = null
     private var chipIdleTicks = 0
 
@@ -2444,7 +2488,7 @@ return t.length>=40?'TXT:'+t:'';
         nextChatbotRequestAtMs = now + gapMs
         rtAheadNextSendAtMs = maxOf(rtAheadNextSendAtMs, now + gapMs)
         chatSendingAtMs = System.currentTimeMillis()
-        chatWv.evaluateJavascript(Js.send(text, true, force = busyTries >= 120)) { raw ->
+        chatWv.evaluateJavascript(Js.send(text, true, force = busyTries >= 120, preferNative = isNativeTapHost())) { raw ->
             quietChatKeyboard()
             if (decode(raw).trim().startsWith("busy")) {
                 // The chat is still producing an answer: never put another text into the composer.
@@ -2693,6 +2737,9 @@ return t.length>=40?'TXT:'+t:'';
             isClickable = false
             isFocusable = false
             webViewClient = object : WebViewClient() {
+                override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean =
+                    handleRendererGone(detail)
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     if (!prefetchLoading || url.isNullOrBlank()) return
@@ -3409,6 +3456,40 @@ return t.length>=40?'TXT:'+t:'';
             tab.thumbnail = null
         }
     }
+    /**
+     * Every WebView of the app runs in ONE renderer process. If Android kills it (low memory on a heavy page)
+     * or it crashes, a WebViewClient that does not handle this lets the whole app die with no Java exception.
+     * Handling it keeps the app alive: the screen is rebuilt, and the page that killed the renderer is not
+     * reloaded straight away (the tab restarts on the site's front page), so it can not loop.
+     */
+    private fun handleRendererGone(detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+        val crashed = detail?.didCrash() == true
+        val page = try { novelWv.url.orEmpty() } catch (_: Exception) { "" }
+        CrashLog.note("WebView renderer " + (if (crashed) "CRASHED" else "KILLED by the system (low memory)") + " | page=" + page.take(160))
+        val now = System.currentTimeMillis()
+        val last = Prefs.get(this, "rendererGoneAt", "0").toLongOrNull() ?: 0L
+        Prefs.put(this, "rendererGoneAt", now.toString())
+        if (now - last > 20_000L && !isFinishing) {
+            handler.post {
+                toast("⚠️ The page process stopped (probably out of memory) — reloading the app")
+                try { recreate() } catch (_: Exception) { }
+            }
+        }
+        return true
+    }
+
+    private fun siteRoot(url: String): String = try {
+        val u = Uri.parse(url)
+        if (u.scheme.isNullOrBlank() || u.host.isNullOrBlank()) url else u.scheme + "://" + u.host + "/"
+    } catch (_: Exception) { url }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_COMPLETE) {
+            CrashLog.note("memory pressure level=$level")
+        }
+    }
+
     private fun initBrowserTabs() {
         browserTabs.clear()
         val raw = Prefs.get(this, "browserTabs", "")
@@ -3437,9 +3518,12 @@ return t.length>=40?'TXT:'+t:'';
         val active = browserTabs.getOrNull(activeTabIndex)
         if (active != null && active.url.isNotBlank()) {
             restoringTab = true
-            try { novelWv.loadUrl(active.url) } catch (_: Exception) {}
+            // If the page process died a moment ago, do not reopen the page that probably caused it.
+            val diedRecently = System.currentTimeMillis() - (Prefs.get(this, "rendererGoneAt", "0").toLongOrNull() ?: 0L) < 90_000L
+            val startUrl = if (diedRecently) siteRoot(active.url) else active.url
+            try { novelWv.loadUrl(startUrl) } catch (_: Exception) {}
             restoringTab = false
-            urlBar.setText(active.url)
+            urlBar.setText(startUrl)
         }
     }
 
@@ -4697,7 +4781,10 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private inner class ChatClient : WebViewClient() {
-        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean =
+            handleRendererGone(detail)
+
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val scheme = request?.url?.scheme ?: ""
             return scheme != "http" && scheme != "https"
         }
@@ -4765,7 +4852,10 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private inner class NovelClient : WebViewClient() {
-        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+        override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean =
+            handleRendererGone(detail)
+
+                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             val r = request ?: return null
             // Only the marked image requests for a cached, OCR-cleaned panel are intercepted.
             WebModeTextRemovalCache.intercept(r.url)?.let { return it }
@@ -5733,7 +5823,8 @@ return t.length>=40?'TXT:'+t:'';
         // never turn it into the original/translation toggle.
         navToken++
         val token = navToken
-        if (webModeOn()) { startWebModeExtract(token); return }
+        // Real-time reads only what is on screen: its retry must not scroll the page either.
+        if (webModeOn()) { startWebModeExtract(token, realtimeViewport = DeepSeekRealtimeTranslation.isEnabled(this)); return }
         val cached = lastChapter
         // A displayed translation is not the source; keep using cached chapter text.
 
@@ -6911,6 +7002,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         chatWv.evaluateJavascript(Js.sendState()) { raw ->
             if (tok != runToken) return@evaluateJavascript
             val state = decode(raw).substringBefore("|").trim()
+            if (tapTried && state == "sent:tap") learnNativeTap()
             if (state.startsWith("sent:")) { chatSendingAtMs = 0L; quietChatKeyboard() }
             else if (state.startsWith("failed:") || (state == "failed" && tapTried)) chatSendingAtMs = 0L
             when {
@@ -6925,10 +7017,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     }, RealtimeCompletionPolicy.firstPollDelayMs(this))
                 }
                 state == "failed" && !tapTried -> rescueSendWithTap(tok, ch, n0, baseLen)
-                state == "failed" -> failJob(
+                state == "failed" -> { forgetNativeTap(); failJob(
                     tok, ch,
                     "The chatbot text was inserted, but Send did not go through. Check the chatbot page and retry."
-                )
+                ) }
                 state.startsWith("failed:") -> failJob(
                     tok, ch,
                     "The chatbot editor did not accept the text (" + state.substringAfter(":") + "). Check the chatbot page and retry."
@@ -7032,6 +7124,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val sendFailed = parts.getOrNull(5) == "failed"
                 val uiDone = parts.getOrNull(6) == "1"
                 val meaningfulReply = parts.getOrNull(7) == "1"
+                // Every marker has some text after it (even just "~" / "..." / "!!"): the chatbot did answer.
+                val filledReply = parts.getOrNull(8) == "1"
                 val got = parts.getOrNull(4) == "1" || n > n0
                 val effLen = if (got) len else 0
                 // Some chat pages (Claude) already report the echoed prompt as "reply text"
@@ -7054,6 +7148,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 // during generation cannot prematurely finish the translation.
                 val realtimeFast = isDeepSeekLivePanel(ch)
                 val st = if (got && effLen == lastLen && (!realtimeFast || !streaming)) stable + 1 else 0
+                chatPhase = when { !got -> 1; streaming || effLen != lastLen -> 2; else -> 3 }
+                chatPhaseAtMs = android.os.SystemClock.elapsedRealtime()
                 val elapsed = System.currentTimeMillis() - started
 
                 // The stop-button detector can miss a model's streaming state or the
@@ -7081,10 +7177,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         this, if (livePanelBatch) 8 else 20
                     )
                 // A stable "[001]" without any translated body is not a completed answer.
-                val usableRealtimeReply = !livePanelBatch || meaningfulReply
+                val usableRealtimeReply = !livePanelBatch || meaningfulReply || (filledReply && allMarkers)
                 val completedByMarkers = got && usableRealtimeReply && effLen >= minReplyLength && !streaming &&
                     allMarkers && st >= markerStableNeeded
                 val completedByUi = got && usableRealtimeReply && effLen >= minReplyLength && uiDone &&
+                    (!livePanelBatch || effLen >= 50 || allMarkers) &&
                     !streaming && st >= uiStableNeeded
                 val completedAfterStop = got && usableRealtimeReply && effLen >= minReplyLength &&
                     streamEnded && st >= stopStableNeeded
@@ -7099,7 +7196,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
 
                 when {
                     completed -> finishJob(tok, ch)
-                    livePanelBatch && got && !meaningfulReply && !streaming && st >= 8 && elapsed >= 12_000L ->
+                    livePanelBatch && got && !meaningfulReply && !(filledReply && allMarkers) && !streaming && st >= 8 && elapsed >= 12_000L ->
                         failJob(tok, ch, "The chatbot returned only paragraph markers, not a translation. Tap ⚡ to retry.")
                     sendFailed && !got -> failJob(tok, ch, "Message could not be sent — all methods failed (check chatbot login/CAPTCHA)")
                     elapsed > 6 * 60_000 -> failJob(tok, ch, "Timed out (6 minutes)")
@@ -7461,7 +7558,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     shownTranslated = true
                     updatePill()
                 } else {
-                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                    showReaderFallback(ch, text)
                 }
             }
             return
@@ -7481,7 +7578,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     shownTranslated = true
                     updatePill()
                 } else {
-                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                    showReaderFallback(ch, text)
                 }
             }
             return
@@ -7513,7 +7610,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         }, 2500L)
                     }
                 } else {
-                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                    showReaderFallback(ch, text)
                 }
             }
             return
@@ -7550,7 +7647,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         }, 2500L)
                     }
                 } else {
-                    toast("⚠️ Could not insert the translation; it is saved in the library")
+                    showReaderFallback(ch, text)
                 }
             }
             return
@@ -7629,6 +7726,35 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         }
                     }, 2500)
                 }
+            } else {
+                showReaderFallback(ch, text)
+            }
+        }
+    }
+
+    /**
+     * Last resort when a translation cannot be written into the original page (site re-renders its text,
+     * unknown layout, blocked DOM): show it in a clean reader view laid over the page instead of losing it.
+     * Same view that Web Mode uses when bubbles cannot be matched; "View original" still switches back.
+     */
+    private fun showReaderFallback(ch: Chapter, text: String) {
+        if (lastChapter !== ch) return
+        val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
+        if (paras.isEmpty()) {
+            toast("⚠️ Could not insert the translation; it is saved in the library")
+            return
+        }
+        val placementId = beginTranslationPlacement()
+        novelWv.evaluateJavascript(
+            WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
+        ) { r ->
+            finishTranslationPlacement(placementId)
+            if (lastChapter !== ch) return@evaluateJavascript
+            if (r != null && r.contains("ok")) {
+                hasTr = true
+                shownTranslated = true
+                updatePill()
+                toast("ℹ️ Could not write into the page itself — showing the translation in a reader view")
             } else {
                 toast("⚠️ Could not insert the translation; it is saved in the library")
             }
@@ -7909,7 +8035,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
-            "🐞 Copy crash / freeze log"
+            "🐞 Copy crash / freeze log", menuBatchLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -7918,13 +8044,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45, 46)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -8044,6 +8170,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                46 -> {
+                    Prefs.put(this, "rtBatchLevel", ((rtBatchLevel() + 1) % 4).toString())
+                    refresh(i, menuBatchLabel())
+                    toast(menuBatchLabel())
                 }
                 45 -> {
                     dlg.dismiss()

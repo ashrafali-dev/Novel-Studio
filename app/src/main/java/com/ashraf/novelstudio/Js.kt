@@ -337,7 +337,7 @@ function __box(){
   if(old){var ob=p.b?(old.querySelector(p.b)||old):old;len0=((ob.innerText||ob.textContent||'').trim().length);}
   if(!len0&&n0){var old2=before[n0-1];var ob2=p.b?(old2.querySelector(p.b)||old2):old2;len0=((ob2.innerText||ob2.textContent||'').trim().length);}
   // Never put a new text into the composer while this chat is still producing an answer.
-  var holdMs=__HOLD__, forceSend=__FORCE__;
+  var holdMs=__HOLD__, forceSend=__FORCE__, preferNative=__NATIVE__;
   if(doSend&&!forceSend){try{if(__stream(p))return 'busy';}catch(e){}}
   var box=__box();
   if(!box) return 'nobox';
@@ -509,6 +509,8 @@ function __box(){
       if(holdMs>0&&Date.now()-landedAt<holdMs){setTimeout(waitUntilReady,Math.max(5,Math.min(40,holdMs-(Date.now()-landedAt)+1)));return;}
       var btn=__findSend(p,box,snap);
       if(btn&&__ok(btn)){
+        // Learned for this site: the page ignores script clicks, so hand over to the native tap at once.
+        if(preferNative&&doSend){__nsHideSendWait();window.__nsSendState='failed';__nsImeLater(6000);return;}
         if(__pressFull(btn)){
           __nsHideSendWait();
           confirmSend('btn');
@@ -519,6 +521,7 @@ function __box(){
       // once text was inserted, or the right-most control beside the editor.
       var g=__guessSend(box,snap);
       if(g){
+        if(preferNative&&doSend){__nsHideSendWait();window.__nsSendState='failed';__nsImeLater(6000);return;}
         if(__pressFull(g)){
           __nsHideSendWait();
           confirmSend('guess');
@@ -547,10 +550,11 @@ function __box(){
 """
 
     // type the text into the chat box (and press send if asked). Returns "ok:<assistant message count>" or "nobox"
-    fun send(text: String, doSend: Boolean, force: Boolean = false): String =
+    fun send(text: String, doSend: Boolean, force: Boolean = false, preferNative: Boolean = false): String =
         run(
             SEND_BODY.replace("__TEXT__", org.json.JSONObject.quote(text)).replace("__SEND__", doSend.toString())
                 .replace("__HOLD__", sendHoldMs.coerceIn(0L, 15_000L).toString()).replace("__FORCE__", force.toString())
+                .replace("__NATIVE__", preferNative.toString())
         )
 
     /** Send status plus elapsed milliseconds, so a queued job can wait for a just-submitted message. */
@@ -594,7 +598,7 @@ function __box(){
     // "This job's reply" = an assistant node that is new, or whose text changed, since send().
     // "<assistant msg count>|<streaming 0/1>|<length of THIS job's reply>|<distinct [NNN] markers seen>|<new reply seen 0/1>"
     // 1) page-text scan (no selectors: works on any chatbot), 2) element detection as a fallback.
-    fun readLen(realtimeFast: Boolean = false): String = run("(function(){var p=__prof();var l=null;var nowT=Date.now();var tk=__trk();var tkOn=!!window.__nsBaseNodes;var tkGot=!!tk&&tk.len>=20;var useOld=!tkOn||(!tkGot&&(Date.now()-(window.__nsSentAt||0))>12000);var sc=useOld?__scan():null;var len=0,found=0,got=0,replyText='';if(tkGot){got=1;len=tk.len;found=tk.found;replyText=tk.text||'';}else if(tk&&tk.len>0&&!useOld){got=1;len=tk.len;found=tk.found;replyText=tk.text||'';}else if(useOld){if(sc&&sc.got){got=1;len=sc.len;found=sc.found;replyText=sc.text||'';}else{if(!l)l=__asst(p);var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);replyText=t;}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);replyText=b?((b.innerText||b.textContent||'').trim()):'';len=replyText.length;}}}var useful=__meaningful(replyText)?1:0;var stop=__stream(p);var sendReady=0;try{var sb=p.send?document.querySelector(p.send):null;sendReady=__ok(sb)?1:0;if(!sendReady){var box=__box();var ct=box&&__ctls(box);sendReady=ct&&ct.some(function(b){return __ok(b)&&/send/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||''))})?1:0;}}catch(e){}var done=(got&&len>50&&!stop&&sendReady&&useful)?1:0;var cnt;if(!l&&tkGot&&window.__nsAsstT&&nowT-window.__nsAsstT<3000){cnt=window.__nsAsstN;}else{if(!l)l=__asst(p);cnt=l.length;window.__nsAsstN=cnt;window.__nsAsstT=nowT;}return cnt+'|'+stop+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+done+'|'+useful;})()", realtimeFast)
+    fun readLen(realtimeFast: Boolean = false): String = run("(function(){var p=__prof();var l=null;var nowT=Date.now();var tk=__trk();var tkOn=!!window.__nsBaseNodes;var tkGot=!!tk&&tk.len>=20;var useOld=!tkOn||(!tkGot&&(Date.now()-(window.__nsSentAt||0))>12000);var sc=useOld?__scan():null;var len=0,found=0,got=0,replyText='';if(tkGot){got=1;len=tk.len;found=tk.found;replyText=tk.text||'';}else if(tk&&tk.len>0&&!useOld){got=1;len=tk.len;found=tk.found;replyText=tk.text||'';}else if(useOld){if(sc&&sc.got){got=1;len=sc.len;found=sc.found;replyText=sc.text||'';}else{if(!l)l=__asst(p);var h=__new(p,l);if(h){var t=__ntext(p,h);got=1;len=t.length;found=__mk(t);replyText=t;}else{var e=__reply(p);var b=e&&(p.b?(e.querySelector(p.b)||e):e);replyText=b?((b.innerText||b.textContent||'').trim()):'';len=replyText.length;}}}var useful=__meaningful(replyText)?1:0;var filled=0;try{var mkc=(String(replyText).match(/\\[\\d{3,}\\]/g)||[]).length;var segs=String(replyText).split(/\\[\\d{3,}\\]/).slice(1);filled=(mkc>0&&segs.length>=mkc&&segs.every(function(x){return x.replace(/[\\s\\u00a0]+/g,'').length>0;}))?1:0;}catch(e){}var stop=__stream(p);var sendReady=0;try{var sb=p.send?document.querySelector(p.send):null;sendReady=__ok(sb)?1:0;if(!sendReady){var box=__box();var ct=box&&__ctls(box);sendReady=ct&&ct.some(function(b){return __ok(b)&&/send/i.test((b.getAttribute('aria-label')||'')+' '+(b.getAttribute('title')||'')+' '+(b.getAttribute('data-testid')||''))})?1:0;}}catch(e){}var done=(got&&(len>50||filled)&&!stop&&sendReady&&(useful||filled))?1:0;var cnt;if(!l&&tkGot&&window.__nsAsstT&&nowT-window.__nsAsstT<3000){cnt=window.__nsAsstN;}else{if(!l)l=__asst(p);cnt=l.length;window.__nsAsstN=cnt;window.__nsAsstT=nowT;}return cnt+'|'+stop+'|'+len+'|'+found+'|'+got+'|'+(window.__nsSendState||'')+'|'+done+'|'+useful+'|'+filled;})()", realtimeFast)
 
     // Final reply text. Markers are forced to the start of a line so the paragraph split works
     // even when the chatbot put several paragraphs on one line.
