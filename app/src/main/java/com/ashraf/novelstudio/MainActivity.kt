@@ -7490,7 +7490,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             if (livePanelBatch) {
                 val returnedIds = Regex("""\[\d{3,}\]""").findAll(rawTranslation)
                     .map { it.value }.toList()
-                val expectedIds = (1..jobMarkers).map { "[\${it.toString().padStart(3, '0')}]" }
+                val expectedIds = (1..jobMarkers).map { "[${it.toString().padStart(3, '0')}]" }
                 if (jobMarkers <= 0 || returnedIds != expectedIds) {
                     retryIncompleteLiveBubbleJob(tok, ch, "The returned marker sequence was missing, duplicated, or out of order.")
                     return@evaluateJavascript
