@@ -309,65 +309,131 @@ internal class WebModeExtractor(
         private fun aheadFinished() { onMain { req.onAheadDone?.invoke() } }
 
         private fun processAhead(refs: List<PanelRef>, pageUrl: String, lang: String) {
-            val script = ScriptState(WebModeLogic.pickScript(lang, pageUrl))
+            val baseScript = WebModeLogic.pickScript(lang, pageUrl)
             // Full-chapter inventory may legitimately contain hundreds of panels. Do not
             // reset its seen-set midway through the chapter or the batcher would start from panel 1 again.
             if (aheadDone.size > 5000) { aheadDone.clear(); aheadBlank.clear(); aheadFails.clear() }
             val total = refs.size.coerceAtLeast(1)
             var cachedCount = 0
             fun emitReady(panel: WebModeAheadPanel) {
-                // Emit each completed OCR result immediately so translation can overlap the
-                // remaining image downloads/OCR instead of waiting for all nine panels.
+                // Each OCR result is emitted as soon as this small parallel group is collected,
+                // so translation can overlap the next group's download/OCR.
                 onMain { if (alive()) req.onAheadPanelsReady?.invoke(listOf(panel)) }
             }
             progress("Read-ahead OCR: preparing ${refs.size} upcoming panels", 0)
-            for ((index, p) in refs.withIndex()) {
-                if (!alive()) return
-                val key = WebModeLogic.normalizeUrl(p.src)
-                // Deliver cached OCR too. A previous successful OCR must not be invisible to the translation cache.
-                val cached = synchronized(aheadCache) { aheadCache[key] }
-                if (cached != null) {
-                    emitReady(WebModeAheadPanel(p.src, p.top, cached.text, cached.bubbles))
-                    cachedCount++
-                    progress("Read-ahead OCR: cache ready $cachedCount/$total", cachedCount * 99 / total)
-                    continue
-                }
-                // A previous cache eviction must not leave a URL permanently marked as done.
-                aheadDone.remove(key)
-                try {
-                    progress("Read-ahead OCR: loading image ${index + 1}/$total", index * 99 / total)
-                    val bytes = fetchWithRetry(p, pageUrl) ?: run {
-                        if ((aheadFails.merge(key, 1) { x, y -> x + y } ?: 1) >= 2) aheadBlank.add(key)
-                        null
-                    } ?: continue
-                    // Full-quality OCR (not the fast one-pass reading): this runs in the background.
-                    progress("Read-ahead OCR: reading text ${index + 1}/$total", index * 99 / total)
-                    val po = ocrBytes(bytes, script, p.src, fastMode = true) ?: run { aheadBlank.add(key); null } ?: continue
-                    // Do not poison the read-ahead cache with an empty OCR result; the visible scan
-                    // gets another attempt when the panel reaches the viewport.
-                    if (po.text.isBlank()) {
-                        // Skipped by read-ahead from now on (the visible scan still reads it when it arrives).
-                        aheadBlank.add(key)
-                        progress("Read-ahead OCR: no text; skipping panel", index * 99 / total)
-                        continue
-                    }
-                    synchronized(aheadCache) { aheadCache[key] = po }
-                    aheadDone.add(key)
-                    emitReady(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
-                    cachedCount++
-                    progress("Read-ahead OCR: cached panel $cachedCount/$total", cachedCount * 99 / total)
-                } catch (_: OcrUnavailableException) {
-                    progress("Read-ahead OCR: OCR engine unavailable", index * 99 / total)
-                    break
-                } catch (_: Exception) {
-                    progress("Read-ahead OCR: panel ${index + 1} failed; continuing", index * 99 / total)
-                } catch (_: OutOfMemoryError) {
-                    progress("Read-ahead OCR: memory limit hit; stopping safely", index * 99 / total)
-                    break
-                }
+            // Read at most four image panels per group, using three workers. This avoids waiting
+            // for 8-10 sequential OCR passes before the chatbot sees any text, while keeping
+            // decoded bitmap memory bounded on lower-RAM phones.
+            val parallelism = minOf(AHEAD_OCR_PARALLELISM, refs.size).coerceAtLeast(1)
+            val batchPool = Executors.newFixedThreadPool(parallelism) { r ->
+                Thread(r, "ns-webmode-ahead-batch").apply { priority = 3 }
             }
-            if (alive()) progress("Read-ahead OCR complete: ${cachedCount}/$total panels cached", 99)
+            try {
+                var batchStart = 0
+                while (batchStart < refs.size) {
+                    if (!alive()) return
+                    val batchEnd = minOf(refs.size, batchStart + AHEAD_OCR_BATCH_SIZE)
+                    val jobs = ArrayList<Triple<PanelRef, String, java.util.concurrent.Future<Triple<PanelOcr?, Boolean, Throwable?>>>>()
+                    for (index in batchStart until batchEnd) {
+                        if (!alive()) break
+                        val p = refs[index]
+                        val key = WebModeLogic.normalizeUrl(p.src)
+                        // Cached panels are immediately eligible for the same 4-panel translation batch.
+                        val cached = synchronized(aheadCache) { aheadCache[key] }
+                        if (cached != null) {
+                            emitReady(WebModeAheadPanel(p.src, p.top, cached.text, cached.bubbles))
+                            cachedCount++
+                            progress("Read-ahead OCR: cache ready $cachedCount/$total", cachedCount * 99 / total)
+                            continue
+                        }
+                        // A previous cache eviction must not leave a URL permanently marked as done.
+                        aheadDone.remove(key)
+                        val future = batchPool.submit(Callable<Triple<PanelOcr?, Boolean, Throwable?>> {
+                            if (!alive()) return@Callable Triple(null, false, InterruptedException("job cancelled"))
+                            val bytes = try {
+                                fetchWithRetry(p, pageUrl)
+                            } catch (e: Exception) {
+                                return@Callable Triple(null, true, e)
+                            } catch (e: OutOfMemoryError) {
+                                return@Callable Triple(null, false, e)
+                            }
+                            if (bytes == null) return@Callable Triple(null, true, null)
+                            try {
+                                // Each panel owns its script state; sharing fallback state across workers
+                                // can make one panel's OCR result affect the next panel's language path.
+                                Triple(ocrBytes(bytes, ScriptState(baseScript), p.src, fastMode = true), false, null)
+                            } catch (e: Exception) {
+                                Triple(null, false, e)
+                            } catch (e: OutOfMemoryError) {
+                                Triple(null, false, e)
+                            }
+                        })
+                        jobs.add(Triple(p, key, future))
+                    }
+
+                    // The OCR tasks run concurrently; merge/cache/emit results on this coordinator
+                    // in stable panel order so UI updates and chapter ordering remain deterministic.
+                    for ((offset, job) in jobs.withIndex()) {
+                        if (!alive()) {
+                            jobs.drop(offset).forEach { it.third.cancel(true) }
+                            return
+                        }
+                        val (p, key, future) = job
+                        val outcome: Triple<PanelOcr?, Boolean, Throwable?> = try {
+                            future.get(JOB_MAX_MS, TimeUnit.MILLISECONDS)
+                        } catch (e: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            return
+                        } catch (e: java.util.concurrent.ExecutionException) {
+                            Triple(null, false, e.cause ?: e)
+                        } catch (e: java.util.concurrent.TimeoutException) {
+                            Triple(null, false, e)
+                        } catch (e: Exception) {
+                            Triple(null, false, e)
+                        }
+                        if (!alive()) return
+                        val (po, fetchFailed, error) = outcome
+                        if (error is OcrUnavailableException) {
+                            progress("Read-ahead OCR: OCR engine unavailable", cachedCount * 99 / total)
+                            return
+                        }
+                        if (error is OutOfMemoryError) {
+                            progress("Read-ahead OCR: memory limit hit; stopping safely", cachedCount * 99 / total)
+                            return
+                        }
+                        if (fetchFailed) {
+                            if ((aheadFails.merge(key, 1) { x, y -> x + y } ?: 1) >= 2) aheadBlank.add(key)
+                            progress("Read-ahead OCR: panel ${batchStart + offset + 1}/$total could not load", cachedCount * 99 / total)
+                            continue
+                        }
+                        if (error != null) {
+                            progress("Read-ahead OCR: panel ${batchStart + offset + 1}/$total failed; continuing", cachedCount * 99 / total)
+                            continue
+                        }
+                        if (po == null) {
+                            aheadBlank.add(key)
+                            continue
+                        }
+                        // A blank pass must not poison the OCR cache; visible OCR may retry it later.
+                        if (po.text.isBlank()) {
+                            aheadBlank.add(key)
+                            progress("Read-ahead OCR: no text; skipping panel", cachedCount * 99 / total)
+                            continue
+                        }
+                        synchronized(aheadCache) { aheadCache[key] = po }
+                        aheadDone.add(key)
+                        emitReady(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
+                        cachedCount++
+                        progress("Read-ahead OCR: cached panel $cachedCount/$total", cachedCount * 99 / total)
+                    }
+                    batchStart = batchEnd
+                }
+            } finally {
+                batchPool.shutdownNow()
+            }
+            if (alive()) progress("Read-ahead OCR complete: $cachedCount/$total panels cached", 99)
         }
+
         // ---- phase 1: scroll the real page so lazy loaders fire, until the image set stops changing
         private fun tick(n: Int, lastCount: Int, stable: Int) {
             if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return }
@@ -1672,6 +1738,8 @@ internal class WebModeExtractor(
         private const val MAX_TICKS = 400
         private const val MAX_BYTES = 25 * 1024 * 1024
         private const val FETCH_THREADS = 4
+        private const val AHEAD_OCR_BATCH_SIZE = 4
+        private const val AHEAD_OCR_PARALLELISM = 3
         private const val FETCH_AHEAD = 4
         private const val EARLY_ABORT_FAILS = 4
         private const val DISCOVERY_MAX_MS = 120_000L
