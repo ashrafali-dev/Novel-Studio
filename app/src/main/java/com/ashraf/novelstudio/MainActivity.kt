@@ -531,6 +531,11 @@ class MainActivity : Activity() {
     private var rtVisibleOcrBatch: RtVisibleOcrBatch? = null
     private var rtVisibleOcrFlush: Runnable? = null
     private var rtVisibleOcrBatchSeq = 0
+    // Snapshot the currently translating visible batch. The next viewport OCR is allowed to run
+    // while its reply is processing, so the global latest-scan layout can change before placement.
+    // Keep this exact geometry until this batch's own reply has been placed.
+    private var rtVisibleActiveLayout: WebModeLayout? = null
+    private var rtVisibleActiveHashes: Set<String> = emptySet()
     // One request per SCREEN, not one per bubble: everything the scanner finds for the current viewport
     // is collected and sent together. A batch is flushed early only when it is already large; otherwise
     // it waits until the viewport OCR has gone quiet (and the chatbot is free).
@@ -888,7 +893,10 @@ class MainActivity : Activity() {
             text = bubbles.joinToString("\n\n") { it.sourceText.trim() },
             contentSel = ""
         )
-        WebModeLayoutStore.setScan(chapter.url, WebModeLayout(pending.titleOffset, bubbles))
+        val batchLayout = WebModeLayout(pending.titleOffset, bubbles)
+        WebModeLayoutStore.setScan(chapter.url, batchLayout)
+        rtVisibleActiveLayout = batchLayout
+        rtVisibleActiveHashes = batchLayout.bubbles.map { WebModeLayout.fingerprint(it) }.toSet()
         deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
         Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
         handleChapter(chapter, useSavedTranslation = false)
@@ -1958,7 +1966,8 @@ return t.length>=40?'TXT:'+t:'';
                 // New image URLs trigger immediately; a long safety recheck only catches readers that mutate
                 // pixels without changing their image URL. Avoid re-OCRing the same panel every 3 s.
                 val runningAhead = running?.let { rtAheadTranslationTasksByJobKey.containsKey(keyOf(it)) } == true
-                val periodicRecheck = hasImages && !runningAhead &&
+                val runningVisibleBatch = running?.let { isRealtimeBubbleBatch(it) } == true
+                val periodicRecheck = hasImages && !runningAhead && !runningVisibleBatch &&
                     signature != deepSeekStallBlockedSignature &&
                     now - deepSeekLastOcrAtMs >= 10000L
                 // While the reader is still flicking through panels, let the current image settle briefly
@@ -1967,9 +1976,12 @@ return t.length>=40?'TXT:'+t:'';
                 val settled = now - deepSeekPendingSince >= 120L
                 // Foreground OCR may pre-empt only an ahead-translation job; it must never interrupt
                 // a visible-panel translation or a user-initiated extraction.
+                // Continue OCR for newly visible content while one realtime bubble batch is
+                // being translated. The next batch is only sent after that reply/placement finishes;
+                // its layout is snapshotted separately so the active reply cannot target new boxes.
+                val canScanWhileReplyRuns = runningVisibleBatch && queue.isEmpty() && changed
                 val idle = webModeHandle == null &&
-                    (running == null || runningAhead) &&
-                    (queue.isEmpty() || runningAhead)
+                    ((running == null && queue.isEmpty()) || runningAhead || canScanWhileReplyRuns)
                 if (idle && signature.isNotEmpty() &&
                     ((hasImages && ((changed && settled) || periodicRecheck)) || textFallbackDue)) {
                     if (runningAhead && changed && settled) interruptRealtimeAheadForVisiblePanel()
@@ -7696,7 +7708,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             // Real-time batches must align against the exact bubbles that produced this reply,
             // then merge into the cumulative page overlay. Never replace the bubbles already translated.
             val livePanelBatch = isDeepSeekLivePanel(ch)
-            val wmLayout = WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
+            val batchHashes = deepSeekTextHashByChapter[keyOf(ch)].orEmpty()
+            val activeBatchLayout = rtVisibleActiveLayout?.takeIf {
+                livePanelBatch && batchHashes.isNotEmpty() && batchHashes == rtVisibleActiveHashes
+            }
+            // Never align a reply against a later viewport's scan. While this reply was processing,
+            // the scanner may have collected more bubbles for the NEXT request.
+            val wmLayout = activeBatchLayout ?: WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
             val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
             val wmScript: String
             if (livePanelBatch) {
