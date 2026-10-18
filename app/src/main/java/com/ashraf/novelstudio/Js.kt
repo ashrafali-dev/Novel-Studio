@@ -582,8 +582,8 @@ function __box(){
      * trusted clipboard paste. This is the last-resort path when scripted input does not
      * become the editor's actual value/state.
      */
-    fun prepareNativePaste(expected: String): String = run(
-        "(function(expected){try{var b=__box();if(!b)return 'nobox';" +
+    fun prepareNativePaste(expected: String, shouldSend: Boolean): String = run(
+        "(function(expected,shouldSend){try{var b=__box();if(!b)return 'nobox';" +
         "var p=__prof(),before=__asst(p);window.__nsBase=before.map(function(e){return {el:e,t:(e.innerText||e.textContent||'').trim()};});" +
         "window.__nsSentN=__nrm(expected);window.__nsSentAt=Date.now();" +
         "try{var __bs=new WeakSet(),__bt=new Set(),__tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),__nn;while(__nn=__tw.nextNode()){__bs.add(__nn);var __x=__nrm(__nn.nodeValue);if(__x.length>=20)__bt.add(__x);}window.__nsBaseNodes=__bs;window.__nsBaseTexts=__bt;}catch(e){window.__nsBaseNodes=null;window.__nsBaseTexts=null;}" +
@@ -591,8 +591,8 @@ function __box(){
         "try{b.focus();}catch(e){}window.__nsSnap=__snap(b);" +
         "if(b.tagName==='TEXTAREA'||b.tagName==='INPUT'){try{b.setSelectionRange(0,String(b.value||'').length);}catch(e){}}" +
         "else{var r=document.createRange();r.selectNodeContents(b);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}" +
-        "window.__nsSendState='pending';return 'ok';}catch(e){return 'err';}})(" +
-        org.json.JSONObject.quote(expected) + ")"
+        "if(shouldSend)window.__nsSendState='pending';return 'ok';}catch(e){return 'err';}})(" +
+        org.json.JSONObject.quote(expected) + "," + shouldSend.toString() + ")"
     )
 
     /** Verify that a trusted native paste reached the framework-backed composer. */
