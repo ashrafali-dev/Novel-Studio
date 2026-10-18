@@ -569,18 +569,31 @@ class MainActivity : Activity() {
     private var rtAheadWarmupPage = ""
     private var rtAheadWarmupUntilMs = 0L
     private val REALTIME_AHEAD_PAGE_WARMUP_MS = 5000L
+    // Keeps read-ahead OCR advancing through the chapter after each successful ten-panel round.
+    private var rtAheadAutoContinueRunnable: Runnable? = null
+    private var rtAheadStatusRefreshRunnable: Runnable? = null
     private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
     // After warm-up, keep collecting until the selected level's bubble threshold is met or this
     // one-shot collection deadline expires. This is a collection deadline, not a translation timeout.
     private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
-        if (rtPausedForReOcr) return
+        if (rtPausedForReOcr || aheadOcrHandle != null) return
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) {
+            updateRealtimeAheadStatus()
+            return
+        }
+        val page = cleanUrl(novelWv.url.orEmpty())
+        if (page.isBlank()) return
         val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
         deepSeekAheadAtMs = System.currentTimeMillis()
-        if (n == 0) return
+        if (n == 0) {
+            updateRealtimeAheadStatus()
+            return
+        }
         val token = navToken
         val seq = ++aheadOcrSeq
+        var hadAheadPanels = false
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
         var collectedFlushRunnable: Runnable? = null
         fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
@@ -615,6 +628,7 @@ class MainActivity : Activity() {
                 if (seq == aheadOcrSeq) {
                     aheadOcrStage = stage
                     aheadOcrPct = pct
+                    updateRealtimeAheadStatus()
                 }
             },
             onDone = { },
@@ -622,6 +636,7 @@ class MainActivity : Activity() {
             fullChapterLinks = true,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
+                    if (panels.any { it.bubbles.isNotEmpty() }) hadAheadPanels = true
                     for (panel in panels) {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
@@ -634,21 +649,144 @@ class MainActivity : Activity() {
                 }
             },
             onAheadDone = {
+                var canContinue = false
                 if (seq == aheadOcrSeq) {
                     aheadOcrHandle = null
                     aheadOcrStage = ""
                     aheadOcrPct = -1
                     if (token == navToken) {
-                        // Send any remaining lines; if there are fewer than 10, the short hold below
-                        // gives immediately arriving OCR a chance to join, then sends the current batch.
+                        // Send any remaining OCR results before scheduling the next round.
                         flushCollected()
+                        canContinue = hadAheadPanels
                     }
                     collectedPanels.clear()
                 }
                 deepSeekAheadAtMs = System.currentTimeMillis()
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 80L)
+                if (canContinue && token == navToken) {
+                    // Continue with the next unseen images automatically; the bounded queue keeps
+                    // OCR from running too far ahead of translation and yields to visible work.
+                    scheduleRealtimeAheadAutoContinue(token, page)
+                } else {
+                    updateRealtimeAheadStatus()
+                }
             }
         ))
+        updateRealtimeAheadStatus()
+    }
+
+    private fun cancelRealtimeAheadAutoContinue() {
+        rtAheadAutoContinueRunnable?.let { handler.removeCallbacks(it) }
+        rtAheadAutoContinueRunnable = null
+        rtAheadStatusRefreshRunnable?.let { handler.removeCallbacks(it) }
+        rtAheadStatusRefreshRunnable = null
+    }
+
+    private fun scheduleRealtimeAheadAutoContinue(token: Int, pageUrl: String, delayMs: Long = 250L) {
+        if (rtAheadAutoContinueRunnable != null) return
+        val expectedPage = cleanUrl(pageUrl)
+        if (expectedPage.isBlank()) return
+        val task = object : Runnable {
+            override fun run() {
+                if (rtAheadAutoContinueRunnable !== this) return
+                val stillValid = token == navToken &&
+                    expectedPage == cleanUrl(novelWv.url.orEmpty()) &&
+                    DeepSeekRealtimeTranslation.isEnabled(this@MainActivity) &&
+                    webModeOn() && Prefs.auto(this@MainActivity)
+                if (!stillValid) {
+                    rtAheadAutoContinueRunnable = null
+                    updateRealtimeAheadStatus()
+                    return
+                }
+                // A scan started by the normal viewport poll already owns the next round.
+                if (aheadOcrHandle != null) {
+                    rtAheadAutoContinueRunnable = null
+                    updateRealtimeAheadStatus()
+                    return
+                }
+                if (rtPausedForReOcr || webModeHandle != null || rtAheadTranslationQueue.size >= 4) {
+                    handler.postDelayed(this, 500L)
+                    updateRealtimeAheadStatus()
+                    return
+                }
+                rtAheadAutoContinueRunnable = null
+                startAheadOcr()
+                updateRealtimeAheadStatus()
+            }
+        }
+        rtAheadAutoContinueRunnable = task
+        handler.postDelayed(task, delayMs.coerceAtLeast(0L))
+        updateRealtimeAheadStatus()
+    }
+
+    private fun realtimeAheadStatusLabel(): String? {
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return null
+        val currentPage = cleanUrl(novelWv.url.orEmpty())
+        val warmupRemaining = if (currentPage.isNotBlank() && rtAheadWarmupPage == currentPage) {
+            rtAheadWarmupUntilMs - System.currentTimeMillis()
+        } else 0L
+        if (warmupRemaining > 0L) {
+            return "OCR সংগ্রহ হচ্ছে · ${(warmupRemaining + 999L) / 1000L}s পরে পাঠাবে"
+        }
+        if (aheadOcrHandle != null) {
+            val pct = aheadOcrPct
+            val stage = aheadOcrStage.lowercase()
+            val label = when {
+                stage.contains("reading text") -> "প্যানেলের লেখা পড়ছে"
+                stage.contains("loading image") -> "পরের প্যানেল লোড হচ্ছে"
+                stage.contains("preparing") -> "পরের ব্যাচ প্রস্তুত হচ্ছে"
+                else -> "আগাম OCR চলছে"
+            }
+            return if (pct in 1..99) "$label · $pct%" else "$label…"
+        }
+        if (webModeHandle != null) return "বর্তমান প্যানেল OCR হচ্ছে…"
+        if (rtAheadWorkerBusy) return "ব্যাকগ্রাউন্ড অনুবাদ হচ্ছে…"
+        if (rtAheadTranslationQueue.isNotEmpty()) {
+            return "অনুবাদের জন্য অপেক্ষায় · ${rtAheadTranslationQueue.size}"
+        }
+        if (rtAheadAutoContinueRunnable != null) return "পরের ব্যাচের জন্য অপেক্ষা…"
+        return null
+    }
+
+    private fun updateRealtimeAheadStatus() {
+        if (!::rtAheadStatusBox.isInitialized || !::rtAheadStatusText.isInitialized) return
+        val label = realtimeAheadStatusLabel()
+        if (label.isNullOrBlank()) {
+            rtAheadStatusRefreshRunnable?.let { handler.removeCallbacks(it) }
+            rtAheadStatusRefreshRunnable = null
+            if (rtAheadStatusBox.visibility == View.VISIBLE) {
+                rtAheadStatusBox.animate().cancel()
+                rtAheadStatusBox.animate().alpha(0f).translationY(-dp(6).toFloat())
+                    .setDuration(140L).withEndAction {
+                        if (realtimeAheadStatusLabel().isNullOrBlank()) rtAheadStatusBox.visibility = View.GONE
+                    }.start()
+            }
+            return
+        }
+        rtAheadStatusText.text = label
+        if (rtAheadStatusBox.visibility != View.VISIBLE) {
+            rtAheadStatusBox.visibility = View.VISIBLE
+            rtAheadStatusBox.alpha = 0f
+            rtAheadStatusBox.translationY = -dp(7).toFloat()
+            rtAheadStatusBox.animate().cancel()
+            rtAheadStatusBox.animate().alpha(1f).translationY(0f).setDuration(180L).start()
+        }
+        rtAheadStatusBox.bringToFront()
+        val currentPage = cleanUrl(novelWv.url.orEmpty())
+        val warmupRemaining = if (currentPage.isNotBlank() && rtAheadWarmupPage == currentPage) {
+            rtAheadWarmupUntilMs - System.currentTimeMillis()
+        } else 0L
+        if (warmupRemaining > 0L && rtAheadStatusRefreshRunnable == null) {
+            val tick = Runnable {
+                rtAheadStatusRefreshRunnable = null
+                updateRealtimeAheadStatus()
+            }
+            rtAheadStatusRefreshRunnable = tick
+            handler.postDelayed(tick, minOf(250L, warmupRemaining.coerceAtLeast(1L)))
+        } else if (warmupRemaining <= 0L) {
+            rtAheadStatusRefreshRunnable?.let { handler.removeCallbacks(it) }
+            rtAheadStatusRefreshRunnable = null
+        }
     }
 
     private fun queueRealtimeVisibleOcrBatch(
@@ -1195,8 +1333,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun pumpRealtimeAheadTranslation() {
-        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) return
-        if (rtPausedForReOcr) { scheduleRealtimeAheadPump(400L); return }
+        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn() || !Prefs.auto(this)) {
+            updateRealtimeAheadStatus()
+            return
+        }
+        if (rtPausedForReOcr) { updateRealtimeAheadStatus(); scheduleRealtimeAheadPump(400L); return }
         // Read-ahead uses its own WebView and can overlap with a foreground bubble batch. The shorter,
         // randomized real-time request gap still prevents rapid-fire submissions.
         if (rtAheadWorkerBusy) return
@@ -1210,6 +1351,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             rtAheadWarmupUntilMs = System.currentTimeMillis() + REALTIME_AHEAD_PAGE_WARMUP_MS
         }
         val warmupRemainingMs = rtAheadWarmupUntilMs - System.currentTimeMillis()
+        updateRealtimeAheadStatus()
         if (warmupRemainingMs > 0L) {
             scheduleRealtimeAheadPump(warmupRemainingMs)
             return
@@ -1574,6 +1716,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun clearRealtimeAheadStateForNavigation() {
+        cancelRealtimeAheadAutoContinue()
+        rtAheadWarmupPage = ""
+        rtAheadWarmupUntilMs = 0L
         clearRealtimeVisibleOcrBatch()
         cancelRealtimeAheadWorker(requeue = false)
         rtAheadTranslationQueue.clear()
@@ -1582,6 +1727,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         rtAheadTranslationCache.clear()
         rtAheadTranslationSuppressedIds.clear()
         rtAheadHold.clear()
+        updateRealtimeAheadStatus()
     }
 
     private var deepSeekPendingSig = ""
@@ -1869,6 +2015,9 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var tabCountBtn: TextView
     private lateinit var content: FrameLayout
     private lateinit var scanDot: View
+    private lateinit var rtAheadStatusBox: LinearLayout
+    private lateinit var rtAheadStatusText: TextView
+    private lateinit var rtAheadStatusSpinner: ProgressBar
     private var scanDotPhase = false
 
     private data class ActivityDotStatus(
@@ -3173,6 +3322,43 @@ return t.length>=40?'TXT:'+t:'';
             addView(progressBar, LinearLayout.LayoutParams(MP, dp(44)).also { it.topMargin = dp(2) })
         }
 
+        rtAheadStatusSpinner = ProgressBar(this, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            if (Build.VERSION.SDK_INT >= 21) {
+                indeterminateTintList = ColorStateList.valueOf(UiTheme.accent)
+            }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        rtAheadStatusText = TextView(this).apply {
+            textSize = 11.5f
+            typeface = medium
+            setTextColor(0xFFF1F2FA.toInt())
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            maxWidth = dp(255)
+        }
+        rtAheadStatusBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(11), dp(6), dp(13), dp(6))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xEE292D40.toInt(), 0xEE171B28.toInt())
+            ).apply {
+                cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), 0x668C9CFF)
+            }
+            elevation = dp(9).toFloat()
+            visibility = View.GONE
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            addView(rtAheadStatusSpinner, LinearLayout.LayoutParams(dp(15), dp(15)))
+            addView(rtAheadStatusText, LinearLayout.LayoutParams(WC, WC).also {
+                it.marginStart = dp(7)
+            })
+        }
+
         togglePill = TextView(this).apply {
             textSize = 12.5f
             typeface = boldMedium
@@ -3208,6 +3394,9 @@ return t.length>=40?'TXT:'+t:'';
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
+            addView(rtAheadStatusBox, FrameLayout.LayoutParams(WC, dp(34), Gravity.TOP or Gravity.CENTER_HORIZONTAL).also {
+                it.setMargins(dp(8), dp(8), dp(8), 0)
+            })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
             scanDot = View(this@MainActivity).apply {
                 background = GradientDrawable().apply {
@@ -7821,6 +8010,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (DeepSeekRealtimeTranslation.isEnabled(this)) {
             progressBar.running = false
             extractBtn.ringProgress = -1
+            updateRealtimeAheadStatus()
             if (progressShown || progressBox.visibility == View.VISIBLE) {
                 progressShown = false
                 progressBox.animate().cancel()
