@@ -563,9 +563,15 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
+    // Give a newly opened chapter a short OCR warm-up window before background translation sends.
+    // During this window, OCR results continue to queue/repack so the first request can contain
+    // several panels instead of firing immediately for the first tiny batch.
+    private var rtAheadWarmupPage = ""
+    private var rtAheadWarmupUntilMs = 0L
+    private val REALTIME_AHEAD_PAGE_WARMUP_MS = 5000L
     private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
-    // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
-    // the first usable panel arrives. Panels completed during that window are batched together.
+    // After warm-up, keep collecting until the selected level's bubble threshold is met or this
+    // one-shot collection deadline expires. This is a collection deadline, not a translation timeout.
     private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
@@ -1196,6 +1202,18 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (rtAheadWorkerBusy) return
         val currentUrl = cleanUrl(novelWv.url.orEmpty())
         if (currentUrl.isBlank()) return
+        // Do not start background translation the instant a chapter opens. OCR can continue
+        // filling/repacking the queue during this short warm-up; visible on-screen translation
+        // remains independent and is never delayed by this gate.
+        if (rtAheadWarmupPage != currentUrl) {
+            rtAheadWarmupPage = currentUrl
+            rtAheadWarmupUntilMs = System.currentTimeMillis() + REALTIME_AHEAD_PAGE_WARMUP_MS
+        }
+        val warmupRemainingMs = rtAheadWarmupUntilMs - System.currentTimeMillis()
+        if (warmupRemainingMs > 0L) {
+            scheduleRealtimeAheadPump(warmupRemainingMs)
+            return
+        }
         // The read-ahead translator owns a separate hidden WebView and its own job state. Let it
         // translate upcoming panels while the current visible bubble batch is streaming, so answers can
         // be cached before the reader reaches them. Whole-chapter jobs stay serialized.
