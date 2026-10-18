@@ -661,80 +661,95 @@ internal class WebModeExtractor(
             var fetchFailed = 0
             var decodeFailed = 0
             var lastCrash: String? = null
-            for ((i, p) in panels.withIndex()) {
-                if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
-                if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
-                if (req.visibleOnly && req.forceOcrSrc.isNullOrBlank()) {
-                    // Real-time: this panel may already have been read ahead (download + full OCR done).
-                    val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
-                    if (hit != null) {
-                        diag.downloaded++; diag.decoded++
-                        val ct = hit.text
-                        if (ct.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += ct.length }
-                        texts[i] = ct
-                        layouts[i] = hit.bubbles
-                        continue
-                    }
-                }
-                progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
-                submitFetch(i)
-                submitFetch(i + FETCH_AHEAD)
-                val bytes = if (pool != null) {
-                    try { futures[i]?.get(JOB_MAX_MS, TimeUnit.MILLISECONDS) } catch (_: Throwable) { null }
-                } else fetchWithRetry(p, meta.url)
-                futures[i] = null
-                if (bytes == null) {
-                    fetchFailed++; diag.failed++
-                    // The first panels all refuse to download (hotlink / CORS / TLS block): do not burn
-                    // minutes on the other panels, switch to reading the WebView's own pixels right away.
-                    if (diag.downloaded == 0 && fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed) {
-                        fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
-                        return
-                    }
-                    continue
-                }
-                if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
-                diag.downloaded++
-                try {
-                    progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
-                    val targeted = !req.forceOcrSrc.isNullOrBlank()
-                    // Scope separation is intentional: full-chapter scans use thorough OCR;
-                    // only explicitly visible real-time requests use the low-latency fast pass.
-                    val fastPass = !targeted && req.visibleOnly
-                    val po = if (targeted && req.forceOcrRegion != null) {
-                        // Some Android codecs throw while decoding a selected region. Retry with a
-                        // bounded downsampled bitmap rather than aborting manual OCR.
-                        try {
-                            ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion)
-                        } catch (cropError: RuntimeException) {
-                            Log.w(TAG, "Force OCR crop failed; retrying bitmap crop: ${cropError.javaClass.simpleName}: ${cropError.message}")
-                            ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion, cropFallback = true)
-                        }
-                    } else {
-                        ocrBytes(bytes, script, p.src, fastMode = fastPass)
-                    }
-                    diag.decoded++
-                    if (po == null) continue                      // too small to be a panel: ignored, not an error
-                    val t = po.text
-                    if (t.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += t.length }
-                    texts[i] = t
-                    layouts[i] = po.bubbles
+            if (req.visibleOnly && total > 1 && req.forceOcrSrc.isNullOrBlank()) {
+                // Foreground real-time OCR used to process visible images serially. That meant the
+                // chatbot could not receive even a small 3-4-panel batch until every single OCR call
+                // had finished. Read this viewport in bounded concurrent groups instead.
+                val stats = try {
+                    processVisiblePanelsInParallel(panels, meta, script, texts, layouts, seen)
                 } catch (e: OcrUnavailableException) {
                     fail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label)
                     return
-                } catch (e: DecodeException) {
-                    decodeFailed++; diag.failed++
-                } catch (e: OutOfMemoryError) {
-                    decodeFailed++; diag.failed++
-                    lastCrash = "OutOfMemoryError"
-                } catch (e: RuntimeException) {
-                    // One unreadable panel must not abort the whole scan; remember why for the message.
-                    decodeFailed++; diag.failed++
-                    lastCrash = crashInfo(e)
-                    Log.w(TAG, "panel OCR crashed: $lastCrash", e)
                 }
+                fetchFailed = stats.first
+                decodeFailed = stats.second
+                lastCrash = stats.third
+            } else {
+                for ((i, p) in panels.withIndex()) {
+                    if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
+                    if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
+                    if (req.visibleOnly && req.forceOcrSrc.isNullOrBlank()) {
+                        // Real-time: this panel may already have been read ahead (download + full OCR done).
+                        val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
+                        if (hit != null) {
+                            diag.downloaded++; diag.decoded++
+                            val ct = hit.text
+                            if (ct.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += ct.length }
+                            texts[i] = ct
+                            layouts[i] = hit.bubbles
+                            continue
+                        }
+                    }
+                    progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
+                    submitFetch(i)
+                    submitFetch(i + FETCH_AHEAD)
+                    val bytes = if (pool != null) {
+                        try { futures[i]?.get(JOB_MAX_MS, TimeUnit.MILLISECONDS) } catch (_: Throwable) { null }
+                    } else fetchWithRetry(p, meta.url)
+                    futures[i] = null
+                    if (bytes == null) {
+                        fetchFailed++; diag.failed++
+                        // The first panels all refuse to download (hotlink / CORS / TLS block): do not burn
+                        // minutes on the other panels, switch to reading the WebView's own pixels right away.
+                        if (diag.downloaded == 0 && fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed) {
+                            fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
+                            return
+                        }
+                        continue
+                    }
+                    if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
+                    diag.downloaded++
+                    try {
+                        progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
+                        val targeted = !req.forceOcrSrc.isNullOrBlank()
+                        // Scope separation is intentional: full-chapter scans use thorough OCR;
+                        // only explicitly visible real-time requests use the low-latency fast pass.
+                        val fastPass = !targeted && req.visibleOnly
+                        val po = if (targeted && req.forceOcrRegion != null) {
+                            // Some Android codecs throw while decoding a selected region. Retry with a
+                            // bounded downsampled bitmap rather than aborting manual OCR.
+                            try {
+                                ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion)
+                            } catch (cropError: RuntimeException) {
+                                Log.w(TAG, "Force OCR crop failed; retrying bitmap crop: ${cropError.javaClass.simpleName}: ${cropError.message}")
+                                ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion, cropFallback = true)
+                            }
+                        } else {
+                            ocrBytes(bytes, script, p.src, fastMode = fastPass)
+                        }
+                        diag.decoded++
+                        if (po == null) continue                      // too small to be a panel: ignored, not an error
+                        val t = po.text
+                        if (t.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += t.length }
+                        texts[i] = t
+                        layouts[i] = po.bubbles
+                    } catch (e: OcrUnavailableException) {
+                        fail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label)
+                        return
+                    } catch (e: DecodeException) {
+                        decodeFailed++; diag.failed++
+                    } catch (e: OutOfMemoryError) {
+                        decodeFailed++; diag.failed++
+                        lastCrash = "OutOfMemoryError"
+                    } catch (e: RuntimeException) {
+                        // One unreadable panel must not abort the whole scan; remember why for the message.
+                        decodeFailed++; diag.failed++
+                        lastCrash = crashInfo(e)
+                        Log.w(TAG, "panel OCR crashed: $lastCrash", e)
+                    }
+                }
+                if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
             }
-            if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
             progress("Collecting recognized text", 99)
             when {
                 diag.downloaded == 0 -> { fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded"); return }
@@ -782,6 +797,149 @@ internal class WebModeExtractor(
             val failedPanels = diag.failed
             onMain { req.onDone(WebModeOutcome.Success(ch, diag, failedPanels)) }
         }
+
+        /**
+         * OCR visible panels concurrently, in a hard-bounded group of four. The normal foreground
+         * path used to download and OCR one panel at a time; this made a viewport with 4 images take
+         * the sum of four OCR latencies rather than the latency of the slowest worker.
+         * Results are consumed in original order so geometry, bubble identity and chapter text stay aligned.
+         */
+        private fun processVisiblePanelsInParallel(
+            panels: List<PanelRef>,
+            meta: PageMeta,
+            script: ScriptState,
+            texts: Array<String?>,
+            layouts: Array<List<WmBubble>?>,
+            seen: MutableSet<String>
+        ): Triple<Int, Int, String?> {
+            var fetchFailed = 0
+            var decodeFailed = 0
+            var lastCrash: String? = null
+            val pool = Executors.newFixedThreadPool(minOf(VISIBLE_OCR_PARALLELISM, panels.size).coerceAtLeast(1)) { r ->
+                Thread(r, "ns-webmode-visible-ocr").apply { priority = 4 }
+            }
+            try {
+                var batchStart = 0
+                while (batchStart < panels.size) {
+                    if (!alive()) break
+                    if (elapsed() > JOB_MAX_MS) {
+                        diag.timedOut = true
+                        break
+                    }
+                    val batchEnd = minOf(panels.size, batchStart + VISIBLE_OCR_BATCH_SIZE)
+                    val work = ArrayList<VisiblePanelWork>()
+                    for (i in batchStart until batchEnd) {
+                        if (!alive()) break
+                        val p = panels[i]
+                        val key = WebModeLogic.normalizeUrl(p.src)
+                        val cached = synchronized(aheadCache) { aheadCache[key] }
+                        if (cached != null && req.forceOcrSrc.isNullOrBlank()) {
+                            work.add(VisiblePanelWork(i, p, key, cached = cached))
+                            continue
+                        }
+                        val future = pool.submit(java.util.concurrent.Callable<VisiblePanelResult> {
+                            if (!alive()) {
+                                return@Callable VisiblePanelResult(error = InterruptedException("OCR job cancelled"))
+                            }
+                            val bytes = try {
+                                fetchWithRetry(p, meta.url)
+                            } catch (e: OutOfMemoryError) {
+                                return@Callable VisiblePanelResult(error = e)
+                            } catch (e: Throwable) {
+                                return@Callable VisiblePanelResult(fetchFailed = true, error = e)
+                            }
+                            if (bytes == null) return@Callable VisiblePanelResult(fetchFailed = true)
+                            try {
+                                val fastPass = req.visibleOnly && req.forceOcrSrc.isNullOrBlank()
+                                VisiblePanelResult(
+                                    bytes = bytes,
+                                    ocr = ocrBytes(bytes, ScriptState(script.current), p.src, fastMode = fastPass)
+                                )
+                            } catch (e: Throwable) {
+                                VisiblePanelResult(bytes = bytes, error = e)
+                            }
+                        })
+                        work.add(VisiblePanelWork(i, p, key, future = future))
+                    }
+
+                    for (item in work) {
+                        if (!alive()) {
+                            work.forEach { it.future?.cancel(true) }
+                            break
+                        }
+                        if (item.cached != null) {
+                            diag.downloaded++
+                            diag.decoded++
+                            texts[item.index] = item.cached.text
+                            layouts[item.index] = item.cached.bubbles
+                            if (item.cached.text.isBlank()) diag.ocrEmpty++ else {
+                                diag.ocrOk++
+                                diag.chars += item.cached.text.length
+                            }
+                            continue
+                        }
+                        val result = try {
+                            val remainingMs = (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
+                            item.future?.get(remainingMs, TimeUnit.MILLISECONDS)
+                        } catch (e: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            item.future?.cancel(true)
+                            return Triple(fetchFailed, decodeFailed, lastCrash)
+                        } catch (e: java.util.concurrent.TimeoutException) {
+                            item.future?.cancel(true)
+                            VisiblePanelResult(error = e)
+                        } catch (e: java.util.concurrent.ExecutionException) {
+                            VisiblePanelResult(error = e.cause ?: e)
+                        } catch (e: Throwable) {
+                            VisiblePanelResult(error = e)
+                        } ?: VisiblePanelResult(error = IllegalStateException("Visible OCR worker returned no result"))
+                        val error = result.error
+                        if (error is OcrUnavailableException) throw error
+                        if (error is OutOfMemoryError) {
+                            decodeFailed++
+                            diag.failed++
+                            lastCrash = "OutOfMemoryError"
+                            continue
+                        }
+                        val bytes = result.bytes
+                        if (result.fetchFailed || bytes == null) {
+                            fetchFailed++
+                            diag.failed++
+                            continue
+                        }
+                        if (!seen.add(md5(bytes))) {
+                            diag.duplicates++
+                            continue
+                        }
+                        diag.downloaded++
+                        if (error != null) {
+                            decodeFailed++
+                            diag.failed++
+                            lastCrash = crashInfo(error)
+                            Log.w(TAG, "visible panel OCR failed: $lastCrash")
+                            continue
+                        }
+                        diag.decoded++
+                        val po = result.ocr ?: continue
+                        val t = po.text
+                        if (t.isBlank()) diag.ocrEmpty++ else {
+                            diag.ocrOk++
+                            diag.chars += t.length
+                        }
+                        texts[item.index] = t
+                        layouts[item.index] = po.bubbles
+                    }
+                    progress("OCR viewport group ${batchStart + 1}–$batchEnd / ${panels.size}", 10 + batchEnd * 89 / panels.size.coerceAtLeast(1))
+                    batchStart = batchEnd
+                }
+            } finally {
+                pool.shutdownNow()
+            }
+            return Triple(fetchFailed, decodeFailed, lastCrash)
+        }
+
+        private const val VISIBLE_OCR_BATCH_SIZE = 4
+        private const val VISIBLE_OCR_PARALLELISM = 3
 
         // ---- FORCE mode: no image is downloaded. The page is scrolled from the top and the WebView's own
         // pixels (exactly what the user sees) are OCR'd per image. Works for blob:/encrypted/CORS/hot-link images.
@@ -1727,6 +1885,19 @@ internal class WebModeExtractor(
     private class DecodeException : Exception()
     private class ForceAcc { var top = 0; val texts = ArrayList<String>(); val bubbles = ArrayList<WmBubble>() }
     private class PanelOcr(val text: String, val bubbles: List<WmBubble>)
+    private class VisiblePanelResult(
+        val bytes: ByteArray? = null,
+        val ocr: PanelOcr? = null,
+        val fetchFailed: Boolean = false,
+        val error: Throwable? = null
+    )
+    private class VisiblePanelWork(
+        val index: Int,
+        val panel: PanelRef,
+        val key: String,
+        val cached: PanelOcr? = null,
+        val future: java.util.concurrent.Future<VisiblePanelResult>? = null
+    )
     private class PageMeta(val url: String, val lang: String, val title: String, val novel: String, val next: String?, val prev: String?)
 
     companion object {
