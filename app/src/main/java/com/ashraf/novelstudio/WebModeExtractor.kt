@@ -1362,6 +1362,20 @@ internal class WebModeExtractor(
                     // (bigger box = bigger Bengali text, and no half-translated fragments).
                     val members = inside.filter { !consumed[it] }
                     if (members.size < 2 || i !in members) continue
+                    // A joined balloon (two lobes, one outline) is one connected region but two separate
+                    // sentences. Only lines that sit close together count as the same text; if anything
+                    // else is inside, every text keeps its own box.
+                    val sameText = linkedSetOf(i)
+                    var growing = true
+                    while (growing) {
+                        growing = false
+                        for (j in members) {
+                            if (j !in sameText && sameText.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.3f) }) {
+                                sameText.add(j); growing = true
+                            }
+                        }
+                    }
+                    if (members.any { it !in sameText }) continue
                     val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
                     val joinedText = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
                         .replace(Regex("\\s+"), " ").trim()
@@ -1504,7 +1518,7 @@ internal class WebModeExtractor(
             return hit * 100 >= n * 60
         }
 
-        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock): Boolean {
+        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock, maxGapFonts: Float = 2.0f): Boolean {
             if (a.vertical || b.vertical) return false
             if (Math.abs(OcrPost.usableTilt(a.angle)) >= 6f ||
                 Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) return false
@@ -1519,7 +1533,7 @@ internal class WebModeExtractor(
             val btop = b.cy - b.h / 2f
             val bbot = b.cy + b.h / 2f
             val gap = maxOf(0f, maxOf(atop, btop) - minOf(abot, bbot))
-            if (gap > scale * 2.0f) return false
+            if (gap > scale * maxGapFonts) return false
             val al = a.cx - a.w / 2f; val ar = a.cx + a.w / 2f
             val bl = b.cx - b.w / 2f; val br = b.cx + b.w / 2f
             val horizontalGap = maxOf(0f, maxOf(al, bl) - minOf(ar, br))

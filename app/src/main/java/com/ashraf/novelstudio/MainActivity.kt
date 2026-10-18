@@ -1988,6 +1988,8 @@ return t.length>=40?'TXT:'+t:'';
      */
     private fun updateActivityChip(statuses: List<ActivityDotStatus>) {
         val chip = activityChip ?: return
+        CrashLog.context = novelWv.url.orEmpty().take(160) + " | mode=" + mode + " | webMode=" + webModeOn() +
+            " | realtime=" + DeepSeekRealtimeTranslation.isEnabled(this) + " | forceLoad=" + forceLoadOn()
         reOcrBtn?.let { b ->
             val show = webModeOn() && mode == Mode.NOVEL && DeepSeekRealtimeTranslation.isEnabled(this)
             val want = if (show) View.VISIBLE else View.GONE
@@ -2679,6 +2681,7 @@ return t.length>=40?'TXT:'+t:'';
         novelWv.webChromeClient = NovelChrome()
         applyForceLoadImages()
         Js.sendHoldMs = sendHoldPref()
+        CrashLog.install(this)
         chatWv.webViewClient = ChatClient()
         chatWv.settings.setSupportMultipleWindows(true)
         chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
@@ -3168,7 +3171,7 @@ return t.length>=40?'TXT:'+t:'';
                 setOnClickListener { reOcrVisiblePanels() }
             }
             addView(reOcrBtn, FrameLayout.LayoutParams(dp(42), dp(42), Gravity.BOTTOM or Gravity.END).also {
-                it.setMargins(0, 0, dp(12), dp(60))
+                it.setMargins(0, 0, dp(12), dp(134))
             })
             activityChip = ActivityChip(this@MainActivity)
             addView(activityChip, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.START).also {
@@ -4380,25 +4383,47 @@ return t.length>=40?'TXT:'+t:'';
             val cur = currentReadMode()
             rowMain.removeAllViews()
             rowSub.removeAllViews()
+            // Tapping the button that is already selected switches it off again (to the other choice), so
+            // no second button has to be pressed just to go back.
+            val toonSub = if (Prefs.get(this, "lastToonSub", "scan") == "rt") ReadMode.REALTIME else ReadMode.SCAN
             rowMain.addView(seg("Novel", cur == ReadMode.NOVEL) {
-                setReadMode(ReadMode.NOVEL)
-                toast("📖 Novel mode")
+                if (currentReadMode() == ReadMode.NOVEL) {
+                    setReadMode(toonSub)
+                    toast("WebToon mode")
+                } else {
+                    setReadMode(ReadMode.NOVEL)
+                    toast("Novel mode")
+                }
                 sheet?.dismiss()
             }, lp())
             rowMain.addView(seg("WebToon", cur != ReadMode.NOVEL) {
                 if (currentReadMode() == ReadMode.NOVEL) {
-                    setReadMode(if (Prefs.get(this, "lastToonSub", "scan") == "rt") ReadMode.REALTIME else ReadMode.SCAN)
+                    setReadMode(toonSub)
+                    render()
+                } else {
+                    setReadMode(ReadMode.NOVEL)
+                    toast("Novel mode")
+                    sheet?.dismiss()
                 }
-                render()
             }, lp())
             rowSub.addView(seg("Realtime", cur == ReadMode.REALTIME) {
-                setReadMode(ReadMode.REALTIME)
-                toast("🤖 AI real-time mode ON — current chatbot will translate chapter panels")
+                if (currentReadMode() == ReadMode.REALTIME) {
+                    setReadMode(ReadMode.SCAN)
+                    toast("Real-time OFF — Scanning mode")
+                } else {
+                    setReadMode(ReadMode.REALTIME)
+                    toast("AI real-time mode ON — current chatbot will translate chapter panels")
+                }
                 sheet?.dismiss()
             }, lp())
             rowSub.addView(seg("Scanning", cur == ReadMode.SCAN) {
-                setReadMode(ReadMode.SCAN)
-                toast("🖼 Scanning mode — tap ⚡ to read image chapters with OCR")
+                if (currentReadMode() == ReadMode.SCAN) {
+                    setReadMode(ReadMode.REALTIME)
+                    toast("Scanning OFF — AI real-time mode ON")
+                } else {
+                    setReadMode(ReadMode.SCAN)
+                    toast("Scanning mode — tap the bolt to read image chapters with OCR")
+                }
                 sheet?.dismiss()
             }, lp())
             rowSub.visibility = if (cur == ReadMode.NOVEL) View.GONE else View.VISIBLE
@@ -4535,7 +4560,11 @@ return t.length>=40?'TXT:'+t:'';
             chromeTopView.elevation = z
             dockWrapView.elevation = z
             (togglePill.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(12) + botH; togglePill.layoutParams = it }
-            reOcrBtn?.let { b -> (b.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(60) + botH; b.layoutParams = it } }
+            // the in-page OCR tools button is positioned by the page itself: tell it how tall the dock is
+            val insetCss = (botH / resources.displayMetrics.density).toInt()
+            WebModeWriter.bottomInsetPx = insetCss
+            novelWv.evaluateJavascript("try{document.documentElement.style.setProperty('--ns-bi','" + insetCss + "px');}catch(e){}", null)
+            reOcrBtn?.let { b -> (b.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(134) + botH; b.layoutParams = it } }
             activityChip?.let { c -> (c.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(14) + botH; c.layoutParams = it } }
             (progressBox.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; progressBox.layoutParams = it }
             (scanDot.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; scanDot.layoutParams = it }
@@ -7879,7 +7908,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
-            "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel()
+            "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
+            "🐞 Copy crash / freeze log"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -7888,13 +7918,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -8014,6 +8044,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                45 -> {
+                    dlg.dismiss()
+                    val log = CrashLog.read().takeLast(20_000)
+                    if (log.isBlank()) toast("🐞 No crash or freeze recorded yet")
+                    else { copy(log); toast("🐞 Log copied — paste it here") }
                 }
                 44 -> editSendHold { refresh(i, menuSendHoldLabel()) }
                 43 -> {

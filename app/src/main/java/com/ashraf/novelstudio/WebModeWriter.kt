@@ -14,6 +14,9 @@ import org.json.JSONObject
  *  - [script]: fallback reader panel, used when the translation cannot be matched to the bubbles.
  */
 internal object WebModeWriter {
+    /** Height (CSS px) of the dock that floats over the page; the in-page OCR tools button sits above it. */
+    @Volatile var bottomInsetPx: Int = 0
+
     private const val BODY = """
 (function(paras,title,font,size,pid){
   try{
@@ -514,7 +517,7 @@ internal object WebModeWriter {
         areaBtn.textContent='▧';
         areaBtn.setAttribute('aria-label','OCR tools');
         areaBtn.title='OCR tools';
-        areaBtn.style.cssText='position:fixed;right:10px;bottom:80px;z-index:2147483647;pointer-events:auto;'
+        areaBtn.style.cssText='position:fixed;right:10px;bottom:calc(80px + var(--ns-bi,0px));z-index:2147483647;pointer-events:auto;'
           +'width:44px;height:44px;padding:0;display:flex;align-items:center;justify-content:center;'
           +'border:1px solid #ffffff55;border-radius:14px;background:rgba(26,34,50,.94);color:#fff;'
           +'font:600 23px sans-serif;box-shadow:0 3px 12px #0007;-webkit-tap-highlight-color:transparent;';
@@ -565,7 +568,7 @@ internal object WebModeWriter {
         function showOcrMenu(){
           hideOcrMenu();
           var m=document.createElement('div');ocrMenu=m;m.id='__ns_ocr_menu';
-          m.style.cssText='position:fixed;right:10px;bottom:132px;z-index:2147483647;pointer-events:auto;'
+          m.style.cssText='position:fixed;right:10px;bottom:calc(132px + var(--ns-bi,0px));z-index:2147483647;pointer-events:auto;'
             +'min-width:172px;padding:5px;border-radius:13px;background:rgba(26,31,46,.98);'
             +'border:1px solid rgba(255,255,255,.2);box-shadow:0 4px 18px #0008;'
             +'font:600 14px sans-serif;color:#fff;-webkit-user-select:none;user-select:none;';
@@ -723,7 +726,7 @@ internal object WebModeWriter {
             .filter { it.isNotBlank() }
             .distinct()
             .forEach { sources.put(it) }
-        return BUBBLES
+        return "try{document.documentElement.style.setProperty('--ns-bi','" + bottomInsetPx + "px');}catch(e){};" + BUBBLES
             .replace("__FONT__", JSONObject.quote(font))
             .replace("__PID__", JSONObject.quote(pageId))
             .replace("__ITEMS__", arr.toString())
