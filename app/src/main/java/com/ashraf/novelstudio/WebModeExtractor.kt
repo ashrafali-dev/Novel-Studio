@@ -348,7 +348,7 @@ internal class WebModeExtractor(
                         }
                         // A previous cache eviction must not leave a URL permanently marked as done.
                         aheadDone.remove(key)
-                        val future = batchPool.submit(Callable<Triple<PanelOcr?, Boolean, Throwable?>> {
+                        val future = batchPool.submit(java.util.concurrent.Callable<Triple<PanelOcr?, Boolean, Throwable?>> {
                             if (!alive()) return@Callable Triple(null, false, InterruptedException("job cancelled"))
                             val bytes = try {
                                 fetchWithRetry(p, pageUrl)
@@ -403,11 +403,11 @@ internal class WebModeExtractor(
                         }
                         if (fetchFailed) {
                             if ((aheadFails.merge(key, 1) { x, y -> x + y } ?: 1) >= 2) aheadBlank.add(key)
-                            progress("Read-ahead OCR: panel ${batchStart + offset + 1}/$total could not load", cachedCount * 99 / total)
+                            progress("Read-ahead OCR: a panel could not load; continuing", cachedCount * 99 / total)
                             continue
                         }
                         if (error != null) {
-                            progress("Read-ahead OCR: panel ${batchStart + offset + 1}/$total failed; continuing", cachedCount * 99 / total)
+                            progress("Read-ahead OCR: a panel failed; continuing", cachedCount * 99 / total)
                             continue
                         }
                         if (po == null) {
