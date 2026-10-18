@@ -544,8 +544,8 @@ class MainActivity : Activity() {
     // Menu "Realtime batching": 0 Small (fastest first text) .. 3 Max (fewest requests). Default 2 = Big.
     private fun rtBatchLevel(): Int = (Prefs.get(this, "rtBatchLevel", "2").toIntOrNull() ?: 2).coerceIn(0, 3)
     private val rtVisibleOcrBatchMin: Int get() = intArrayOf(2, 3, 4, 4)[rtBatchLevel()]
-    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(450L, 650L, 850L, 1000L)[rtBatchLevel()]
-    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(800L, 1000L, 1250L, 1500L)[rtBatchLevel()]
+    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(500L, 800L, 1200L, 1500L)[rtBatchLevel()]
+    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(2500L, 3000L, 3500L, 4000L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -896,7 +896,7 @@ class MainActivity : Activity() {
         rtVisibleActiveLayout = batchLayout
         rtVisibleActiveHashes = batchLayout.bubbles.map { WebModeLayout.fingerprint(it) }.toSet()
         deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
-        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
+        Log.i("NovelStudioOCR", "Realtime viewport batch: panels=${pending.panelKeys.size}, bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
