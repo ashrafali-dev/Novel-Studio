@@ -573,9 +573,6 @@ class MainActivity : Activity() {
     private var rtAheadAutoContinueRunnable: Runnable? = null
     private var rtAheadStatusRefreshRunnable: Runnable? = null
     private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
-    // After warm-up, keep collecting until the selected level's bubble threshold is met or this
-    // one-shot collection deadline expires. This is a collection deadline, not a translation timeout.
-    private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr || aheadOcrHandle != null) return
@@ -595,29 +592,14 @@ class MainActivity : Activity() {
         val seq = ++aheadOcrSeq
         var hadAheadPanels = false
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
-        var collectedFlushRunnable: Runnable? = null
         fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
             panel.bubbles.count { it.sourceText.isNotBlank() }
         }
-        fun cancelCollectedFlush() {
-            collectedFlushRunnable?.let { handler.removeCallbacks(it) }
-            collectedFlushRunnable = null
-        }
         fun flushCollected() {
-            cancelCollectedFlush()
             if (collectedPanels.isEmpty()) return
             val ready = collectedPanels.values.sortedBy { it.top }
             collectedPanels.clear()
             queueRealtimeAheadTranslations(novelWv.url.orEmpty(), ready)
-        }
-        fun scheduleCollectedFlush() {
-            if (collectedPanels.isEmpty() || collectedFlushRunnable != null) return
-            val flush = Runnable {
-                collectedFlushRunnable = null
-                if (seq == aheadOcrSeq && token == navToken) flushCollected()
-            }
-            collectedFlushRunnable = flush
-            handler.postDelayed(flush, REALTIME_AHEAD_COLLECT_FLUSH_MS)
         }
         aheadOcrHandle = webMode.start(WebModeRequest(
             webView = novelWv,
@@ -641,11 +623,12 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Full batches go immediately; a smaller batch gets only one 300 ms chance
-                    // for more OCR results to join. Do not reset the timer on every slow panel.
+                    // Do not timer-flush a partial group while this OCR round is still reading
+                    // images sequentially. That split related bubbles into separate chatbot requests
+                    // whenever one image took longer than the collection timer. Flush only at the
+                    // batch target; onAheadDone() sends any remaining bubbles together at round end.
                     val bubblesReady = collectedBubbleCount()
                     if (bubblesReady >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
-                    else if (bubblesReady > 0) scheduleCollectedFlush()
                 }
             },
             onAheadDone = {
