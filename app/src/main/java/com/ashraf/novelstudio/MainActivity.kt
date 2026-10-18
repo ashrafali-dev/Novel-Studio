@@ -526,7 +526,9 @@ class MainActivity : Activity() {
         var titleOffset: Int,
         val bubbles: MutableList<WmBubble> = ArrayList(),
         val hashes: LinkedHashSet<String> = LinkedHashSet(),
-        val seen: HashSet<String> = HashSet()
+        val seen: HashSet<String> = HashSet(),
+        // Count distinct source image panels, not speech-bubble/text blocks within an image.
+        val panelKeys: LinkedHashSet<String> = LinkedHashSet()
     )
     private var rtVisibleOcrBatch: RtVisibleOcrBatch? = null
     private var rtVisibleOcrFlush: Runnable? = null
@@ -541,9 +543,9 @@ class MainActivity : Activity() {
     // it waits until the viewport OCR has gone quiet (and the chatbot is free).
     // Menu "Realtime batching": 0 Small (fastest first text) .. 3 Max (fewest requests). Default 2 = Big.
     private fun rtBatchLevel(): Int = (Prefs.get(this, "rtBatchLevel", "2").toIntOrNull() ?: 2).coerceIn(0, 3)
-    private val rtVisibleOcrBatchMin: Int get() = intArrayOf(2, 4, 8, 12)[rtBatchLevel()]
-    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
-    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
+    private val rtVisibleOcrBatchMin: Int get() = intArrayOf(2, 3, 4, 4)[rtBatchLevel()]
+    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(450L, 650L, 850L, 1000L)[rtBatchLevel()]
+    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(800L, 1000L, 1250L, 1500L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -811,12 +813,13 @@ class MainActivity : Activity() {
             if (fingerprint !in hashes || !pending.seen.add(fingerprint)) continue
             pending.bubbles.add(bubble)
             pending.hashes.add(fingerprint)
+            val panelKey = WebModeLogic.normalizeUrl(bubble.src).ifBlank { bubble.src }
+            if (panelKey.isNotBlank()) pending.panelKeys.add(panelKey)
         }
 
-        // Flush at the target size, otherwise keep one deadline measured from the FIRST
-        // bubble in this batch. Do not restart the timer on every OCR result: doing so either
-        // starves the batch or repeatedly emits tiny one-bubble requests on slow pages.
-        if (force || pending.bubbles.size >= rtVisibleOcrBatchMin) {
+        // Batch by distinct comic images, not OCR text blocks: one panel may contain many bubbles.
+        // Flush at 2/3/4 source panels, otherwise keep one deadline measured from the FIRST panel.
+        if (force || pending.panelKeys.size >= rtVisibleOcrBatchMin) {
             rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
             rtVisibleOcrFlush = null
             flushRealtimeVisibleOcrBatch(token, page)
