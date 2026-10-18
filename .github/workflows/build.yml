@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, fix/realtime-ahead-css-inventory]
+    branches: [main, master, fix/realtime-ahead-css-inventory, fix/realtime-ahead-panel-batching]
 
 jobs:
   build:
