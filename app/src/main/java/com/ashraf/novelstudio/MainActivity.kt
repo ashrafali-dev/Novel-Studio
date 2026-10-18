@@ -1288,33 +1288,24 @@ class MainActivity : Activity() {
         val marked = addInternalMarkers(source)
         val markerCount = Regex("(?m)^\\[\\d{3,}] ").findAll(marked).count()
         val markerInstruction = """
-[Internal paragraph markers]
-Each paragraph starts with a marker such as [001], [002], [003].
-Keep every marker exactly once, in the same order. Do not translate, remove,
-merge, split, or reorder the markers. Return only the translation with the
-markers preserved.
+[Bubble marker contract]
+Translate the numbered bubbles below into Bengali. Output every ID from [001] through
+the final ID exactly once and in order. Do not merge bubbles, omit IDs, add commentary,
+or stop after the first marker. Each ID must have its own translated text (blank only
+for UI/watermark/OCR noise). Keep sound effects in Bengali script.
 """.trimIndent()
-        val imageRules = """
-[Comic / webtoon page]
-Every marker is one piece of text read from a comic image: speech, narration, a system window or a
-sound effect. Translate EVERY marker into Bengali script, including sound effects and exclamations
-(BOOM -> ধুম!, HAH -> হাঃ, GRR -> গরররর!). If a word has no Bengali equivalent, write its sound in
-Bengali letters. Never leave a marker in English letters, never skip a marker, and never put two
-markers' text under one marker.
-A marker normally holds a WHOLE speech bubble (all its lines already joined): translate all of it,
-every word, and drop nothing. Only when a sentence clearly continues across consecutive markers
-(for example "...THE" / "HERO'S LIFE..."), read them together and translate each marker as only the
-part it carries.
-Website names, URLs, chatbot controls, app UI labels, and scan-group watermarks are not dialogue:
-keep their marker but leave the text after it empty.
-If a marker is meaningless OCR noise (random letters or symbols), keep the marker and leave its text empty.
-Never use "~", "-", or another placeholder to represent unreadable or non-dialogue text.
-Do not invent text. Keep each translation short enough to fit a speech bubble.
-""".trimIndent()
+        // On retry, state the exact required IDs explicitly; the previous response was incomplete.
+        val retryInstruction = if (task.attempts > 0 && markerCount > 0) {
+            val ids = (1..markerCount).joinToString(", ") {
+                "[${it.toString().padStart(3, '0')}]"
+            }
+            "\\n\\n[Correction retry] The complete required ID sequence is: $ids. " +
+                "Return all $markerCount IDs exactly once and in order; do not stop early."
+        } else ""
         // This is a separate chatbot page with no prior prompt in its conversation, so always include
-        // the full active translation prompt, even if the visible-chat option normally sends it once.
+        // the active translation prompt. The marker contract is short to reduce repeated prompt noise.
         val full = promptWithGlossary(Prefs.activeTranslationPrompt(this), marked) +
-            markerInstruction + "\n\n" + imageRules + "\n\n" + marked
+            markerInstruction + retryInstruction + "\\n\\n" + marked
         return full to markerCount
     }
 
@@ -1571,29 +1562,40 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val realtimeFast = RealtimeCompletionPolicy.enabled(this)
                 val deepSeek = realtimeFast && (host == "deepseek.com" || host.endsWith(".deepseek.com"))
                 val noSignalStable = if (deepSeek) 3 else RealtimeCompletionPolicy.noStopSignalThreshold(this, 8)
+                // A visually completed chatbot bubble is NOT a completed translation unless
+                // every expected marker is present. Otherwise a one-marker partial answer can be
+                // accepted and silently lose the rest of the scanned bubbles.
                 val completedByMarkers = got && meaningfulReply && effectiveLen >= minReplyLength &&
                     !streaming && allMarkers && stableNow >= markerStable
                 val completedByUi = got && meaningfulReply && effectiveLen >= minReplyLength &&
-                    uiDone && !streaming && stableNow >= uiStable
+                    uiDone && !streaming && allMarkers && stableNow >= uiStable
                 val completedAfterStop = got && meaningfulReply && effectiveLen >= minReplyLength &&
-                    streamEnded && stableNow >= stopStable
+                    streamEnded && !streaming && allMarkers && stableNow >= stopStable
                 val completedWithoutStop = got && meaningfulReply && effectiveLen >= maxOf(minReplyLength, expectedFloor) &&
-                    !streaming && stableNow >= noSignalStable &&
-                    (deepSeek || allMarkers || effectiveLen >= expectedFloor)
+                    !streaming && allMarkers && stableNow >= noSignalStable
                 val completed = completedByMarkers || completedByUi || completedAfterStop || completedWithoutStop
+                val incompleteStable = got && meaningfulReply && effectiveLen >= minReplyLength &&
+                    !streaming && !allMarkers && stableNow >= uiStable && elapsed >= 12_000L
 
                 if (completed) {
                     worker.evaluateJavascript(Js.readText()) { answerRaw ->
                         if (seq != rtAheadWorkerSeq || !rtAheadWorkerBusy ||
                             rtAheadWorkerJobKey != jobKey) return@evaluateJavascript
                         val answer = cleanReply(decode(answerRaw))
-                        if (answer.length < minReplyLength) {
+                        val returnedIds = Regex("""\\[\\d{3,}\\]""").findAll(answer)
+                            .map { it.value }.toList()
+                        val expectedIds = (1..markerCount).map {
+                            "[${it.toString().padStart(3, '0')}]"
+                        }
+                        // Validate exact ID sequence, not just the number of marker-like strings.
+                        if (answer.length < minReplyLength || markerCount <= 0 || returnedIds != expectedIds) {
                             failRealtimeAheadTranslation(seq, task, jobKey)
                         } else {
                             finishRealtimeAheadTranslation(jobKey, task, answer)
                         }
                     }
-                } else if ((got && !meaningfulReply && !streaming && stableNow >= 8 && elapsed >= 12_000L) ||
+                } else if (incompleteStable ||
+                    (got && !meaningfulReply && !streaming && stableNow >= 8 && elapsed >= 12_000L) ||
                     (sendFailed && !got) || (elapsed > 60_000L && !got) ||
                     elapsed > 6 * 60_000L) {
                     failRealtimeAheadTranslation(seq, task, jobKey)
