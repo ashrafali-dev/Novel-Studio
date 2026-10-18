@@ -636,7 +636,7 @@ class MainActivity : Activity() {
             fullChapterLinks = true,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
-                    if (panels.any { it.bubbles.isNotEmpty() }) hadAheadPanels = true
+                    if (panels.any { it.text.isNotBlank() }) hadAheadPanels = true
                     for (panel in panels) {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
@@ -754,12 +754,11 @@ class MainActivity : Activity() {
         if (label.isNullOrBlank()) {
             rtAheadStatusRefreshRunnable?.let { handler.removeCallbacks(it) }
             rtAheadStatusRefreshRunnable = null
+            rtAheadStatusBox.animate().cancel()
             if (rtAheadStatusBox.visibility == View.VISIBLE) {
-                rtAheadStatusBox.animate().cancel()
-                rtAheadStatusBox.animate().alpha(0f).translationY(-dp(6).toFloat())
-                    .setDuration(140L).withEndAction {
-                        if (realtimeAheadStatusLabel().isNullOrBlank()) rtAheadStatusBox.visibility = View.GONE
-                    }.start()
+                rtAheadStatusBox.visibility = View.GONE
+                rtAheadStatusBox.alpha = 1f
+                rtAheadStatusBox.translationY = 0f
             }
             return
         }
@@ -770,6 +769,11 @@ class MainActivity : Activity() {
             rtAheadStatusBox.translationY = -dp(7).toFloat()
             rtAheadStatusBox.animate().cancel()
             rtAheadStatusBox.animate().alpha(1f).translationY(0f).setDuration(180L).start()
+        } else {
+            // A new job may start during a previous hide transition; restore the pill immediately.
+            rtAheadStatusBox.animate().cancel()
+            rtAheadStatusBox.alpha = 1f
+            rtAheadStatusBox.translationY = 0f
         }
         rtAheadStatusBox.bringToFront()
         val currentPage = cleanUrl(novelWv.url.orEmpty())
@@ -782,7 +786,7 @@ class MainActivity : Activity() {
                 updateRealtimeAheadStatus()
             }
             rtAheadStatusRefreshRunnable = tick
-            handler.postDelayed(tick, minOf(250L, warmupRemaining.coerceAtLeast(1L)))
+            handler.postDelayed(tick, minOf(1000L, warmupRemaining.coerceAtLeast(1L)))
         } else if (warmupRemaining <= 0L) {
             rtAheadStatusRefreshRunnable?.let { handler.removeCallbacks(it) }
             rtAheadStatusRefreshRunnable = null
@@ -8081,6 +8085,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         val on = !Prefs.auto(this)
         Prefs.putBool(this, "noAuto", !on)
         refreshAutoBtn()
+        updateRealtimeAheadStatus()
         toast(if (on) "⚡ Background translation enabled — tap ▶ to translate and insert into the site" else "⚡ Copy mode — tap ▶ to copy the chapter")
     }
 
