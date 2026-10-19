@@ -24,7 +24,7 @@
     } catch (_) {}
   }
 
-  async function loadModels() {
+  async function loadModels(withDetector) {
     if (!window.ort) throw new Error('ONNX Runtime WASM could not load');
     ort.env.wasm.wasmPaths = {
       mjs: BASE + 'ort-wasm-simd-threaded.mjs',
@@ -32,8 +32,10 @@
     };
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
-    if (!detector) detector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    // The normal reader path only needs text recognition on crops already detected by the app.
+    // Keep the detector lazy-loaded for the optional stand-alone diagnostic screen only.
     if (!recognizer) recognizer = await ort.InferenceSession.create(BASE + 'rec/manga_rec_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+    if (withDetector && !detector) detector = await ort.InferenceSession.create(BASE + 'det/manga_det_v0.2.onnx', { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
     if (!dictionary) {
       const response = await fetch(BASE + 'ppocrv6_dict.txt');
       if (!response.ok) throw new Error('Character dictionary unavailable (' + response.status + ')');
@@ -44,7 +46,7 @@
       dictionary.push(' ');
       if (dictionary.length < 10000) throw new Error('Character dictionary is incomplete');
     }
-    state.textContent = 'Japanese manga OCR ready';
+    state.textContent = withDetector ? 'Japanese manga OCR ready' : 'Japanese manga text recognizer ready';
     if (!readySignalled) {
       readySignalled = true;
       try { if (window.NsJapaneseMangaBridge) window.NsJapaneseMangaBridge.onReady(); } catch (_) {}
@@ -360,13 +362,32 @@
     return out;
   }
 
-  async function run(url,id) {
+  async function run(url,id,regionsJson) {
     if(busy){bridge('onOcrError',id,'একটি OCR কাজ চলছে।');return;}
     busy=true;
     try{
-      await loadModels();
+      const recognitionOnly = typeof regionsJson === 'string' && regionsJson.length > 0;
+      await loadModels(!recognitionOnly);
       const image=new Image();image.decoding='async';image.src=url;
       await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('Local panel image could not load'));});
+
+      if (recognitionOnly) {
+        // Geometry originates from the app's default OCR blocks. This mode cannot create, merge,
+        // move, or resize blocks; it returns only the recognised string for each supplied index.
+        const requested=JSON.parse(regionsJson);
+        if(!Array.isArray(requested)||requested.length>128)throw new Error('Invalid manga recognition regions');
+        const results=[];
+        for(const b of requested){
+          let text='';
+          try{text=await recognize(image,b);}catch(_){}
+          results.push({index:Number(b.index),text:text});
+        }
+        bridge('onOcrResult',id,JSON.stringify({results:results}));
+        return;
+      }
+
+      // Legacy manual test screen only: it can still run the model's detector for a standalone
+      // comparison. Normal NovelStudio scanning uses runJapaneseMangaRecognitionOnly above.
       const boxes=await detect(image),regions=[];
       for(const b of boxes){
         let text='';
@@ -386,7 +407,9 @@
   }
 
   window.runJapaneseMangaOcr=run;
-  loadModels().catch(e=>{
+  window.runJapaneseMangaRecognitionOnly=function(url,id,regionsJson){return run(url,id,regionsJson);};
+  // Warm only the recognizer when the hidden runtime is created, to reduce initial RAM/CPU use.
+  loadModels(false).catch(e=>{
     state.textContent='Runtime/model initialization failed: '+(e&&e.message?e.message:String(e));
     try{if(window.NsJapaneseMangaBridge)window.NsJapaneseMangaBridge.onRuntimeError(state.textContent);}catch(_){}
   });
