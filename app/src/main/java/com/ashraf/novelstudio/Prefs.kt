@@ -30,9 +30,11 @@ object Prefs {
     fun bool(c: Context, k: String): Boolean = sp(c).getBoolean(k, false)
     fun bool(c: Context, k: String, def: Boolean): Boolean = sp(c).getBoolean(k, def)
     fun putBool(c: Context, k: String, v: Boolean) = sp(c).edit().putBoolean(k, v).apply()
-    fun prompt(c: Context): String = get(c, "prompt", DEFAULT_PROMPT)
+    /** The saved prompt if the user edited one; otherwise the one generated from the chosen languages. */
+    fun prompt(c: Context): String =
+        get(c, "prompt", "").let { if (it.isBlank() || it == DEFAULT_PROMPT) Langs.novelPrompt(c) else it }
     fun realtimePrompt(c: Context): String =
-        get(c, "realtimePrompt", "").ifBlank { DEFAULT_REALTIME_PROMPT }
+        get(c, "realtimePrompt", "").let { if (it.isBlank() || it == DEFAULT_REALTIME_PROMPT) Langs.realtimePrompt(c) else it }
 
     /** Use its own editable prompt only while AI Real-time Translation is enabled. */
     fun activeTranslationPrompt(c: Context): String =

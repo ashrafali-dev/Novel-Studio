@@ -760,6 +760,9 @@ internal object WebModeWriter {
  * common ones are replaced by their Bengali form. Anything unknown is kept exactly as received.
  */
 internal object WmSfx {
+    /** False when the target language is not Bengali: the English-to-Bengali sound-effect map is skipped. */
+    @Volatile var bengali = true
+
     private val MAP = mapOf(
         "BOOM" to "ধুম!", "BANG" to "দুম!", "CRASH" to "ঝনঝন!", "SMASH" to "ধ্বংস!", "THUD" to "ধপ!",
         "THUMP" to "ধুপ!", "BAM" to "ধাম!", "POW" to "পাউ!", "WHAM" to "ধড়াম!", "SLAM" to "দড়াম!",
@@ -783,6 +786,7 @@ internal object WmSfx {
         if (t == "~" || t == "-" || t == "—" || t == "…") return ""     // chatbot's "this was noise" answer: leave the picture alone
         val l = letters(t)
         if (l.isEmpty() || l.any { it.code > 0x24F }) return t          // already (partly) non-Latin
+        if (!bengali) return t
         val key = l.uppercase().replace(Regex("(.)\\1{2,}"), "$1$1")
         return MAP[key] ?: MAP[l.uppercase()] ?: t
     }
