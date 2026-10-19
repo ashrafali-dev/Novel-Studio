@@ -357,7 +357,7 @@ class JapaneseMangaEngineActivity : Activity() {
         val w = json.optInt("width"); val h = json.optInt("height")
         val regions = json.optJSONArray("regions") ?: JSONArray()
         val bubbleRegions = json.optJSONArray("bubbles")?.takeIf { it.length() > 0 } ?: regions
-        val removalBubbles = if (Prefs.bool(this, "wmTextRemoval", false)) {
+        val removalBubbles = if (Prefs.bool(this, "wmTextRemoval", true)) {
             mangaRemovalBubbles(panel.sourceUrl, bubbleRegions, w, h)
         } else emptyList()
 
@@ -496,7 +496,7 @@ class JapaneseMangaEngineActivity : Activity() {
             finally { bitmap.recycle() }
             // Keep the original compressed source only while this optional remover is enabled and
             // the frame is small enough to be cleaned safely. The JPEG used by OCR stays separate.
-            if (Prefs.bool(this, "wmTextRemoval", false) &&
+            if (Prefs.bool(this, "wmTextRemoval", true) &&
                 bounds.outWidth <= 4096 && bounds.outHeight <= 4096 &&
                 bounds.outWidth.toLong() * bounds.outHeight.toLong() <= MAX_CLEAN_PIXELS) {
                 // If preserving the original fails, fall back to OCR only; the cleaner won't use the
