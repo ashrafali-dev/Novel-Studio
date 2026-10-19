@@ -1855,6 +1855,10 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var readerSubtitleView: TextView
     private lateinit var extractActionView: LinearLayout
     private lateinit var extractActionLabel: TextView
+    private lateinit var autoToggleRow: LinearLayout
+    private lateinit var autoToggleText: TextView
+    private lateinit var autoToggleTrack: View
+    private lateinit var autoToggleThumb: View
     private lateinit var chatScrim: View
     private lateinit var chatSheetHandleRow: FrameLayout
     private lateinit var scanDot: View
@@ -3383,6 +3387,47 @@ return t.length>=40?'TXT:'+t:'';
             addView(extractBtn, LinearLayout.LayoutParams(dp(58), dp(58)))
             addView(extractActionLabel, LinearLayout.LayoutParams(MP, dp(17)))
         }
+        val autoSwitch = FrameLayout(this).apply {
+            isClickable = false
+            autoToggleTrack = View(this@MainActivity).apply {
+                background = Glass.solid(
+                    this@MainActivity,
+                    if (Prefs.auto(this@MainActivity)) UiTheme.accent else 0xFF454A5D.toInt(),
+                    9
+                )
+            }
+            addView(autoToggleTrack, FrameLayout.LayoutParams(dp(30), dp(18), Gravity.CENTER))
+            autoToggleThumb = View(this@MainActivity).apply {
+                background = Glass.oval(Color.WHITE)
+            }
+            addView(autoToggleThumb, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.CENTER_VERTICAL or Gravity.START).also {
+                it.leftMargin = dp(2)
+            })
+        }
+        autoToggleText = TextView(this).apply {
+            text = "পরের অধ্যায়ে গেলে নিজে থেকেই অনুবাদ"
+            textSize = 11.5f
+            typeface = medium
+            setTextColor(UiTheme.dim)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        autoToggleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), 0)
+            background = Glass.ripple(this@MainActivity, null, 12)
+            isClickable = true
+            isFocusable = true
+            addView(autoSwitch, LinearLayout.LayoutParams(dp(34), dp(22)))
+            addView(autoToggleText, LinearLayout.LayoutParams(WC, dp(24)).also {
+                it.marginStart = dp(7)
+            })
+            setOnClickListener {
+                toggleAuto()
+                refreshAutoBtn()
+            }
+        }
         val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -3397,9 +3442,17 @@ return t.length>=40?'TXT:'+t:'';
             addView(modeBtn)
             addView(dockBtn(Ic.GRID, "Menu") { menu() })
         }
+        val dockStack = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(dock, LinearLayout.LayoutParams(MP, dp(80)))
+            addView(autoToggleRow, LinearLayout.LayoutParams(MP, dp(25)).also {
+                it.topMargin = dp(2)
+            })
+        }
         val dockWrap = FrameLayout(this).apply {
-            setPadding(dp(10), dp(2), dp(10), dp(7))
-            addView(dock, FrameLayout.LayoutParams(MP, dp(80)))
+            setPadding(dp(10), dp(2), dp(10), dp(5))
+            addView(dockStack, FrameLayout.LayoutParams(MP, WC))
         }
         dockBar = dock
         dockWrapView = dockWrap
@@ -3808,13 +3861,16 @@ return t.length>=40?'TXT:'+t:'';
         val pageUrl = novelWv.url.orEmpty()
         val host = try { Uri.parse(pageUrl).host.orEmpty().removePrefix("www.") } catch (_: Exception) { "" }
         val pageTitle = novelWv.title.orEmpty().trim()
-        val chapterTitle = lastChapter?.title.orEmpty().trim()
+        val chapter = lastChapter?.takeIf {
+            it.url.isNotBlank() && pageUrl.isNotBlank() && pageKey(it.url) == pageKey(pageUrl)
+        }
+        val chapterTitle = chapter?.title.orEmpty().trim()
         val title = (chapterTitle.takeIf { it.isNotBlank() }
             ?: pageTitle.takeIf { it.isNotBlank() }
             ?: host.takeIf { it.isNotBlank() }
             ?: "Novel Studio").take(100)
         if (readerTitleView.text.toString() != title) readerTitleView.text = title
-        val chapterNumber = lastChapter?.number.orEmpty().trim()
+        val chapterNumber = chapter?.number.orEmpty().trim()
         val subtitle = buildList {
             if (host.isNotBlank()) add(host)
             if (chapterNumber.isNotBlank()) add("Chapter $chapterNumber")
@@ -8173,7 +8229,26 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun refreshAutoBtn() {
-        extractBtn.autoOn = Prefs.auto(this)
+        val enabled = Prefs.auto(this)
+        if (::extractBtn.isInitialized) extractBtn.autoOn = enabled
+        if (::autoToggleTrack.isInitialized) {
+            autoToggleTrack.background = Glass.solid(
+                this,
+                if (enabled) UiTheme.accent else 0xFF454A5D.toInt(),
+                9
+            )
+        }
+        if (::autoToggleThumb.isInitialized) {
+            autoToggleThumb.translationX = if (enabled) dp(12).toFloat() else 0f
+        }
+        if (::autoToggleText.isInitialized) {
+            autoToggleText.setTextColor(if (enabled) UiTheme.text else UiTheme.dim)
+        }
+        if (::autoToggleRow.isInitialized) {
+            autoToggleRow.contentDescription = if (enabled)
+                "পরের অধ্যায়ে গেলে নিজে থেকেই অনুবাদ চালু"
+            else "পরের অধ্যায়ে গেলে নিজে থেকেই অনুবাদ বন্ধ"
+        }
     }
 
     // ================================================================== save answer by hand (copy mode)
