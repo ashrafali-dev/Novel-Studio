@@ -9,12 +9,12 @@ internal object JapaneseMangaResultParser {
 
     fun parse(raw: String): Result? {
         return try {
-        if (raw.length !in 2..900_000) return null
+        if (raw.length !in 2..4_000_000) return null
         val root = JSONObject(raw)
         val pageUrl = root.optString("pageUrl").trim()
         if (!isHttpUrl(pageUrl)) return null
         val panels = root.optJSONArray("panels") ?: return null
-        if (panels.length() !in 1..12) return null
+        if (panels.length() !in 1..80) return null
 
         val bubbles = ArrayList<WmBubble>()
         for (i in 0 until panels.length()) {
@@ -24,7 +24,8 @@ internal object JapaneseMangaResultParser {
             val imageWidth = panel.optInt("width", 0)
             val imageHeight = panel.optInt("height", 0)
             if (imageWidth !in 1..12000 || imageHeight !in 1..20000) continue
-            val regions = panel.optJSONArray("regions") ?: continue
+            val regions = panel.optJSONArray("bubbles")?.takeIf { it.length() > 0 }
+                ?: panel.optJSONArray("regions") ?: continue
             for (j in 0 until regions.length()) {
                 if (bubbles.size >= MAX_BUBBLES) break
                 val region = regions.optJSONObject(j) ?: continue
@@ -41,7 +42,8 @@ internal object JapaneseMangaResultParser {
                 val normalizedHeight = (height.toFloat() / imageHeight).coerceIn(0.003f, 1f)
                 val cx = ((x + width / 2f) / imageWidth).coerceIn(0f, 1f)
                 val cy = ((y + height / 2f) / imageHeight).coerceIn(0f, 1f)
-                val font = (minOf(width, height).toFloat() / imageWidth).coerceIn(0.004f, 0.12f)
+                val fontPx = region.optDouble("font", minOf(width, height).toDouble()).toFloat()
+                val font = (fontPx / imageWidth).coerceIn(0.004f, 0.12f)
                 val bg = region.optInt("bg", 0xFFFFFFFF.toInt())
                 val fg = region.optInt("fg", 0xFF171717.toInt())
                 bubbles.add(
