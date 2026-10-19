@@ -1828,15 +1828,9 @@ return t.length>=40?'TXT:'+t:'';
                     chatWv.resumeTimers()
                     startWebModeExtract(token, useSaved = false, realtimeViewport = true)
                 }
-                // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
-                // Keep the DOM probe light enough that it does not compete with touch scrolling.
-                if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
-                    // Keep a bounded OCR/translation pipeline: allow the next ten-panel batch
-                    // to be prepared while the previous batch is still being translated.
-                    rtAheadTranslationQueue.size < 4 &&
-                    System.currentTimeMillis() - deepSeekAheadAtMs >= 220L) {
-                    startAheadOcr()
-                }
+                // Realtime is intentionally viewport-only: do not OCR panels below the screen.
+                // This avoids background CPU/battery use and prevents hidden work from competing
+                // with touch scrolling. The next viewport is scanned only when it becomes visible.
                 handler.postDelayed(this, 250L)
             }
         }
