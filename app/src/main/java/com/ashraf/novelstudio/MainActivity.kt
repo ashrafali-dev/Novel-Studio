@@ -620,8 +620,8 @@ class MainActivity : Activity() {
             },
             onDone = { },
             ahead = n,
-            // Discover only a bounded window below the viewport; do not inventory the whole chapter
-            // before starting OCR. The next window is discovered after this batch completes.
+            // Use observer-backed, bounded look-ahead candidates instead of building a full-chapter
+            // URL inventory before OCR. The next window is collected as scrolling/lazy loading progresses.
             fullChapterLinks = false,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
