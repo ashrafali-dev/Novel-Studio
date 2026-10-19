@@ -291,7 +291,7 @@ class JapaneseMangaEngineActivity : Activity() {
         lastResultJson = ""
         scannedPanels = JSONArray()
         translateButton.isEnabled = false
-        val js = "(function(){return JSON.stringify({imgs:Array.from(document.images).map(function(i){var r=i.getBoundingClientRect();return {src:i.currentSrc||i.src||'',top:r.top+scrollY,w:r.width,h:r.height,nw:i.naturalWidth||0,nh:i.naturalHeight||0};}).filter(function(i){return /^https?:/i.test(i.src)&&i.nw>=160&&i.nh>=120&&i.w>=60&&i.h>=60;}).sort(function(a,b){return a.top-b.top;}).filter(function(v,i,a){return a.findIndex(function(x){return x.src===v.src;})===i;}).slice(0,2)})})()"
+        val js = "(function(){return JSON.stringify({imgs:Array.from(document.images).map(function(i){var r=i.getBoundingClientRect();return {src:i.currentSrc||i.src||'',top:r.top+scrollY,w:r.width,h:r.height,nw:i.naturalWidth||0,nh:i.naturalHeight||0};}).filter(function(i){return /^https?:/i.test(i.src)&&i.nw>=160&&i.nh>=120&&i.w>=60&&i.h>=60;}).sort(function(a,b){return a.top-b.top;}).filter(function(v,i,a){return a.findIndex(function(x){return x.src===v.src;})===i;}).slice(0,60)})})()"
         page.evaluateJavascript(js) { raw ->
             try {
                 val result = JSONObject(org.json.JSONTokener(raw).nextValue() as String)
@@ -352,8 +352,9 @@ class JapaneseMangaEngineActivity : Activity() {
         val json = JSONObject(raw)
         val w = json.optInt("width"); val h = json.optInt("height")
         val regions = json.optJSONArray("regions") ?: JSONArray()
+        val bubbleRegions = json.optJSONArray("bubbles")?.takeIf { it.length() > 0 } ?: regions
         val removalBubbles = if (Prefs.bool(this, "wmTextRemoval", false)) {
-            mangaRemovalBubbles(panel.sourceUrl, regions, w, h)
+            mangaRemovalBubbles(panel.sourceUrl, bubbleRegions, w, h)
         } else emptyList()
 
         // Image decode, pixel masking, and WebP encoding must not run on the UI thread.
@@ -363,7 +364,7 @@ class JapaneseMangaEngineActivity : Activity() {
             panel.sourceWidth.toLong() * panel.sourceHeight.toLong() <= MAX_CLEAN_PIXELS
         if (!shouldAttempt) {
             deleteLocal(panel.localUrl)
-            commitOcrResult(panel, w, h, regions)
+            commitOcrResult(panel, w, h, regions, bubbleRegions)
             return
         }
         worker.execute {
@@ -427,15 +428,15 @@ class JapaneseMangaEngineActivity : Activity() {
         return out
     }
 
-    private fun commitOcrResult(panel: PanelImage, w: Int, h: Int, regions: JSONArray) {
+    private fun commitOcrResult(panel: PanelImage, w: Int, h: Int, regions: JSONArray, bubbles: JSONArray) {
         if (!scanning) return
         scannedPanels.put(JSONObject()
             .put("src", panel.sourceUrl).put("top", panel.top)
             .put("sourceWidth", panel.sourceWidth).put("sourceHeight", panel.sourceHeight)
-            .put("width", w).put("height", h).put("regions", regions))
+            .put("width", w).put("height", h).put("regions", regions).put("bubbles", bubbles))
         val sb = StringBuilder(accumulated)
         sb.append("\n━━━━━━━━━━━━━━━━━━\nছবি ").append(index + 1).append(" · ").append(w).append("×").append(h)
-            .append("\nরিজিয়ন: ").append(regions.length()).append("\n\n")
+            .append("\nরিজিয়ন: ").append(regions.length()).append(" · বাবল: ").append(bubbles.length()).append("\n\n")
         for (i in 0 until regions.length()) {
             val r = regions.optJSONObject(i) ?: continue
             val text = r.optString("text").trim()
