@@ -14,8 +14,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Small floating status pill for Web Mode (Realtime / Scanning): three bouncing dots plus a short
- * label such as "OCR হচ্ছে" or "চ্যাটবটে পাঠানো হচ্ছে". It never takes touches.
+ * Small floating status pill (every reading mode): three bouncing dots plus a short plain-English
+ * label such as "Reading the page" or "Sending to chatbot". It never takes touches.
  * The label cross-fades when the stage changes and the whole pill fades in/out.
  */
 class ActivityChip(context: Context) : LinearLayout(context) {

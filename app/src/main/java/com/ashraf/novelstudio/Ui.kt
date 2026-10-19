@@ -29,6 +29,8 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.widget.ImageView
 import android.widget.ScrollView
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * Novel Studio design system ("Aurora Glass").
@@ -375,7 +377,7 @@ class GlowBar(ctx: Context) : View(ctx) {
 
 // ============================================================================ extract button
 
-/** The big centre button of the dock: gradient disc + bolt, ringed by the translation progress. */
+/** The big centre button of the dock: a raised bubble, gradient disc + bolt, ringed by 24 ticks that show progress / activity. */
 class ExtractButton(ctx: Context) : View(ctx) {
     /** -1 = no ring, 0 = busy (spinning), 1..100 = determinate */
     var ringProgress: Int = -1
@@ -394,6 +396,14 @@ class ExtractButton(ctx: Context) : View(ctx) {
     private val bolt = IconDrawable(Ic.BOLT, Color.WHITE)
     private val oval = RectF()
     private var rot = 0f
+
+    /** 0 = Novel, 1 = Scan, 2 = Live. Tints the disc and the idle ticks (see [ModeUi]). */
+    var modeIndex: Int = 0
+        set(v) { if (field != v) { field = v; invalidate() } }
+
+    private val tick = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private val bubble = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bubbleStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = UiTheme.stroke }
 
     // The little badge is also the live activity light. MainActivity feeds it real task state.
     // A solid green/grey dot means idle; active OCR/translation stages pulse in their own colours.
@@ -449,7 +459,7 @@ class ExtractButton(ctx: Context) : View(ctx) {
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val s = (66f * dens).toInt()
+        val s = (74f * dens).toInt()
         setMeasuredDimension(resolveSize(s, widthMeasureSpec), resolveSize(s, heightMeasureSpec))
     }
 
@@ -471,35 +481,62 @@ class ExtractButton(ctx: Context) : View(ctx) {
     }
 
     override fun onDraw(c: Canvas) {
-        val busy = ringProgress >= 0
-        if (busy && !spin.isStarted && ringProgress == 0) spin.start()
-        if ((!busy || ringProgress > 0) && spin.isStarted) spin.cancel()
+        // The ring "comet" runs while a job is busy (ringProgress == 0) or the activity light is blinking.
+        val comet = ringProgress == 0 || (ringProgress < 0 && activityIndicatorBlinking)
+        if (comet && !spin.isStarted) spin.start()
+        if (!comet && spin.isStarted) spin.cancel()
 
         val cx = width / 2f
         val cy = height / 2f
         val r = minOf(width, height) / 2f
-        glow.shader = RadialGradient(cx, cy, r, intArrayOf(0x557B8CFF, 0x007B8CFF), floatArrayOf(0.55f, 1f), Shader.TileMode.CLAMP)
+        val mStart = ModeUi.start(modeIndex)
+        val mEnd = ModeUi.end(modeIndex)
+
+        glow.shader = RadialGradient(cx, cy, r, intArrayOf(ModeUi.withAlpha(mStart, 0x44), ModeUi.withAlpha(mStart, 0)), floatArrayOf(0.55f, 1f), Shader.TileMode.CLAMP)
         c.drawCircle(cx, cy, r, glow)
 
-        val br = r - 9f * dens
-        disc.shader = LinearGradient(cx - br, cy - br, cx + br, cy + br, UiTheme.accentA, UiTheme.accentB, Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, br, disc)
+        // the bubble the button sits in
+        val bubR = r - 2f * dens
+        bubble.color = UiTheme.sheet
+        c.drawCircle(cx, cy, bubR, bubble)
+        bubbleStroke.strokeWidth = 1f * dens
+        c.drawCircle(cx, cy, bubR, bubbleStroke)
 
+        // 24 ticks: idle = dim, comet = busy, filled up to N% = determinate progress
+        val n = 24
+        val tOuter = bubR - 3.5f * dens
+        val tInner = tOuter - 5f * dens
+        tick.strokeWidth = 2.4f * dens
+        val active = ringProgress >= 0 || activityIndicatorBlinking
+        val tickColor = if (active) (activityIndicatorColor ?: mStart) else mStart
+        val head = ((rot / 360f) * n).toInt() % n
+        val litCount = if (ringProgress > 0) (n * ringProgress / 100f).toInt() else -1
+        for (i in 0 until n) {
+            var a = 0.22f
+            if (comet) {
+                val behind = (head - i + n) % n
+                if (behind < 6) a = 1f - behind * 0.15f
+            } else if (litCount >= 0 && i < litCount) {
+                a = 1f
+            }
+            tick.color = ModeUi.withAlpha(tickColor, (a * 255f).toInt())
+            val ang = Math.toRadians(i * 360.0 / n - 90.0)
+            val ca = cos(ang).toFloat()
+            val sa = sin(ang).toFloat()
+            c.drawLine(cx + ca * tInner, cy + sa * tInner, cx + ca * tOuter, cy + sa * tOuter, tick)
+        }
+
+        // gradient disc + bolt
+        val br = tInner - 4f * dens
+        disc.shader = LinearGradient(cx - br, cy - br, cx + br, cy + br, mStart, mEnd, Shader.TileMode.CLAMP)
+        c.drawCircle(cx, cy, br, disc)
         val s = (br * 1.05f).toInt()
         bolt.setBounds((cx - s / 2f).toInt(), (cy - s / 2f).toInt(), (cx + s / 2f).toInt(), (cy + s / 2f).toInt())
         bolt.draw(c)
 
-        val rr = br + 5f * dens
-        if (busy) {
-            c.drawCircle(cx, cy, rr, ringBg)
-            oval.set(cx - rr, cy - rr, cx + rr, cy + rr)
-            if (ringProgress <= 0) c.drawArc(oval, rot, 95f, false, ringFg)
-            else c.drawArc(oval, -90f, 360f * ringProgress / 100f, false, ringFg)
-        }
-
-        // auto-translate indicator
-        val bx = cx + br * 0.80f
-        val by = cy - br * 0.80f
+        // activity light, sitting on the bubble's top-right edge
+        val bx = cx + (bubR - 1f * dens) * 0.707f
+        val by = cy - (bubR - 1f * dens) * 0.707f
         badge.alpha = 255
         badge.color = UiTheme.bg
         c.drawCircle(bx, by, 6.5f * dens, badge)
