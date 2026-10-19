@@ -268,12 +268,12 @@ internal class WebModeExtractor(
         fun beginAhead() {
             try {
                 ensureBridge(wv)
-                val aheadN = req.ahead.coerceIn(1, 12)
+                val aheadN = req.ahead.coerceIn(1, 15)
                 // Look at up to 3x the batch size below the screen; the first aheadN panels that are still
                 // undone are read. As panels finish, the window moves on by itself (it used to stop after
                 // the first N, until the reader scrolled).
-                // Full-chapter link inventory is bounded at 600 candidates; OCR remains
-                // sequential and is still limited to aheadN images per batch.
+                // Real-time mode inspects only a bounded look-ahead window. It does not enumerate 600
+                // chapter links and only OCRs up to aheadN newly discovered images per pass.
                 val aheadWindow = if (req.fullChapterLinks) 600 else (aheadN * 3).coerceAtMost(30)
                 val js = wrap(
                     LIB + JS_COLLECT_AHEAD
@@ -298,6 +298,7 @@ internal class WebModeExtractor(
                     }
                     if (req.fullChapterLinks) refs.sortBy { it.top }
                     while (refs.size > aheadN) refs.removeAt(refs.size - 1)
+                    Log.i(TAG, "Read-ahead discovery: window=${aheadWindow} selected=${refs.size} fullChapter=${req.fullChapterLinks}")
                     if (refs.isEmpty()) { aheadFinished(); return@evaluateJavascript }
                     aheadWorker.execute {
                         try { runCatching { processAhead(refs, pageUrl, lang) } } finally { aheadFinished() }
@@ -2114,21 +2115,104 @@ return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,
 
         // Real-time read-ahead: the next images that are completely below the screen (nothing is scrolled).
         private const val JS_COLLECT_AHEAD = """
-var sc=scroller(),c=cands(sc);
+var sc=scroller();
 var vpH=window.innerHeight||800,vpBottom=vpH;
 var all=__ALL__;
-// "Full chapter links" means we may inspect every URL already present in the DOM, not that
-// we should OCR from panel 1 again. Upcoming-panel OCR must always start strictly below the
-// reader's current viewport, otherwise its answers arrive late and duplicate the foreground OCR.
 if(sc){
   var sr=sc.getBoundingClientRect();
   vpBottom=Math.max(sr.top,Math.min(vpH,sr.bottom));
 }
-c=c.filter(function(p){return p.vt>=vpBottom-2;});
-// Use the page's document-space top for a stable reading order across batches.
-c.sort(function(a,b){return all?(a.t-b.t):(a.vt-b.vt);});
-return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:c.slice(0,__N__)});
+function belowViewport(p){return p.vt>=vpBottom-2;}
+function panelFromImage(im,seen){
+  if(!im||!im.isConnected)return null;
+  var src=imageSrc(im);if(!src||seen[src])return null;
+  var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
+  if(!((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120))){
+    var pe=im.parentElement,pr=pe?pe.getBoundingClientRect():null;
+    if(!(pr&&pr.width>=100&&pr.height>=60&&(!im.complete||nw===0)))return null;
+    r=pr;
+  }
+  var meta=(im.className&&im.className.baseVal!==undefined?im.className.baseVal:im.className||'')+' '+(im.id||'')+' '+(im.alt||'');
+  if(BAD.test(meta))return null;
+  if(im.closest&&im.closest('header,footer,nav,aside,[class*=comment],[class*=recommend],[class*=related],[id*=comment]')&&!(r.width>=360&&r.height>=240))return null;
+  seen[src]=1;
+  var inScroller=!!(sc&&sc.contains(im));
+  var top=inScroller?(r.top-sr.top+sc.scrollTop):(r.top+(window.pageYOffset||de.scrollTop||0));
+  return {s:src,t:Math.round(top),l:Math.round(r.left),w:Math.round(r.width),h:Math.round(r.height),d:(im.complete&&nw>0)?1:0,fw:r.width,fh:r.height,vl:r.left,vt:r.top,vb:r.bottom};
+}
+var candidates=[],state=null,observerReady=false;
+if(typeof IntersectionObserver==='function'&&typeof MutationObserver==='function'){
+  state=window.__nsAheadObserverState;
+  if(!state||state.root!==sc||!state.io||!state.mo){
+    try{if(state&&state.io)state.io.disconnect();if(state&&state.mo)state.mo.disconnect();}catch(e){}
+    state={root:sc,candidates:new Set(),observed:new WeakSet(),ready:false};
+    state.io=new IntersectionObserver(function(entries){
+      for(var ei=0;ei<entries.length;ei++){
+        var en=entries[ei];
+        if(en.isIntersecting)state.candidates.add(en.target);
+        else state.candidates.delete(en.target);
+      }
+      state.ready=true;
+    },{root:sc||null,rootMargin:'0px 0px 12000px 0px',threshold:0});
+    state.watch=function(node){
+      if(!node)return;
+      function watchImage(im){
+        if(!im||String(im.tagName).toLowerCase()!=='img'||state.observed.has(im))return;
+        state.observed.add(im);
+        try{state.io.observe(im);}catch(e){}
+      }
+      if(node.nodeType===1)watchImage(node);
+      var imgs=node.querySelectorAll?node.querySelectorAll('img'):[];
+      for(var wi=0;wi<imgs.length;wi++)watchImage(imgs[wi]);
+    };
+    state.mo=new MutationObserver(function(mutations){
+      for(var mi=0;mi<mutations.length;mi++){
+        var mut=mutations[mi];
+        if(mut.type==='childList'){
+          for(var ni=0;ni<mut.addedNodes.length;ni++)state.watch(mut.addedNodes[ni]);
+        }else if(mut.type==='attributes'&&mut.target&&String(mut.target.tagName).toLowerCase()==='img'&&state.observed.has(mut.target)){
+          // Lazy loaders can replace src without moving the image; re-observe to refresh its intersection.
+          try{state.io.unobserve(mut.target);state.io.observe(mut.target);}catch(e){}
+        }
+      }
+    });
+    state.watch(document.documentElement);
+    state.mo.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['src','srcset','data-src','data-srcset','style','class']});
+    window.__nsAheadObserverState=state;
+  }
+  observerReady=!!state.ready;
+  if(observerReady){
+    var seenImages={};
+    state.candidates.forEach(function(im){
+      if(!im||!im.isConnected){state.candidates.delete(im);return;}
+      // Deduplicate only after the viewport test; an earlier duplicate above the viewport
+      // must not suppress the same image URL if it is also used by an upcoming panel.
+      var p=panelFromImage(im,{});
+      if(p&&belowViewport(p)&&!seenImages[p.s]){seenImages[p.s]=1;candidates.push(p);}
+    });
+  }
+}else{
+  // Compatibility fallback for older WebView engines without IntersectionObserver.
+  var legacy=cands(sc,false);
+  for(var li=0;li<legacy.length;li++)if(belowViewport(legacy[li]))candidates.push(legacy[li]);
+}
+// CSS-background, iframe and other non-IMG readers remain supported by a throttled fallback.
+// Do not pay for a page-wide style sweep on every real-time polling cycle.
+if((observerReady||!state)&&candidates.length===0){
+  var bgNow=Date.now();
+  if(bgNow-(window.__nsWmLastAheadBgFallback||0)>=3500){
+    window.__nsWmLastAheadBgFallback=bgNow;
+    var withBackgrounds=cands(sc,true),bgSeen={};
+    for(var bi=0;bi<withBackgrounds.length;bi++){
+      var bp=withBackgrounds[bi];
+      if(belowViewport(bp)&&!bgSeen[bp.s]){bgSeen[bp.s]=1;candidates.push(bp);}
+    }
+  }
+}
+candidates.sort(function(a,b){return all?(a.t-b.t):(a.vt-b.vt);});
+return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:candidates.slice(0,__N__)});
 """
+
 
         private const val JS_COLLECT = """
 var sc=scroller(),c=cands(sc,true);
