@@ -58,6 +58,7 @@ class JapaneseMangaEngineActivity : Activity() {
     private var scanPageUrl = ""
     private var scannedPanels = JSONArray()
     private data class ImageSource(val url: String, val top: Double, val width: Int, val height: Int)
+    private data class DownloadedImage(val path: String, val width: Int, val height: Int)
     private data class PanelImage(val sourceUrl: String, val localUrl: String, val top: Double, val sourceWidth: Int, val sourceHeight: Int)
     private var scanWhenReady = false
     private var requestId = 0
@@ -310,8 +311,11 @@ class JapaneseMangaEngineActivity : Activity() {
                     for (source in sources) {
                         if (!scanning) break
                         try {
-                            val local = "https://appassets.androidplatform.net/manga-engine/" + downloadImage(source.url, pageUrl, ua)
-                            saved.add(PanelImage(source.url, local, source.top, source.width, source.height))
+                            val downloaded = downloadImage(source.url, pageUrl, ua)
+                            val local = "https://appassets.androidplatform.net/manga-engine/" + downloaded.path
+                            // Use decoded source dimensions rather than DOM naturalWidth (which is 0
+                            // for a lazy image). The cleaner may run only if OCR saw the original size.
+                            saved.add(PanelImage(source.url, local, source.top, downloaded.width, downloaded.height))
                         } catch (e: Exception) { failures.add(Uri.parse(source.url).host.orEmpty() + ": " + (e.message ?: "download failed")) }
                     }
                     main.post {
@@ -450,7 +454,7 @@ class JapaneseMangaEngineActivity : Activity() {
         nextImage()
     }
 
-    private fun downloadImage(src: String, referer: String, userAgent: String): String {
+    private fun downloadImage(src: String, referer: String, userAgent: String): DownloadedImage {
         val dir = File(manager.root, "input")
         if (!dir.exists() && !dir.mkdirs()) error("image folder unavailable")
         val id = UUID.randomUUID().toString()
@@ -500,7 +504,7 @@ class JapaneseMangaEngineActivity : Activity() {
                 raw.renameTo(original)
             }
             success = true
-            return "input/" + target.name
+            return DownloadedImage("input/" + target.name, bounds.outWidth, bounds.outHeight)
         } finally {
             raw.delete()
             if (!success) {
