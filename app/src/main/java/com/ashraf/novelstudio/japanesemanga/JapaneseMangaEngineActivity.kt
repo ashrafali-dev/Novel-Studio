@@ -390,7 +390,7 @@ class JapaneseMangaEngineActivity : Activity() {
             } finally {
                 main.post {
                     deleteLocal(panel.localUrl)
-                    if (!isFinishing && !isDestroyed && scanning) commitOcrResult(panel, w, h, regions)
+                    if (!isFinishing && !isDestroyed && scanning) commitOcrResult(panel, w, h, regions, bubbleRegions)
                 }
             }
         }
