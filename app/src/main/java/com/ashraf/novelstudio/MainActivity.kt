@@ -2082,6 +2082,9 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var modeChip: LinearLayout
     private lateinit var modeChipText: TextView
     private lateinit var modeChipDot: View
+    private lateinit var modeCapsule: ModeCapsule
+    private lateinit var modeOverlay: ModeSwitchOverlay
+    private var modeCapsuleSeeded = false
     private lateinit var dockBar: LinearLayout
     private lateinit var dockWrapView: FrameLayout
     private lateinit var chromeTopView: LinearLayout
@@ -3245,7 +3248,7 @@ return t.length>=40?'TXT:'+t:'';
         }
         contentHolderView = contentHolder
 
-        // ================= floating dock: [view mode] [prev] [EXTRACT] [next] [save]
+        // ================= floating dock: [mode capsule] [view] [prev] [EXTRACT] [next] [menu]
         modeBtn = dockBtn(Ic.SPLIT, "View mode") { cycleMode() }
         modeChipDot = View(this).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(UiTheme.ok) }
@@ -3258,15 +3261,19 @@ return t.length>=40?'TXT:'+t:'';
             setLineSpacing(0f, 0.95f)
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
+        modeCapsule = ModeCapsule(this).apply {
+            onSelect = { idx ->
+                setReadMode(when (idx) {
+                    0 -> ReadMode.NOVEL
+                    1 -> ReadMode.SCAN
+                    else -> ReadMode.REALTIME
+                })
+            }
+        }
         modeChip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), 0, dp(6), 0)
-            background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x14FFFFFF, 18, UiTheme.strokeSoft), 18)
+            gravity = Gravity.CENTER
             contentDescription = "Reading mode"
-            setOnClickListener { showModeSheet() }
-            addView(modeChipText, LinearLayout.LayoutParams(0, WC, 1f))
-            addView(modeChipDot, LinearLayout.LayoutParams(dp(7), dp(7)).also { it.marginStart = dp(6) })
+            addView(modeCapsule, LinearLayout.LayoutParams(MP, dp(38)))
         }
         refreshModeChip()
         extractBtn = ExtractButton(this).apply {
@@ -3288,6 +3295,7 @@ return t.length>=40?'TXT:'+t:'';
             setOnTouchListener { _, event -> tapDetector.onTouchEvent(event) }
             isClickable = true
             isLongClickable = true
+            translationY = -dp(10).toFloat()
         }
         val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3295,20 +3303,24 @@ return t.length>=40?'TXT:'+t:'';
             setPadding(dp(8), 0, dp(8), 0)
             background = floatingBarBg(34)
             elevation = dp(12).toFloat()
+            clipChildren = false
+            clipToPadding = false
             addView(modeChip, LinearLayout.LayoutParams(0, dp(42), 1.9f).also { it.setMargins(0, 0, dp(2), 0) })
             addView(modeBtn)
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
-            addView(extractBtn, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
+            addView(extractBtn, extractLp())
             addView(dockBtn(Ic.FORWARD, "Next chapter") { step("next") })
             addView(dockBtn(Ic.GRID, "Menu") { menu() })
         }
         val dockWrap = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
             setPadding(dp(14), dp(6), dp(14), dp(12))
             addView(dock, FrameLayout.LayoutParams(MP, dp(68)))
         }
         dockBar = dock
         dockWrapView = dockWrap
-        // The bars float over the page in Web Mode; their size can change (tab rail, shortcuts), so follow it.
+        // Keep floating page insets synced when the top/bottom bars resize.
         val barSizeWatcher = View.OnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
             if (b - t != ob - ot) handler.post { applyFloatingBars() }
         }
@@ -3335,6 +3347,7 @@ return t.length>=40?'TXT:'+t:'';
 
         val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
             addView(browserChrome, LinearLayout.LayoutParams(MP, WC))
             addView(contentHolder, LinearLayout.LayoutParams(MP, 0, 1f))
             addView(dockWrap, LinearLayout.LayoutParams(MP, WC))
@@ -3343,9 +3356,11 @@ return t.length>=40?'TXT:'+t:'';
             visibility = View.GONE
             elevation = dp(12).toFloat()
         }
+        modeOverlay = ModeSwitchOverlay(this)
         val root = FrameLayout(this).apply {
             background = appBackground()
             addView(main, FrameLayout.LayoutParams(MP, MP))
+            addView(modeOverlay, FrameLayout.LayoutParams(dp(230), dp(230), Gravity.CENTER))
             addView(floatBoltHost, FrameLayout.LayoutParams(dp(60), dp(60), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(20) })
             addView(snackView, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(106) })
         }
@@ -4326,14 +4341,32 @@ return t.length>=40?'TXT:'+t:'';
         else -> ReadMode.NOVEL
     }
 
+    /** Slot for the raised centre action; it is intentionally larger than the dock height. */
+    private fun extractLp() = LinearLayout.LayoutParams(dp(74), dp(74)).also {
+        it.setMargins(dp(-3), 0, dp(-3), 0)
+    }
+
     private fun refreshModeChip() {
         if (!::modeChipText.isInitialized) return
-        val t = when (currentReadMode()) {
+        val mode = currentReadMode()
+        val t = when (mode) {
             ReadMode.NOVEL -> "Novel"
             ReadMode.REALTIME -> "WebToon\nRealtime"
             ReadMode.SCAN -> "WebToon\nScanning"
         }
         if (modeChipText.text.toString() != t) modeChipText.text = t
+        val idx = when (mode) {
+            ReadMode.NOVEL -> 0
+            ReadMode.SCAN -> 1
+            ReadMode.REALTIME -> 2
+        }
+        if (::modeCapsule.isInitialized) {
+            val first = !modeCapsuleSeeded
+            val changed = modeCapsule.setSelectedIndex(idx, !first)
+            modeCapsuleSeeded = true
+            if (changed && !first && ::modeOverlay.isInitialized) modeOverlay.play(idx)
+        }
+        if (::extractBtn.isInitialized) extractBtn.modeIndex = idx
     }
 
     /** Same work the menu's "Web Mode" row did, so the menu and the mode sheet share it. */
