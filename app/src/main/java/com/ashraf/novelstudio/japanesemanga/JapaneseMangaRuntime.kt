@@ -120,7 +120,19 @@ internal object JapaneseMangaRuntime {
      * existing detector; coordinates and returned indices are retained, so this model cannot change
      * overlay positions or group neighbouring speech balloons.
      */
-    fun recognizeRegions(bitmap: Bitmap, regionsJson: String): Output = run(bitmap, regionsJson)
+    fun recognizeRegions(bitmap: Bitmap, regionsJson: String): Output {
+        return try {
+            run(bitmap, regionsJson)
+        } catch (e: Exception) {
+            // Avoid retrying a broken WASM session on every visible panel. The normal OCR path will
+            // keep using its original ML Kit text until the short cooldown expires.
+            fail("recognition-only request failed: " + (e.message ?: e.javaClass.simpleName))
+            throw e
+        } catch (e: OutOfMemoryError) {
+            fail("recognition-only request ran out of memory")
+            throw e
+        }
+    }
 
     private fun run(bitmap: Bitmap, regionsJson: String?): Output {
         val m = manager ?: throw IOException("manga runtime not initialised")
