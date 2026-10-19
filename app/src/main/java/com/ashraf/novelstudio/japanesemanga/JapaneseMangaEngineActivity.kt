@@ -291,7 +291,7 @@ class JapaneseMangaEngineActivity : Activity() {
         lastResultJson = ""
         scannedPanels = JSONArray()
         translateButton.isEnabled = false
-        val js = "(function(){return JSON.stringify({imgs:Array.from(document.images).map(function(i){var r=i.getBoundingClientRect();return {src:i.currentSrc||i.src||'',top:r.top+scrollY,w:r.width,h:r.height,nw:i.naturalWidth||0,nh:i.naturalHeight||0};}).filter(function(i){return /^https?:/i.test(i.src)&&i.nw>=160&&i.nh>=120&&i.w>=60&&i.h>=60;}).sort(function(a,b){return a.top-b.top;}).filter(function(v,i,a){return a.findIndex(function(x){return x.src===v.src;})===i;}).slice(0,60)})})()"
+        val js = "(function(){var imgs=Array.from(document.images).map(function(i){var r=i.getBoundingClientRect();var cand=[i.currentSrc,i.getAttribute('data-src'),i.getAttribute('data-lazy-src'),i.getAttribute('data-original'),i.getAttribute('data-original-src'),i.getAttribute('data-url'),i.src];var src='';for(var j=0;j<cand.length;j++){var s=(cand[j]||'').trim();if(/^https?:/i.test(s)&&!/placeholder|blank\\.|spacer|loading|1x1|transparent/i.test(s)){src=s;break;}}return {src:src,top:r.top+(window.scrollY||0),w:r.width,h:r.height,nw:i.naturalWidth||0,nh:i.naturalHeight||0};}).filter(function(i){return /^https?:/i.test(i.src)&&((i.nw>=160&&i.nh>=120)||(i.w>=60&&i.h>=60));}).sort(function(a,b){return a.top-b.top;}).filter(function(v,i,a){return a.findIndex(function(x){return x.src===v.src;})===i;}).slice(0,60);return JSON.stringify({imgs:imgs});})()"
         page.evaluateJavascript(js) { raw ->
             try {
                 val result = JSONObject(org.json.JSONTokener(raw).nextValue() as String)
