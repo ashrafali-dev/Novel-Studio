@@ -1850,6 +1850,13 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var urlBar: EditText
     private lateinit var tabCountBtn: TextView
     private lateinit var content: FrameLayout
+    private lateinit var readerHeader: LinearLayout
+    private lateinit var readerTitleView: TextView
+    private lateinit var readerSubtitleView: TextView
+    private lateinit var extractActionView: LinearLayout
+    private lateinit var extractActionLabel: TextView
+    private lateinit var chatScrim: View
+    private lateinit var chatSheetHandleRow: FrameLayout
     private lateinit var scanDot: View
     private var scanDotPhase = false
 
@@ -3001,7 +3008,7 @@ return t.length>=40?'TXT:'+t:'';
             background = ColorDrawable(Color.TRANSPARENT)
             setSelectAllOnFocus(true)
             ellipsize = android.text.TextUtils.TruncateAt.END
-            setOnEditorActionListener { _, _, _ -> go(this.text.toString()); true }
+            setOnEditorActionListener { _, _, _ -> go(this.text.toString()); hideAddressEditor(); true }
             onFocusChangeListener = View.OnFocusChangeListener { _, has ->
                 searchShortcutsVisible = has
                 shortcutScroll.visibility = if (has) View.VISIBLE else View.GONE
@@ -3030,10 +3037,7 @@ return t.length>=40?'TXT:'+t:'';
             addView(addrIcon)
             addView(urlBar, LinearLayout.LayoutParams(0, MP, 1f))
             addView(reloadBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
-            layoutParams = LinearLayout.LayoutParams(0, dp(38), 1f).also {
-                it.marginStart = dp(8)
-                it.marginEnd = dp(4)
-            }
+            layoutParams = LinearLayout.LayoutParams(MP, dp(40))
         }
 
         tabCountBtn = TextView(this).apply {
@@ -3048,18 +3052,50 @@ return t.length>=40?'TXT:'+t:'';
             setOnLongClickListener { newBrowserTab("https://www.google.com/"); true }
         }
 
-        val topBar = LinearLayout(this).apply {
+        readerTitleView = TextView(this).apply {
+            text = "Novel Studio"
+            textSize = 15f
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        readerSubtitleView = TextView(this).apply {
+            text = "উপন্যাস · পড়া শুরু করুন"
+            textSize = 11f
+            typeface = medium
+            setTextColor(UiTheme.dim)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val readerInfo = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(readerTitleView, LinearLayout.LayoutParams(MP, WC))
+            addView(readerSubtitleView, LinearLayout.LayoutParams(MP, WC).also { it.topMargin = dp(1) })
+            contentDescription = "Current book and chapter"
+        }
+        readerHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(9), 0, dp(6), 0)
-            background = floatingBarBg(26)
+            setPadding(dp(9), 0, dp(5), 0)
+            background = floatingBarBg(25)
             elevation = dp(8).toFloat()
-            addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
-            addView(addressBox)
+            addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(38)))
+            addView(readerInfo, LinearLayout.LayoutParams(0, MP, 1f).also {
+                it.marginStart = dp(8)
+                it.marginEnd = dp(4)
+            })
+            addView(iconButton(Ic.SEARCH, "Enter URL", 19, 36, UiTheme.iconIdle) {
+                showAddressEditor()
+            }, LinearLayout.LayoutParams(dp(36), dp(36)))
+            addView(iconButton(Ic.GRID, "More options", 19, 36, UiTheme.iconIdle) {
+                menu()
+            }, LinearLayout.LayoutParams(dp(36), dp(36)))
         }
         val topWrap = FrameLayout(this).apply {
             setPadding(dp(10), dp(8), dp(10), dp(4))
-            addView(topBar, FrameLayout.LayoutParams(MP, dp(52)))
+            addView(readerHeader, FrameLayout.LayoutParams(MP, dp(60)))
         }
 
         // tab rail (only visible with 2+ tabs) and quick-site shortcuts (only while typing an address)
@@ -3089,9 +3125,12 @@ return t.length>=40?'TXT:'+t:'';
         val browserChrome = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(topWrap, LinearLayout.LayoutParams(MP, WC))
+            addressBox.visibility = View.GONE
+            addView(addressBox, LinearLayout.LayoutParams(MP, dp(40)).also {
+                it.setMargins(dp(12), dp(2), dp(12), dp(4))
+            })
             addView(shortcutScroll, LinearLayout.LayoutParams(MP, WC))
         }
-
         chromeTopView = browserChrome
 
         // ================= panes (both always full-size and alive; the one on top is the one you see)
@@ -3108,11 +3147,44 @@ return t.length>=40?'TXT:'+t:'';
             addView(strip, ViewGroup.LayoutParams(WC, dp(46)))
         }
         val stripDivider = View(this).apply { setBackgroundColor(UiTheme.strokeSoft) }
+        var chatSheetTouchDownY = 0f
+        chatSheetHandleRow = FrameLayout(this).apply {
+            minimumHeight = dp(18)
+            addView(View(this@MainActivity).apply {
+                background = Glass.solid(this@MainActivity, 0x66FFFFFF, 3)
+            }, FrameLayout.LayoutParams(dp(42), dp(4), Gravity.CENTER))
+            setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        chatSheetTouchDownY = event.rawY
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val dy = event.rawY - chatSheetTouchDownY
+                        when {
+                            dy < -dp(35) -> setMode(Mode.CHAT)
+                            dy > dp(35) -> setMode(Mode.NOVEL)
+                            else -> setMode(Mode.CHAT)
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> true
+                    else -> true
+                }
+            }
+        }
         chatBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            addView(chatSheetHandleRow, LinearLayout.LayoutParams(MP, dp(18)))
             addView(stripScroll, LinearLayout.LayoutParams(MP, WC))
             addView(stripDivider, LinearLayout.LayoutParams(MP, dp(1)))
             addView(chatWv, LinearLayout.LayoutParams(MP, 0, 1f))
+        }
+        chatScrim = View(this).apply {
+            background = ColorDrawable(0x99000000.toInt())
+            visibility = View.GONE
+            setOnClickListener { setMode(Mode.NOVEL) }
+            contentDescription = "Close chatbot sheet"
         }
 
         // ================= translation status card (floats over the page)
@@ -3190,6 +3262,7 @@ return t.length>=40?'TXT:'+t:'';
             // and WebNovel use, so their chapter text never appeared.
             addView(prefetchWv, 0, FrameLayout.LayoutParams(MP, MP))
             addView(novelBox, FrameLayout.LayoutParams(MP, MP))
+            addView(chatScrim, FrameLayout.LayoutParams(MP, MP))
             addView(chatBox, FrameLayout.LayoutParams(MP, MP))
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
@@ -3245,8 +3318,10 @@ return t.length>=40?'TXT:'+t:'';
         }
         contentHolderView = contentHolder
 
-        // ================= floating dock: [view mode] [prev] [EXTRACT] [next] [save]
-        modeBtn = dockBtn(Ic.SPLIT, "View mode") { cycleMode() }
+        // ================= floating dock: [prev] [translate] [next] [chat] [more]
+        modeBtn = dockBtn(Ic.CHAT, "Open chatbot") {
+            if (mode == Mode.NOVEL) setMode(Mode.SPLIT) else setMode(Mode.NOVEL)
+        }
         modeChipDot = View(this).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(UiTheme.ok) }
         }
@@ -3268,6 +3343,8 @@ return t.length>=40?'TXT:'+t:'';
             addView(modeChipText, LinearLayout.LayoutParams(0, WC, 1f))
             addView(modeChipDot, LinearLayout.LayoutParams(dp(7), dp(7)).also { it.marginStart = dp(6) })
         }
+        // Reading-mode selection now lives in the overflow menu; avoid a technical chip on the page.
+        modeChip.visibility = View.GONE
         refreshModeChip()
         extractBtn = ExtractButton(this).apply {
             val tapDetector = GestureDetector(this@MainActivity,
@@ -3289,22 +3366,40 @@ return t.length>=40?'TXT:'+t:'';
             isClickable = true
             isLongClickable = true
         }
+        extractActionLabel = TextView(this).apply {
+            text = "অনুবাদ করুন"
+            textSize = 10.5f
+            typeface = boldMedium
+            gravity = Gravity.CENTER
+            setTextColor(0xFFF4F6FB.toInt())
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            contentDescription = "Translate current chapter"
+            setOnClickListener { extractCopy() }
+        }
+        extractActionView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            addView(extractBtn, LinearLayout.LayoutParams(dp(58), dp(58)))
+            addView(extractActionLabel, LinearLayout.LayoutParams(MP, dp(17)))
+        }
         val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), 0, dp(8), 0)
-            background = floatingBarBg(34)
+            setPadding(dp(6), 0, dp(6), 0)
+            background = floatingBarBg(30)
             elevation = dp(12).toFloat()
-            addView(modeChip, LinearLayout.LayoutParams(0, dp(42), 1.9f).also { it.setMargins(0, 0, dp(2), 0) })
-            addView(modeBtn)
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
-            addView(extractBtn, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
+            addView(extractActionView, LinearLayout.LayoutParams(0, dp(78), 1.55f).also {
+                it.setMargins(dp(1), 0, dp(1), 0)
+            })
             addView(dockBtn(Ic.FORWARD, "Next chapter") { step("next") })
+            addView(modeBtn)
             addView(dockBtn(Ic.GRID, "Menu") { menu() })
         }
         val dockWrap = FrameLayout(this).apply {
-            setPadding(dp(14), dp(6), dp(14), dp(12))
-            addView(dock, FrameLayout.LayoutParams(MP, dp(68)))
+            setPadding(dp(10), dp(2), dp(10), dp(7))
+            addView(dock, FrameLayout.LayoutParams(MP, dp(80)))
         }
         dockBar = dock
         dockWrapView = dockWrap
@@ -3355,7 +3450,7 @@ return t.length>=40?'TXT:'+t:'';
         buildStrip()
         buildSiteShortcuts()
         initBrowserTabs()
-        setMode(Mode.SPLIT)
+        setMode(Mode.NOVEL)
         refreshModeChip()
         refreshAutoBtn()
         applyDark()
@@ -3686,6 +3781,46 @@ return t.length>=40?'TXT:'+t:'';
             tab.thumbnail?.let { if (!it.isRecycled) it.recycle() }
             tab.thumbnail = bmp
         } catch (_: Exception) {}
+    }
+
+    private fun showAddressEditor() {
+        if (!::addressBox.isInitialized || !::readerHeader.isInitialized || !::urlBar.isInitialized) return
+        readerHeader.visibility = View.GONE
+        addressBox.visibility = View.VISIBLE
+        urlBar.setText(novelWv.url.orEmpty())
+        urlBar.setSelection(urlBar.text.length)
+        urlBar.requestFocus()
+        val keyboard = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+        keyboard?.showSoftInput(urlBar, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun hideAddressEditor() {
+        if (!::addressBox.isInitialized || !::readerHeader.isInitialized) return
+        addressBox.visibility = View.GONE
+        readerHeader.visibility = View.VISIBLE
+        if (::shortcutScroll.isInitialized) shortcutScroll.visibility = View.GONE
+        if (::urlBar.isInitialized) urlBar.clearFocus()
+    }
+
+    private fun updateReaderHeader() {
+        if (!::readerTitleView.isInitialized || !::readerSubtitleView.isInitialized ||
+            !::novelWv.isInitialized) return
+        val pageUrl = novelWv.url.orEmpty()
+        val host = try { Uri.parse(pageUrl).host.orEmpty().removePrefix("www.") } catch (_: Exception) { "" }
+        val pageTitle = novelWv.title.orEmpty().trim()
+        val chapterTitle = lastChapter?.title.orEmpty().trim()
+        val title = (chapterTitle.takeIf { it.isNotBlank() }
+            ?: pageTitle.takeIf { it.isNotBlank() }
+            ?: host.takeIf { it.isNotBlank() }
+            ?: "Novel Studio").take(100)
+        if (readerTitleView.text.toString() != title) readerTitleView.text = title
+        val chapterNumber = lastChapter?.number.orEmpty().trim()
+        val subtitle = buildList {
+            if (host.isNotBlank()) add(host)
+            if (chapterNumber.isNotBlank()) add("Chapter $chapterNumber")
+            if (isEmpty()) add("উপন্যাস · পড়া শুরু করুন")
+        }.joinToString(" · ")
+        if (readerSubtitleView.text.toString() != subtitle) readerSubtitleView.text = subtitle
     }
 
     private fun switchBrowserTab(index: Int) {
@@ -4194,14 +4329,17 @@ return t.length>=40?'TXT:'+t:'';
         val keepFrame = mode != m && beginModeTransition()
         mode = m
         modeBtn.setImageDrawable(IconDrawable(when (m) {
-            Mode.NOVEL -> Ic.BOOK
-            Mode.CHAT -> Ic.CHAT
-            Mode.SPLIT -> Ic.SPLIT
+            Mode.NOVEL -> Ic.CHAT
+            Mode.CHAT -> Ic.BOOK
+            Mode.SPLIT -> Ic.CHAT
         }, UiTheme.iconIdle))
         modeBtn.contentDescription = when (m) {
-            Mode.NOVEL -> "Novel only"
-            Mode.CHAT -> "Chatbot only"
-            Mode.SPLIT -> "Split view"
+            Mode.NOVEL -> "Open chatbot"
+            Mode.CHAT -> "Return to novel"
+            Mode.SPLIT -> "Close chatbot sheet"
+        }
+        if (::chatSheetHandleRow.isInitialized) {
+            chatSheetHandleRow.visibility = if (m == Mode.SPLIT) View.VISIBLE else View.GONE
         }
         activeWv = if (m == Mode.CHAT) chatWv else novelWv
         if (barsHidden && m != Mode.NOVEL) setBarsHidden(false)
@@ -4227,18 +4365,16 @@ return t.length>=40?'TXT:'+t:'';
 
         when (mode) {
             Mode.NOVEL -> {
-                // Full novel WebView.
+                chatScrim.visibility = View.GONE
+                chatBox.background = null
+                chatBox.clipToOutline = false
                 novelBox.translationY = 0f
                 chatBox.translationY = 0f
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
                 novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-                // Never collapse the chatbot to 0 height: DeepSeek (and other sites that size their
-                // page by 100vh) then report a 0-size composer, the app cannot find the input box
-                // and only copies the text to the clipboard. Keep it full-size UNDER the novel pane.
+                // Keep the chatbot WebView alive at a real viewport size to preserve its session.
                 chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
-                // Elevation beats bringToFront(): SPLIT leaves chatBox raised, which would draw the
-                // (hidden, full-size) chatbot over the novel page. Raise the novel pane explicitly.
                 chatBox.elevation = 0f
                 novelBox.elevation = dp(2).toFloat()
                 chatBox.bringToFront()
@@ -4246,12 +4382,14 @@ return t.length>=40?'TXT:'+t:'';
             }
 
             Mode.CHAT -> {
-                // Full chatbot WebView.
+                chatScrim.visibility = View.GONE
+                chatBox.background = null
+                chatBox.clipToOutline = false
                 novelBox.translationY = 0f
                 chatBox.translationY = 0f
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
-                novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)   // keep its viewport alive (images lazy-load)
+                novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
                 chatBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
                 novelBox.elevation = 0f
                 chatBox.elevation = dp(2).toFloat()
@@ -4259,39 +4397,27 @@ return t.length>=40?'TXT:'+t:'';
                 chatBox.bringToFront()
             }
 
+            // The former Split slot is now a pull-up chatbot sheet over the live reader.
             Mode.SPLIT -> {
-                val half = h / 2
-
-                // Each pane gets its own real half-height viewport. This is
-                // important: clipping a full-height WebView only shows a slice
-                // of its page. Giving chatBox a real half-height layout lets
-                // chatWv fill the entire lower pane normally.
                 novelBox.translationY = 0f
                 chatBox.translationY = 0f
                 novelBox.clipBounds = null
                 chatBox.clipBounds = null
-
-                novelBox.layoutParams = FrameLayout.LayoutParams(
-                    MP, half
-                )
-
+                novelBox.layoutParams = FrameLayout.LayoutParams(MP, MP)
                 chatBox.layoutParams = FrameLayout.LayoutParams(
-                    MP, half
-                ).apply {
-                    topMargin = half
-                }
-
-                // Ensure the lower chatbot pane wins hit-testing as well as drawing.
-                // WebViews can retain stale sibling Z ordering after their bounds change.
-                novelBox.elevation = 0f
-                chatBox.elevation = dp(2).toFloat()
-                content.bringChildToFront(novelBox)
+                    MP, (h * 0.61f).toInt().coerceAtLeast(dp(260)), Gravity.BOTTOM
+                )
+                chatBox.background = Sheets.sheetBackground(this, 26)
+                chatBox.clipToOutline = true
+                novelBox.elevation = dp(1).toFloat()
+                chatScrim.visibility = View.VISIBLE
+                chatScrim.elevation = dp(4).toFloat()
+                chatBox.elevation = dp(5).toFloat()
+                content.bringChildToFront(chatScrim)
                 content.bringChildToFront(chatBox)
-                chatWv.bringToFront()
             }
         }
 
-        // Keep overlays above both panes, without covering the chatbot's touch area.
         progressBox.bringToFront()
         togglePill.bringToFront()
     }
@@ -4444,7 +4570,7 @@ return t.length>=40?'TXT:'+t:'';
             background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x0FFFFFFF, 14, UiTheme.strokeSoft), 14)
         }
         fun viewLabel() = "View: " + when (mode) {
-            Mode.SPLIT -> "Split view"
+            Mode.SPLIT -> "Chat sheet"
             Mode.NOVEL -> "Novel only"
             Mode.CHAT -> "Chatbot only"
         } + "  (tap to change)"
@@ -4563,6 +4689,7 @@ return t.length>=40?'TXT:'+t:'';
                     dockWrapView.setLayerType(View.LAYER_TYPE_NONE, null)
                     // The bolt stays reachable: it floats over the page while the bars are away.
                     (extractBtn.parent as? ViewGroup)?.removeView(extractBtn)
+                    (extractActionView.parent as? ViewGroup)?.removeView(extractActionView)
                     floatBoltHost.addView(extractBtn, FrameLayout.LayoutParams(dp(60), dp(60)))
                     floatBoltHost.alpha = 0f
                     floatBoltHost.visibility = View.VISIBLE
@@ -4579,7 +4706,12 @@ return t.length>=40?'TXT:'+t:'';
             floatBoltHost.animate().cancel()
             if (extractBtn.parent === floatBoltHost) {
                 floatBoltHost.removeView(extractBtn)
-                dockBar.addView(extractBtn, 3, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
+                extractActionView.addView(extractBtn, 0, LinearLayout.LayoutParams(dp(58), dp(58)))
+                dockBar.addView(
+                    extractActionView,
+                    minOf(1, dockBar.childCount),
+                    LinearLayout.LayoutParams(0, dp(78), 1.55f).also { it.setMargins(dp(1), 0, dp(1), 0) }
+                )
             }
             floatBoltHost.visibility = View.GONE
             chromeTopView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -4965,6 +5097,7 @@ return t.length>=40?'TXT:'+t:'';
                 // Save immediately so the URL survives an app/process restart.
                 persistBrowserTabs()
                 if (!urlBar.hasFocus()) urlBar.setText(url)
+                updateReaderHeader()
             }
         }
 
@@ -4996,6 +5129,7 @@ return t.length>=40?'TXT:'+t:'';
                 }, 2500)
             }
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
+            if (view === novelWv) updateReaderHeader()
             if (url != null) {
                 Prefs.put(this@MainActivity, "lastNovelUrl", url)
                 if (view === novelWv && !restoringTab) {
@@ -7965,66 +8099,55 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun updatePill() {
-        togglePill.visibility = if (hasTr && mode != Mode.CHAT) View.VISIBLE else View.GONE
-        togglePill.text = if (shownTranslated) "View original" else "View translation"
+        togglePill.visibility = if (hasTr && mode == Mode.NOVEL) View.VISIBLE else View.GONE
+        togglePill.text = if (shownTranslated) "মূল লেখা দেখুন" else "অনুবাদ দেখুন"
     }
 
     // ---- translation status card + the ring around the extract button
     private fun updateProgressUi() {
-        // Real-time DeepSeek mode should not keep popping the large progress card over panels.
-        // OCR/translation continues normally; the small scan status dot remains the indicator.
+        if (!::extractActionLabel.isInitialized || !::extractBtn.isInitialized) return
+        updateReaderHeader()
+        // Keep progress in the primary action instead of a separate card over chapter text.
+        progressBar.running = false
         if (DeepSeekRealtimeTranslation.isEnabled(this)) {
-            progressBar.running = false
             extractBtn.ringProgress = -1
-            if (progressShown || progressBox.visibility == View.VISIBLE) {
-                progressShown = false
-                progressBox.animate().cancel()
-                progressBox.alpha = 0f
-                progressBox.translationY = -dp(10).toFloat()
-                progressBox.visibility = View.GONE
-            }
+            extractActionLabel.text = "লাইভ অনুবাদ"
+            setProgressVisible(false)
             return
         }
         if (webModePct >= 0) {
-            // Web Mode OCR pass for the visible chapter: same bar, same ring, never 100 until the chatbot is done.
             progressTv.text = webModeStage
             progressPct.text = if (webModePct > 0) "$webModePct%" else ""
             progressBar.progress = webModePct
-            progressBar.running = true
             extractBtn.ringProgress = if (webModePct > 0) webModePct else 0
-            setProgressVisible(true)
-            progressBox.bringToFront()
+            extractActionLabel.text = if (webModePct > 0) "স্ক্যান ${webModePct}%" else "স্ক্যান হচ্ছে"
+            setProgressVisible(false)
             return
         }
         val run = running
         if (run == null && queue.isEmpty()) {
-            // keep the finish animation (worm → butterfly) alive until it has played out
-            if (progressBar.progress == 100) progressTv.text = "Translated"
-            progressBar.running = false
-            setProgressVisible(false)
             extractBtn.ringProgress = -1
+            extractActionLabel.text = if (progressBar.progress == 100) "অনুবাদ সম্পন্ন" else "অনুবাদ করুন"
+            setProgressVisible(false)
             return
         }
         val shown = lastChapter
-        val title: String
         var pct = 0
-        if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
-            title = "Translating" + (if (run.number.isNotBlank()) " · Chapter ${run.number}" else "")
+        val status = if (run != null && shown != null && keyOf(run) == keyOf(shown)) {
             pct = progress
+            "অনুবাদ হচ্ছে"
         } else if (shown != null && queue.any { keyOf(it) == keyOf(shown) }) {
-            val ahead = (if (run != null) 1 else 0) + queue.indexOfFirst { keyOf(it) == keyOf(shown) }
-            title = "Queued · $ahead ahead"
+            "সারিতে আছে"
         } else {
-            title = "Translating in the background"
             pct = progress
+            "অনুবাদ চলছে"
         }
-        progressTv.text = title
+        progressTv.text = status
         progressPct.text = if (pct > 0) "$pct%" else ""
         progressBar.progress = pct
-        progressBar.running = run != null
         extractBtn.ringProgress = if (pct > 0) pct else 0
-        setProgressVisible(true)
-        progressBox.bringToFront()
+        extractActionLabel.text = if (pct > 0) "$status $pct%" else status
+        setProgressVisible(false)
     }
 
     private fun setProgressVisible(v: Boolean) {
@@ -8222,7 +8345,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
             "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
-            menuOcrLangLabel()
+            menuOcrLangLabel(),
+            "📖 Reading mode & OCR"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8231,13 +8355,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.BOOK
         )
         val sections = listOf(
-            "LIBRARY" to listOf(0, 1, 3, 4),
-            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
-            "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45, 46, 47, 48, 49, 50)
+            "LIBRARY" to listOf(3),
+            "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 32, 33, 34, 36, 39, 40, 41, 46, 47, 48, 51),
+            "READER" to listOf(9, 20, 23, 37, 38, 50),
+            "BROWSER" to listOf(15, 16, 21, 24, 43, 49),
+            "ADVANCED" to listOf(22, 27, 28, 29, 35, 42, 44, 45)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -8247,6 +8372,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             when (i) {
                 0 -> { dlg.dismiss(); libraryNovels() }
                 1 -> { dlg.dismiss(); browserHistoryDialog() }
+                51 -> { dlg.dismiss(); showModeSheet() }
                 3 -> { dlg.dismiss(); saveBookmark() }
                 4 -> { dlg.dismiss(); bookmarkList() }
                 5 -> { dlg.dismiss(); editPrompt() }
@@ -8476,32 +8602,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         fun addTile(t: Pair<LinearLayout, (Boolean) -> Unit>) {
             tiles.addView(t.first, LinearLayout.LayoutParams(0, dp(76), 1f).also { it.setMargins(dp(4), 0, dp(4), 0) })
         }
-        addTile(tile(Ic.HOME, "Home", false) {
-            dlg.dismiss()
-            val home = "https://www.google.com/"
-            urlBar.setText(home)
-            go(home)
-        })
-        addTile(tile(Ic.SHARE, "Share", false) {
-            dlg.dismiss()
-            val currentUrl = novelWv.url ?: browserTabs.getOrNull(activeTabIndex)?.url.orEmpty()
-            if (currentUrl.isNotBlank()) {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, currentUrl)
-                }
-                startActivity(Intent.createChooser(send, "Share page"))
-            } else toast("No page to share")
-        })
-        addTile(tile(Ic.PLUS, "New tab", false) { dlg.dismiss(); newBrowserTab("https://www.google.com/") })
-        addTile(tile(Ic.SPARK, "Prompt", false) { dlg.dismiss(); deliver(Prefs.prompt(this), "Prompt") })
-        lateinit var styleAuto: (Boolean) -> Unit
-        val autoTile = tile(Ic.BOLT, "Auto", Prefs.auto(this)) {
-            toggleAuto()
-            styleAuto(Prefs.auto(this))
-        }
-        styleAuto = autoTile.second
-        addTile(autoTile)
+        addTile(tile(Ic.BOOK, "Library", false) { dlg.dismiss(); libraryNovels() })
+        addTile(tile(Ic.BOOKMARK, "Bookmarks", false) { dlg.dismiss(); bookmarkList() })
+        addTile(tile(Ic.CLOCK, "History", false) { dlg.dismiss(); browserHistoryDialog() })
+        addTile(tile(Ic.TEXT, "Glossary", false) { dlg.dismiss(); glossaryDialog() })
 
         // ---- grouped rows
         val col = LinearLayout(this).apply {
@@ -8513,8 +8617,18 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         for ((name, idx) in sections) {
             val shown = idx.filter { it !in hidden }
             if (shown.isEmpty()) continue
-            col.addView(sectionLabel(name))
+            val heading = sectionLabel(name)
             val group = sheetGroup()
+            var expanded = name != "ADVANCED"
+            group.visibility = if (expanded) View.VISIBLE else View.GONE
+            heading.text = "$name  " + if (expanded) "▾" else "▸"
+            heading.isClickable = true
+            heading.setOnClickListener {
+                expanded = !expanded
+                group.visibility = if (expanded) View.VISIBLE else View.GONE
+                heading.text = "$name  " + if (expanded) "▾" else "▸"
+            }
+            col.addView(heading)
             shown.forEachIndexed { n, i ->
                 val row = sheetRow(icons[i], labels[i], n == shown.lastIndex) { onItem(i) }
                 rows[i] = row
