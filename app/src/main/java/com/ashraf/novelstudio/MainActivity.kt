@@ -563,23 +563,23 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
-    // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
-    // the first usable panel arrives. Panels completed during that window are batched together.
+    // Read-ahead requests are grouped by completed image/panel count, not bubble count.
+    // Big (the default) sends after 10 panels; Max waits for up to 15 to reduce requests.
+    private val REALTIME_AHEAD_MIN_PANELS: Int get() = intArrayOf(4, 6, 10, 15)[rtBatchLevel()]
+    // Flush on the target image-panel count. The idle watchdog is only a fallback for a stalled
+    // OCR pass; successful panels refresh it instead of splitting an active batch prematurely.
     private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr) return
-        val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
+        val n = (Prefs.get(this, "rtAheadOcr", "15").toIntOrNull() ?: 15).coerceIn(0, 15)
         deepSeekAheadAtMs = System.currentTimeMillis()
         if (n == 0) return
         val token = navToken
         val seq = ++aheadOcrSeq
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
         var collectedFlushRunnable: Runnable? = null
-        fun collectedBubbleCount(): Int = collectedPanels.values.sumOf { panel ->
-            panel.bubbles.count { it.sourceText.isNotBlank() }
-        }
+        fun collectedPanelCount(): Int = collectedPanels.size
         fun cancelCollectedFlush() {
             collectedFlushRunnable?.let { handler.removeCallbacks(it) }
             collectedFlushRunnable = null
@@ -588,11 +588,16 @@ class MainActivity : Activity() {
             cancelCollectedFlush()
             if (collectedPanels.isEmpty()) return
             val ready = collectedPanels.values.sortedBy { it.top }
+            val bubbleCount = ready.sumOf { panel -> panel.bubbles.count { it.sourceText.isNotBlank() } }
             collectedPanels.clear()
+            Log.i("NovelStudioOCR", "Read-ahead batch ready: panels=${ready.size}, bubbles=$bubbleCount")
             queueRealtimeAheadTranslations(novelWv.url.orEmpty(), ready)
         }
         fun scheduleCollectedFlush() {
-            if (collectedPanels.isEmpty() || collectedFlushRunnable != null) return
+            if (collectedPanels.isEmpty()) return
+            // This is an idle watchdog, not a deadline from the first panel. Refresh it after
+            // each successful OCR result so an active 10–15-panel batch is not split early.
+            collectedFlushRunnable?.let { handler.removeCallbacks(it) }
             val flush = Runnable {
                 collectedFlushRunnable = null
                 if (seq == aheadOcrSeq && token == navToken) flushCollected()
@@ -620,11 +625,12 @@ class MainActivity : Activity() {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
                     }
-                    // Full batches go immediately; a smaller batch gets only one 300 ms chance
-                    // for more OCR results to join. Do not reset the timer on every slow panel.
-                    val bubblesReady = collectedBubbleCount()
-                    if (bubblesReady >= REALTIME_AHEAD_MIN_BUBBLES) flushCollected()
-                    else if (bubblesReady > 0) scheduleCollectedFlush()
+                    // One callback represents one completed image/panel. Dispatch after the configured
+                    // panel target (10 by default), while OCR continues through the remaining images.
+                    // The idle watchdog only flushes early if OCR stops making progress.
+                    val panelsReady = collectedPanelCount()
+                    if (panelsReady >= REALTIME_AHEAD_MIN_PANELS) flushCollected()
+                    else if (panelsReady > 0) scheduleCollectedFlush()
                 }
             },
             onAheadDone = {
@@ -633,8 +639,8 @@ class MainActivity : Activity() {
                     aheadOcrStage = ""
                     aheadOcrPct = -1
                     if (token == navToken) {
-                        // Send any remaining lines; if there are fewer than 10, the short hold below
-                        // gives immediately arriving OCR a chance to join, then sends the current batch.
+                        // End of this OCR window is a hard flush boundary. Send any remainder even
+                        // when fewer than the panel target were returned because images may be empty or fail.
                         flushCollected()
                     }
                     collectedPanels.clear()

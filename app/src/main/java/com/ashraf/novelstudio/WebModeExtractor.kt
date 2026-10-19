@@ -268,7 +268,7 @@ internal class WebModeExtractor(
         fun beginAhead() {
             try {
                 ensureBridge(wv)
-                val aheadN = req.ahead.coerceIn(1, 12)
+                val aheadN = req.ahead.coerceIn(1, 15)
                 // Look at up to 3x the batch size below the screen; the first aheadN panels that are still
                 // undone are read. As panels finish, the window moves on by itself (it used to stop after
                 // the first N, until the reader scrolled).
