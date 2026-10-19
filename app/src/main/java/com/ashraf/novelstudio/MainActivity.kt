@@ -3873,7 +3873,7 @@ return t.length>=40?'TXT:'+t:'';
         val chapterNumber = chapter?.number.orEmpty().trim()
         val subtitle = buildList {
             if (host.isNotBlank()) add(host)
-            if (chapterNumber.isNotBlank()) add("Chapter $chapterNumber")
+            if (chapterNumber.isNotBlank()) add("অধ্যায় $chapterNumber")
             if (isEmpty()) add("উপন্যাস · পড়া শুরু করুন")
         }.joinToString(" · ")
         if (readerSubtitleView.text.toString() != subtitle) readerSubtitleView.text = subtitle
