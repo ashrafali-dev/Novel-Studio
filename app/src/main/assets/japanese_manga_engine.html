@@ -329,7 +329,7 @@
       const vertical=group.filter(r=>r._vertical).length>group.length*0.45;
       group.sort(vertical ? (a,b)=>(b.x-a.x)||(a.y-b.y) : (a,b)=>(a.y-b.y)||(a.x-b.x));
       const jp=group.some(r=>/[\u3040-\u30ff\u31f0-\u31ff\u3400-\u9fff\uff66-\uff9d]/.test(r.text));
-      const text=group.map(r=>String(r.text||'').replace(/\s+/g,jp?'':' ').trim()).filter(Boolean).join(jp?'':' ').trim();
+      const text=group.map(r=>String(r.text||'').replace(/\s+/g,' ').trim()).filter(Boolean).join(jp?'':' ').trim();
       if(!text)continue;
       const l=Math.min(...group.map(r=>r.x)),t=Math.min(...group.map(r=>r.y));
       const rr=Math.max(...group.map(r=>r.x+r.w)),bb=Math.max(...group.map(r=>r.y+r.h));
