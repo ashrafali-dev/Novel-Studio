@@ -134,7 +134,14 @@ internal object OcrPost {
         val core = t.count { !it.isWhitespace() && it !in NEUTRAL_PUNCT }
         if (core >= 3 && letters * 100 < core * 45) return true
         if (b.h < 9f || b.w < 9f) return true
-        if (b.h > b.w * 6f && t.length <= 4) return true    // vertical smear of a few "letters"
+        // Short, narrow columns are common in vertical Japanese manga. Don't discard them
+        // merely for their aspect ratio; keep the old noise filter for non-CJK vertical smears.
+        val hasJapaneseGlyph = t.any {
+            it in '\u3040'..'\u30FF' || it in '\u31F0'..'\u31FF' ||
+                it in '\u3400'..'\u4DBF' || it in '\u4E00'..'\u9FFF' ||
+                it in '\uF900'..'\uFAFF' || it in '\uFF66'..'\uFF9D'
+        }
+        if (!hasJapaneseGlyph && b.h > b.w * 6f && t.length <= 4) return true
         return false
     }
 
