@@ -58,6 +58,17 @@ internal class RoutingOcrEngine(
     private fun wantsManga(script: OcrScript) =
         script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()
 
+    private fun hasJapaneseEvidence(text: String): Boolean {
+        if (text.isBlank()) return false
+        val kana = text.count { it in '\u3040'..'\u309F' || it in '\u30A0'..'\u30FF' || it in '\uFF66'..'\uFF9D' }
+        if (kana > 0) return true
+        // Some short manga balloons contain only kanji. Accept a mostly-CJK Japanese-recognizer
+        // result as a hint too; model errors still fall back to the Japanese ML Kit output.
+        val han = text.count { it in '\u3400'..'\u4DBF' || it in '\u4E00'..'\u9FFF' || it in '\uF900'..'\uFAFF' }
+        val letters = text.count { it.isLetter() }
+        return han >= 2 && letters > 0 && han * 100 >= letters * 55
+    }
+
     private fun viaManga(bitmap: Bitmap, script: OcrScript): OcrResult? {
         if (!wantsManga(script)) return null
         return try {
@@ -70,17 +81,42 @@ internal class RoutingOcrEngine(
         }
     }
 
+    /**
+     * On auto-detected/unknown readers, ML Kit's Japanese recognizer is a quick script probe.
+     * Only a real Japanese/CJK signal activates the dedicated model; ordinary English/Korean
+     * webtoons keep their normal OCR path. This works even when the site URL has no manga hint.
+     */
+    private fun autoDetectedManga(bitmap: Bitmap, script: OcrScript): OcrResult? {
+        if (script != OcrScript.LATIN || !JapaneseMangaRuntime.isAvailable()) return null
+        return try {
+            val probe = general.recognizeFast(bitmap, OcrScript.JAPANESE)
+            if (!hasJapaneseEvidence(probe.text)) null
+            else viaManga(bitmap, OcrScript.JAPANESE) ?: probe
+        } catch (e: Exception) {
+            Log.d("NovelStudioManga", "Japanese auto-detection skipped: " + e.message)
+            null
+        } catch (_: OutOfMemoryError) {
+            null
+        }
+    }
+
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognize(bitmap, script)
+        viaManga(bitmap, script)
+            ?: autoDetectedManga(bitmap, script)
+            ?: general.recognize(bitmap, script)
 
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognizeFast(bitmap, script)
+        viaManga(bitmap, script)
+            ?: autoDetectedManga(bitmap, script)
+            ?: general.recognizeFast(bitmap, script)
 
     override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
         general.recognizeFallback(bitmap, script)
 
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognizeRegion(bitmap, script)
+        viaManga(bitmap, script)
+            ?: autoDetectedManga(bitmap, script)
+            ?: general.recognizeRegion(bitmap, script)
 
     override fun close() {
         general.close()
