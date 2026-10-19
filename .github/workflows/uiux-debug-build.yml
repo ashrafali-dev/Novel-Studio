@@ -28,6 +28,13 @@ jobs:
           gradle-version: '8.7'
 
       - name: Compile debug APK
+        # app/build.gradle validates release signing variables even for assembleDebug.
+        # These placeholders satisfy configuration only; the debug variant never signs with them.
+        env:
+          KEYSTORE_FILE: /tmp/not-used-for-debug.jks
+          KEYSTORE_PASSWORD: debug-only-placeholder
+          KEY_ALIAS: debug-only-placeholder
+          KEY_PASSWORD: debug-only-placeholder
         run: gradle assembleDebug --no-daemon
 
       - name: Upload debug APK
