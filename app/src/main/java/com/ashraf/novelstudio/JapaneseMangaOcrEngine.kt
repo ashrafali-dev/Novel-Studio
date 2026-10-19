@@ -13,7 +13,9 @@ import org.json.JSONObject
 internal class JapaneseMangaOcrEngine : OcrEngine {
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
         val out = JapaneseMangaRuntime.recognize(bitmap)
-        val regions = JSONObject(out.json).optJSONArray("regions") ?: return OcrResult(emptyList())
+        val root = JSONObject(out.json)
+        val grouped = root.optJSONArray("bubbles")?.takeIf { it.length() > 0 }
+        val regions = grouped ?: root.optJSONArray("regions") ?: return OcrResult(emptyList())
         val k = if (out.scale > 0f) 1f / out.scale else 1f
         val blocks = ArrayList<OcrBlock>()
         for (i in 0 until regions.length()) {
@@ -32,7 +34,8 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
                 cx = x + w / 2f, cy = y + h / 2f,
                 w = w, h = h, angle = 0f,
                 fontPx = if (font > 0f) font else minOf(w, h),
-                vertical = r.optBoolean("vertical", false)
+                // A grouped speech balloon is a horizontal translation surface even when its source text was vertical.
+                vertical = grouped == null && r.optBoolean("vertical", false)
             )
             if (!OcrPost.isNoise(block)) blocks.add(block)
         }
