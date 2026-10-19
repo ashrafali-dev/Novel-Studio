@@ -43,6 +43,13 @@ jobs:
           node --check /tmp/novelstudio-manga-engine.js
 
       - name: Run unit tests and assemble debug APK
+        # app/build.gradle validates release signing during configuration even for debug-only tasks.
+        # These placeholders satisfy that configuration guard; assembleDebug uses Android's debug key.
+        env:
+          KEYSTORE_FILE: /tmp/unused-release-keystore.jks
+          KEYSTORE_PASSWORD: debug-build-only
+          KEY_ALIAS: debug-build-only
+          KEY_PASSWORD: debug-build-only
         run: gradle testDebugUnitTest assembleDebug --no-daemon --stacktrace
 
       - name: Upload test APK
