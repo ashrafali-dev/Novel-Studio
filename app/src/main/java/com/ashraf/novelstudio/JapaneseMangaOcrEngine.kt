@@ -37,7 +37,9 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
                 // A grouped speech balloon is a horizontal translation surface even when its source text was vertical.
                 vertical = grouped == null && r.optBoolean("vertical", false)
             )
-            if (!OcrPost.isNoise(block)) blocks.add(block)
+            val shortJapaneseColumn = grouped != null && block.h > block.w * 6f && text.length <= 4 &&
+                text.any { ch -> ch in '\u3040'..'\u30FF' || ch in '\u3400'..'\u9FFF' || ch in '\uFF66'..'\uFF9D' }
+            if (!OcrPost.isNoise(block) || shortJapaneseColumn) blocks.add(block)
         }
         return OcrResult(blocks)
     }
