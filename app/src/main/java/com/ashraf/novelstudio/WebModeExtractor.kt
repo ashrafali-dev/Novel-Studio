@@ -2185,8 +2185,10 @@ if(typeof IntersectionObserver==='function'&&typeof MutationObserver==='function
     var seenImages={};
     state.candidates.forEach(function(im){
       if(!im||!im.isConnected){state.candidates.delete(im);return;}
-      var p=panelFromImage(im,seenImages);
-      if(p&&belowViewport(p))candidates.push(p);
+      // Deduplicate only after the viewport test; an earlier duplicate above the viewport
+      // must not suppress the same image URL if it is also used by an upcoming panel.
+      var p=panelFromImage(im,{});
+      if(p&&belowViewport(p)&&!seenImages[p.s]){seenImages[p.s]=1;candidates.push(p);}
     });
   }
 }else{
