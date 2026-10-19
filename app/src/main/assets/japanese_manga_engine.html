@@ -342,7 +342,7 @@
       const fg=group[Math.floor(group.length/2)].fg||0xFF171717;
       out.push({order:0,text,x,y,w:Math.max(1,right-x),h:Math.max(1,bottom-y),
         vertical:vertical,score:group.reduce((s,r)=>s+(Number(r.score)||0),0)/group.length,
-        font:font,bg:bg,fg:fg,soft:group.some(r=>!!r.soft),regionCount:group.length,
+        font:font,bg:bg,fg:fg,soft:group.filter(r=>!!r.soft).length>group.length*0.5,regionCount:group.length,
         members:group.map(r=>r.order||r._i+1)});
     }
     out.sort((a,b)=>a.y-b.y||b.x-a.x);
