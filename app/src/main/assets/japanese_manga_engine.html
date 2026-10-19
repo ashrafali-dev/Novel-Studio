@@ -117,21 +117,26 @@
     const br=medianChannel(0), bgc=medianChannel(1), bb=medianChannel(2);
     const luma=0.2126*br+0.7152*bgc+0.0722*bb;
     const chroma=Math.max(br,bgc,bb)-Math.min(br,bgc,bb);
-    const dark=[];
-    const strideX=Math.max(1,Math.floor((right-left)/18));
-    const strideY=Math.max(1,Math.floor((bottom-top)/18));
+    // Foreground ink may be black on white OR white on black. Select pixels that
+    // contrast with the sampled background instead of assuming all lettering is dark.
+    const ink=[];
+    const strideX=Math.max(1,Math.floor((right-left)/24));
+    const strideY=Math.max(1,Math.floor((bottom-top)/24));
     for(let y=top;y<=bottom;y+=strideY)for(let x=left;x<=right;x+=strideX){
       const at=(y*cw+x)*4,r=pixels[at],g=pixels[at+1],b=pixels[at+2];
-      const lum=0.2126*r+0.7152*g+0.0722*b;
-      if(lum<Math.max(80,luma*0.58))dark.push([r,g,b]);
+      const contrast=(Math.abs(r-br)+Math.abs(g-bgc)+Math.abs(b-bb))/3;
+      if(contrast>=Math.max(52,chroma*0.55))ink.push([r,g,b]);
     }
     let fr=20,fg=20,fb=20;
-    if(dark.length){
-      fr=dark.reduce((a,p)=>a+p[0],0)/dark.length;
-      fg=dark.reduce((a,p)=>a+p[1],0)/dark.length;
-      fb=dark.reduce((a,p)=>a+p[2],0)/dark.length;
+    if(ink.length){
+      fr=ink.reduce((a,p)=>a+p[0],0)/ink.length;
+      fg=ink.reduce((a,p)=>a+p[1],0)/ink.length;
+      fb=ink.reduce((a,p)=>a+p[2],0)/ink.length;
     }
-    return {bg:toArgb(br,bgc,bb),fg:toArgb(fr,fg,fb),soft:(luma<150||chroma>38)};
+    const spread=border.length ? border.reduce((sum,p)=>sum+(Math.abs(p[0]-br)+Math.abs(p[1]-bgc)+Math.abs(p[2]-bb))/3,0)/border.length : 255;
+    // "soft" now means an uncertain/variegated background, not simply a dark or coloured bubble.
+    // This lets the pixel cleaner safely process flat dark speech balloons with white lettering.
+    return {bg:toArgb(br,bgc,bb),fg:toArgb(fr,fg,fb),soft:(spread>38||ink.length===0)};
   }
 
   function detectComponents(map, mh, mw, input) {
