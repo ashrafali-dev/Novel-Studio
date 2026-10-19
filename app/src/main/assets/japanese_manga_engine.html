@@ -231,6 +231,120 @@
     return text.trim();
   }
 
+
+  // Convert detector text-line boxes into complete manga speech-bubble units.
+  // PP-OCR detects lettering; bubble grouping is a separate page-layout task.
+  function groupIntoBubbles(image, regions) {
+    if (!regions || !regions.length) return [];
+    const items = regions.filter(r => r && r.text && r.w >= 4 && r.h >= 4).map((r, i) => ({
+      ...r, _i:i,
+      _font:Math.max(5,Math.min(r.w,r.h)),
+      _vertical:!!r.vertical || r.h > r.w * 1.18
+    }));
+    const n=items.length, parent=Array.from({length:n},(_,i)=>i), size=Array(n).fill(1);
+    function root(x){while(parent[x]!==x){parent[x]=parent[parent[x]];x=parent[x];}return x;}
+    function join(a,b){a=root(a);b=root(b);if(a===b)return;if(size[a]<size[b]){const t=a;a=b;b=t;}parent[b]=a;size[a]+=size[b];}
+    function color(c){return [((c>>>16)&255),((c>>>8)&255),(c&255)];}
+    function colorGap(a,b){const x=color(a||0xFFFFFFFF),y=color(b||0xFFFFFFFF);return (Math.abs(x[0]-y[0])+Math.abs(x[1]-y[1])+Math.abs(x[2]-y[2]))/3;}
+    function overlap(a0,a1,b0,b1){return Math.max(0,Math.min(a1,b1)-Math.max(a0,b0));}
+    function edgeBetween(a,b,vertical,font) {
+      // Look for a continuous balloon edge between otherwise-neighbouring text boxes.
+      // The sampled strip is bounded to keep memory and work suitable for a phone.
+      const gap=vertical ? Math.max(0,Math.max(a.x,b.x)-Math.min(a.x+a.w,b.x+b.w))
+                        : Math.max(0,Math.max(a.y,b.y)-Math.min(a.y+a.h,b.y+b.h));
+      if(gap<2 || gap>font*2.1) return false;
+      const lo=vertical ? Math.max(a.y,b.y) : Math.max(a.x,b.x);
+      const hi=vertical ? Math.min(a.y+a.h,b.y+b.h) : Math.min(a.x+a.w,b.x+b.w);
+      const span=hi-lo;
+      if(span<font*1.2) return false;
+      const cross=Math.min(Math.round(gap),vertical?160:160);
+      const along=Math.min(Math.round(span*0.7),360);
+      if(cross<2 || along<8) return false;
+      const x0=vertical?Math.max(0,Math.floor(Math.max(a.x+a.w,b.x+a.w))):Math.max(0,Math.floor(lo+span*0.15));
+      const y0=vertical?Math.max(0,Math.floor(lo+span*0.15)):Math.max(0,Math.floor(Math.max(a.y+a.h,b.y+b.h)));
+      const cw=vertical?Math.min(cross,Math.max(1,image.naturalWidth-x0)):Math.min(along,Math.max(1,image.naturalWidth-x0));
+      const ch=vertical?Math.min(along,Math.max(1,image.naturalHeight-y0)):Math.min(cross,Math.max(1,image.naturalHeight-y0));
+      if(cw<2||ch<2||cw*ch>60000)return false;
+      try {
+        const c=canvasOf(cw,ch),ctx=c.getContext('2d',{willReadFrequently:true});
+        ctx.drawImage(image,x0,y0,cw,ch,0,0,cw,ch);
+        const p=ctx.getImageData(0,0,cw,ch).data;
+        const bg=color(a.bg||b.bg||0xFFFFFFFF);
+        // Count continuous dark/light edge candidates (bubble outline) across most of the strip.
+        const crossN=vertical?cw:ch, alongN=vertical?ch:cw;
+        const step=Math.max(1,Math.floor(alongN/48));
+        for(let q=0;q<crossN;q++){
+          let hit=0,total=0;
+          for(let z=1;z<alongN-1;z+=step){
+            const xx=vertical?q:z, yy=vertical?z:q, at=(yy*cw+xx)*4;
+            const d=(Math.abs(p[at]-bg[0])+Math.abs(p[at+1]-bg[1])+Math.abs(p[at+2]-bg[2]))/3;
+            if(d>68)hit++;total++;
+          }
+          if(total>=8&&hit/total>0.72)return true;
+        }
+      } catch(_) {}
+      return false;
+    }
+    for(let i=0;i<n;i++){
+      const a=items[i];
+      for(let j=i+1;j<n;j++){
+        const b=items[j];
+        if(a._vertical!==b._vertical)continue;
+        const fa=a._font,fb=b._font,font=Math.max(fa,fb);
+        if(Math.min(fa,fb)/font<0.48 || Math.max(fa,fb)/font>2.1)continue;
+        if(colorGap(a.bg,b.bg)>46)continue;
+        // Do not group dark, outlined effects into a dialogue balloon unless their backgrounds agree.
+        if(!!a.soft!==!!b.soft && (a.soft||b.soft))continue;
+        if(a._vertical){
+          const gx=Math.max(0,Math.max(a.x,b.x)-Math.min(a.x+a.w,b.x+b.w));
+          const oy=overlap(a.y,a.y+a.h,b.y,b.y+b.h);
+          const minH=Math.min(a.h,b.h);
+          const centerY=Math.abs((a.y+a.h/2)-(b.y+b.h/2));
+          if(gx>font*2.35)continue;
+          if(oy<Math.max(font*1.05,minH*0.22) && centerY>Math.max(font*2.0,minH*0.45))continue;
+          if(edgeBetween(a,b,true,font))continue;
+          join(i,j);
+        }else{
+          const gy=Math.max(0,Math.max(a.y,b.y)-Math.min(a.y+a.h,b.y+b.h));
+          const ox=overlap(a.x,a.x+a.w,b.x,b.x+b.w);
+          const minW=Math.min(a.w,b.w);
+          const centerX=Math.abs((a.x+a.w/2)-(b.x+b.w/2));
+          const closeSameLine=gy<=font*0.78 && centerX<=Math.max(a.w,b.w)*1.1;
+          const stacked=gy<=font*1.55 && ox>=minW*0.22 && centerX<=Math.max(a.w,b.w)*0.72;
+          if(!closeSameLine&&!stacked)continue;
+          if(edgeBetween(a,b,false,font))continue;
+          join(i,j);
+        }
+      }
+    }
+    const groups=new Map();
+    for(let i=0;i<n;i++){const k=root(i);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(items[i]);}
+    const out=[];
+    for(const group of groups.values()){
+      const vertical=group.filter(r=>r._vertical).length>group.length*0.45;
+      group.sort(vertical ? (a,b)=>(b.x-a.x)||(a.y-b.y) : (a,b)=>(a.y-b.y)||(a.x-b.x));
+      const jp=group.some(r=>/[\u3040-\u30ff\u31f0-\u31ff\u3400-\u9fff\uff66-\uff9d]/.test(r.text));
+      const text=group.map(r=>String(r.text||'').replace(/\s+/g,jp?'':' ').trim()).filter(Boolean).join(jp?'':' ').trim();
+      if(!text)continue;
+      const l=Math.min(...group.map(r=>r.x)),t=Math.min(...group.map(r=>r.y));
+      const rr=Math.max(...group.map(r=>r.x+r.w)),bb=Math.max(...group.map(r=>r.y+r.h));
+      const glyphs=group.map(r=>r._font).sort((a,b)=>a-b);
+      const font=glyphs[Math.floor(glyphs.length/2)]||Math.min(rr-l,bb-t);
+      const pad=Math.min(Math.max(3,Math.round(font*0.16)),Math.max(3,Math.round(Math.min(image.naturalWidth,image.naturalHeight)*0.008)));
+      const x=Math.max(0,Math.floor(l-pad)),y=Math.max(0,Math.floor(t-pad));
+      const right=Math.min(image.naturalWidth,Math.ceil(rr+pad)),bottom=Math.min(image.naturalHeight,Math.ceil(bb+pad));
+      const bg=group[Math.floor(group.length/2)].bg||0xFFFFFFFF;
+      const fg=group[Math.floor(group.length/2)].fg||0xFF171717;
+      out.push({order:0,text,x,y,w:Math.max(1,right-x),h:Math.max(1,bottom-y),
+        vertical:vertical,score:group.reduce((s,r)=>s+(Number(r.score)||0),0)/group.length,
+        font:font,bg:bg,fg:fg,soft:group.some(r=>!!r.soft),regionCount:group.length,
+        members:group.map(r=>r.order||r._i+1)});
+    }
+    out.sort((a,b)=>a.y-b.y||b.x-a.x);
+    out.forEach((b,i)=>b.order=i+1);
+    return out;
+  }
+
   async function run(url,id) {
     if(busy){bridge('onOcrError',id,'একটি OCR কাজ চলছে।');return;}
     busy=true;
@@ -250,7 +364,8 @@
         const dy=a.y-b.y;return Math.abs(dy)>Math.max(a.h,b.h)*0.7?dy:b.x-a.x;
       });
       regions.forEach((r,i)=>r.order=i+1);
-      bridge('onOcrResult',id,JSON.stringify({width:image.naturalWidth,height:image.naturalHeight,verticalReading:vertical,regions:regions}));
+      const bubbles=groupIntoBubbles(image,regions);
+      bridge('onOcrResult',id,JSON.stringify({width:image.naturalWidth,height:image.naturalHeight,verticalReading:vertical,regions:regions,bubbles:bubbles}));
     }catch(e){bridge('onOcrError',id,e&&e.message?e.message:String(e));}
     finally{busy=false;}
   }
