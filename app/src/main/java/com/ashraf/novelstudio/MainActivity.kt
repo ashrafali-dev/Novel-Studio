@@ -3079,6 +3079,9 @@ return t.length>=40?'TXT:'+t:'';
             addView(readerSubtitleView, LinearLayout.LayoutParams(MP, WC).also { it.topMargin = dp(1) })
             contentDescription = "Current book and chapter"
         }
+        modeBtn = iconButton(Ic.CHAT, "Open chatbot", 19, 36, UiTheme.iconIdle) {
+            if (mode == Mode.NOVEL) setMode(Mode.SPLIT) else setMode(Mode.NOVEL)
+        }
         readerHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -3088,8 +3091,9 @@ return t.length>=40?'TXT:'+t:'';
             addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(38)))
             addView(readerInfo, LinearLayout.LayoutParams(0, MP, 1f).also {
                 it.marginStart = dp(8)
-                it.marginEnd = dp(4)
+                it.marginEnd = dp(2)
             })
+            addView(modeBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
             addView(iconButton(Ic.SEARCH, "Enter URL", 19, 36, UiTheme.iconIdle) {
                 showAddressEditor()
             }, LinearLayout.LayoutParams(dp(36), dp(36)))
@@ -3322,10 +3326,7 @@ return t.length>=40?'TXT:'+t:'';
         }
         contentHolderView = contentHolder
 
-        // ================= floating dock: [prev] [translate] [next] [chat] [more]
-        modeBtn = dockBtn(Ic.CHAT, "Open chatbot") {
-            if (mode == Mode.NOVEL) setMode(Mode.SPLIT) else setMode(Mode.NOVEL)
-        }
+        // ================= floating dock: [previous] [translate] [next]
         modeChipDot = View(this).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(UiTheme.ok) }
         }
@@ -3439,8 +3440,6 @@ return t.length>=40?'TXT:'+t:'';
                 it.setMargins(dp(1), 0, dp(1), 0)
             })
             addView(dockBtn(Ic.FORWARD, "Next chapter") { step("next") })
-            addView(modeBtn)
-            addView(dockBtn(Ic.GRID, "Menu") { menu() })
         }
         val dockStack = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
