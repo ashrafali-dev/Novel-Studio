@@ -34,11 +34,11 @@ jobs:
           from pathlib import Path
           import re
           source = Path("app/src/main/assets/japanese_manga_engine.html").read_text(encoding="utf-8")
-          scripts = re.findall(r"<script\\b[^>]*>(.*?)</script\\s*>", source, re.I | re.S)
+          scripts = re.findall(r"<script\b[^>]*>(.*?)</script\s*>", source, re.I | re.S)
           inline = [part for part in scripts if part.strip()]
           if not inline:
               raise SystemExit("No inline manga-engine JavaScript found")
-          Path("/tmp/novelstudio-manga-engine.js").write_text("\\n".join(inline), encoding="utf-8")
+          Path("/tmp/novelstudio-manga-engine.js").write_text("\n".join(inline), encoding="utf-8")
           PY
           node --check /tmp/novelstudio-manga-engine.js
 
