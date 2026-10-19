@@ -1630,7 +1630,7 @@ internal class WebModeExtractor(
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
                 // multi-pass engine; bubbles that still hide ink are re-read one by one afterwards.
                 val quick = engine.recognizeFast(bmp, st.current)
-                if (quick.text.count { it.isLetterOrDigit() } >= 12) quick else engine.recognize(bmp, st.current)
+                if (quick.text.count { it.isLetterOrDigit() } >= 12 || (st.current == OcrScript.LATIN && hasJapaneseScript(quick.text))) quick else engine.recognize(bmp, st.current)
             } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
