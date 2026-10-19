@@ -1641,6 +1641,13 @@ internal class WebModeExtractor(
                 combineOcrResults(first, retry)
             } else first
 
+            // Promote Auto mode to Japanese once the OCR signal contains Japanese script. This avoids
+            // probing every later slice and enables manga-specific cleanup/layout for the whole page.
+            if (!st.locked && st.current == OcrScript.LATIN && hasJapaneseScript(result.text)) {
+                st.current = OcrScript.JAPANESE
+                st.locked = true
+                st.fastFallbackTried = true
+            }
             val resultLetters = result.text.count { it.isLetterOrDigit() }
             // Real-time is latency-sensitive. A short but readable result should not trigger three
             // extra language models on every slice; this caused multi-second pauses on English
@@ -1694,6 +1701,14 @@ internal class WebModeExtractor(
                 }
             }
             return result
+        }
+
+        private fun hasJapaneseScript(text: String): Boolean {
+            if (text.isBlank()) return false
+            if (text.any { it in '\u3040'..'\u309F' || it in '\u30A0'..'\u30FF' || it in '\uFF66'..'\uFF9D' }) return true
+            val han = text.count { it in '\u3400'..'\u4DBF' || it in '\u4E00'..'\u9FFF' || it in '\uF900'..'\uFAFF' }
+            val letters = text.count { it.isLetter() }
+            return han >= 2 && letters > 0 && han * 100 >= letters * 55
         }
 
         private fun needsOcrRetry(bmp: Bitmap, result: OcrResult): Boolean {
