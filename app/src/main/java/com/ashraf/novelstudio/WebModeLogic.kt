@@ -15,7 +15,7 @@ internal object WebModeLogic {
             .sortedWith(compareBy<PanelRef>({ it.top }, { it.left }))
 
     private val KO = Regex("naver\\.com|kakao|webtoons\\.com/ko|comic\\.naver", RegexOption.IGNORE_CASE)
-    private val JA = Regex("webtoons\\.com/ja|comic-walker|piccoma|pixiv|shonenjump", RegexOption.IGNORE_CASE)
+    private val JA = Regex("webtoons\\.com/ja|comic-walker|piccoma|pixiv|shonenjump|mangaplus|shonenjumpplus|comic-days|tonarinoyj|youngjump|sunday-webry|magazinepocket|pocket\\.shonenmagazine|bookwalker\\.jp|manga-park|kuragebunch|ganma\\.jp|rawkuma|manga\\.jp|mangadex\\.org", RegexOption.IGNORE_CASE)
     private val ZH = Regex("webtoons\\.com/zh|bilibili|kuaikan|ac\\.qq|manhuagui|dmzj|manhuaren", RegexOption.IGNORE_CASE)
 
     /** First-guess script from the page language and URL. A fallback chain covers wrong guesses. */
