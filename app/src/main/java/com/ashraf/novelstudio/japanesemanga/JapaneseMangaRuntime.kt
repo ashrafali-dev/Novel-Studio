@@ -11,6 +11,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -112,7 +113,16 @@ internal object JapaneseMangaRuntime {
      * the bitmap that was scanned, divided by [Output.scale] when the picture had to be shrunk).
      * Throws on any failure so the caller can fall back to another engine.
      */
-    fun recognize(bitmap: Bitmap): Output {
+    fun recognize(bitmap: Bitmap): Output = run(bitmap, null)
+
+    /**
+     * Recognition-only path used by the normal OCR pipeline. The supplied boxes come from the app's
+     * existing detector; coordinates and returned indices are retained, so this model cannot change
+     * overlay positions or group neighbouring speech balloons.
+     */
+    fun recognizeRegions(bitmap: Bitmap, regionsJson: String): Output = run(bitmap, regionsJson)
+
+    private fun run(bitmap: Bitmap, regionsJson: String?): Output {
         val m = manager ?: throw IOException("manga runtime not initialised")
         return ocrLock.withLock {
             inFlight++
@@ -142,8 +152,16 @@ internal object JapaneseMangaRuntime {
                     FileOutputStream(file).use {
                         if (!work.compress(Bitmap.CompressFormat.JPEG, 92, it)) throw IOException("JPEG encode failed")
                     }
-                    val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
-                        "," + JSONObject.quote(id) + ")"
+                    val js = if (regionsJson == null) {
+                        // Kept for the standalone diagnostic screen. The normal scan path never calls
+                        // the model's detector; it supplies the boxes found by the built-in OCR engine.
+                        "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
+                            "," + JSONObject.quote(id) + ")"
+                    } else {
+                        val scaledRegions = scaleRegionJson(regionsJson, scale)
+                        "window.runJapaneseMangaRecognitionOnly(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
+                            "," + JSONObject.quote(id) + "," + JSONObject.quote(scaledRegions) + ")"
+                    }
                     main.post { view?.evaluateJavascript(js, null) }
                     if (!pend.latch.await(OCR_TIMEOUT_S, TimeUnit.SECONDS)) {
                         fail("manga OCR timeout")
@@ -162,6 +180,22 @@ internal object JapaneseMangaRuntime {
                 scheduleIdleRelease()
             }
         }
+    }
+
+    /** Scale incoming original-bitmap coordinates when a large image was downsampled for OCR. */
+    private fun scaleRegionJson(raw: String, scale: Float): String {
+        if (scale >= 0.9999f) return raw
+        val input = JSONArray(raw)
+        val output = JSONArray()
+        for (i in 0 until input.length()) {
+            val source = input.optJSONObject(i) ?: continue
+            val item = JSONObject(source.toString())
+            for (key in arrayOf("x", "y", "w", "h")) {
+                if (item.has(key)) item.put(key, item.optDouble(key) * scale.toDouble())
+            }
+            output.put(item)
+        }
+        return output.toString()
     }
 
     // ------------------------------------------------------------------ WebView lifecycle
