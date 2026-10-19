@@ -182,8 +182,18 @@
           // Use the short box dimension as a glyph-size estimate. Using a merged line's full height
           // made the gap threshold grow after every merge and could combine neighbouring columns.
           const fa=Math.max(3,Math.min(a.w,a.h)),fb=Math.max(3,Math.min(b.w,b.h)),font=Math.max(fa,fb);
-          const row=(yo>Math.min(a.h,b.h)*0.25||Math.abs(a.y+a.h/2-b.y-b.h/2)<font*0.8)&&gx<font*2.2;
-          const col=(xo>Math.min(a.w,b.w)*0.25||Math.abs(a.x+a.w/2-b.x-b.w/2)<font*0.8)&&gy<font*2.2;
+          const minH=Math.min(a.h,b.h),minW=Math.min(a.w,b.w);
+          const verticalPair=a.h>a.w*1.8&&b.h>b.w*1.8;
+          const horizontalPair=a.w>a.h*1.8&&b.w>b.h*1.8;
+          const rowAligned=(yo>minH*0.25||Math.abs(a.y+a.h/2-b.y-b.h/2)<font*0.8)&&gx<font*2.2;
+          const colAligned=(xo>minW*0.25||Math.abs(a.x+a.w/2-b.x-b.w/2)<font*0.8)&&gy<font*2.2;
+          // A complete vertical column must not be merged sideways just because its neighbour
+          // overlaps in Y; that turns several Japanese columns into one unreadable horizontal crop.
+          // Likewise, stacked horizontal lines stay separate for the later bubble-level grouping.
+          const row=verticalPair?false:rowAligned;
+          const col=horizontalPair?false:(verticalPair
+            ? xo>minW*0.25&&gy<font*2.2&&yo<minH*0.15
+            : colAligned);
           if(!row&&!col){j++;continue;}
           const x=Math.min(a.x,b.x),y=Math.min(a.y,b.y),r=Math.max(a.x+a.w,b.x+b.w),bt=Math.max(a.y+a.h,b.y+b.h);
           boxes[i]={x,y,w:r-x,h:bt-y,score:(a.score+b.score)/2};
