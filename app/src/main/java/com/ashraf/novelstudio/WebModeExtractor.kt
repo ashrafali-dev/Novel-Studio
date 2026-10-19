@@ -272,8 +272,8 @@ internal class WebModeExtractor(
                 // Look at up to 3x the batch size below the screen; the first aheadN panels that are still
                 // undone are read. As panels finish, the window moves on by itself (it used to stop after
                 // the first N, until the reader scrolled).
-                // Full-chapter link inventory is bounded at 600 candidates; OCR remains
-                // sequential and is still limited to aheadN images per batch.
+                // Real-time mode inspects only a bounded look-ahead window. It does not enumerate 600
+                // chapter links and only OCRs up to aheadN newly discovered images per pass.
                 val aheadWindow = if (req.fullChapterLinks) 600 else (aheadN * 3).coerceAtMost(30)
                 val js = wrap(
                     LIB + JS_COLLECT_AHEAD
@@ -298,6 +298,7 @@ internal class WebModeExtractor(
                     }
                     if (req.fullChapterLinks) refs.sortBy { it.top }
                     while (refs.size > aheadN) refs.removeAt(refs.size - 1)
+                    Log.i(TAG, "Read-ahead discovery: window=${aheadWindow} selected=${refs.size} fullChapter=${req.fullChapterLinks}")
                     if (refs.isEmpty()) { aheadFinished(); return@evaluateJavascript }
                     aheadWorker.execute {
                         try { runCatching { processAhead(refs, pageUrl, lang) } } finally { aheadFinished() }
@@ -2114,7 +2115,7 @@ return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,
 
         // Real-time read-ahead: the next images that are completely below the screen (nothing is scrolled).
         private const val JS_COLLECT_AHEAD = """
-var sc=scroller(),c=cands(sc);
+var sc=scroller(),c=cands(sc,false);
 var vpH=window.innerHeight||800,vpBottom=vpH;
 var all=__ALL__;
 // "Full chapter links" means we may inspect every URL already present in the DOM, not that
@@ -2124,8 +2125,21 @@ if(sc){
   var sr=sc.getBoundingClientRect();
   vpBottom=Math.max(sr.top,Math.min(vpH,sr.bottom));
 }
-c=c.filter(function(p){return p.vt>=vpBottom-2;});
-// Use the page's document-space top for a stable reading order across batches.
+function belowViewport(p){return p.vt>=vpBottom-2;}
+var ahead=c.filter(belowViewport);
+// CSS-background readers are supported as a fallback, but their expensive style sweep is rate-limited
+// and runs only when there are no ordinary image candidates in the look-ahead window.
+if(ahead.length===0){
+  var bgNow=Date.now();
+  if(bgNow-(window.__nsWmLastAheadBgFallback||0)>=3500){
+    window.__nsWmLastAheadBgFallback=bgNow;
+    var withBackgrounds=cands(sc,true);
+    var bgAhead=withBackgrounds.filter(belowViewport);
+    if(bgAhead.length>0){c=withBackgrounds;ahead=bgAhead;}
+  }
+}
+c=ahead;
+// Sort only the bounded upcoming window, not the complete chapter inventory.
 c.sort(function(a,b){return all?(a.t-b.t):(a.vt-b.vt);});
 return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:c.slice(0,__N__)});
 """
