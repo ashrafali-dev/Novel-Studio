@@ -4612,7 +4612,7 @@ return t.length>=40?'TXT:'+t:'';
             floatBoltHost.animate().cancel()
             if (extractBtn.parent === floatBoltHost) {
                 floatBoltHost.removeView(extractBtn)
-                dockBar.addView(extractBtn, 3, LinearLayout.LayoutParams(dp(66), dp(66)).also { it.setMargins(dp(2), 0, dp(2), 0) })
+                dockBar.addView(extractBtn, 3, extractLp())
             }
             floatBoltHost.visibility = View.GONE
             chromeTopView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
