@@ -1,0 +1,54 @@
+name: Manga Engine Debug APK
+
+on:
+  push:
+    branches:
+      - fix/manga-bubble-engine-20261019
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Check manga OCR JavaScript syntax
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          source = Path("app/src/main/assets/japanese_manga_engine.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script\\b[^>]*>(.*?)</script\\s*>", source, re.I | re.S)
+          inline = [part for part in scripts if part.strip()]
+          if not inline:
+              raise SystemExit("No inline manga-engine JavaScript found")
+          Path("/tmp/novelstudio-manga-engine.js").write_text("\\n".join(inline), encoding="utf-8")
+          PY
+          node --check /tmp/novelstudio-manga-engine.js
+
+      - name: Run unit tests and assemble debug APK
+        run: gradle testDebugUnitTest assembleDebug --no-daemon --stacktrace
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovelStudio-Manga-Engine-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
