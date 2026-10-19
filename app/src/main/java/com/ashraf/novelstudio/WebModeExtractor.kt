@@ -309,7 +309,7 @@ internal class WebModeExtractor(
         private fun aheadFinished() { onMain { req.onAheadDone?.invoke() } }
 
         private fun processAhead(refs: List<PanelRef>, pageUrl: String, lang: String) {
-            val script = ScriptState(WebModeLogic.pickScript(lang, pageUrl))
+            val script = newScript(lang, pageUrl)
             // Full-chapter inventory may legitimately contain hundreds of panels. Do not
             // reset its seen-set midway through the chapter or the batcher would start from panel 1 again.
             if (aheadDone.size > 5000) { aheadDone.clear(); aheadBlank.clear(); aheadFails.clear() }
@@ -377,7 +377,9 @@ internal class WebModeExtractor(
             if (elapsed() > DISCOVERY_MAX_MS + userStepMs * 150L || n > MAX_TICKS) { finishDiscovery(); return }
             // Read the current viewport before moving; virtualized readers can recycle the first panels on scroll.
             // Then use overlapping steps so lazy-loaded panels are less likely to be skipped.
-            val stepSize = if (n == 0 && lastCount < 0) "0" else if (lastCount >= 8) "0.85" else "0.70"
+            // Nothing has reacted to the last few scroll steps (images already in the page, no lazy loader):
+            // there is nothing to wait for, so steps get bigger and the wait shrinks (see settleThen).
+            val stepSize = if (n == 0 && lastCount < 0) "0" else if (quietStreak >= 3) "0.95" else if (lastCount >= 8) "0.85" else "0.70"
             wv.evaluateJavascript(wrap(LIB + JS_STEP.replace("__STEP__", stepSize))) { raw ->
                 if (!alive()) { restoreScroll(); fail(WebModeError.NAVIGATION_INVALIDATED); return@evaluateJavascript }
                 val o = parseJson(raw)
@@ -433,8 +435,22 @@ internal class WebModeExtractor(
 
         private var slowTicks = 0
         private var capHits = 0
+        private var quietStreak = 0
 
         private fun scanFastFirst(): Boolean = Prefs.get(wv.context, "scanFastFirst", "1") == "1"
+
+        /** OCR language: the menu can pin it (English / Korean / Japanese / Chinese); "Auto" = guess from the page. */
+        private fun newScript(lang: String, url: String): ScriptState {
+            val pinned = when (Prefs.get(wv.context, "ocrLang", "auto")) {
+                "en" -> OcrScript.LATIN
+                "ko" -> OcrScript.KOREAN
+                "ja" -> OcrScript.JAPANESE
+                "zh" -> OcrScript.CHINESE
+                else -> null
+            }
+            if (pinned == null) return ScriptState(WebModeLogic.pickScript(lang, url))
+            return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
+        }
 
         private fun scanHost(): String = try {
             android.net.Uri.parse(wv.url.orEmpty()).host.orEmpty().removePrefix("www.")
@@ -462,7 +478,10 @@ internal class WebModeExtractor(
             } catch (_: Exception) { }
         }
 
-        private fun settleThen(baseMs: Long, startMut: Int, startLoad: Int, next: () -> Unit) {
+        private fun settleThen(configuredMs: Long, startMut: Int, startLoad: Int, next: () -> Unit) {
+            // After 3 quiet steps in a row the page clearly does not load anything on scroll: do not wait the
+            // full interval any more (slow sites keep their long wait because they are never quiet).
+            val baseMs = if (quietStreak >= 3) Math.min(configuredMs, 70L) else configuredMs
             val t0 = android.os.SystemClock.uptimeMillis()
             val extra = if (capHits >= 3) 0L else 1_200L
             val hardCap = baseMs + extra
@@ -487,9 +506,9 @@ internal class WebModeExtractor(
                     val quiet = now - lastAct >= 100L
                     if (el >= baseMs && !counted && (p > 0 || (activity && !quiet))) { counted = true; slowTicks++ }
                     when {
-                        el >= hardCap -> { if (p > 0 || (activity && !quiet)) capHits++; next() }
-                        activity && quiet && p == 0 -> next()
-                        el >= baseMs && p == 0 && !activity -> next()
+                        el >= hardCap -> { quietStreak = 0; if (p > 0 || (activity && !quiet)) capHits++; next() }
+                        activity && quiet && p == 0 -> { quietStreak = 0; next() }
+                        el >= baseMs && p == 0 && !activity -> { quietStreak++; next() }
                         else -> handler.postDelayed({ probe() }, 60L)
                     }
                 }
@@ -593,7 +612,7 @@ internal class WebModeExtractor(
             val texts = arrayOfNulls<String>(total)
             val layouts = arrayOfNulls<List<WmBubble>>(total)
             val seen = HashSet<String>()
-            val script = ScriptState(WebModeLogic.pickScript(meta.lang, meta.url))
+            val script = newScript(meta.lang, meta.url)
             var fetchFailed = 0
             var decodeFailed = 0
             var lastCrash: String? = null
@@ -921,7 +940,7 @@ internal class WebModeExtractor(
                 next = mo.optString("next").takeIf { it.startsWith("http") },
                 prev = mo.optString("prev").takeIf { it.startsWith("http") }
             )
-            val script = ScriptState(WebModeLogic.pickScript(meta.lang, meta.url))
+            val script = newScript(meta.lang, meta.url)
             val accs = LinkedHashMap<String, ForceAcc>()
             // In visible-only recovery, collect image candidates exactly once and include CSS
             // backgrounds; full-chapter Force Extract retains its original throttled scan.
@@ -1351,7 +1370,7 @@ internal class WebModeExtractor(
                     grow = false
                     for (j in pool) {
                         if (j in grp || consumed[j]) continue
-                        if (grp.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.0f) && aligned(blocks[p], blocks[j]) }) {
+                        if (grp.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.0f, loose = true) && aligned(blocks[p], blocks[j]) }) {
                             grp.add(j); grow = true
                         }
                     }
@@ -1418,7 +1437,7 @@ internal class WebModeExtractor(
                     while (growing) {
                         growing = false
                         for (j in members) {
-                            if (j !in sameText && sameText.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.3f) }) {
+                            if (j !in sameText && sameText.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.3f, loose = true) }) {
                                 sameText.add(j); growing = true
                             }
                         }
@@ -1571,15 +1590,16 @@ internal class WebModeExtractor(
             return hit * 100 >= n * 60
         }
 
-        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock, maxGapFonts: Float = 2.0f): Boolean {
+        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock, maxGapFonts: Float = 2.0f, loose: Boolean = false): Boolean {
             if (a.vertical || b.vertical) return false
-            if (Math.abs(OcrPost.usableTilt(a.angle)) >= 6f ||
-                Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) return false
+            val maxTilt = if (loose) 20f else 6f
+            if (Math.abs(OcrPost.usableTilt(a.angle)) >= maxTilt ||
+                Math.abs(OcrPost.usableTilt(b.angle)) >= maxTilt) return false
             val fa = if (a.fontPx > 0f) a.fontPx else a.h
             val fb = if (b.fontPx > 0f) b.fontPx else b.h
             if (fa <= 0f || fb <= 0f) return false
             val ratio = fa / fb
-            if (ratio < 0.55f || ratio > 1.8f) return false
+            if (ratio < (if (loose) 0.4f else 0.55f) || ratio > (if (loose) 2.5f else 1.8f)) return false
             val scale = maxOf(fa, fb)
             val atop = a.cy - a.h / 2f
             val abot = a.cy + a.h / 2f
@@ -1648,7 +1668,8 @@ internal class WebModeExtractor(
                     if (script != null) {
                         val alternate = try { engine.recognizeFast(bmp, script) }
                             catch (_: Exception) { OcrResult(emptyList()) }
-                        if (alternate.text.count { it.isLetterOrDigit() } >= 2) {
+                        // from Latin a switch needs real text, not the noise a CJK model finds in artwork
+                        if (alternate.text.count { it.isLetterOrDigit() } >= (if (st.current == OcrScript.LATIN) 10 else 2)) {
                             st.current = script
                             st.locked = true
                             return alternate
@@ -1662,7 +1683,7 @@ internal class WebModeExtractor(
                 for (script in WebModeLogic.fallbackScripts(st.current)) {
                     val alternate = try { engine.recognize(bmp, script) }
                         catch (_: Exception) { OcrResult(emptyList()) }
-                    if (alternate.text.count { it.isLetterOrDigit() } >= 2) {
+                    if (alternate.text.count { it.isLetterOrDigit() } >= (if (st.current == OcrScript.LATIN) 10 else 2)) {
                         st.current = script
                         st.locked = true
                         return alternate
@@ -1964,15 +1985,25 @@ if(!window.__nsWmObs){
   }catch(e){}
 }
 var sc=window.__nsWmUseDocumentScroll?null:scroller(),vh=window.innerHeight||800,before,after,hh,bottom,step=__STEP__;
+// Sites with CSS "scroll-behavior: smooth" animate every programmatic scroll (about half a second per step,
+// and the position read right after still shows the OLD place). Force instant jumps for the scan.
+try{
+  if(window.__nsWmSB===undefined){
+    window.__nsWmSB=[de.style.scrollBehavior||'',document.body?(document.body.style.scrollBehavior||''):''];
+    de.style.setProperty('scroll-behavior','auto','important');
+    if(document.body)document.body.style.setProperty('scroll-behavior','auto','important');
+  }
+}catch(e){}
+var jump=function(el,dy){try{el.scrollBy({top:dy,left:0,behavior:'instant'});}catch(e){el.scrollTop=(el.scrollTop||0)+dy;}};
 if(sc){
   if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;
-  before=sc.scrollTop;vh=sc.clientHeight;sc.scrollTop=before+Math.round(vh*step);after=sc.scrollTop;hh=sc.scrollHeight;
+  before=sc.scrollTop;vh=sc.clientHeight;jump(sc,Math.round(vh*step));after=sc.scrollTop;hh=sc.scrollHeight;
   // If the selected inner pane refuses to move before its real bottom, fall back to document
   // scrolling rather than falsely claiming that discovery reached the end.
   if(after===before&&before+vh<hh-4){
     var docBefore=window.pageYOffset||de.scrollTop||0;
     if(window.__nsWmY===undefined)window.__nsWmY=docBefore;
-    window.scrollBy(0,Math.round((window.innerHeight||vh)*step));
+    jump(window,Math.round((window.innerHeight||vh)*step));
     var docAfter=window.pageYOffset||de.scrollTop||0;
     if(docAfter!==docBefore){
       window.__nsWmUseDocumentScroll=true;
@@ -1983,7 +2014,7 @@ if(sc){
 }else{
   before=window.pageYOffset||de.scrollTop||0;
   if(window.__nsWmY===undefined)window.__nsWmY=before;
-  window.scrollBy(0,Math.round(vh*step));after=window.pageYOffset||de.scrollTop||0;
+  jump(window,Math.round(vh*step));after=window.pageYOffset||de.scrollTop||0;
   hh=Math.max(de.scrollHeight||0,document.body?document.body.scrollHeight:0);
 }
 bottom=(after+vh>=hh-4);
@@ -2046,7 +2077,13 @@ var e=document.getElementById('__ns_wm_overlay');if(e)e.style.visibility='';retu
         private const val JS_RESTORE = """
 var sc=scroller();
 if(sc&&window.__nsWmS!==undefined)sc.scrollTop=window.__nsWmS;
-if(window.__nsWmY!==undefined)window.scrollTo(0,window.__nsWmY);
+if(window.__nsWmY!==undefined){try{window.scrollTo({top:window.__nsWmY,left:0,behavior:'instant'});}catch(e){window.scrollTo(0,window.__nsWmY);}}
+try{
+  if(window.__nsWmSB!==undefined){
+    de.style.scrollBehavior=window.__nsWmSB[0];if(document.body)document.body.style.scrollBehavior=window.__nsWmSB[1];
+    delete window.__nsWmSB;
+  }
+}catch(e){}
 try{delete window.__nsWmY;delete window.__nsWmS;delete window.__nsWmUseDocumentScroll;}catch(e){}
 return '1';
 """

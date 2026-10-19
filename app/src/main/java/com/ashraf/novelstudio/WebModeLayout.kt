@@ -284,9 +284,36 @@ internal object WebModeLayoutStore {
         return boxOverlapOfSmaller(a, b) >= 0.55f
     }
 
+    /**
+     * [small] sits mostly inside [big] and its words are (almost) all contained in big's text: an OCR ghost
+     * (a re-read of part of the bubble, e.g. "PIN ONES" from "...KEEPING AN EYE ON THE ONES"), not a bubble.
+     */
+    private fun ghostOf(big: WmBubble, small: WmBubble): Boolean {
+        if (big === small || big.src != small.src) return false
+        val bigArea = big.w * big.h
+        val smallArea = small.w * small.h
+        if (smallArea <= 0f || bigArea < smallArea * 1.8f) return false
+        val x = Math.min(big.cx + big.w / 2, small.cx + small.w / 2) - Math.max(big.cx - big.w / 2, small.cx - small.w / 2)
+        val y = Math.min(big.cy + big.h / 2, small.cy + small.h / 2) - Math.max(big.cy - big.h / 2, small.cy - small.h / 2)
+        if (x <= 0f || y <= 0f || x * y < smallArea * 0.6f) return false
+        val b = WebModeLayout.normalizeOcrText(big.sourceText)
+        val s = WebModeLayout.normalizeOcrText(small.sourceText)
+        if (s.isEmpty() || s.length > b.length * 0.6) return false
+        if (b.contains(s)) return true
+        val n = s.length - 1
+        if (n < 2) return false
+        val grams = HashSet<String>()
+        for (i in 0 until b.length - 1) grams.add(b.substring(i, i + 2))
+        var hit = 0
+        for (i in 0 until n) if (grams.contains(s.substring(i, i + 2))) hit++
+        return hit * 100 >= n * 70
+    }
+
     private fun mergeLayouts(old: WebModeLayout?, incoming: WebModeLayout): WebModeLayout {
         val result = old?.bubbles?.toMutableList() ?: mutableListOf()
         for (fresh in incoming.bubbles) {
+            if (result.any { ghostOf(it, fresh) }) continue
+            result.removeAll { ghostOf(fresh, it) }
             val freshKey = WebModeLayout.normalizeOcrText(fresh.sourceText)
             val samePositionIndices = result.indices.filter { samePosition(result[it], fresh) }
             val relatedIndices = result.indices.filter { sameBubbleReading(result[it], fresh) }

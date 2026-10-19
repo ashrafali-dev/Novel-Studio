@@ -4528,7 +4528,7 @@ return t.length>=40?'TXT:'+t:'';
     // moves); the slide itself is pure translation, which stays smooth.
     private fun setBarsHidden(hide: Boolean) {
         if (!::dockBar.isInitialized || !::chromeTopView.isInitialized || !::contentHolderView.isInitialized) return
-        if (hide && (barsLockedForToon || webModeOn())) return
+        if (hide && (barsLockedForToon || (webModeOn() && barsMode() != 2))) return
         if (hide == barsHidden || barsAnimating) return
         val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
         val botLp = dockWrapView.layoutParams as? LinearLayout.LayoutParams ?: return
@@ -4607,8 +4607,22 @@ return t.length>=40?'TXT:'+t:'';
      * Keeps the bars locked in place while a WebToon mode is on, and brings them back if they were
      * hidden when the mode was switched on. Safe to call at any time (also from the mode switchers).
      */
+    /** Menu "Bars": 0 Float (over the page), 1 Fixed (own rows, nothing hidden behind them), 2 Auto-hide while scrolling. */
+    private fun barsMode(): Int = (Prefs.get(this, "barsMode", "0").toIntOrNull() ?: 0).coerceIn(0, 2)
+
+    private val ocrLangCodes = listOf("auto", "en", "ko", "ja", "zh")
+
+    private fun menuOcrLangLabel(): String =
+        "🔤 OCR language: " + when (Prefs.get(this, "ocrLang", "auto")) {
+            "en" -> "English only"; "ko" -> "Korean only"; "ja" -> "Japanese only"; "zh" -> "Chinese only"
+            else -> "Auto (guess from page)"
+        }
+
+    private fun menuBarsLabel(): String =
+        "📐 Bars in Web Mode: " + listOf("Float over page", "Fixed (no overlap)", "Auto-hide on scroll")[barsMode()]
+
     private fun syncToonBars() {
-        barsLockedForToon = webModeOn()
+        barsLockedForToon = webModeOn() && barsMode() != 2
         if (barsLockedForToon && barsHidden) {
             if (barsAnimating) handler.postDelayed({ syncToonBars() }, 120L)
             else setBarsHidden(false)
@@ -4634,7 +4648,9 @@ return t.length>=40?'TXT:'+t:'';
             if (barsHidden || barsAnimating) return
             val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
             val botLp = dockWrapView.layoutParams as? LinearLayout.LayoutParams ?: return
-            val want = barsLockedForToon && mode == Mode.NOVEL
+            // Only "Float" overlays the page. "Fixed" keeps the bars in their own rows, "Auto-hide" uses the
+            // Chrome-style slide-away, so a button of the site behind a bar is never permanently covered.
+            val want = webModeOn() && barsMode() == 0 && mode == Mode.NOVEL
             val topH = if (want) chromeTopView.height else 0
             val botH = if (want) dockWrapView.height else 0
             if (want && (topH <= 0 || botH <= 0)) return
@@ -7625,11 +7641,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 WebModeLayoutStore.replace(this, ch.url, WebModeLayout.translated(mangaLayout, aligned))
                 WebModeWriter.bubbleScript(mangaLayout, aligned, Prefs.fontFile(this), pageKey(ch.url))
             } else {
-                toast("⚠️ Manga translation markers did not match; showing the reader view instead")
-                WebModeWriter.script(
-                    splitInternalMarkedTranslation(text, preserveParagraphs = true),
-                    ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url)
-                )
+                toast("Something went wrong. Please use Realtime mode.")
+                return
             }
             val placementId = beginTranslationPlacement()
             novelWv.evaluateJavascript(script) { result ->
@@ -7674,10 +7687,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 WebModeLayoutStore.replace(this, ch.url, translatedLayout)
                 wmScript = WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
             } else {
-                if (wmLayout != null) toast("⚠️ Translation could not be matched to the bubbles; showing the reader view")
-                else toast("⚠️ Bubble layout not found for this page (" + ch.url.takeLast(40) + "); showing the reader view")
-                val paras = splitInternalMarkedTranslation(text, preserveParagraphs = true)
-                wmScript = WebModeWriter.script(paras, ch.title, Prefs.fontFile(this), Prefs.sizePx(this), pageKey(ch.url))
+                // Scanning mode has no reader-view fallback: tell the user briefly (English) and point to Realtime mode.
+                toast("Something went wrong. Please use Realtime mode.")
+                return
             }
             val placementId = beginTranslationPlacement()
             novelWv.evaluateJavascript(wmScript) { r ->
@@ -8209,7 +8221,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
-            "✨ Apply recommended settings", menuScanFastLabel()
+            "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
+            menuOcrLangLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8218,13 +8231,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH
         )
         val sections = listOf(
             "LIBRARY" to listOf(0, 1, 3, 4),
             "TRANSLATION" to listOf(5, 7, 12, 14, 19, 26, 30, 31, 34, 32, 33, 36, 39, 40, 41),
             "READER" to listOf(20, 23, 9, 37, 38),
-            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45, 46, 47, 48)
+            "BROWSER" to listOf(15, 16, 21, 24, 27, 28, 29, 35, 22, 42, 43, 44, 45, 46, 47, 48, 49, 50)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -8344,6 +8357,19 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                50 -> {
+                    val cur = ocrLangCodes.indexOf(Prefs.get(this, "ocrLang", "auto")).let { if (it < 0) 0 else it }
+                    Prefs.put(this, "ocrLang", ocrLangCodes[(cur + 1) % ocrLangCodes.size])
+                    refresh(i, menuOcrLangLabel())
+                    toast(menuOcrLangLabel())
+                }
+                49 -> {
+                    Prefs.put(this, "barsMode", ((barsMode() + 1) % 3).toString())
+                    if (barsHidden && !barsAnimating) setBarsHidden(false)
+                    syncToonBars()
+                    refresh(i, menuBarsLabel())
+                    toast(menuBarsLabel())
                 }
                 48 -> {
                     Prefs.put(this, "scanFastFirst", if (Prefs.get(this, "scanFastFirst", "1") == "1") "0" else "1")
