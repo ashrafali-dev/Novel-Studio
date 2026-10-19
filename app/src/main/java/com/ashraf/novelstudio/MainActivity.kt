@@ -578,6 +578,8 @@ class MainActivity : Activity() {
         val token = navToken
         val seq = ++aheadOcrSeq
         val collectedPanels = LinkedHashMap<String, WebModeAheadPanel>()
+        // Count OCR results independently of the current batch map (flushCollected clears that map).
+        var emittedPanels = 0
         var collectedFlushRunnable: Runnable? = null
         fun collectedPanelCount(): Int = collectedPanels.size
         fun cancelCollectedFlush() {
@@ -618,12 +620,16 @@ class MainActivity : Activity() {
             },
             onDone = { },
             ahead = n,
-            fullChapterLinks = true,
+            // Discover only a bounded window below the viewport; do not inventory the whole chapter
+            // before starting OCR. The next window is discovered after this batch completes.
+            fullChapterLinks = false,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
                     for (panel in panels) {
                         val key = WebModeLogic.normalizeUrl(panel.src)
-                        if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
+                        if (key.isNotBlank() && collectedPanels.putIfAbsent(key, panel) == null) {
+                            emittedPanels++
+                        }
                     }
                     // One callback represents one completed image/panel. Dispatch after the configured
                     // panel target (10 by default), while OCR continues through the remaining images.
@@ -645,7 +651,9 @@ class MainActivity : Activity() {
                     }
                     collectedPanels.clear()
                 }
-                deepSeekAheadAtMs = System.currentTimeMillis()
+                // An empty look-ahead window is normal near the end of the loaded DOM. Back off briefly
+                // instead of re-running DOM discovery every poll tick and wasting battery.
+                deepSeekAheadAtMs = System.currentTimeMillis() + (if (emittedPanels == 0) 1000L else 0L)
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 80L)
             }
         ))
