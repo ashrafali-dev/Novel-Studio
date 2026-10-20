@@ -4944,8 +4944,8 @@ return t.length>=40?'TXT:'+t:'';
         val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
         val labels = arrayOf(
             "ML Kit — Default (fast, built-in)",
-            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean uses ML Kit)",
-            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
+            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean: install the PP-OCRv5 Korean pack, else ML Kit)",
+            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean: install the PP-OCRv5 Korean pack, else ML Kit)",
             "RapidOCR ONNX — legacy optional engine",
             "Japanese Manga OCR — if its model is installed"
         )
@@ -4967,7 +4967,7 @@ return t.length>=40?'TXT:'+t:'';
         val legacyPacks = OcrModels.PACKS
         val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\\nTap to choose the engine")
+        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose the engine")
 
         for (p in legacyPacks) {
             val state = when {
@@ -4976,7 +4976,7 @@ return t.length>=40?'TXT:'+t:'';
                 OcrModels.isInstalled(p) -> "installed · " + OcrModels.sizeMb(p) + " MB — tap to delete"
                 else -> "not installed · tap to download (~" + OcrModels.approxMb(p) + " MB)"
             }
-            labels.add(p.label + "\\n" + state)
+            labels.add(p.label + "\n" + state)
         }
 
         for (p in paddlePacks) {
@@ -4985,14 +4985,14 @@ return t.length>=40?'TXT:'+t:'';
                 PaddleOcrModels.isInstalled(p) -> "installed · " + PaddleOcrModels.sizeMb(p) + " MB — tap to delete"
                 else -> "not installed · tap to download (~" + p.approximateMb + " MB)"
             }
-            labels.add("🧠 " + p.label + "\\n" + state)
+            labels.add("🧠 " + p.label + "\n" + state)
         }
 
         val deleteIndex = 1 + legacyPacks.size + paddlePacks.size
         val err = OcrModels.lastError
         val paddleErr = PaddleOcrModels.lastError
         val lastError = if (paddleErr.isNotBlank()) paddleErr else err
-        labels.add("🗑 Delete all optional OCR models\\n" +
+        labels.add("🗑 Delete all optional OCR models\n" +
             (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
 
         listDialog("🧠 OCR engine & models", labels, { i ->

@@ -53,7 +53,12 @@ internal object OcrEngineStatus {
     @Volatile var label: String = ""
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
-        used.startsWith("mlkit(korean-by-design") -> "ML Kit (Paddle can't read Korean)"
+        used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
+        used == "paddle_korean" -> "Paddle Korean v5"
+        used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
+        used == "mlkit(oom)" -> "ML Kit (Paddle: low RAM)"
+        used == "mlkit(link-error)" -> "ML Kit (Paddle native lib missing)"
+        used.startsWith("mlkit(error:") -> "ML Kit (Paddle error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit") && fellBack && selected.startsWith("paddle") -> "ML Kit (Paddle fallback)"
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
         used.startsWith("mlkit") -> "ML Kit"
@@ -177,15 +182,19 @@ internal class RoutingOcrEngine : OcrEngine {
         return try {
             val primary = run(chosen)
             if (useful(primary)) {
-                // PaddleProfileOcrEngine hands Korean to ML Kit by design: never label that as Paddle.
-                if (chosen is PaddleProfileOcrEngine && script == OcrScript.KOREAN) report("mlkit(korean-by-design under $selectedMode)", true)
-                else report(selectedMode, false)
+                // Label what REALLY read the page: Korean is Paddle only with the Korean pack, otherwise ML Kit.
+                when ((chosen as? PaddleProfileOcrEngine)?.familyFor(script)) {
+                    "mlkit-korean" -> report("mlkit(korean-by-design under $selectedMode)", true)
+                    "paddle-ko" -> report("paddle_korean", false)
+                    else -> report(selectedMode, false)
+                }
                 primary
             }
             else { report("mlkit(empty-primary)", true); run(mlKit) }
         } catch (e: Exception) {
-            Log.w("NovelStudioOCR", "${selectedMode} failed; falling back to ML Kit: ${e.message}")
-            report("mlkit(error)", true)
+            val why = (e.cause ?: e).javaClass.simpleName
+            Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
+            report("mlkit(error:$why)", true)
             run(mlKit)
         } catch (e: OutOfMemoryError) {
             Log.w("NovelStudioOCR", "${selectedMode} ran out of memory; falling back to ML Kit")
