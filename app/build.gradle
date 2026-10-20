@@ -69,5 +69,8 @@ dependencies {
     implementation 'com.google.mlkit:text-recognition-japanese:16.0.0'
     implementation 'com.google.mlkit:text-recognition-korean:16.0.0'
 
+    // Primary Web Mode OCR: PP-OCR style ONNX models, downloaded by the user (ML Kit is the fallback).
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.18.0'
+
     testImplementation 'junit:junit:4.13.2'
 }
