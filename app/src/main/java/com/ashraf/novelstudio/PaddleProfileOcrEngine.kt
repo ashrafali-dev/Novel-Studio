@@ -1,6 +1,7 @@
 package com.ashraf.novelstudio
 
 import android.content.Context
+import android.graphics.Bitmap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 
 /**
