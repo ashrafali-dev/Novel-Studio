@@ -1,4 +1,4 @@
-name: PaddleOCR integration compile check
+name: PaddleOCR integration build and tests
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  android-debug:
+  android-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,25 +24,40 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Create temporary build-only keystore
-        run: |
-          keytool -genkeypair -alias ci-test -keyalg RSA -keysize 2048 \
-            -keystore "$RUNNER_TEMP/ci-test.jks" -storepass ci-test-pass \
-            -keypass ci-test-pass -dname "CN=NovelStudio CI" -validity 2 -noprompt
-          test -s "$RUNNER_TEMP/ci-test.jks"
-
-      - name: Compile app and run unit tests
+      - name: Prepare existing NovelStudio release keystore
         env:
-          KEYSTORE_FILE: ${{ runner.temp }}/ci-test.jks
-          KEYSTORE_PASSWORD: ci-test-pass
-          KEY_ALIAS: ci-test
-          KEY_PASSWORD: ci-test-pass
-        run: gradle app:assembleDebug app:testDebugUnitTest --no-daemon
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "KEYSTORE_BASE64 GitHub Secret is missing; refusing to create a different signing key."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/novelstudio-release.jks"
+          test -s "$RUNNER_TEMP/novelstudio-release.jks"
 
-      - name: Upload debug APK
+      - name: Run unit tests
+        run: gradle app:testDebugUnitTest --no-daemon
+
+      - name: Build signed release APKs
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/novelstudio-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle app:assembleRelease --no-daemon
+
+      - name: Upload signed ARM64 APK (most modern Android phones)
         uses: actions/upload-artifact@v4
         with:
-          name: NovelStudio-PaddleOCR-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: NovelStudio-PaddleOCR-arm64-v8a-signed
+          path: app/build/outputs/apk/release/app-arm64-v8a-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload signed ARMv7 APK (older 32-bit ARM phones)
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovelStudio-PaddleOCR-armeabi-v7a-signed
+          path: app/build/outputs/apk/release/app-armeabi-v7a-release.apk
           if-no-files-found: error
           retention-days: 14
