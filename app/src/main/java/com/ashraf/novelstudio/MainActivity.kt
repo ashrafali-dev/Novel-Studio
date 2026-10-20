@@ -101,6 +101,8 @@ class MainActivity : Activity() {
     private var prefetchCatalogTitle = ""
     private var prefetchSourceUrl = ""
     private val prefetchRequestedUrls = mutableSetOf<String>()
+    private val prefetchRetryCount = HashMap<String, Int>()
+    private val prefetchNoLinkNotified = HashSet<String>()
     // Multi-chapter prefetch: which chapter was prefetched after which (keyOf(source) -> next chapter),
     // the chapter the running job started from, and the pause between two prefetch jobs.
     private val prefetchNextOf = mutableMapOf<String, Chapter>()
@@ -131,6 +133,11 @@ class MainActivity : Activity() {
     // The OCR text is still in memory, so nothing is scanned again.
     private val failedChapters = LinkedHashMap<String, Chapter>()
     private val failedRetryTries = HashMap<String, Int>()
+    // Scanning: how often the chatbot answered in a form that could not be matched to the bubbles.
+    private val scanFallbackTries = HashMap<String, Int>()
+    // The last chapter whose translation failed; tapping the centre ⚡ again sends exactly this text again.
+    private var lastFailedChapter: Chapter? = null
+    private var scanFallbackDialog: AlertDialog? = null
     private val failedRetryRunnable = Runnable { retryFailedChapters() }
 
     private fun scheduleFailedRetry(list: List<Chapter>, delayMs: Long = 15_000L) {
@@ -2108,6 +2115,7 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var progressBar: BookwormProgress
     private lateinit var progressTv: TextView
     private lateinit var togglePill: TextView
+    private lateinit var prefetchChip: TextView
     private lateinit var tabRail: HorizontalScrollView
     private lateinit var shortcutScroll: HorizontalScrollView
     private lateinit var addressBox: LinearLayout
@@ -3186,6 +3194,22 @@ return t.length>=40?'TXT:'+t:'';
             setOnClickListener { toggleView() }
         }
 
+        // Small always-visible switch for "translate the next chapter ahead of time" (Novel + Scanning only).
+        prefetchChip = TextView(this).apply {
+            textSize = 11f
+            typeface = boldMedium
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(10), 0, dp(12), 0)
+            compoundDrawablePadding = dp(5)
+            val bi = IconDrawable(Ic.BOLT, Color.WHITE)
+            bi.setBounds(0, 0, dp(12), dp(12))
+            setCompoundDrawablesRelative(bi, null, null, null)
+            elevation = dp(8).toFloat()
+            contentDescription = "Translate next chapter ahead"
+            setOnClickListener { setPrefetchEnabled(!Prefs.bool(this@MainActivity, "prefetchNextChapter")) }
+        }
+
         modeTransitionCover = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_XY
             visibility = View.GONE
@@ -3203,6 +3227,7 @@ return t.length>=40?'TXT:'+t:'';
             addView(modeTransitionCover, FrameLayout.LayoutParams(MP, MP))
             addView(progressBox, FrameLayout.LayoutParams(MP, WC, Gravity.TOP).also { it.setMargins(dp(10), dp(10), dp(10), 0) })
             addView(togglePill, FrameLayout.LayoutParams(WC, dp(38), Gravity.BOTTOM or Gravity.END).also { it.setMargins(0, 0, dp(12), dp(12)) })
+            addView(prefetchChip, FrameLayout.LayoutParams(WC, dp(28), Gravity.BOTTOM or Gravity.START).also { it.setMargins(dp(12), 0, 0, dp(12)) })
             scanDot = View(this@MainActivity).apply {
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
@@ -3303,7 +3328,7 @@ return t.length>=40?'TXT:'+t:'';
             setOnTouchListener { _, event -> tapDetector.onTouchEvent(event) }
             isClickable = true
             isLongClickable = true
-            translationY = -dp(10).toFloat()   // raised out of the dock
+            translationY = -dp(8).toFloat()   // raised out of the dock (headroom for it lives in dockWrap's top padding)
         }
         val dock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3322,7 +3347,8 @@ return t.length>=40?'TXT:'+t:'';
         val dockWrap = FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            setPadding(dp(14), dp(6), dp(14), dp(12))
+            // Top padding >= the button's overhang (~11dp) + badge: hardware layers / elevation clip anything outside this view.
+            setPadding(dp(14), dp(18), dp(14), dp(12))
             addView(dock, FrameLayout.LayoutParams(MP, dp(68)))
         }
         dockBar = dock
@@ -3413,6 +3439,7 @@ return t.length>=40?'TXT:'+t:'';
         if (!::homeView.isInitialized) return
         homeView.visibility = View.VISIBLE
         refreshHome()
+        refreshPrefetchChip()
     }
 
     /** Called from every place that opens a page, so the browser underneath becomes visible. */
@@ -3420,6 +3447,7 @@ return t.length>=40?'TXT:'+t:'';
         if (!::homeView.isInitialized || homeView.visibility != View.VISIBLE) return
         homeView.hideKeyboard()
         homeView.visibility = View.GONE
+        refreshPrefetchChip()
         if (!Prefs.bool(this, "tourDone")) {
             handler.postDelayed({
                 if (!isFinishing && !homeVisible() && !Prefs.bool(this, "tourDone")) startTour(manual = false)
@@ -4571,6 +4599,45 @@ return t.length>=40?'TXT:'+t:'';
             if (changed && !first && ::modeOverlay.isInitialized) modeOverlay.play(idx)
         }
         if (::extractBtn.isInitialized) extractBtn.modeIndex = idx
+        refreshPrefetchChip()
+    }
+
+    /** Shown in Novel and Scanning mode only; Real-time never prefetches whole chapters. */
+    private fun refreshPrefetchChip() {
+        if (!::prefetchChip.isInitialized) return
+        val show = currentReadMode() != ReadMode.REALTIME && mode != Mode.CHAT && !homeVisible()
+        prefetchChip.visibility = if (show) View.VISIBLE else View.GONE
+        val on = Prefs.bool(this, "prefetchNextChapter")
+        prefetchChip.text = if (on) "Ahead ON" else "Ahead OFF"
+        prefetchChip.background = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+            setColor(if (on) 0xEB2FBF8A.toInt() else 0xD92A2E3F.toInt())
+            setStroke(dp(1), 0x38FFFFFF)
+        }
+    }
+
+    /** One place for the prefetch switch, used by the chip and by the menu row. */
+    private fun setPrefetchEnabled(enabled: Boolean) {
+        Prefs.putBool(this, "prefetchNextChapter", enabled)
+        if (enabled) {
+            prefetchRequestedUrls.clear()   // a stale "already asked" entry must never block a fresh start
+            prefetchRetryCount.clear()
+            val ch = lastChapter
+            if (ch == null) toast("Ahead translation is ON — it starts as soon as a chapter is opened")
+            else schedulePrefetch(ch)
+        } else {
+            prefetchToken++
+            prefetchLoading = false
+            prefetchCatalogPending = false
+            prefetchTarget = ""
+            prefetchRequestedUrls.clear()
+            prefetchNextOf.clear()
+            prefetchKeys.clear()
+            // Chapters still waiting in the queue for prefetch are dropped too.
+            queue.removeAll { prefetchGeneratedKeys.contains(keyOf(it)) }
+            try { prefetchWv.stopLoading() } catch (_: Exception) {}
+        }
+        refreshPrefetchChip()
     }
 
     /** Same work the menu's "Web Mode" row did, so the menu and the mode sheet share it. */
@@ -5044,6 +5111,7 @@ return t.length>=40?'TXT:'+t:'';
             chromeTopView.elevation = z
             dockWrapView.elevation = z
             (togglePill.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(12) + botH; togglePill.layoutParams = it }
+            (prefetchChip.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(12) + botH; prefetchChip.layoutParams = it }
             // the in-page OCR tools button is positioned by the page itself: tell it how tall the dock is
             val insetCss = (botH / resources.displayMetrics.density).toInt()
             WebModeWriter.bottomInsetPx = insetCss
@@ -6258,6 +6326,19 @@ return t.length>=40?'TXT:'+t:'';
     private fun extractCopy() {
         // ● is always a real extraction. Never wait for WebView.progress and
         // never turn it into the original/translation toggle.
+        // Tapping again after a failed translation sends the very same text again (no new OCR / extraction).
+        val failed = lastFailedChapter
+        if (failed != null && running == null && Store.find(this, failed) == null &&
+            lastChapter?.let { keyOf(it) == keyOf(failed) } == true) {
+            val fk = keyOf(failed)
+            lastFailedChapter = null
+            failedChapters.remove(fk); failedRetryTries.remove(fk); scanFallbackTries.remove(fk)
+            handler.removeCallbacks(failedRetryRunnable)
+            chatWv.evaluateJavascript(Js.clearSendState(), null)
+            toast("🔁 Sending the same text to the chatbot again…")
+            enqueue(failed)
+            return
+        }
         navToken++
         val token = navToken
         // Real-time reads only what is on screen: its retry must not scroll the page either.
@@ -7078,6 +7159,16 @@ return t.length>=40?'TXT:'+t:'';
         while (depth < want) {
             if (!seen.add(keyOf(cur))) break
             val nx = prefetchNextOf[keyOf(cur)] ?: break
+            // The prefetched copy was thrown away after reading (or its job died): fetch it again, twice at most.
+            val nxKey = keyOf(nx)
+            if (Store.find(this, nx) == null && !prefetchKeys.contains(nxKey) &&
+                queue.none { keyOf(it) == nxKey } && running?.let { keyOf(it) == nxKey } != true &&
+                (prefetchRetryCount[nxKey] ?: 0) < 2) {
+                prefetchRetryCount[nxKey] = (prefetchRetryCount[nxKey] ?: 0) + 1
+                prefetchNextOf.remove(keyOf(cur))
+                prefetchRequestedUrls.remove(cleanUrl(nx.url))
+                break
+            }
             cur = nx
             depth++
         }
@@ -7111,7 +7202,7 @@ return t.length>=40?'TXT:'+t:'';
             (ch.next?.takeIf { it.startsWith("http") && adjacentUrlIsSafe(ch.url, it) }
                 ?: inferredWtrNext?.takeIf { adjacentUrlIsSafe(ch.url, it) }
                 // Webtoon-style readers have no plain "next" link: build it from the episode number.
-                ?: (if (webModeOn()) inferEpisodeUrl(ch.url, "next") else null)
+                ?: inferEpisodeUrl(ch.url, "next")
                     ?.takeIf { adjacentUrlIsSafe(ch.url, it) })
         val target: String
         val useCatalog: Boolean
@@ -7144,6 +7235,8 @@ return t.length>=40?'TXT:'+t:'';
             target = catalog
             useCatalog = true
         } else {
+            // Used to fail silently, which looked like "prefetch does nothing".
+            if (prefetchNoLinkNotified.add(keyOf(ch))) toast("Ahead: the next-chapter link was not found on this page")
             return
         }
         val targetKey = cleanUrl(target)
@@ -7230,11 +7323,7 @@ return t.length>=40?'TXT:'+t:'';
                 if (o.optBoolean("ok", false) && body.length >= 80 && count > 0 &&
                     !(title.isNotBlank() && body == title)) {
                     val full = if (title.isNotBlank() && !body.startsWith(title)) "$title\n\n$body" else body
-                    val number = Regex(
-                        "\\b(?:chapter|chap|ch|episode|ep)\\.?\\s*[-#:.]?\\s*(\\d+(?:\\.\\d+)?)",
-                        RegexOption.IGNORE_CASE
-                    ).find(title)?.groupValues?.getOrNull(1)
-                        ?: Regex("(\\d{1,5})").find(title)?.value.orEmpty()
+                    val number = Extractor.chapterNumberOf(title, url)
                     val chapter = Chapter(
                         title.ifBlank { o.optString("pageTitle", "").trim() },
                         full,
@@ -7823,6 +7912,18 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 finishRealtimeAheadTranslation(aheadTaskKey, aheadTask, rawTranslation)
                 return@evaluateJavascript
             }
+            // Scanning: a reply that cannot be matched to the bubbles used to be saved as a good translation
+            // (the AI always answers something). Treat it as a failure instead.
+            if (webModeOn() && !livePanelBatch && ch.contentSel.isBlank() && !JapaneseMangaSession.isManaged(ch)) {
+                val lay = WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
+                if (lay != null) {
+                    val placed = WebModeLayout.align(rawTranslation, lay)
+                    if (placed == null || placed.none { !it.isNullOrBlank() }) {
+                        failJob(tok, ch, "The chatbot answer could not be matched to the page.", fallback = true)
+                        return@evaluateJavascript
+                    }
+                }
+            }
             deferNextChatbotRequest()
             remember(t)
             // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
@@ -7835,6 +7936,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             deepSeekLastOcrAtMs = System.currentTimeMillis()
             val savedKey = keyOf(ch)
             failedRetryTries.remove(savedKey)
+            scanFallbackTries.remove(savedKey)
+            if (lastFailedChapter?.let { keyOf(it) == savedKey } == true) lastFailedChapter = null
             failedChapters.remove(savedKey)
             if (prefetchGeneratedKeys.contains(savedKey) && savedTranslation != null) {
                 prefetchedTranslationIds[savedKey] = savedTranslation.id
@@ -7862,7 +7965,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
-    private fun failJob(tok: Int, ch: Chapter, msg: String) {
+    private fun failJob(tok: Int, ch: Chapter, msg: String, fallback: Boolean = false) {
         if (tok != runToken) return
         val aheadTaskKey = keyOf(ch)
         val aheadTask = rtAheadTranslationTasksByJobKey.remove(aheadTaskKey)
@@ -7898,7 +8001,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         }
         queue.clear()
         running = null
-        val manualText = promptWithGlossary(Prefs.prompt(this), ch.text) + ch.text
+        if (!isDeepSeekLivePanel(ch)) lastFailedChapter = ch
+        if (fallback) {
+            handleScanFallback(ch, retryList)
+            return
+        }
+        val manualText = promptWithGlossary(Prefs.activeTranslationPrompt(this), ch.text) + ch.text
         val willRetry = retryList.isNotEmpty() && (failedRetryTries[keyOf(ch)] ?: 0) < 2
         val retryNote = if (willRetry) "\n⏳ Retrying automatically in 15 s…" else ""
         // The chapter goes straight into the chatbot box (just press Send); the clipboard is the fallback only.
@@ -7910,6 +8018,77 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         updateProgressUi()
         restoreChapterAfterBubbleJob()
         handler.postDelayed({ pumpRealtimeAheadTranslation() }, 600L)
+    }
+
+    /**
+     * Scanning mode: the chatbot answered, but not in a form that can be placed on the bubbles.
+     *  - chapter on screen  -> popup "change the AI provider", the same text is sent again 15 s later
+     *  - chapter in background (prefetch) -> the app switches to the next provider by itself and keeps the chapter ready
+     */
+    private fun handleScanFallback(ch: Chapter, retryList: List<Chapter>) {
+        val key = keyOf(ch)
+        val tries = (scanFallbackTries[key] ?: 0) + 1
+        scanFallbackTries[key] = tries
+        chatWv.evaluateJavascript(Js.clearSendState(), null)
+        chatWv.evaluateJavascript(Js.clearBox(), null)
+        updateProgressUi()
+        restoreChapterAfterBubbleJob()
+        if (tries > 4) {
+            toast("❌ Translation kept failing on every try. Tap ⚡ to send it again.")
+            return
+        }
+        for (c in retryList) failedRetryTries.remove(keyOf(c))   // fallback retries have their own limit
+        val onScreen = lastChapter?.let { keyOf(it) == key } == true && !homeVisible()
+        if (onScreen) {
+            scheduleFailedRetry(retryList, 15_000L)
+            showProviderFailedDialog()
+        } else {
+            val name = switchToNextBot()
+            toast(if (name != null) "⚠️ A background chapter failed — switched the chatbot to $name"
+                  else "⚠️ A background chapter failed — retrying")
+            scheduleFailedRetry(retryList, 8_000L)
+        }
+        handler.postDelayed({ pumpRealtimeAheadTranslation() }, 600L)
+    }
+
+    private fun showProviderFailedDialog() {
+        if (isFinishing || scanFallbackDialog?.isShowing == true) return
+        val names = ArrayList<String>()
+        val urls = ArrayList<String>()
+        val a = bots()
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            names.add(o.optString("n", o.optString("u")))
+            urls.add(o.getString("u"))
+        }
+        scanFallbackDialog = AlertDialog.Builder(this)
+            .setTitle("Translation failed")
+            .setMessage("The AI did not return a usable translation for this chapter. Change the AI provider now. The chapter is sent again automatically in 15 seconds.")
+            .setPositiveButton("Change provider") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle("Choose AI provider")
+                    .setItems(names.toTypedArray()) { _, which -> openBot(urls[which]) }
+                    .show()
+            }
+            .setNeutralButton("Retry now") { _, _ ->
+                handler.removeCallbacks(failedRetryRunnable)
+                retryFailedChapters()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /** Opens the next chatbot in the list (wrapping around). Returns its name, or null when there is no other one. */
+    private fun switchToNextBot(): String? {
+        val a = bots()
+        if (a.length() < 2) return null
+        var idx = -1
+        for (i in 0 until a.length()) if (botKey(a.getJSONObject(i).getString("u")) == currentBotKey) idx = i
+        val next = a.getJSONObject((idx + 1) % a.length())
+        val u = next.getString("u")
+        if (botKey(u) == currentBotKey) return null
+        openBot(u)
+        return next.optString("n", u)
     }
 
     private fun cancelAll() {
@@ -8621,7 +8800,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private fun menu() {
         val labels = arrayListOf(
             "📚 Library", "🕘 Browser History", "⬇️ Export All Translations (.txt)",
-            "🔖 Bookmark This Page", "🔖 Bookmarks", "📝 Edit Prompt",
+            "🔖 Bookmark This Page", "🔖 Bookmarks", "📝 Edit Prompt For Novel Translation",
             menuAutoLabel(), "🔁 Re-translate Current Chapter", "⏹ Stop Background Translation",
             menuDarkLabel(), menuAutoPasteLabel(), menuAutoSendLabel(), menuPromptLabel(),
             menuSaveNextLabel(), menuNextExtractLabel(), menuAdBlockLabel(),
@@ -8631,14 +8810,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🔍 Inspect Chatbot (Copy Report)", menuPrefetchLabel(),
             "🧪 AdBlock Debug: " + AdBlock.debugModeName(), "📋 Copy AdBlock Debug Report",
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
-            "📝 Edit Real-time Prompt", menuForceLabel(),
+            "📝 Edit Prompt For Live Translation", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
             "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
             "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
-            menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel(), menuOcrModelsLabel()
+            menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel(), menuOcrModelsLabel(),
+            "📝 Edit Prompt For Scanning Translation"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8647,17 +8827,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
             "LIBRARY" to listOf(0, 4, 1, 3),
-            "TRANSLATE" to listOf(5, 7),
+            "TRANSLATE" to listOf(5, 33, 54, 7),
             "READER" to listOf(9, 20, 23)
         )
         val advanced = listOf(
             "TRANSLATION" to listOf(47, 12, 19, 14, 26, 30, 39, 40, 44, 46),
-            "WEBTOON TOOLS" to listOf(31, 32, 33, 36, 34, 37, 38, 41, 43, 48, 49, 50, 51, 53),
+            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 41, 43, 48, 49, 50, 51, 53),
             "BROWSER" to listOf(15, 16, 21, 24, 29, 35),
             "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45, 52)
         )
@@ -8726,6 +8906,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
+                54 -> { dlg.dismiss(); editScanPrompt() }
                 35 -> {
                     dlg.dismiss()
                     startAiAdBlockScan()
@@ -8887,22 +9068,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 }
                 24 -> { dlg.dismiss(); loginChatbot() }
                 26 -> {
-                    val enabled = !Prefs.bool(this, "prefetchNextChapter")
-                    Prefs.putBool(this, "prefetchNextChapter", enabled)
-                    if (enabled) {
-                        lastChapter?.let { schedulePrefetch(it) }
-                    } else {
-                        prefetchToken++
-                        prefetchLoading = false
-                        prefetchCatalogPending = false
-                        prefetchTarget = ""
-                        prefetchRequestedUrls.clear()
-                        prefetchNextOf.clear()
-                        prefetchKeys.clear()
-                        // Chapters still waiting in the queue for prefetch are dropped too.
-                        queue.removeAll { prefetchGeneratedKeys.contains(keyOf(it)) }
-                        try { prefetchWv.stopLoading() } catch (_: Exception) {}
-                    }
+                    setPrefetchEnabled(!Prefs.bool(this, "prefetchNextChapter"))
                     refresh(i, menuPrefetchLabel())
                 }
             }
@@ -9630,12 +9796,35 @@ ${rows.take(220).joinToString("\n")}
             gravity = Gravity.TOP
         }
         AlertDialog.Builder(this)
-            .setTitle("Prompt")
+            .setTitle("Novel Translation Prompt")
             .setView(et)
             .setPositiveButton("Save") { _, _ ->
                 val t = et.text.toString()
                 // Unchanged generated text is stored as "no custom prompt" so it keeps following the language choice.
                 Prefs.put(this, "prompt", if (t.trim() == Langs.novelPrompt(this).trim()) "" else t)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun editScanPrompt() {
+        val et = EditText(this).apply {
+            setText(Prefs.scanPrompt(this@MainActivity))
+            minLines = 10
+            gravity = Gravity.TOP
+            hint = "Scanning translation prompt"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Scanning Translation Prompt")
+            .setView(et)
+            .setPositiveButton("Save") { _, _ ->
+                val t = et.text.toString()
+                Prefs.put(this, "scanPrompt", if (t.trim() == Langs.realtimePrompt(this).trim()) "" else t)
+                toast("✅ Scanning prompt saved")
+            }
+            .setNeutralButton("Reset") { _, _ ->
+                Prefs.put(this, "scanPrompt", "")
+                toast("↩ Scanning prompt reset to default")
             }
             .setNegativeButton("Cancel", null)
             .show()

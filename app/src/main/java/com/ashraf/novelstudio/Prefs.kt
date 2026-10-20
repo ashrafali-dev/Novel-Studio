@@ -36,9 +36,16 @@ object Prefs {
     fun realtimePrompt(c: Context): String =
         get(c, "realtimePrompt", "").let { if (it.isBlank() || it == DEFAULT_REALTIME_PROMPT) Langs.realtimePrompt(c) else it }
 
-    /** Use its own editable prompt only while AI Real-time Translation is enabled. */
-    fun activeTranslationPrompt(c: Context): String =
-        if (DeepSeekRealtimeTranslation.isEnabled(c)) realtimePrompt(c) else prompt(c)
+    /** Scanning (Web Mode, not real-time) has its own prompt; until edited it follows the comic-style default. */
+    fun scanPrompt(c: Context): String =
+        get(c, "scanPrompt", "").let { if (it.isBlank()) Langs.realtimePrompt(c) else it }
+
+    /** Real-time, Scanning and Novel each use their own editable prompt. */
+    fun activeTranslationPrompt(c: Context): String = when {
+        DeepSeekRealtimeTranslation.isEnabled(c) -> realtimePrompt(c)
+        bool(c, "webMode") -> scanPrompt(c)
+        else -> prompt(c)
+    }
     fun adblock(c: Context): Boolean = !bool(c, "noAdblock")
     fun auto(c: Context): Boolean = !bool(c, "noAuto")
 

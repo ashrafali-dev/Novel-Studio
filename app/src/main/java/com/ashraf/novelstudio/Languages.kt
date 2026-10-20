@@ -39,7 +39,8 @@ object Langs {
     fun hasCustomPrompt(c: Context): Boolean {
         val p = Prefs.get(c, "prompt", "")
         val r = Prefs.get(c, "realtimePrompt", "")
-        return (p.isNotBlank() && p != Prefs.DEFAULT_PROMPT) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT)
+        val sc = Prefs.get(c, "scanPrompt", "")
+        return (p.isNotBlank() && p != Prefs.DEFAULT_PROMPT) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT) || sc.isNotBlank()
     }
 
     private fun classic(c: Context) = source(c) == AUTO && target(c) == DEFAULT_TARGET

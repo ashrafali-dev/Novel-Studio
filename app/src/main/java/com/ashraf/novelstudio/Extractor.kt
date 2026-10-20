@@ -146,11 +146,25 @@ object Extractor {
         // Never infer WebNovel's chapter number from a random number in the title
         // or its opaque URL ID. Keep the progress card title-only when unknown.
         if (isWebNovel) return ""
-        val m2 = Regex("(\\d{1,5})").find(title)
-        if (m2 != null) return m2.groupValues[1]
-        val m3 = Regex("(\\d{1,5})(?!.*\\d)").find(pathOf(url))
-        return if (m3 != null && m3.value.length <= 5) m3.value else ""
+        // A title that simply starts with its number: "7. The Duel", "12 - Fire". A number that merely appears
+        // somewhere ("2365 years later") is NOT a chapter number any more.
+        Regex("^\\s*#?(\\d{1,4})\\s*(?:[.:：、)\\-–—]\\s*\\S|$)").find(title)?.let { return it.groupValues[1] }
+        val path = pathOf(url)
+        // The URL only counts when it says so itself: chapter-12, /ep/7, ?chapter=3 ...
+        Regex("(?i)(?:chapter|chap|chapitre|capitulo|episode|ep|ch)[-_/=.]?0*(\\d{1,5}(?:\\.\\d+)?)").findAll(path).lastOrNull()
+            ?.let { return it.groupValues[1] }
+        Regex("(?i)[?&](?:chapter|chap|ch|episode|ep)=(\\d{1,5})(?:&|$)").find(url)?.let { return it.groupValues[1] }
+        // Bare trailing number in the URL (/123/45.html): accept it only when the title shows the same number,
+        // otherwise it is usually a book/site id and must not be shown as the chapter.
+        val last = Regex("(\\d{1,4})(?!.*\\d)").find(path)?.value
+        if (last != null && Regex("(?<!\\d)" + last.trimStart('0').ifEmpty { "0" } + "(?!\\d)").containsMatchIn(title)) {
+            return last.trimStart('0').ifEmpty { "0" }
+        }
+        return ""
     }
+
+    /** Public entry for other extractors (prefetch) so every path derives the chapter number the same safe way. */
+    fun chapterNumberOf(title: String, url: String): String = findNumber(title, url)
 
     // Prefer selectors that survive chapter-to-chapter DOM changes.
     // Jsoup's cssSelector() can generate positional :nth-child selectors,
