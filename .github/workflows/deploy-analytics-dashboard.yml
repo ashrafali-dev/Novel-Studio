@@ -3,7 +3,7 @@ name: Deploy NovelStudio Analytics dashboard
 on:
   push:
     branches:
-      - fix/analytics-dashboard-hosting
+      - main
     paths:
       - 'analytics-dashboard/**'
       - '.github/workflows/deploy-analytics-dashboard.yml'
