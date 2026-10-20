@@ -41,10 +41,11 @@ object DetPreprocessor {
         limitType: String,
         maxSideLimit: Int,
         imgMode: String,
+        maxPixels: Long = Long.MAX_VALUE,
     ): DetPreprocessResult {
         val src = BitmapUtils.bitmapToBGRMat(bitmap)
         return try {
-            preprocess(src, limitSideLen, limitType, maxSideLimit, imgMode)
+            preprocess(src, limitSideLen, limitType, maxSideLimit, imgMode, maxPixels)
         } finally {
             src.release()
         }
@@ -56,6 +57,7 @@ object DetPreprocessor {
         limitType: String,
         maxSideLimit: Int,
         imgMode: String,
+        maxPixels: Long = Long.MAX_VALUE,
     ): DetPreprocessResult {
         val originalH = src.rows()
         val originalW = src.cols()
@@ -65,7 +67,7 @@ object DetPreprocessor {
             src
         }
 
-        val resized = ImageUtils.resizeToMultipleOf32(input, limitSideLen, limitType, maxSideLimit)
+        val resized = ImageUtils.resizeToMultipleOf32(input, limitSideLen, limitType, maxSideLimit, maxPixels)
         if (input !== src) input.release()
 
         val h = resized.rows()
