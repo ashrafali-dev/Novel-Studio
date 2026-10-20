@@ -1481,7 +1481,10 @@ internal class WebModeExtractor(
                 // again and compare it against every OCR box; a tall panel with many bubbles can stall.
                 // Without a collector the helper returns immediately after finding the bubble's fill.
                 val bands: MutableList<IntArray>? = if (fastMode) null else ArrayList()
-                val inter: IntArray? = try {
+                // Realtime screens optimise for latency: flood-filling up to 1.2M pixels around
+                // every OCR block repeatedly was the dominant freeze on long/mobile Webtoon panels.
+                // Keep this expensive interior/leftover audit only for thorough chapter extraction.
+                val inter: IntArray? = if (fastMode) null else try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
                         bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()))
                 } catch (_: Exception) { null }
