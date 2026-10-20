@@ -15,6 +15,8 @@
 package com.paddle.ocr.engine
 
 import android.graphics.Bitmap
+import android.util.Log
+import com.paddle.ocr.model.OCRError
 import com.paddle.ocr.PaddleOCRConfig
 import com.paddle.ocr.model.OCRBox
 import com.paddle.ocr.postprocess.DBPostProcessor
@@ -35,31 +37,66 @@ class DetectionEngine(
         val inputShape: List<Int>,
     )
 
+    // Adaptive caps: start from the config and shrink (stickily, for this engine's lifetime) whenever ONNX Runtime
+    // runs out of memory, so one big screenshot does not force every later scan to fail and fall back to ML Kit.
+    @Volatile private var sideCap: Int = config.detMaxSideLimit
+    @Volatile private var pixelCap: Long = config.detMaxPixels
+
+    private fun isMemoryFailure(t: Throwable): Boolean {
+        var c: Throwable? = t
+        while (c != null) {
+            if (c is OutOfMemoryError) return true
+            val m = c.message ?: ""
+            if (m.contains("bad_alloc", true) || m.contains("out of memory", true) ||
+                m.contains("failed to allocate", true) || m.contains("alloc", true) && m.contains("fail", true)) return true
+            c = c.cause
+        }
+        return false
+    }
+
     fun detect(bitmap: Bitmap): DetectionResult {
-        return detect {
+        return detect { side, px ->
             DetPreprocessor.preprocess(
                 bitmap,
                 config.detLimitSideLen,
                 config.detLimitType,
-                config.detMaxSideLimit,
+                side,
                 config.detImgMode,
+                px,
             )
         }
     }
 
     fun detect(src: Mat): DetectionResult {
-        return detect {
+        return detect { side, px ->
             DetPreprocessor.preprocess(
                 src,
                 config.detLimitSideLen,
                 config.detLimitType,
-                config.detMaxSideLimit,
+                side,
                 config.detImgMode,
+                px,
             )
         }
     }
 
-    private fun detect(preprocessor: () -> DetPreprocessResult): DetectionResult {
+    private fun detect(preprocessor: (Int, Long) -> DetPreprocessResult): DetectionResult {
+        var attempt = 0
+        while (true) {
+            try {
+                return detectOnce { preprocessor(sideCap, pixelCap) }
+            } catch (t: Throwable) {
+                val retriable = (t is OCRError.InferenceFailed || t is OutOfMemoryError) && isMemoryFailure(t)
+                if (!retriable || attempt >= 3 || pixelCap <= 300_000L) throw t
+                attempt++
+                sideCap = (sideCap * 0.7).toInt().coerceAtLeast(640)
+                pixelCap = (pixelCap * 0.6).toLong().coerceAtLeast(300_000L)
+                Log.w("NovelStudioPaddle", "detector out of memory; retry #$attempt with maxSide=$sideCap maxPixels=$pixelCap")
+            }
+        }
+    }
+
+    private fun detectOnce(preprocessor: () -> DetPreprocessResult): DetectionResult {
         val preStart = System.currentTimeMillis()
         val preResult = preprocessor()
         val preprocessMs = System.currentTimeMillis() - preStart
