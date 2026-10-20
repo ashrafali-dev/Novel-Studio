@@ -1505,7 +1505,7 @@ internal class WebModeExtractor(
                 if (i !in inside) continue
                 val members = inside.filter { !consumed[it] }
                 if (i !in members) continue
-                if (members.size < 2 && bands.isEmpty()) continue   // a lone, fully read line needs nothing
+                if (members.size < 2 && bands.isNullOrEmpty()) continue   // a lone, fully read line needs nothing
 
                 // Lines of ONE sentence chain together (a skipped line makes a double gap: allow it).
                 val sameText = linkedSetOf(i)
