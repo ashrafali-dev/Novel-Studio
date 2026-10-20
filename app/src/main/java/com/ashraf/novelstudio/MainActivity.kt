@@ -4858,55 +4858,138 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR models (download / delete)"
+    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR)"
+
+    private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
+        "paddle_small" -> "PaddleOCR Small"
+        "paddle_heavy" -> "PaddleOCR Heavy"
+        "rapid_onnx" -> "RapidOCR / legacy ONNX"
+        "manga" -> "Japanese Manga OCR"
+        else -> "ML Kit · Default"
+    }
+
+    private fun chooseOcrEngine() {
+        val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
+        val labels = arrayOf(
+            "ML Kit — Default (fast, built-in)",
+            "PaddleOCR PP-OCRv6 Small — balanced speed and accuracy",
+            "PaddleOCR PP-OCRv6 Medium / Heavy — larger model",
+            "RapidOCR ONNX — legacy optional engine",
+            "Japanese Manga OCR — if its model is installed"
+        )
+        val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("OCR Engine")
+            .setSingleChoiceItems(labels, selected) { dialog, which ->
+                Prefs.put(this, "ocrEngine", keys[which])
+                dialog.dismiss()
+                toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     private fun ocrModelsDialog() {
         OcrModels.init(this)
-        val packs = OcrModels.PACKS
+        PaddleOcrModels.init(this)
+        val legacyPacks = OcrModels.PACKS
+        val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        for (p in packs) {
+        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\\nTap to choose the engine")
+
+        for (p in legacyPacks) {
             val state = when {
                 !p.available -> "link not configured yet"
                 OcrModels.isBusy(p) -> "downloading…"
                 OcrModels.isInstalled(p) -> "installed · " + OcrModels.sizeMb(p) + " MB — tap to delete"
                 else -> "not installed · tap to download (~" + OcrModels.approxMb(p) + " MB)"
             }
-            labels.add(p.label + "\n" + state)
+            labels.add(p.label + "\\n" + state)
         }
+
+        for (p in paddlePacks) {
+            val state = when {
+                PaddleOcrModels.isBusy(p) -> "downloading…"
+                PaddleOcrModels.isInstalled(p) -> "installed · " + PaddleOcrModels.sizeMb(p) + " MB — tap to delete"
+                else -> "not installed · tap to download (~" + p.approximateMb + " MB)"
+            }
+            labels.add("🧠 " + p.label + "\\n" + state)
+        }
+
+        val deleteIndex = 1 + legacyPacks.size + paddlePacks.size
         val err = OcrModels.lastError
-        labels.add("🗑 Delete all models\n" +
-            (if (err.isNotBlank()) "Last ONNX problem: " + err.take(70) else "Without a model, ML Kit reads the page"))
-        listDialog("🧠 OCR models", labels, { i ->
-            if (i == packs.size) {
-                AlertDialog.Builder(this)
-                    .setMessage("Delete all downloaded OCR models? ML Kit will be used instead.")
-                    .setPositiveButton("Delete") { _, _ -> OcrModels.deleteAll(); toast("🗑 OCR models deleted") }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            } else {
-                val p = packs[i]
-                when {
-                    !p.available -> toast("⚠ ${p.label}: download link not configured yet")
-                    OcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
-                    OcrModels.isInstalled(p) -> AlertDialog.Builder(this)
-                        .setMessage("Delete the ${p.label} OCR model? ML Kit will be used for this language.")
-                        .setPositiveButton("Delete") { _, _ -> OcrModels.delete(p); toast("🗑 ${p.label} deleted") }
-                        .setNegativeButton("Cancel", null)
-                        .show()
-                    else -> {
-                        toast("⬇️ Downloading ${p.label}…")
-                        Thread {
-                            try {
-                                OcrModels.download(p) { name, pct ->
-                                    if (pct % 25 == 0) runOnUiThread { toast("⬇️ $name $pct%") }
-                                }
-                                runOnUiThread { toast("✅ ${p.label} installed — Web Mode OCR uses it now") }
-                            } catch (e: Exception) {
-                                runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+        val paddleErr = PaddleOcrModels.lastError
+        val lastError = if (paddleErr.isNotBlank()) paddleErr else err
+        labels.add("🗑 Delete all optional OCR models\\n" +
+            (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
+
+        listDialog("🧠 OCR engine & models", labels, { i ->
+            when {
+                i == 0 -> chooseOcrEngine()
+                i in 1..legacyPacks.size -> {
+                    val p = legacyPacks[i - 1]
+                    when {
+                        !p.available -> toast("⚠ ${p.label}: download link not configured yet")
+                        OcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
+                        OcrModels.isInstalled(p) -> AlertDialog.Builder(this)
+                            .setMessage("Delete the ${p.label} legacy OCR model?")
+                            .setPositiveButton("Delete") { _, _ ->
+                                OcrModels.delete(p)
+                                toast("🗑 ${p.label} deleted")
                             }
-                        }.start()
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                        else -> {
+                            toast("⬇️ Downloading ${p.label}…")
+                            Thread {
+                                try {
+                                    OcrModels.download(p) { name, pct ->
+                                        if (pct % 25 == 0) runOnUiThread { toast("⬇️ $name $pct%") }
+                                    }
+                                    runOnUiThread { toast("✅ ${p.label} installed. Select it in OCR Engine if needed.") }
+                                } catch (e: Exception) {
+                                    runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+                                }
+                            }.start()
+                        }
                     }
                 }
+                i < deleteIndex -> {
+                    val p = paddlePacks[i - (1 + legacyPacks.size)]
+                    when {
+                        PaddleOcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
+                        PaddleOcrModels.isInstalled(p) -> AlertDialog.Builder(this)
+                            .setMessage("Delete ${p.label}? ML Kit remains available as fallback.")
+                            .setPositiveButton("Delete") { _, _ ->
+                                PaddleOcrModels.delete(p)
+                                toast("🗑 ${p.label} deleted")
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                        else -> {
+                            toast("⬇️ Downloading ${p.label}…")
+                            Thread {
+                                try {
+                                    PaddleOcrModels.download(p) { name, pct ->
+                                        if (pct % 25 == 0) runOnUiThread { toast("⬇️ PaddleOCR $name $pct%") }
+                                    }
+                                    runOnUiThread { toast("✅ ${p.label} installed. Select it in OCR Engine to use it.") }
+                                } catch (e: Exception) {
+                                    runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+                                }
+                            }.start()
+                        }
+                    }
+                }
+                else -> AlertDialog.Builder(this)
+                    .setMessage("Delete all downloaded optional OCR models? ML Kit will remain as the default engine.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        OcrModels.deleteAll()
+                        PaddleOcrModels.deleteAll()
+                        toast("🗑 Optional OCR models deleted")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         }, null)
     }
