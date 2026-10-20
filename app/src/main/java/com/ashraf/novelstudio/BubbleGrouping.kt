@@ -52,7 +52,10 @@ internal object BubbleGrouping {
 
     /** Pairwise rule used while no bubble outline is known (generic gap <= 1 font, aligned, similar font). */
     fun sameBubbleFast(a: OcrBlock, b: OcrBlock): Boolean =
-        likelySameBubbleLine(a, b, 1.0f, loose = true) && aligned(a, b)
+        // OCR boxes often leave a larger vertical gap than the glyph height inside tall Korean webtoon balloons.
+        // Production callers also pass outlineBetween() as a veto, so tolerate wider line spacing without
+        // blindly chaining two visibly separate balloons together.
+        likelySameBubbleLine(a, b, 1.6f, loose = true) && aligned(a, b)
 
     /**
      * Groups the lines [pool] (indices into [blocks]) into speech bubbles.
