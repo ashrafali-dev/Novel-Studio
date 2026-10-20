@@ -32,7 +32,9 @@ internal data class OcrBlock(
     val h: Float = 0f,
     val angle: Float = 0f,
     val fontPx: Float = 0f,
-    val vertical: Boolean = false
+    val vertical: Boolean = false,
+    val confidence: Float = 0f,
+    val observations: Int = 1
 )
 
 internal class OcrResult(val blocks: List<OcrBlock>) {
@@ -133,14 +135,14 @@ internal object OcrPost {
         // Only text that is mostly OTHER symbols (|, /, ~~~, box-drawing...) is recogniser noise.
         val core = t.count { !it.isWhitespace() && it !in NEUTRAL_PUNCT }
         if (core >= 3 && letters * 100 < core * 45) return true
-        if (b.h < 9f || b.w < 9f) return true
+        if (b.h < 4f || b.w < 2f) return true
         if (b.h > b.w * 6f && t.length <= 4) return true    // vertical smear of a few "letters"
         return false
     }
 
     fun scaled(b: OcrBlock, k: Float): OcrBlock = OcrBlock(
         b.text, (b.top * k).toInt(), (b.left * k).toInt(),
-        b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical
+        b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical, b.confidence, b.observations
     )
 
     /**
@@ -310,240 +312,93 @@ internal class MlKitOcrEngine : OcrEngine {
         }
     }
 
-    // Normalize spacing and punctuation for comparing partial OCR readings from different passes.
-    private fun comparableOcrText(text: String): String =
-        text.lowercase().filter { it.isLetterOrDigit() }
-
-    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult {
-        // Real-time mode must return quickly: one on-device pass over the original bitmap.
-        // Full multi-view/contrast recognition remains available through recognize() for chapter scans
-        // and through the bounded fallback when this first pass is genuinely sparse.
-        try {
-            val result = Tasks.await(
-                recognizer(script).process(InputImage.fromBitmap(bitmap, 0))
-            )
-            return OcrResult(OcrPost.mergeNeighbours(toBlocks(result).filterNot { OcrPost.isNoise(it) }, bitmap))
-        } catch (e: ExecutionException) {
-            val c = e.cause
-            if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
-            throw OcrUnavailableException("ML Kit ${script.name} failed: ${c?.javaClass?.simpleName}", c)
-        } catch (e: MlKitException) {
-            throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
-        }
-    }
-
-    override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
-        try {
-            val rec = recognizer(script)
-            // Stylised sound effects are what ML Kit misses most: huge, outlined, glowing or
-            // gradient lettering. Look at the picture in several ways AT THE SAME TIME (ML Kit runs
-            // the tasks in parallel, so this costs little more than one pass) and keep every block
-            // that an earlier look did not already find:
-            //   1x original, 1/2 size, 1/2 size with boosted contrast (glow/outline), 1/4 size (giant letters)
-            val mine = ArrayList<Bitmap>()                       // bitmaps we created and must recycle
-            val tasks = ArrayList<com.google.android.gms.tasks.Task<com.google.mlkit.vision.text.Text>>()
-            val scale = ArrayList<Float>()
-            try {
-                tasks.add(rec.process(InputImage.fromBitmap(bitmap, 0))); scale.add(1f)
-                if (bitmap.width >= 240 && bitmap.height >= 240) {
-                    try {
-                        val half = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
-                        mine.add(half)
-                        tasks.add(rec.process(InputImage.fromBitmap(half, 0))); scale.add(2f)
-                        val boosted = OcrPost.boostContrast(half)
-                        mine.add(boosted)
-                        tasks.add(rec.process(InputImage.fromBitmap(boosted, 0))); scale.add(2f)
-                        val bright = OcrPost.brightMask(bitmap)
-                        mine.add(bright)
-                        tasks.add(rec.process(InputImage.fromBitmap(bright, 0))); scale.add(1f)
-                        if (bitmap.width >= 480 && bitmap.height >= 480) {
-                            val quarter = Bitmap.createScaledBitmap(bitmap, bitmap.width / 4, bitmap.height / 4, true)
-                            mine.add(quarter)
-                            tasks.add(rec.process(InputImage.fromBitmap(quarter, 0))); scale.add(4f)
-                        }
-                    } catch (_: OutOfMemoryError) { }
-                    // Extra looks for the full (non-real-time) scan. The prefetch already hides the
-                    // waiting time, so quality matters more than speed here. Each one is optional:
-                    // an out-of-memory error only skips that look.
-                    val area = bitmap.width.toLong() * bitmap.height.toLong()
-                    // 2x enlarged: small / thin lettering that the 1x pass reads as noise.
-                    if (maxOf(bitmap.width, bitmap.height) <= 1400 && area * 4L <= 6_000_000L) {
-                        try {
-                            val up = Bitmap.createScaledBitmap(bitmap, bitmap.width * 2, bitmap.height * 2, true)
-                            mine.add(up)
-                            tasks.add(rec.process(InputImage.fromBitmap(up, 0))); scale.add(0.5f)
-                        } catch (_: OutOfMemoryError) { }
-                    }
-                    // Full-size contrast stretch: faint text on tinted / grey bubbles (the 1/2-size
-                    // boosted look above can lose thin strokes).
-                    if (area <= 3_200_000L) {
-                        try {
-                            val boost1 = OcrPost.boostContrast(bitmap)
-                            mine.add(boost1)
-                            tasks.add(rec.process(InputImage.fromBitmap(boost1, 0))); scale.add(1f)
-                        } catch (_: OutOfMemoryError) { }
-                    }
-                }
-                val all = ArrayList<OcrBlock>()
-                for ((i, t) in tasks.withIndex()) {
-                    val blocks = try { toBlocks(Tasks.await(t)) }
-                        catch (e: ExecutionException) { if (i == 0) throw e else emptyList() }
-                    for (b in blocks) {
-                        val big = if (scale[i] == 1f) b else OcrPost.scaled(b, scale[i])
-                        val candidateText = comparableOcrText(big.text)
-                        if (i > 0 && candidateText.length < 2) continue
-
-                        if (i > 0) {
-                            val overlaps = all.indices.filter {
-                                OcrPost.overlapOfSmaller(all[it], big) > 0.25f
-                            }
-                            if (overlaps.isNotEmpty()) {
-                                // A later scale/contrast pass can read more of a line than the
-                                // original pass. Do not blindly discard it as a duplicate: keep it
-                                // when its text extends an earlier reading at the same position.
-                                val upgrade = overlaps.firstOrNull { index ->
-                                    val priorText = comparableOcrText(all[index].text)
-                                    priorText.length >= 3 &&
-                                        candidateText.length > priorText.length + maxOf(2, priorText.length / 10) &&
-                                        candidateText.contains(priorText)
-                                }
-                                if (upgrade != null) {
-                                    all[upgrade] = big
-                                    // If the fuller result also contains another overlapping
-                                    // fragment, remove that fragment so it is not translated twice.
-                                    val redundant = overlaps.filter { index ->
-                                        index != upgrade && comparableOcrText(all[index].text).let { priorText ->
-                                            priorText.length >= 3 && candidateText.contains(priorText)
-                                        }
-                                    }.sortedDescending()
-                                    for (index in redundant) all.removeAt(index)
-                                }
-                                // Keep the best existing candidate for this position unless the
-                                // new one demonstrably contains more of the same text.
-                                continue
-                            }
-                        }
-                        all.add(big)
-                    }
-                }
-                val merged = OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) }, bitmap)
-                return OcrResult(merged)
-            } finally {
-                for (m in mine) if (m !== bitmap) m.recycle()
-            }
-        } catch (e: ExecutionException) {
-            val c = e.cause
-            if (c is MlKitException) throw OcrUnavailableException("ML Kit ${script.name}: code ${c.errorCode}", c)
-            throw OcrUnavailableException("ML Kit ${script.name} failed: ${c?.javaClass?.simpleName}", c)
-        } catch (e: MlKitException) {
-            throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
-        }
-    }
-
-    /**
-     * Retry only when the caller detects a sparse first reading. Upscale within a bounded pixel
-     * budget and run normal + contrast-boosted inputs in parallel, then merge distinct text boxes.
+    /** English comic text needs several views even when the first view looks non-empty.
+     * Keep LINES until the uncovered-ink audit; merging before that hides missing middle rows.
+     * Each optional view is awaited before recycling, with a bounded pixel budget.
      */
-    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult {
-        val maxDim = maxOf(bitmap.width, bitmap.height).toFloat()
-        val area = bitmap.width.toDouble() * bitmap.height.toDouble()
-        val factor = minOf(
-            2f,
-            2400f / maxDim,
-            kotlin.math.sqrt(5_000_000.0 / area).toFloat()
-        ).coerceAtLeast(1f)
+    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
+        readViews(bitmap, script, thorough = script == OcrScript.LATIN)
 
-        var enlarged: Bitmap? = null
-        var boosted: Bitmap? = null
-        try {
-            val base = if (factor > 1.01f) {
-                Bitmap.createScaledBitmap(
-                    bitmap,
-                    (bitmap.width * factor).toInt().coerceAtLeast(1),
-                    (bitmap.height * factor).toInt().coerceAtLeast(1),
-                    true
-                ).also { enlarged = it }
-            } else bitmap
-            boosted = OcrPost.boostContrast(base)
-            val rec = recognizer(script)
-            val tasks = listOf(
-                rec.process(InputImage.fromBitmap(base, 0)),
-                rec.process(InputImage.fromBitmap(boosted, 0))
-            )
-            val all = ArrayList<OcrBlock>()
-            for (task in tasks) {
-                val raw = try { toBlocks(Tasks.await(task)) }
-                    catch (_: ExecutionException) { emptyList() }
-                for (found in raw) {
-                    val candidate = OcrPost.scaled(found, 1f / factor)
-                    if (OcrPost.isNoise(candidate)) continue
-                    val key = comparableOcrText(candidate.text)
-                    if (key.isEmpty()) continue
-                    val overlaps = all.indices.filter {
-                        OcrPost.overlapOfSmaller(all[it], candidate) > 0.25f
+    override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
+        readViews(bitmap, script, thorough = true)
+
+    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
+        readViews(bitmap, script, thorough = true)
+
+    override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
+        readViews(bitmap, script, thorough = true, region = true)
+
+    private fun readViews(
+        bitmap: Bitmap, script: OcrScript, thorough: Boolean, region: Boolean = false
+    ): OcrResult {
+        val all = ArrayList<OcrBlock>()
+        val rec = recognizer(script)
+        fun scan(view: Bitmap, x: Int = 0, y: Int = 0, originalW: Int = view.width,
+                 originalH: Int = view.height, required: Boolean = false) {
+            try {
+                val text = Tasks.await(rec.process(InputImage.fromBitmap(view, 0)))
+                val kx = originalW.toFloat() / view.width
+                val ky = originalH.toFloat() / view.height
+                val mapped = toBlocks(text, script).map { b ->
+                    b.copy(top = (b.top * ky).toInt() + y, left = (b.left * kx).toInt() + x,
+                        cx = b.cx * kx + x, cy = b.cy * ky + y,
+                        w = b.w * kx, h = b.h * ky, fontPx = b.fontPx * minOf(kx, ky))
+                }
+                OcrLineFusion.addAll(all, mapped.filterNot { OcrPost.isNoise(it) })
+            } catch (e: ExecutionException) {
+                if (required) throw OcrUnavailableException("ML Kit ${script.name} failed", e.cause ?: e)
+            } catch (e: MlKitException) {
+                if (required) throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
+            }
+        }
+        scan(bitmap, required = true)
+        if (thorough) {
+            // Tile instead of shrinking a tall webtoon to fit an enlarged view. Overlap keeps lines
+            // on tile boundaries complete; all geometry is mapped back to the ORIGINAL slice.
+            val tileH = if (region) 1000 else 900
+            for ((top, bottom) in WebModeLogic.slices(bitmap.height, tileH, 180)) {
+                var crop: Bitmap? = null
+                var up: Bitmap? = null
+                var contrast: Bitmap? = null
+                var inverted: Bitmap? = null
+                try {
+                    crop = Bitmap.createBitmap(bitmap, 0, top, bitmap.width, bottom - top)
+                    val factor = minOf(2f, 2200f / maxOf(crop.width, crop.height),
+                        kotlin.math.sqrt(3_200_000.0 / (crop.width.toDouble() * crop.height)).toFloat())
+                        .coerceAtLeast(1f)
+                    up = if (factor > 1.05f) Bitmap.createScaledBitmap(crop,
+                        (crop.width * factor).toInt(), (crop.height * factor).toInt(), true) else crop
+                    scan(up, y = top, originalW = crop.width, originalH = crop.height)
+                    contrast = OcrPost.boostContrast(up)
+                    scan(contrast, y = top, originalW = crop.width, originalH = crop.height)
+                    if (script == OcrScript.LATIN) {
+                        // Explicit polarity inversion recovers glowing white serif captions. A fixed
+                        // bright threshold alone destroys anti-aliased strokes and is not a replacement.
+                        inverted = invert(contrast)
+                        scan(inverted, y = top, originalW = crop.width, originalH = crop.height)
                     }
-                    if (overlaps.isEmpty()) {
-                        all.add(candidate)
-                    } else {
-                        val upgrade = overlaps.firstOrNull { index ->
-                            val prior = comparableOcrText(all[index].text)
-                            prior.length >= 3 &&
-                                key.length > prior.length + maxOf(2, prior.length / 10) &&
-                                key.contains(prior)
-                        }
-                        if (upgrade != null) all[upgrade] = candidate
-                    }
+                } catch (_: OutOfMemoryError) {
+                    // Already recognised lines survive a failed optional view.
+                } finally {
+                    val owned = listOfNotNull(inverted, contrast, up, crop).distinct()
+                    for (b in owned) if (b !== bitmap && !b.isRecycled) b.recycle()
                 }
             }
-            return OcrResult(OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) }))
-        } catch (_: OutOfMemoryError) {
-            return OcrResult(emptyList())
-        } catch (e: ExecutionException) {
-            val c = e.cause
-            throw OcrUnavailableException("ML Kit ${script.name} retry failed: ${c?.javaClass?.simpleName}", c)
-        } catch (e: MlKitException) {
-            throw OcrUnavailableException("ML Kit ${script.name} retry: code ${e.errorCode}", e)
-        } finally {
-            boosted?.let { if (it !== bitmap) it.recycle() }
-            enlarged?.let { if (it !== bitmap && it !== boosted) it.recycle() }
         }
+        val lines = all.sortedWith(compareBy({ it.top }, { it.left }))
+        return OcrResult(if (script == OcrScript.LATIN) lines else OcrPost.mergeNeighbours(lines, bitmap))
     }
 
-    override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult {
-        try {
-            val rec = recognizer(script)
-            val mine = ArrayList<Bitmap>()
-            val tasks = ArrayList<com.google.android.gms.tasks.Task<com.google.mlkit.vision.text.Text>>()
-            val scale = ArrayList<Float>()
-            try {
-                tasks.add(rec.process(InputImage.fromBitmap(bitmap, 0))); scale.add(1f)
-                if (bitmap.height < 220 && bitmap.width >= 16 && bitmap.height >= 16) {
-                    try {
-                        val up = Bitmap.createScaledBitmap(bitmap, bitmap.width * 2, bitmap.height * 2, true)
-                        mine.add(up)
-                        tasks.add(rec.process(InputImage.fromBitmap(up, 0))); scale.add(0.5f)
-                    } catch (_: OutOfMemoryError) { }
-                }
-                var best: List<OcrBlock> = emptyList()
-                var bestLen = -1
-                for ((i, t) in tasks.withIndex()) {
-                    val blocks = try { toBlocks(Tasks.await(t)) }
-                        catch (e: ExecutionException) { if (i == 0) throw e else emptyList() }
-                    val scaledBlocks = if (scale[i] == 1f) blocks else blocks.map { OcrPost.scaled(it, scale[i]) }
-                    val merged = OcrPost.mergeNeighbours(scaledBlocks.filterNot { OcrPost.isNoise(it) })
-                    val len = merged.sumOf { it.text.length }
-                    if (len > bestLen) { best = merged; bestLen = len }
-                }
-                return OcrResult(best)
-            } finally {
-                for (m in mine) if (m !== bitmap) m.recycle()
-            }
-        } catch (e: ExecutionException) {
-            val c = e.cause
-            throw OcrUnavailableException("ML Kit ${script.name} failed: ${c?.javaClass?.simpleName}", c)
-        } catch (e: MlKitException) {
-            throw OcrUnavailableException("ML Kit ${script.name}: code ${e.errorCode}", e)
-        }
+    private fun invert(src: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val paint = android.graphics.Paint()
+        paint.colorFilter = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix(floatArrayOf(
+            -1f, 0f, 0f, 0f, 255f,
+            0f, -1f, 0f, 0f, 255f,
+            0f, 0f, -1f, 0f, 255f,
+            0f, 0f, 0f, 1f, 0f)))
+        android.graphics.Canvas(out).drawBitmap(src, 0f, 0f, paint)
+        return out
     }
 
     /**
@@ -551,19 +406,20 @@ internal class MlKitOcrEngine : OcrEngine {
      * LINES instead and let [OcrPost.mergeNeighbours] rebuild the sentences with one consistent rule.
      * Vertical text and clearly tilted blocks (sound effects) stay whole.
      */
-    private fun toBlocks(vt: com.google.mlkit.vision.text.Text): List<OcrBlock> {
+    private fun toBlocks(vt: com.google.mlkit.vision.text.Text, script: OcrScript): List<OcrBlock> {
         val out = ArrayList<OcrBlock>()
         for (b in vt.textBlocks) {
             val t = b.text.trim()
             if (t.isEmpty()) continue
             val whole = toBlock(t, b)
-            if (whole.vertical || b.lines.size < 2 || Math.abs(whole.angle) >= 6f) { out.add(whole); continue }
+            if ((whole.vertical && script != OcrScript.LATIN) || b.lines.isEmpty() || Math.abs(whole.angle) >= 6f) { out.add(whole); continue }
             for (l in b.lines) {
                 val lt = l.text.trim()
                 if (lt.isEmpty()) continue
                 val g = geo(l.cornerPoints, l.boundingBox) ?: continue
                 val box = l.boundingBox
-                out.add(OcrBlock(lt, box?.top ?: 0, box?.left ?: 0, g.cx, g.cy, g.w, g.h, g.angle, g.h * 0.9f, false))
+                out.add(OcrBlock(lt, box?.top ?: 0, box?.left ?: 0, g.cx, g.cy, g.w, g.h, g.angle, g.h * 0.9f, false,
+                    l.confidence.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f))
             }
         }
         return out.sortedWith(compareBy({ it.top }, { it.left }))
@@ -607,7 +463,10 @@ internal class MlKitOcrEngine : OcrEngine {
         val vertical = verticalVotes > 0 && verticalVotes * 2 >= b.lines.size
         val font = if (vertical) median(wide) else median(tall)
         val px = if (font > 0f) font * 0.9f else minOf(g.w, g.h) * 0.5f
-        return OcrBlock(t, top, left, g.cx, g.cy, g.w, g.h, g.angle, px, vertical)
+        return OcrBlock(t, top, left, g.cx, g.cy, g.w, g.h, g.angle, px, vertical,
+            b.lines.map { it.confidence }.filter { it.isFinite() }.average().toFloat().let {
+                if (it.isFinite()) it.coerceIn(0f, 1f) else 0f
+            })
     }
 
     @Synchronized

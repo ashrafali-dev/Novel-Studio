@@ -37,15 +37,15 @@ internal object OcrRescan {
     private const val TAG = "NSOcrRescan"
 
     // Tuned on a real webtoon screenshot (glowing serif caption between two bubbles).
-    private const val GRID_W = 400        // analysis width in pixels
-    private const val EDGE_T = 70         // gradient strength that counts as an edge
-    private const val GAP = 8             // horizontal gap (grid px) bridged between letters
-    private const val MIN_W = 28          // region must be at least this wide (grid px)
-    private const val MIN_H = 7
-    private const val MAX_H = 70
-    private const val MIN_ASPECT = 2.2f   // text lines are wide, not square blobs
-    private const val DENS_LO = 0.08f     // share of edge pixels in the region's box
-    private const val DENS_HI = 0.55f
+    private const val GRID_W = 800        // analysis width in pixels
+    private const val EDGE_T = 55         // gradient strength that counts as an edge
+    private const val GAP = 5             // horizontal gap (grid px) bridged between letters
+    private const val MIN_W = 16          // region must be at least this wide (grid px)
+    private const val MIN_H = 4
+    private const val MAX_H = 100
+    private const val MIN_ASPECT = 1.3f   // text lines are wide, not square blobs
+    private const val DENS_LO = 0.055f     // share of edge pixels in the region's box
+    private const val DENS_HI = 0.65f
 
     /** [anchor] is the block that only partly explains this row (null for a completely unread line). */
     internal class Region(val l: Int, val t: Int, val r: Int, val b: Int, val anchor: OcrBlock? = null)
@@ -94,7 +94,7 @@ internal object OcrRescan {
             val hx = (b.w * c + b.h * sn) / 2f
             val hy = (b.w * sn + b.h * c) / 2f
             val font = if (b.fontPx > 0f) b.fontPx else b.h
-            val pad = ((font * sy * 0.3f).toInt()).coerceIn(3, 6)
+            val pad = ((font * sy * 0.08f).toInt()).coerceIn(1, 2)
             val x0 = (((b.cx - hx) * sx).toInt() - pad).coerceIn(0, gw)
             val x1 = (((b.cx + hx) * sx).toInt() + pad).coerceIn(0, gw)
             val y0 = (((b.cy - hy) * sy).toInt() - pad).coerceIn(0, gh)
@@ -274,7 +274,11 @@ internal object OcrRescan {
             } else crop
             val looks = ArrayList<Bitmap>()
             looks.add(base)
-            if (lightBackground(base)) {
+            // Latin recognizeRegion already performs scale, contrast and polarity views. Do not
+            // multiply those passes again for every uncovered row.
+            if (script == OcrScript.LATIN) {
+                // base is the sole input; the engine supplies the additional views.
+            } else if (lightBackground(base)) {
                 if (!fastMode) {
                     val boosted = OcrPost.boostContrast(base)
                     made.add(boosted)
@@ -290,12 +294,10 @@ internal object OcrRescan {
                     looks.add(boosted)
                 }
             }
-            var best: List<OcrBlock> = emptyList()
-            var bestLen = 0
+            val best = ArrayList<OcrBlock>()
             for (look in looks) {
                 val res = if (fastMode) engine.recognizeFast(look, script) else engine.recognizeRegion(look, script)
-                val len = res.blocks.sumOf { letters(it.text) }
-                if (len > 0 && (best.isEmpty() || len > bestLen * 1.25f + 1f)) { best = res.blocks; bestLen = len }
+                OcrLineFusion.addAll(best, res.blocks.filterNot { OcrPost.isNoise(it) })
             }
             val sc = base.width.toFloat() / cw
             return best.map { b ->
@@ -329,12 +331,15 @@ internal object OcrRescan {
         val found = ArrayList<OcrBlock>()
         val empty = ArrayList<Region>()
         val tried = ArrayList<Region>()
-        var budget = if (fastMode) 2 else 5          // OCR reads in total for this picture
+        // English captions with many missed rows must not stop after two regions. Scale the bounded
+        // audit to the slice height; retain the small latency budget for the other language engines.
+        var budget = if (script == OcrScript.LATIN) (bmp.height / 120).coerceIn(8, 16)
+            else if (fastMode) 2 else 5
         var changed = false
         var regionCount = 0
 
         var round = 0
-        val maxRounds = if (fastMode) 2 else 3
+        val maxRounds = if (script == OcrScript.LATIN) 4 else if (fastMode) 2 else 3
         while (round < maxRounds && budget > 0) {
             round++
             val proposed: List<Region> = try {
@@ -360,38 +365,24 @@ internal object OcrRescan {
                     emptyList()
                 }
                 val anchor = reg.anchor
+                val usable = got.filter { !OcrPost.isNoise(it) }
+                if (usable.isEmpty()) { empty.add(reg); continue }
                 if (anchor != null) {
-                    // A row that was only partly read: the full-row reading replaces the fragment, but only
-                    // when it really contains more text and does not run over another recognised block.
-                    val oldLetters = letters(anchor.text)
-                    val others = current.filter { it !== anchor }
-                    val usable = got.filter { nb ->
-                        !OcrPost.isNoise(nb) && others.none { OcrPost.overlapOfSmaller(it, nb) > 0.25f }
+                    val combined = usable.sortedWith(compareBy({ it.top }, { it.left })).joinToString(" ") { it.text }
+                    // Do not replace a valid fragment with longer but unrelated detector noise.
+                    if (letters(combined) <= letters(anchor.text) ||
+                        OcrLineFusion.agreement(anchor.text, combined) < 0.88f) {
+                        empty.add(reg); continue
                     }
-                    if (usable.isNotEmpty() && usable.sumOf { letters(it.text) } > oldLetters) {
-                        current.removeAll { it === anchor }
-                        found.removeAll { it === anchor }
-                        current.addAll(usable)
-                        found.addAll(usable)
-                        progressed = true
-                    } else {
-                        empty.add(reg)
-                    }
-                    continue
                 }
-                var added = 0
-                for (nb in got) {
-                    if (OcrPost.isNoise(nb)) continue
-                    if (letters(nb.text) < 2) continue
-                    val clash = current.any { OcrPost.overlapOfSmaller(it, nb) > 0.25f }
-                    if (clash) continue
-                    current.add(nb)
-                    found.add(nb)
-                    added++
-                }
-                if (added == 0) empty.add(reg) else progressed = true
+                val before = current.toList()
+                OcrLineFusion.addAll(current, usable)
+                if (before != current) {
+                    found.addAll(usable)
+                    progressed = true
+                } else empty.add(reg)
             }
-            if (progressed) changed = true else break
+            if (progressed) changed = true
         }
         if (regionCount > 0) {
             Log.i(TAG, "rounds=$round regions=$regionCount recovered=${found.size} script=$script fast=$fastMode")
@@ -400,7 +391,8 @@ internal object OcrRescan {
             try { saveDebug(ctx, bmp, base.blocks, found, empty) } catch (_: Exception) {} catch (_: OutOfMemoryError) {}
         }
         if (!changed) return base
-        return OcrResult(OcrPost.mergeNeighbours(current, bmp))
+        // Caller performs paragraph grouping after all line-level audits are complete.
+        return OcrResult(current)
     }
 
     // ------------------------------------------------------------------ debug images

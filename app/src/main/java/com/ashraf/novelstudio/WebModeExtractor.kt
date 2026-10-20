@@ -1238,10 +1238,9 @@ internal class WebModeExtractor(
             val h = bounds.outHeight
             if (w <= 0 || h <= 0) throw DecodeException()
             if (w < MIN_W || h < MIN_H) return null
-            // Real-time keeps the old aggressive down-sampling (speed). Full scans run behind the
-            // prefetch, so they keep more pixels: small lettering survives and OCR reads it better.
-            val sample = if (fastMode) when { w > 3200 -> 4; w > 1600 -> 2; else -> 1 }
-                else when { w > 5000 -> 4; w > 2400 -> 2; else -> 1 }
+            // Quality must not depend on whether the panel arrived via prefetch or visible scanning.
+            // The engine tiles/enlarges within its own pixel budget; retain native small-letter detail.
+            val sample = when { w > 5000 -> 4; w > 2400 -> 2; else -> 1 }
             val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
@@ -1334,15 +1333,11 @@ internal class WebModeExtractor(
             src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
             firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false
         ) {
-            // Slices overlap. A block touching a cut edge is only part of its text; the neighbouring
-            // slice sees it whole, so it is dropped here instead of being translated in halves.
-            val edge = 4f
-            val blocks = recognize(bmp, st, fastMode).blocks.filter { b ->
-                if (b.text.isBlank()) return@filter false
-                val top = b.cy - b.h / 2f
-                val bot = b.cy + b.h / 2f
-                !((!firstSlice && top <= edge) || (!lastSlice && bot >= bmp.height - edge))
-            }
+            // Audit raw lines BEFORE joining paragraphs. A merged paragraph rectangle hides skipped
+            // middle rows from the ink detector. Never discard an edge reading on the assumption that
+            // another slice will find it; the fuller overlapping reading can upgrade it below.
+            val blocks = OcrPost.mergeNeighbours(
+                recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }, bmp)
             if (blocks.isEmpty()) return
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
@@ -1407,7 +1402,7 @@ internal class WebModeExtractor(
                 if (inter == null) {
                     // No closed outline found (tail leaks into the artwork, thick outline ...). Lines that sit
                     // right under each other are still one sentence: never send them as separate fragments.
-                    if (fastMode) joinAdjacentLines(i, blocks.indices.filter { !consumed[it] })
+                    joinAdjacentLines(i, blocks.indices.filter { !consumed[it] })
                     continue
                 }
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
@@ -1423,8 +1418,8 @@ internal class WebModeExtractor(
                 }
                 if (i !in inside) continue
 
-                if (fastMode) {
-                    // Real-time: no second OCR. Every line inside one closed bubble is ONE unit, so the
+                if (fastMode && st.current != OcrScript.LATIN) {
+                    // Non-Latin real-time: no second OCR. Every line inside one closed bubble is ONE unit, so the
                     // chatbot gets the whole sentence and the overlay gets the whole bubble as its box
                     // (bigger box = bigger Bengali text, and no half-translated fragments).
                     val members = inside.filter { !consumed[it] }
@@ -1495,7 +1490,9 @@ internal class WebModeExtractor(
                         .joinToString(" ") { it.text.replace(NEWLINES, " ").trim() }.trim()
                     val joinedKey = WebModeLayout.normalizeOcrText(joined)
                     val knownParts = sourceKeys.filter { it.length >= 2 }
-                    val preservesKnownText = knownParts.isNotEmpty() && knownParts.all { joinedKey.contains(it) }
+                    val preservesKnownText = knownParts.isNotEmpty() && knownParts.all {
+                        OcrLineFusion.agreement(it, joinedKey) >= 0.90f
+                    }
                     val minGain = maxOf(1, (sourceKey.length * 0.03f).toInt())
 
                     // Only accept a retry that retains the text already found and adds characters.
@@ -1503,7 +1500,13 @@ internal class WebModeExtractor(
                     if (joined.isNotBlank() && preservesKnownText &&
                         joinedKey.length > sourceKey.length + minGain) {
                         refinedText[i] = joined
-                        refinedBox[i] = inter
+                        val readRects = res.blocks.map { WmBubbleStyle.rectOf(it, cw, ch) }
+                        val pad = maxOf(3, (b.fontPx * 0.22f).toInt())
+                        refinedBox[i] = if (readRects.isEmpty()) null else intArrayOf(
+                            (inter[0] + readRects.minOf { it[0] } - pad).coerceAtLeast(inter[0]),
+                            (inter[1] + readRects.minOf { it[1] } - pad).coerceAtLeast(inter[1]),
+                            (inter[0] + readRects.maxOf { it[2] } + pad).coerceAtMost(inter[2]),
+                            (inter[1] + readRects.maxOf { it[3] } + pad).coerceAtMost(inter[3]))
                         for (j in group) if (j != i) consumed[j] = true
                     }
                 } catch (_: Exception) {
@@ -1535,7 +1538,7 @@ internal class WebModeExtractor(
                 val text = (refinedText[i] ?: b.text).replace(NEWLINES, " ").trim()
                 val rb = refinedBox[i]
                 if (rb != null) {
-                    // the bubble's whole inside (kept a little off its outline)
+                    // Refined text bounds, kept inside the bubble outline.
                     cx = (rb[0] + rb[2]) / 2f; cy = (rb[1] + rb[3]) / 2f
                     bw = (rb[2] - rb[0]) - 4f; bh = (rb[3] - rb[1]) - 4f
                 }
@@ -1555,15 +1558,28 @@ internal class WebModeExtractor(
                 }
                 if (dup >= 0) {
                     if (sameOcrText(texts[dup], text)) {
-                        if (nb.w * nb.h > out[dup].w * out[dup].h * 1.15f) { out[dup] = nb; texts[dup] = text }
+                        val priorKey = WebModeLayout.normalizeOcrText(texts[dup])
+                        val freshKey = WebModeLayout.normalizeOcrText(text)
+                        // Text completeness wins over box area. A full reading can have a tighter box.
+                        if (freshKey.length > priorKey.length ||
+                            (freshKey == priorKey && nb.w * nb.h > out[dup].w * out[dup].h * 1.15f)) {
+                            out[dup] = nb; texts[dup] = text
+                        }
                     } else {
                         // DIFFERENT text on the same spot: two lines of one speech bubble that OCR did not
                         // join (both boxes grew to the same bubble interior). Dropping one lost a whole
                         // line (e.g. the first line stayed untranslated). Keep both, top to bottom: blocks
                         // arrive in reading order, so the new one is the lower line.
-                        val merged = (texts[dup] + " " + text).replace(Regex("\\s+"), " ").trim()
-                        val base = if (nb.w * nb.h > out[dup].w * out[dup].h) nb else out[dup]
-                        out[dup] = base.copy(sourceText = merged)
+                        val merged = OcrLineFusion.joinSliceText(texts[dup], text)
+                        val prior = out[dup]
+                        val l = minOf(prior.cx - prior.w / 2, nb.cx - nb.w / 2)
+                        val r = maxOf(prior.cx + prior.w / 2, nb.cx + nb.w / 2)
+                        val t = minOf(prior.cy - prior.h / 2, nb.cy - nb.h / 2)
+                        val bt = maxOf(prior.cy + prior.h / 2, nb.cy + nb.h / 2)
+                        // A union covers the recovered lower rows too; choosing just the bigger box
+                        // can leave the other slice's tail visibly untranslated.
+                        out[dup] = prior.copy(sourceText = merged, cx = (l + r) / 2, cy = (t + bt) / 2,
+                            w = r - l, h = bt - t)
                         texts[dup] = merged
                     }
                     continue
@@ -1578,16 +1594,11 @@ internal class WebModeExtractor(
             val x = WebModeLayout.normalizeOcrText(a)
             val y = WebModeLayout.normalizeOcrText(b)
             if (x.isEmpty() || y.isEmpty() || x == y || x.contains(y) || y.contains(x)) return true
-            val small = if (x.length <= y.length) x else y
-            val large = if (small === x) y else x
-            if (small.length < 2) return false
-            val grams = HashSet<String>()
-            for (i in 0 until large.length - 1) grams.add(large.substring(i, i + 2))
-            var hit = 0
-            val n = small.length - 1
-            for (i in 0 until n) if (grams.contains(small.substring(i, i + 2))) hit++
-            // Re-reads of one text share most of their letter pairs; separate lines share almost none.
-            return hit * 100 >= n * 60
+            // A 60% bigram match also matches DIFFERENT neighbouring lines and used to drop them.
+            // Only near-identical long readings qualify as duplicates.
+            return minOf(x.length, y.length) >= 12 &&
+                minOf(x.length, y.length).toFloat() / maxOf(x.length, y.length) >= 0.90f &&
+                OcrLineFusion.agreement(x, y) >= 0.94f
         }
 
         private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock, maxGapFonts: Float = 2.0f, loose: Boolean = false): Boolean {
@@ -1641,7 +1652,8 @@ internal class WebModeExtractor(
         }
 
         private fun recognizeCore(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            val first = if (fastMode) engine.recognizeFast(bmp, st.current)
+            val first = if (st.current == OcrScript.LATIN) engine.recognize(bmp, st.current)
+            else if (fastMode) engine.recognizeFast(bmp, st.current)
             else if (scanFastFirst()) {
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
                 // multi-pass engine; bubbles that still hide ink are re-read one by one afterwards.
@@ -1724,31 +1736,8 @@ internal class WebModeExtractor(
         private fun combineOcrResults(first: OcrResult, retry: OcrResult): OcrResult {
             if (retry.blocks.isEmpty()) return first
             val all = first.blocks.toMutableList()
-            for (candidate in retry.blocks.sortedWith(compareBy({ it.top }, { it.left }))) {
-                val key = candidate.text.lowercase().filter { it.isLetterOrDigit() }
-                if (key.isEmpty()) continue
-                val overlaps = all.indices.filter {
-                    OcrPost.overlapOfSmaller(all[it], candidate) > 0.25f
-                }
-                if (overlaps.isEmpty()) {
-                    val duplicateText = all.any { prior ->
-                        val priorKey = prior.text.lowercase().filter { it.isLetterOrDigit() }
-                        priorKey.isNotEmpty() && (priorKey.contains(key) || key.contains(priorKey)) &&
-                            kotlin.math.abs(prior.cx - candidate.cx) < maxOf(prior.w, candidate.w) * 0.25f &&
-                            kotlin.math.abs(prior.cy - candidate.cy) < maxOf(prior.h, candidate.h) * 0.6f
-                    }
-                    if (!duplicateText) all.add(candidate)
-                } else {
-                    val upgrade = overlaps.firstOrNull { index ->
-                        val priorKey = all[index].text.lowercase().filter { it.isLetterOrDigit() }
-                        priorKey.length >= 3 &&
-                            key.length > priorKey.length + maxOf(2, priorKey.length / 10) &&
-                            key.contains(priorKey)
-                    }
-                    if (upgrade != null) all[upgrade] = candidate
-                }
-            }
-            return OcrResult(OcrPost.mergeNeighbours(all.filterNot { OcrPost.isNoise(it) }))
+            OcrLineFusion.addAll(all, retry.blocks.filterNot { OcrPost.isNoise(it) })
+            return OcrResult(all)
         }
     }
 
