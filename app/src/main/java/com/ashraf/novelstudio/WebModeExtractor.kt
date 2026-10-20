@@ -1487,8 +1487,11 @@ internal class WebModeExtractor(
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
                 val ownFont = if (b.fontPx > 0f) b.fontPx else b.h
-                val bands = ArrayList<IntArray>()
-                val inter: IntArray? = try {
+                // Real-time reading cannot afford a flood-fill over a large pixel region for every text
+                // line. It uses geometry-based line joining plus whole-panel fusion at finishResult().
+                // Thorough chapter extraction still searches bubble interiors to recover missed rows.
+                val bands: MutableList<IntArray>? = if (fastMode) null else ArrayList()
+                val inter: IntArray? = if (fastMode) null else try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
                         bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()))
                 } catch (_: Exception) { null }
@@ -1509,7 +1512,7 @@ internal class WebModeExtractor(
                 if (i !in inside) continue
                 val members = inside.filter { !consumed[it] }
                 if (i !in members) continue
-                if (members.size < 2 && bands.isEmpty()) continue   // a lone, fully read line needs nothing
+                if (members.size < 2 && bands.isNullOrEmpty()) continue   // a lone, fully read line needs nothing
 
                 // Lines of ONE sentence chain together (a skipped line makes a double gap: allow it).
                 val sameText = linkedSetOf(i)
@@ -1534,7 +1537,7 @@ internal class WebModeExtractor(
                 val lines = ordered.mapTo(ArrayList<BubbleLine>()) {
                     BubbleLine(blocks[it].cy, blocks[it].text.replace(NEWLINES, " ").trim())
                 }
-                if (bands.isNotEmpty()) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
+                if (bands?.isNotEmpty() == true && !fastMode) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
                 val joinedText = lines.sortedBy { it.cy }.joinToString(" ") { it.text }
                     .replace(Regex("\\s+"), " ").trim()
                 if (joinedText.isBlank()) continue
@@ -1801,7 +1804,10 @@ internal class WebModeExtractor(
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
             OcrModels.init(wv.context)
             val core = recognizeCore(bmp, st, fastMode)
-            if (!Prefs.bool(wv.context, "ocrRescan", true)) return core
+            // Visible scan/read-ahead is latency-sensitive. The uncovered-ink audit can run
+            // several more OCR passes per tile and was keeping the UI at "Reading the page" for
+            // tens of seconds. Thorough/manual chapter scans still retain this quality recovery.
+            if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
             if (st.current == OcrScript.JAPANESE &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
@@ -1827,7 +1833,7 @@ internal class WebModeExtractor(
             } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
-            val result = if (needsOcrRetry(bmp, first)) {
+            val result = if (!fastMode && needsOcrRetry(bmp, first)) {
                 val retry = try { engine.recognizeFallback(bmp, st.current) } catch (_: Exception) {
                     OcrResult(emptyList())
                 }
