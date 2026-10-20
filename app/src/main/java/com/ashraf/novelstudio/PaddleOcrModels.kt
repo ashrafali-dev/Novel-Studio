@@ -41,19 +41,19 @@ internal object PaddleOcrModels {
             detectorSha256 = "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
             recognitionSha256 = "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
             approximateMb = 32,
-            recognitionBatchSize = 4,
+            recognitionBatchSize = 8,
             threads = 2
         ),
         Pack(
             id = "heavy",
             label = "PP-OCRv6 Medium · Heavy",
             detectorUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/dbee314/inference.onnx",
-            recognitionUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/a7c2cc35beb94846af153645f5a619b6be905786/inference.onnx",
+            recognitionUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/12b418c3792e3ccf3fed807eb17863981051955e/inference.onnx",
             configUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/12b418c3792e3ccf3fed807eb17863981051955e/inference.yml",
             detectorSha256 = "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
             recognitionSha256 = "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
             approximateMb = 140,
-            recognitionBatchSize = 2,
+            recognitionBatchSize = 4,
             threads = 2
         )
     )
