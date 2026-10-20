@@ -82,6 +82,13 @@ class BubbleGroupingTest {
         assertEquals(1, groups(listOf(line("위 줄", 300f, 100f, 200f), line("아래 줄", 300f, 120f, 200f))).size)  // 10 px overlap
     }
 
+    @Test fun widerLineSpacingInsideOneBubbleStillGroups() {
+        // Webtoon OCR boxes can have a 1.5-font gap even when the lines belong to the same balloon.
+        val g = groups(listOf(line("저자는 노인이", 300f, 100f, 220f), line("될 때까지 얼마나", 300f, 175f, 260f)))
+        assertEquals(1, g.size)
+        assertEquals("저자는 노인이 될 때까지 얼마나", BubbleGrouping.joinLines(g.single()))
+    }
+
     @Test fun unusuallyLargeGapSeparates() {
         assertEquals(2, groups(listOf(line("위", 300f, 100f, 200f), line("아래", 300f, 190f, 200f))).size)  // gap 60 > 1 font
     }
