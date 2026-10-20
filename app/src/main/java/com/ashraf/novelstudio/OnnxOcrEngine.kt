@@ -37,7 +37,8 @@ internal class OnnxOcrEngine : OcrEngine {
     @Synchronized
     private fun detector(): OrtSession {
         syncModels()
-        det?.let { return it }
+        val cached = det
+        if (cached != null) return cached
         detError?.let { throw OcrUnavailableException(it) }
         val bytes = OcrModels.readFile("det.onnx")
         if (bytes == null) {
@@ -51,7 +52,8 @@ internal class OnnxOcrEngine : OcrEngine {
     @Synchronized
     private fun reader(script: OcrScript): Pair<OrtSession, List<String>> {
         syncModels()
-        recs[script]?.let { return it }
+        val cachedRec = recs[script]
+        if (cachedRec != null) return cachedRec
         recErrors[script]?.let { throw OcrUnavailableException(it) }
         val (model, dict) = when (script) {
             OcrScript.LATIN -> "rec_en.onnx" to "dict_en.txt"
@@ -75,11 +77,16 @@ internal class OnnxOcrEngine : OcrEngine {
     private class Box(val l: Int, val t: Int, val r: Int, val b: Int)
 
     /** Runs [sess] on one CHW float tensor and reads the output with [read]. */
-    private inline fun <T> infer(sess: OrtSession, data: FloatArray, shape: LongArray, read: (OnnxTensor) -> T): T {
+    private fun <T> infer(sess: OrtSession, data: FloatArray, shape: LongArray, read: (OnnxTensor) -> T): T {
         val input = OnnxTensor.createTensor(env, FloatBuffer.wrap(data), shape)
-        return try {
-            sess.run(mapOf(sess.inputNames.first() to input)).use { result ->
-                read(result.get(0) as OnnxTensor)
+        try {
+            val inputs = HashMap<String, OnnxTensor>()
+            inputs[sess.inputNames.iterator().next()] = input
+            val result = sess.run(inputs)
+            try {
+                return read(result.get(0) as OnnxTensor)
+            } finally {
+                result.close()
             }
         } finally {
             input.close()
@@ -277,7 +284,7 @@ internal class FallbackOcrEngine(
     private fun useful(r: OcrResult?): Boolean =
         r != null && r.blocks.any { b -> b.text.count { it.isLetterOrDigit() } >= 2 }
 
-    private inline fun chain(run: (OcrEngine) -> OcrResult): OcrResult {
+    private fun chain(run: (OcrEngine) -> OcrResult): OcrResult {
         val p: OcrResult? = try { run(primary) } catch (e: Exception) {
             OcrModels.lastError = (e.message ?: e.javaClass.simpleName)
             null

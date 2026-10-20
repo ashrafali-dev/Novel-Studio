@@ -104,7 +104,12 @@ internal object OcrModels {
         return Math.max(1, (bytes / (1024 * 1024)).toInt())
     }
 
-    fun approxMb(p: Pack): Int = p.files.sumOf { it.approxMb } + (if (file(DETECTOR.fileName)?.isFile == true) 0 else DETECTOR.approxMb)
+    fun approxMb(p: Pack): Int {
+        var mb = 0
+        for (f in p.files) mb += f.approxMb
+        if (file(DETECTOR.fileName)?.isFile != true) mb += DETECTOR.approxMb
+        return mb
+    }
 
     /** Blocking: call from a worker thread. [onProgress] gets (file name, percent). Throws on any failure. */
     fun download(p: Pack, onProgress: (String, Int) -> Unit) {
