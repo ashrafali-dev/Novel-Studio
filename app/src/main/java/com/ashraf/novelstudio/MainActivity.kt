@@ -4851,6 +4851,12 @@ return t.length>=40?'TXT:'+t:'';
             else -> "Auto (guess from page)"
         }
 
+    private fun menuOcrRescanLabel(): String =
+        (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
+
+    private fun menuOcrDebugLabel(): String =
+        (if (Prefs.bool(this, "ocrDebug", false)) "✅" else "⬜") + " 🔬 OCR debug (save boxes to Gallery)"
+
     private fun menuBarsLabel(): String =
         "📐 Bars in Web Mode: " + listOf("Float over page", "Fixed (no overlap)", "Auto-hide on scroll")[barsMode()]
 
@@ -8490,7 +8496,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
             "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
-            menuOcrLangLabel()
+            menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8499,7 +8505,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
@@ -8509,9 +8515,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         )
         val advanced = listOf(
             "TRANSLATION" to listOf(47, 12, 19, 14, 26, 30, 39, 40, 44, 46),
-            "WEBTOON TOOLS" to listOf(31, 32, 33, 36, 34, 37, 38, 41, 43, 48, 49, 50),
+            "WEBTOON TOOLS" to listOf(31, 32, 33, 36, 34, 37, 38, 41, 43, 48, 49, 50, 51),
             "BROWSER" to listOf(15, 16, 21, 24, 29, 35),
-            "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45)
+            "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45, 52)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -8631,6 +8637,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuAutoFreshChatLabel())
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
+                }
+                51 -> {
+                    val on = !Prefs.bool(this, "ocrRescan", true)
+                    Prefs.putBool(this, "ocrRescan", on)
+                    refresh(i, menuOcrRescanLabel())
+                    toast(if (on) "🩹 OCR rescan ON — lines the first pass missed are re-read"
+                          else "🩹 OCR rescan OFF — normal OCR only")
+                }
+                52 -> {
+                    val on = !Prefs.bool(this, "ocrDebug", false)
+                    Prefs.putBool(this, "ocrDebug", on)
+                    refresh(i, menuOcrDebugLabel())
+                    toast(if (on) "🔬 OCR debug ON — scanned slices are saved to Gallery › NovelStudioOCR (max 30)"
+                          else "🔬 OCR debug OFF")
                 }
                 50 -> {
                     val cur = ocrLangCodes.indexOf(Prefs.get(this, "ocrLang", "auto")).let { if (it < 0) 0 else it }

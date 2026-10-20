@@ -1621,7 +1621,26 @@ internal class WebModeExtractor(
             return small > 0f && x * y / small > 0.5f
         }
 
+        /**
+         * Normal OCR, then a second look at any line-shaped ink the first pass left unread
+         * (see [OcrRescan]). Any failure keeps the normal result untouched.
+         */
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
+            val core = recognizeCore(bmp, st, fastMode)
+            if (!Prefs.bool(wv.context, "ocrRescan", true)) return core
+            // The Japanese manga engine has its own detector; do not run it once per crop.
+            if (st.current == OcrScript.JAPANESE &&
+                com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
+            return try {
+                OcrRescan.augment(wv.context, engine, bmp, core, st.current, fastMode)
+            } catch (_: Exception) {
+                core
+            } catch (_: OutOfMemoryError) {
+                core
+            }
+        }
+
+        private fun recognizeCore(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
             val first = if (fastMode) engine.recognizeFast(bmp, st.current)
             else if (scanFastFirst()) {
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
