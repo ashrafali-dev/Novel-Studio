@@ -317,7 +317,7 @@ internal class MlKitOcrEngine : OcrEngine {
      * Each optional view is awaited before recycling, with a bounded pixel budget.
      */
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
-        readViews(bitmap, script, thorough = script == OcrScript.LATIN)
+        readViews(bitmap, script, thorough = script == OcrScript.LATIN, light = true)
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
         readViews(bitmap, script, thorough = true)
@@ -328,8 +328,14 @@ internal class MlKitOcrEngine : OcrEngine {
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
         readViews(bitmap, script, thorough = true, region = true)
 
+    /**
+     * [light] = speed mode for screen scanning: the plain view plus ONE enlarged view per tile.
+     * The contrast-stretched and inverted views (2 more ML Kit passes per tile) are only used by the
+     * full engine, i.e. when a panel really read badly. They made every screen 2-3x slower for little gain.
+     */
     private fun readViews(
-        bitmap: Bitmap, script: OcrScript, thorough: Boolean, region: Boolean = false
+        bitmap: Bitmap, script: OcrScript, thorough: Boolean, region: Boolean = false,
+        light: Boolean = false
     ): OcrResult {
         val all = ArrayList<OcrBlock>()
         val rec = recognizer(script)
@@ -369,6 +375,7 @@ internal class MlKitOcrEngine : OcrEngine {
                     up = if (factor > 1.05f) Bitmap.createScaledBitmap(crop,
                         (crop.width * factor).toInt(), (crop.height * factor).toInt(), true) else crop
                     scan(up, y = top, originalW = crop.width, originalH = crop.height)
+                    if (light) continue
                     contrast = OcrPost.boostContrast(up)
                     scan(contrast, y = top, originalW = crop.width, originalH = crop.height)
                     if (script == OcrScript.LATIN) {

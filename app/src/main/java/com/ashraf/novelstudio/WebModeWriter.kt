@@ -123,10 +123,10 @@ internal object WebModeWriter {
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
       // measures both axes and shrinks the text instead of letting it spill outside.
       t.style.cssText='display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;'
-        +'text-align:center;line-height:1.5;white-space:normal;word-break:keep-all;text-wrap:balance;'
+        +'text-align:center;line-height:1.35;white-space:normal;word-break:keep-all;text-wrap:balance;'
         // Bengali vowel signs (ি ী ু ৃ ে ৈ) stick out above and below the line box; room for them
         // stops them being clipped by the box edge or by the gradient's background-clip.
-        +'padding:0.22em 0.1em;'
+        +'padding:0.16em 0.1em;'
         +'overflow-wrap:normal;hyphens:none;font-kerning:normal;'
         // Keep browser defaults for complex-script shaping (including Bengali conjuncts).
         +'font-variant-ligatures:normal;text-rendering:optimizeLegibility;';
@@ -369,7 +369,7 @@ internal object WebModeWriter {
         if(bb.style.zIndex!==zz)bb.style.zIndex=zz;
         if(bb.style.display!=='flex')bb.style.display='flex';
         var fw=String(Math.round(R.rw));
-        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,gg[5]*R.rw*1.2);}
+        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,gg[5]*R.rw*1.5);}
       }}
     var raf=0,lastRun=0,forceNext=false,settleT=0,ro=null;
     function sched(){

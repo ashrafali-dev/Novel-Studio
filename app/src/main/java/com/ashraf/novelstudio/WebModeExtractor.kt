@@ -8,6 +8,8 @@ import android.os.Handler
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -881,13 +883,85 @@ internal class WebModeExtractor(
                 }
             }
             val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
-            if (b != null && !isBlank(b)) return b
+            if (b != null && !isBlank(b)) {
+                // A window screenshot also contains the app's own floating panels, buttons and chips
+                // ("Reading the page", "View original", the bottom toolbar...). Paint them out so the
+                // OCR only ever sees the comic itself.
+                try { maskNativeOverlays(b) } catch (_: Throwable) {}
+                return b
+            }
             b?.recycle()
             forceBlank++
             Log.w(TAG, "Visible screen capture returned blank after safe capture paths; " +
                 "visibleOnly=${req.visibleOnly}, view=${wv.width}x${wv.height}, " +
                 "attached=${wv.isAttachedToWindow}, hardware=${wv.isHardwareAccelerated}")
             return null
+        }
+
+        /**
+         * Native views that are drawn ABOVE the WebView (floating panels, buttons, chips, toasts) end up in a
+         * window screenshot. Collect their bounds (WebView-local pixels) and flood them with the colour just
+         * outside, so no recogniser can read app UI text or mistake a button edge for lettering.
+         */
+        private fun maskNativeOverlays(bmp: Bitmap) {
+            val rects = ArrayList<Rect>()
+            val latch = CountDownLatch(1)
+            handler.post {
+                try {
+                    val root = wv.rootView
+                    val wl = IntArray(2)
+                    wv.getLocationInWindow(wl)
+                    val wvArea = (wv.width.toLong() * wv.height).coerceAtLeast(1L)
+                    var passed = false
+                    val tmp = IntArray(2)
+                    fun isAncestor(g: ViewGroup, target: View): Boolean {
+                        var p = target.parent
+                        while (p != null) { if (p === g) return true; p = p.parent }
+                        return false
+                    }
+                    fun add(v: View) {
+                        v.getLocationInWindow(tmp)
+                        val r = Rect(tmp[0] - wl[0], tmp[1] - wl[1], tmp[0] - wl[0] + v.width, tmp[1] - wl[1] + v.height)
+                        if (!r.intersect(0, 0, bmp.width, bmp.height)) return
+                        if (r.width() < 4 || r.height() < 4) return
+                        // a full-screen layer is a container, not a button: masking it would blank the page
+                        if (r.width().toLong() * r.height() > wvArea * 0.7) return
+                        rects.add(r)
+                    }
+                    fun walk(v: View) {
+                        if (v === wv) { passed = true; return }
+                        if (v.visibility != View.VISIBLE || v.alpha <= 0.02f || v.width <= 0 || v.height <= 0) return
+                        if (v is ViewGroup) {
+                            if (isAncestor(v, wv)) { for (i in 0 until v.childCount) walk(v.getChildAt(i)); return }
+                            if (passed && v.background != null) { add(v); return }
+                            for (i in 0 until v.childCount) walk(v.getChildAt(i))
+                        } else if (passed) {
+                            add(v)
+                        }
+                    }
+                    if (root != null) walk(root)
+                } catch (_: Throwable) {
+                } finally { latch.countDown() }
+            }
+            latch.await(2, TimeUnit.SECONDS)
+            if (rects.isEmpty()) return
+            val canvas = android.graphics.Canvas(bmp)
+            val paint = android.graphics.Paint()
+            for (r in rects) {
+                // colour from the pixels just OUTSIDE the rectangle (page / bubble background)
+                val xs = intArrayOf(r.left - 2, r.centerX(), r.right + 1)
+                val ys = intArrayOf(r.top - 2, r.centerY(), r.bottom + 1)
+                var rr = 0; var gg = 0; var bb = 0; var n = 0
+                for (x in xs) for (y in ys) {
+                    if (x < 0 || y < 0 || x >= bmp.width || y >= bmp.height) continue
+                    if (x in r.left until r.right && y in r.top until r.bottom) continue
+                    val c = bmp.getPixel(x, y)
+                    rr += (c shr 16) and 255; gg += (c shr 8) and 255; bb += c and 255; n++
+                }
+                paint.color = if (n == 0) android.graphics.Color.WHITE
+                    else android.graphics.Color.rgb(rr / n, gg / n, bb / n)
+                canvas.drawRect(r, paint)
+            }
         }
 
         private fun captureByDraw(): Bitmap? {
@@ -1391,13 +1465,21 @@ internal class WebModeExtractor(
                 for (j in grp) if (j != i) consumed[j] = true
             }
 
+            // ONE closed speech bubble = ONE unit. Every line that sits inside the same outline is joined
+            // (before, lines were only joined if a strict "same paragraph" test passed for ALL of them, so a
+            // skipped middle line left "IN OTHER" and "THE MOST BEAUTIFUL MAN..." as two separate texts and the
+            // chatbot translated fragments). Lettering the recogniser skipped inside the bubble is then
+            // read again line by line from the bubble's own pixels.
             for (i in blocks.indices) {
                 if (consumed[i]) continue
                 val b = blocks[i]
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
+                val ownFont = if (b.fontPx > 0f) b.fontPx else b.h
+                val bands = ArrayList<IntArray>()
                 val inter: IntArray? = try {
-                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = !fastMode)
+                    WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
+                        bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()))
                 } catch (_: Exception) { null }
                 if (inter == null) {
                     // No closed outline found (tail leaks into the artwork, thick outline ...). Lines that sit
@@ -1408,112 +1490,47 @@ internal class WebModeExtractor(
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
 
-                // Gather every OCR block lying inside this recovered balloon. Join only blocks
-                // that look like adjacent lines of the SAME text; if another speaker/bubble is
-                // mixed into the connected region, keep the original boxes separate.
                 val inside = blocks.indices.filter { j ->
                     val cxj = blocks[j].cx
                     val cyj = blocks[j].cy
                     cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
                 }
                 if (i !in inside) continue
+                val members = inside.filter { !consumed[it] }
+                if (i !in members) continue
+                if (members.size < 2 && bands.isEmpty()) continue   // a lone, fully read line needs nothing
 
-                if (fastMode && st.current != OcrScript.LATIN) {
-                    // Non-Latin real-time: no second OCR. Every line inside one closed bubble is ONE unit, so the
-                    // chatbot gets the whole sentence and the overlay gets the whole bubble as its box
-                    // (bigger box = bigger Bengali text, and no half-translated fragments).
-                    val members = inside.filter { !consumed[it] }
-                    if (members.size < 2 || i !in members) continue
-                    // A joined balloon (two lobes, one outline) is one connected region but two separate
-                    // sentences. Only lines that sit close together count as the same text; if anything
-                    // else is inside, every text keeps its own box.
-                    val sameText = linkedSetOf(i)
-                    var growing = true
-                    while (growing) {
-                        growing = false
-                        for (j in members) {
-                            if (j !in sameText && sameText.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.3f, loose = true) }) {
-                                sameText.add(j); growing = true
-                            }
+                // Lines of ONE sentence chain together (a skipped line makes a double gap: allow it).
+                val sameText = linkedSetOf(i)
+                var growing = true
+                while (growing) {
+                    growing = false
+                    for (j in members) {
+                        if (j !in sameText && sameText.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 2.4f, loose = true) }) {
+                            sameText.add(j); growing = true
                         }
                     }
-                    if (members.any { it !in sameText }) {
-                        // Something else is inside the same outline (second lobe, a stray mark): join only the
-                        // lines that belong together, the rest keeps its own box.
-                        joinAdjacentLines(i, members)
-                        continue
-                    }
-                    val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
-                    val joinedText = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
-                        .replace(Regex("\\s+"), " ").trim()
-                    if (joinedText.isBlank()) continue
-                    val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
-                    refinedText[i] = joinedText
-                    refinedBox[i] = inter
-                    refinedFont[i] = if (fonts.isEmpty()) null else fonts[fonts.size / 2]
-                    for (j in members) if (j != i) consumed[j] = true
+                }
+                if (members.any { it !in sameText }) {
+                    // A joined balloon (two lobes, one outline) holds two separate sentences: each keeps its own box.
+                    for (k in members) if (!consumed[k] && refinedText[k] == null) joinAdjacentLines(k, members)
                     continue
                 }
 
-                val group = linkedSetOf(i)
-                var grew = true
-                while (grew) {
-                    grew = false
-                    for (j in inside) {
-                        if (j !in group && group.any { prior -> likelySameBubbleLine(blocks[prior], blocks[j]) }) {
-                            group.add(j)
-                            grew = true
-                        }
-                    }
+                val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
+                val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
+                val medFont = if (fonts.isEmpty()) ownFont else fonts[fonts.size / 2]
+                val lines = ordered.mapTo(ArrayList<BubbleLine>()) {
+                    BubbleLine(blocks[it].cy, blocks[it].text.replace(NEWLINES, " ").trim())
                 }
-                if (inside.any { it !in group }) continue
-
-                val groupOrdered = group.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
-                val sourceKeys = groupOrdered.map {
-                    WebModeLayout.normalizeOcrText(blocks[it].text.replace(NEWLINES, " ").trim())
-                }.filter { it.isNotEmpty() }
-                val sourceKey = sourceKeys.joinToString("")
-                if (sourceKey.isBlank()) continue
-
-                val cw = inter[2] - inter[0]
-                val ch = inter[3] - inter[1]
-                if (cw < 12 || ch < 12) continue
-
-                var crop: Bitmap? = null
-                try {
-                    crop = Bitmap.createBitmap(bmp, inter[0], inter[1], cw, ch)
-                    // Use the full multi-pass engine on a bubble proven to contain unread ink.
-                    // This checks original, resized and contrast/outlined variants without retrying
-                    // every already-complete balloon.
-                    val res = engine.recognize(crop, st.current)
-                    val joined = res.blocks.sortedWith(compareBy({ it.top }, { it.left }))
-                        .joinToString(" ") { it.text.replace(NEWLINES, " ").trim() }.trim()
-                    val joinedKey = WebModeLayout.normalizeOcrText(joined)
-                    val knownParts = sourceKeys.filter { it.length >= 2 }
-                    val preservesKnownText = knownParts.isNotEmpty() && knownParts.all {
-                        OcrLineFusion.agreement(it, joinedKey) >= 0.90f
-                    }
-                    val minGain = maxOf(1, (sourceKey.length * 0.03f).toInt())
-
-                    // Only accept a retry that retains the text already found and adds characters.
-                    // Then make one overlay for the whole balloon and consume its constituent lines.
-                    if (joined.isNotBlank() && preservesKnownText &&
-                        joinedKey.length > sourceKey.length + minGain) {
-                        refinedText[i] = joined
-                        val readRects = res.blocks.map { WmBubbleStyle.rectOf(it, cw, ch) }
-                        val pad = maxOf(3, (b.fontPx * 0.22f).toInt())
-                        refinedBox[i] = if (readRects.isEmpty()) null else intArrayOf(
-                            (inter[0] + readRects.minOf { it[0] } - pad).coerceAtLeast(inter[0]),
-                            (inter[1] + readRects.minOf { it[1] } - pad).coerceAtLeast(inter[1]),
-                            (inter[0] + readRects.maxOf { it[2] } + pad).coerceAtMost(inter[2]),
-                            (inter[1] + readRects.maxOf { it[3] } + pad).coerceAtMost(inter[3]))
-                        for (j in group) if (j != i) consumed[j] = true
-                    }
-                } catch (_: Exception) {
-                } catch (_: OutOfMemoryError) {
-                } finally {
-                    if (crop != null && crop !== bmp) crop.recycle()
-                }
+                if (bands.isNotEmpty()) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
+                val joinedText = lines.sortedBy { it.cy }.joinToString(" ") { it.text }
+                    .replace(Regex("\\s+"), " ").trim()
+                if (joinedText.isBlank()) continue
+                refinedText[i] = joinedText
+                refinedBox[i] = inter
+                refinedFont[i] = medFont
+                for (j in members) if (j != i) consumed[j] = true
             }
 
             for ((i, b) in blocks.withIndex()) {
@@ -1589,6 +1606,57 @@ internal class WebModeExtractor(
             }
         }
 
+        /**
+         * Lettering inside a closed bubble that the recogniser skipped ([bands] = rows of ink no block explains).
+         * Each band is cut out of the picture as a thin full-width strip, enlarged and read on its own: a single
+         * line on a clean bubble is the easiest case for the recogniser. A longer reading of a row that was
+         * only partly read replaces that fragment; anything else is added as a new line of the bubble.
+         */
+        private fun recoverBubbleLines(
+            bmp: Bitmap, st: ScriptState, inter: IntArray, bands: List<IntArray>,
+            lines: MutableList<BubbleLine>, font: Float
+        ) {
+            fun letters(t: String) = t.count { it.isLetterOrDigit() }
+            var budget = 3
+            for (band in bands) {
+                if (budget <= 0 || !alive()) break
+                budget--
+                val pad = Math.max(3, ((band[1] - band[0]) * 0.2f).toInt())
+                val x0 = inter[0].coerceIn(0, bmp.width - 1)
+                val x1 = inter[2].coerceIn(x0 + 8, bmp.width)
+                val y0 = (band[0] - pad).coerceIn(0, bmp.height - 1)
+                val y1 = (band[1] + pad).coerceIn(y0 + 8, bmp.height)
+                var strip: Bitmap? = null
+                var up: Bitmap? = null
+                try {
+                    strip = Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0)
+                    val f = Math.max(1f, Math.min(Math.min(4f, Math.max(2f, 96f / strip.height)), 2400f / strip.width))
+                    up = Bitmap.createScaledBitmap(strip, (strip.width * f).toInt(), (strip.height * f).toInt(), true)
+                    val got = engine.recognizeFast(up, st.current).blocks
+                        .filterNot { OcrPost.isNoise(it) }
+                        .sortedWith(compareBy({ it.cy }, { it.cx }))
+                    for (g in got) {
+                        val text = g.text.replace(NEWLINES, " ").trim()
+                        if (letters(text) < 1) continue
+                        val gcy = y0 + g.cy / f
+                        val same = lines.firstOrNull { Math.abs(it.cy - gcy) <= Math.max(font, 8f) * 0.7f }
+                        if (same != null) {
+                            // same row: keep the fuller reading, never duplicate it
+                            if (letters(text) > letters(same.text) && OcrLineFusion.agreement(same.text, text) >= 0.8f)
+                                same.text = text
+                            continue
+                        }
+                        lines.add(BubbleLine(gcy, text))
+                    }
+                } catch (_: Exception) {
+                } catch (_: OutOfMemoryError) {
+                } finally {
+                    if (up != null && up !== strip && !up.isRecycled) up.recycle()
+                    if (strip != null && strip !== bmp && !strip.isRecycled) strip.recycle()
+                }
+            }
+        }
+
         /** True when two OCR readings are (nearly) the same text; false when they are different lines. */
         private fun sameOcrText(a: String, b: String): Boolean {
             val x = WebModeLayout.normalizeOcrText(a)
@@ -1652,8 +1720,10 @@ internal class WebModeExtractor(
         }
 
         private fun recognizeCore(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            val first = if (st.current == OcrScript.LATIN) engine.recognize(bmp, st.current)
-            else if (fastMode) engine.recognizeFast(bmp, st.current)
+            // Real-time (fastMode) used to run the full 4-pass engine for English: the main reason a screen took
+            // seconds. The light engine (plain + one enlarged view) plus the targeted rescan reads the same text.
+            val first = if (fastMode) engine.recognizeFast(bmp, st.current)
+            else if (st.current == OcrScript.LATIN) engine.recognize(bmp, st.current)
             else if (scanFastFirst()) {
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
                 // multi-pass engine; bubbles that still hide ink are re-read one by one afterwards.
@@ -1746,6 +1816,7 @@ internal class WebModeExtractor(
         var fallbackBudget = 3
         var fastFallbackTried = false
     }
+    private class BubbleLine(var cy: Float, var text: String)
     private class DecodeException : Exception()
     private class ForceAcc { var top = 0; val texts = ArrayList<String>(); val bubbles = ArrayList<WmBubble>() }
     private class PanelOcr(val text: String, val bubbles: List<WmBubble>)

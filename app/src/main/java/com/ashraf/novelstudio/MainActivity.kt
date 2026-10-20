@@ -1169,6 +1169,9 @@ keep their marker but leave the text after it empty.
 If a marker is meaningless OCR noise (random letters or symbols), keep the marker and leave its text empty.
 Never use "~", "-", or another placeholder to represent unreadable or non-dialogue text.
 Do not invent text. Keep each translation short enough to fit a speech bubble.
+Translate ONLY the words that are written under each marker. Never add names, sentences or meaning from the
+story, from other markers or from your own guess; a one-word marker (a shout, a sound effect, a title) gets a
+one-word translation. Each marker must stay faithful to its own English text, word for word in meaning.
 """.trimIndent()
         // This is a separate chatbot page with no prior prompt in its conversation, so always include
         // the full active translation prompt, even if the visible-chat option normally sends it once.
@@ -2706,6 +2709,7 @@ return t.length>=40?'TXT:'+t:'';
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        OcrRescan.resetDebug(this)   // OCR debug is a per-session tool: never leave it on by accident
         // Android 13+: lets the "scanning in background" notification show (the service works without it).
         if (Build.VERSION.SDK_INT >= 33 && !Prefs.bool(this, "askedNotifPerm") &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -4855,7 +4859,7 @@ return t.length>=40?'TXT:'+t:'';
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
     private fun menuOcrDebugLabel(): String =
-        (if (Prefs.bool(this, "ocrDebug", false)) "✅" else "⬜") + " 🔬 OCR debug (save boxes to Gallery)"
+        (if (Prefs.bool(this, "ocrDebug", false)) "✅" else "⬜") + " 🔬 OCR debug (marked images, private folder)"
 
     private fun menuBarsLabel(): String =
         "📐 Bars in Web Mode: " + listOf("Float over page", "Fixed (no overlap)", "Auto-hide on scroll")[barsMode()]
@@ -8649,7 +8653,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val on = !Prefs.bool(this, "ocrDebug", false)
                     Prefs.putBool(this, "ocrDebug", on)
                     refresh(i, menuOcrDebugLabel())
-                    toast(if (on) "🔬 OCR debug ON — scanned slices are saved to Gallery › NovelStudioOCR (max 30)"
+                    toast(if (on) "🔬 OCR debug ON — marked slices go to the app's private folder (Android/data › files › ocr_debug, newest 12), NOT the Gallery. Resets to OFF on restart"
                           else "🔬 OCR debug OFF")
                 }
                 50 -> {

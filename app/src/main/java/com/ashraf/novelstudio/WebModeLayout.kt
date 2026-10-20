@@ -480,7 +480,10 @@ internal object WmBubbleStyle {
      * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
      * recognised block ([allRects]) accounts for - i.e. text the OCR missed.
      */
-    fun bubbleInterior(bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true): IntArray? {
+    fun bubbleInterior(
+        bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true,
+        bandsOut: MutableList<IntArray>? = null, minBand: Int = 6
+    ): IntArray? {
         val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
         if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
         val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
@@ -529,20 +532,47 @@ internal object WmBubbleStyle {
         var r = w - 1; while (r > l && cols[r] * 10 < maxCol * 3) r--
         if (r - l < 12 || b - t < 12) return null
         // Real-time grouping only needs the bubble's inside, not proof of missed lettering.
-        if (!requireLeftover) return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
-        // leftover lettering: not background, not filled, not inside a recognised block
-        var ink = 0
-        for (y in t..b) for (x in l..r) {
-            val i = y * w + x
-            if (seen[i] || near(px[i], bg)) continue
-            val ax = x + x0; val ay = y + y0
-            var covered = false
-            for (o in allRects) {
-                if (ax >= o[0] - 4 && ax < o[2] + 4 && ay >= o[1] - 4 && ay < o[3] + 4) { covered = true; break }
-            }
-            if (!covered) ink++
+        if (!requireLeftover && bandsOut == null) return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
+        // Leftover lettering = "holes" in the bubble fill (between the fill's left and right edge of each row, so
+        // the outline and the corners of an oval are never counted) that no recognised block accounts for.
+        val rowMin = IntArray(h) { w }
+        val rowMax = IntArray(h) { -1 }
+        for (i in 0 until w * h) if (seen[i]) {
+            val yy = i / w; val xx = i - yy * w
+            if (xx < rowMin[yy]) rowMin[yy] = xx
+            if (xx > rowMax[yy]) rowMax[yy] = xx
         }
-        if (ink < 40) return null
+        val inkRow = IntArray(h)
+        var ink = 0
+        for (y in t..b) {
+            if (rowMax[y] < 0) continue
+            for (x in rowMin[y]..rowMax[y]) {
+                val i = y * w + x
+                if (seen[i] || near(px[i], bg)) continue
+                val ax = x + x0; val ay = y + y0
+                var covered = false
+                for (o in allRects) {
+                    if (ax >= o[0] - 4 && ax < o[2] + 4 && ay >= o[1] - 4 && ay < o[3] + 4) { covered = true; break }
+                }
+                if (!covered) { inkRow[y]++; ink++ }
+            }
+        }
+        if (bandsOut != null) {
+            // consecutive ink rows (small gaps bridged) = one unread line of lettering
+            var y = t
+            while (y <= b) {
+                if (inkRow[y] < 2) { y++; continue }
+                var top = y; var bottom = y; var gap = 0
+                var yy = y
+                while (yy <= b && gap <= 2) {
+                    if (inkRow[yy] >= 2) { bottom = yy; gap = 0 } else gap++
+                    yy++
+                }
+                if (bottom - top + 1 >= minBand) bandsOut.add(intArrayOf(top + y0, bottom + y0 + 1))
+                y = bottom + 1
+            }
+        }
+        if (requireLeftover && ink < 40) return null
         return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
     }
 

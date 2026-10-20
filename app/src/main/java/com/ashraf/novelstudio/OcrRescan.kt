@@ -1,13 +1,10 @@
 package com.ashraf.novelstudio
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.os.Build
-import android.provider.MediaStore
 import android.util.Log
 
 /**
@@ -296,7 +293,10 @@ internal object OcrRescan {
             }
             val best = ArrayList<OcrBlock>()
             for (look in looks) {
-                val res = if (fastMode) engine.recognizeFast(look, script) else engine.recognizeRegion(look, script)
+                // One cropped line/row is easy for the recogniser; the 4-pass "region" engine made every
+                // rescanned row cost as much as a whole screen. Only non-fast, non-Latin reads keep it.
+                val res = if (fastMode || script == OcrScript.LATIN) engine.recognizeFast(look, script)
+                    else engine.recognizeRegion(look, script)
                 OcrLineFusion.addAll(best, res.blocks.filterNot { OcrPost.isNoise(it) })
             }
             val sc = base.width.toFloat() / cw
@@ -333,13 +333,14 @@ internal object OcrRescan {
         val tried = ArrayList<Region>()
         // English captions with many missed rows must not stop after two regions. Scale the bounded
         // audit to the slice height; retain the small latency budget for the other language engines.
-        var budget = if (script == OcrScript.LATIN) (bmp.height / 120).coerceIn(8, 16)
-            else if (fastMode) 2 else 5
+        var budget = if (script == OcrScript.LATIN) {
+            if (fastMode) (bmp.height / 160).coerceIn(3, 6) else (bmp.height / 120).coerceIn(8, 16)
+        } else if (fastMode) 2 else 5
         var changed = false
         var regionCount = 0
 
         var round = 0
-        val maxRounds = if (script == OcrScript.LATIN) 4 else if (fastMode) 2 else 3
+        val maxRounds = if (script == OcrScript.LATIN) (if (fastMode) 2 else 4) else if (fastMode) 2 else 3
         while (round < maxRounds && budget > 0) {
             round++
             val proposed: List<Region> = try {
@@ -401,13 +402,13 @@ internal object OcrRescan {
 
     /**
      * Green = blocks from the normal pass, orange = lines recovered by the rescan,
-     * red = regions that were re-read but gave nothing. Saved to Pictures/NovelStudioOCR (max 30 per run).
+     * red = regions that were re-read but gave nothing. Saved to the private ocr_debug folder (newest 12 kept).
      */
     @Synchronized
     private fun saveDebug(
         ctx: Context, bmp: Bitmap, base: List<OcrBlock>, found: List<OcrBlock>, empty: List<Region>
     ) {
-        if (savedCount >= 30) return
+        if (savedCount >= 12) return
         val copy = bmp.copy(Bitmap.Config.ARGB_8888, true) ?: return
         try {
             val canvas = Canvas(copy)
@@ -429,19 +430,24 @@ internal object OcrRescan {
         }
     }
 
+    /**
+     * Debug pictures go to the app's PRIVATE folder (Android/data/<app>/files/ocr_debug), never to the
+     * Gallery: they used to flood Pictures/NovelStudioOCR with dozens of marked-up screenshots.
+     * Only the newest [KEEP] files are kept.
+     */
+    private const val KEEP = 12
+
     private fun write(ctx: Context, bm: Bitmap) {
+        val dir = ctx.getExternalFilesDir("ocr_debug") ?: java.io.File(ctx.filesDir, "ocr_debug")
+        dir.mkdirs()
         val name = "ocr_" + System.currentTimeMillis() + "_" + savedCount + ".jpg"
-        if (Build.VERSION.SDK_INT >= 29) {
-            val values = ContentValues()
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, name)
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/NovelStudioOCR")
-            val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return
-            ctx.contentResolver.openOutputStream(uri)?.use { bm.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-        } else {
-            val dir = ctx.getExternalFilesDir("ocr_debug") ?: return
-            dir.mkdirs()
-            java.io.FileOutputStream(java.io.File(dir, name)).use { bm.compress(Bitmap.CompressFormat.JPEG, 85, it) }
-        }
+        java.io.FileOutputStream(java.io.File(dir, name)).use { bm.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+        val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
+        for (f in files.dropLast(KEEP)) runCatching { f.delete() }
+    }
+
+    /** Called at app start: the debug switch is a per-session tool, it must not silently stay on. */
+    fun resetDebug(ctx: Context) {
+        try { Prefs.putBool(ctx, "ocrDebug", false) } catch (_: Exception) {}
     }
 }
