@@ -1508,23 +1508,11 @@ internal class WebModeExtractor(
                 if (i !in members) continue
                 if (members.size < 2 && bands.isNullOrEmpty()) continue   // a lone, fully read line needs nothing
 
-                // Lines of ONE sentence chain together (a skipped line makes a double gap: allow it).
-                val sameText = linkedSetOf(i)
-                var growing = true
-                while (growing) {
-                    growing = false
-                    for (j in members) {
-                        if (j !in sameText && sameText.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 2.4f, loose = true) }) {
-                            sameText.add(j); growing = true
-                        }
-                    }
-                }
-                if (members.any { it !in sameText }) {
-                    // A joined balloon (two lobes, one outline) holds two separate sentences: each keeps its own box.
-                    for (k in members) if (!consumed[k] && refinedText[k] == null) joinAdjacentLines(k, members)
-                    continue
-                }
-
+                // The closed speech-bubble outline is stronger evidence than line spacing/alignment:
+                // every OCR row whose centre lies inside this same interior belongs to ONE bubble.
+                // Splitting these rows back into sentence-like groups creates several Bengali overlays
+                // inside one Korean balloon (the exact failure seen with tall/multiline webtoon balloons).
+                // Keep the outline as the grouping boundary and translate its complete contents together.
                 val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
                 val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
                 val medFont = if (fonts.isEmpty()) ownFont else fonts[fonts.size / 2]
