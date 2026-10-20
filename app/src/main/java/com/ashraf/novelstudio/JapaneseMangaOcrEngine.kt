@@ -53,6 +53,16 @@ internal object OcrEngineStatus {
     @Volatile var label: String = ""
     /** Last Paddle failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
     @Volatile var lastError: String = ""
+    @Volatile private var lastToast: String = ""
+
+    /** Shows a long toast once per distinct message (so a failing scan loop does not spam the screen). */
+    fun toastOnce(context: Context?, message: String) {
+        if (context == null || message == lastToast) return
+        lastToast = message
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try { android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show() } catch (_: Throwable) {}
+        }
+    }
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
@@ -200,7 +210,10 @@ internal class RoutingOcrEngine : OcrEngine {
             val detail = (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(70)
             val why = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName +
                 (if (detail.isNotEmpty()) " – $detail" else "")
-            OcrEngineStatus.lastError = "$selectedMode ${script.name}: $why"
+            val full = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName + " – " +
+                (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
+            OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
+            OcrEngineStatus.toastOnce(appContext, "Paddle error → ML Kit\n$full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
             run(mlKit)
