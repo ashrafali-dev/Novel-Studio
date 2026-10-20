@@ -4858,6 +4858,59 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
+    private fun menuOcrModelsLabel(): String = "🧠 OCR models (download / delete)"
+
+    private fun ocrModelsDialog() {
+        OcrModels.init(this)
+        val packs = OcrModels.PACKS
+        val labels = ArrayList<String>()
+        for (p in packs) {
+            val state = when {
+                !p.available -> "link not configured yet"
+                OcrModels.isBusy(p) -> "downloading…"
+                OcrModels.isInstalled(p) -> "installed · " + OcrModels.sizeMb(p) + " MB — tap to delete"
+                else -> "not installed · tap to download (~" + OcrModels.approxMb(p) + " MB)"
+            }
+            labels.add(p.label + "\n" + state)
+        }
+        val err = OcrModels.lastError
+        labels.add("🗑 Delete all models\n" +
+            (if (err.isNotBlank()) "Last ONNX problem: " + err.take(70) else "Without a model, ML Kit reads the page"))
+        listDialog("🧠 OCR models", labels, { i ->
+            if (i == packs.size) {
+                AlertDialog.Builder(this)
+                    .setMessage("Delete all downloaded OCR models? ML Kit will be used instead.")
+                    .setPositiveButton("Delete") { _, _ -> OcrModels.deleteAll(); toast("🗑 OCR models deleted") }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            } else {
+                val p = packs[i]
+                when {
+                    !p.available -> toast("⚠ ${p.label}: download link not configured yet")
+                    OcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
+                    OcrModels.isInstalled(p) -> AlertDialog.Builder(this)
+                        .setMessage("Delete the ${p.label} OCR model? ML Kit will be used for this language.")
+                        .setPositiveButton("Delete") { _, _ -> OcrModels.delete(p); toast("🗑 ${p.label} deleted") }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                    else -> {
+                        toast("⬇️ Downloading ${p.label}…")
+                        Thread {
+                            try {
+                                OcrModels.download(p) { name, pct ->
+                                    if (pct % 25 == 0) runOnUiThread { toast("⬇️ $name $pct%") }
+                                }
+                                runOnUiThread { toast("✅ ${p.label} installed — Web Mode OCR uses it now") }
+                            } catch (e: Exception) {
+                                runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+                            }
+                        }.start()
+                    }
+                }
+            }
+        }, null)
+    }
+
     private fun menuOcrDebugLabel(): String =
         (if (Prefs.bool(this, "ocrDebug", false)) "✅" else "⬜") + " 🔬 OCR debug (marked images, private folder)"
 
@@ -8500,7 +8553,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
             "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
-            menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel()
+            menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel(), menuOcrModelsLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8509,7 +8562,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
@@ -8519,7 +8572,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         )
         val advanced = listOf(
             "TRANSLATION" to listOf(47, 12, 19, 14, 26, 30, 39, 40, 44, 46),
-            "WEBTOON TOOLS" to listOf(31, 32, 33, 36, 34, 37, 38, 41, 43, 48, 49, 50, 51),
+            "WEBTOON TOOLS" to listOf(31, 32, 33, 36, 34, 37, 38, 41, 43, 48, 49, 50, 51, 53),
             "BROWSER" to listOf(15, 16, 21, 24, 29, 35),
             "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45, 52)
         )
@@ -8642,6 +8695,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
                 }
+                53 -> { dlg.dismiss(); ocrModelsDialog() }
                 51 -> {
                     val on = !Prefs.bool(this, "ocrRescan", true)
                     Prefs.putBool(this, "ocrRescan", on)

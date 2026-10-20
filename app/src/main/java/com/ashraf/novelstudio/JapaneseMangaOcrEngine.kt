@@ -48,7 +48,7 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
  * so real-time scanning keeps working for all languages exactly as before.
  */
 internal class RoutingOcrEngine(
-    private val general: OcrEngine = MlKitOcrEngine(),
+    private val general: OcrEngine = FallbackOcrEngine(OnnxOcrEngine(), MlKitOcrEngine()),
     private val manga: OcrEngine = JapaneseMangaOcrEngine()
 ) : OcrEngine {
 

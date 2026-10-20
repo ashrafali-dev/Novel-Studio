@@ -1705,6 +1705,7 @@ internal class WebModeExtractor(
          * (see [OcrRescan]). Any failure keeps the normal result untouched.
          */
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
+            OcrModels.init(wv.context)
             val core = recognizeCore(bmp, st, fastMode)
             if (!Prefs.bool(wv.context, "ocrRescan", true)) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
