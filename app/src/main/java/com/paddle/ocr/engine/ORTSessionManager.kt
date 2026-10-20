@@ -40,6 +40,10 @@ class ORTSessionManager(
         val opts = OrtSession.SessionOptions().apply {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             setIntraOpNumThreads(config.numThreads)
+            // Dynamic input sizes (every screenshot differs): the arena and memory-pattern planner keep the largest
+            // buffers alive and are a common cause of std::bad_alloc on phones.
+            try { setCPUArenaAllocator(false) } catch (_: Throwable) {}
+            try { setMemoryPatternOptimization(false) } catch (_: Throwable) {}
         }
         try {
             val ortEnv = env ?: throw OCRError.ModelLoadFailed("OCR", Exception("Environment not initialized"))
