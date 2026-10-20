@@ -124,13 +124,15 @@ internal class PaddleV6OcrEngine(
             }
             cx /= points.size
             cy /= points.size
-            val w = (maxX - minX).coerceAtLeast(1f)
-            val h = (maxY - minY).coerceAtLeast(1f)
             val p0 = points[0]
             val p1 = points[1]
-            val edgeHeight = hypot(points[2].first - p1.first, points[2].second - p1.second)
+            val p2 = points[2]
+            // Match ML Kit's coordinate contract: centre + rotated edge dimensions, while top/left
+            // keep the full axis-aligned bounds for clipping, rescan and bubble-interior sampling.
+            val w = hypot(p1.first - p0.first, p1.second - p0.second).coerceAtLeast(1f)
+            val h = hypot(p2.first - p1.first, p2.second - p1.second).coerceAtLeast(1f)
             val rawAngle = Math.toDegrees(atan2((p1.second - p0.second).toDouble(), (p1.first - p0.first).toDouble())).toFloat()
-            val angle = OcrPost.usableTilt(rawAngle)
+            val angle = OcrPost.foldAngle(rawAngle)
             val vertical = script != OcrScript.LATIN && h > w * 1.25f
             val block = OcrBlock(
                 text = text,
@@ -150,7 +152,7 @@ internal class PaddleV6OcrEngine(
             if (!OcrPost.isNoise(block)) blocks.add(block)
         }
 
-        val ordered = if (script == OcrScript.JAPANESE && blocks.any { it.vertical }) {
+        val ordered = if (script != OcrScript.LATIN && blocks.any { it.vertical }) {
             blocks.sortedWith(compareByDescending<OcrBlock> { it.cx }.thenBy { it.top })
         } else {
             blocks.sortedWith(compareBy<OcrBlock> { it.cy }.thenBy { it.left })

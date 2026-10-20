@@ -100,8 +100,8 @@ internal class RoutingOcrEngine : OcrEngine {
                 val context = appContext
                     ?: throw OcrUnavailableException("OCR engine has not been initialized")
                 activeCustom = when (mode) {
-                    "paddle_small" -> PaddleV6OcrEngine(context, "small")
-                    "paddle_heavy" -> PaddleV6OcrEngine(context, "heavy")
+                    "paddle_small" -> PaddleProfileOcrEngine(context, "small")
+                    "paddle_heavy" -> PaddleProfileOcrEngine(context, "heavy")
                     "rapid_onnx" -> FallbackOcrEngine(OnnxOcrEngine(), MlKitOcrEngine())
                     else -> mlKit
                 }

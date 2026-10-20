@@ -20,7 +20,7 @@ The copied SDK source files retain their upstream Apache-2.0 headers. The corres
 - PP-OCRv6 Small: lower resource profile intended for routine scanning.
 - PP-OCRv6 Medium/Heavy: larger model option for users prioritizing OCR detail at a higher RAM/latency cost.
 
-The names do not promise that Heavy is more accurate on every manga font or language. Actual CER/WER and speed depend on language, artwork, device and test corpus. PaddleOCR detects text boxes, not entire speech balloons; NovelStudio continues using its existing image-aware bubble-interior and layout logic.
+The standard PP-OCRv6 Small/Medium recognition dictionaries are primarily suited to English/Chinese. NovelStudio routes Korean and Japanese to its existing language-specific PP-OCRv4 model packs when those are installed, and otherwise falls back to ML Kit rather than feeding those scripts to an incompatible dictionary. Install Korean/Japanese packs from the legacy model section when using those languages. The names do not promise that Heavy is more accurate on every manga font or language. Actual CER/WER and speed depend on language, artwork, device and test corpus. PaddleOCR detects text regions, not entire speech-balloon shapes; NovelStudio preserves its existing image-aware bubble-interior detection, line grouping, cumulative layout and translation-placement logic.
 
 ## Runtime dependencies
 

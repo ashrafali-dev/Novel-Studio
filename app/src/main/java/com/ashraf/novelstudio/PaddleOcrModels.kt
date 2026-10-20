@@ -38,9 +38,9 @@ internal object PaddleOcrModels {
             detectorUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/5994b4f1a827310b6d38f6b13716af6381847be0/inference.onnx",
             recognitionUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/3d2d345/inference.onnx",
             configUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/3d2d345/inference.yml",
-            detectorSha256 = null,
+            detectorSha256 = "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
             recognitionSha256 = "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
-            approximateMb = 45,
+            approximateMb = 32,
             recognitionBatchSize = 4,
             threads = 2
         ),
