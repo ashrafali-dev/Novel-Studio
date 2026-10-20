@@ -1523,7 +1523,9 @@ internal class WebModeExtractor(
                 val lines = ordered.mapTo(ArrayList<BubbleLine>()) {
                     BubbleLine(blocks[it].cy, blocks[it].text.replace(NEWLINES, " ").trim())
                 }
-                if (bands.isNotEmpty()) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
+                // Recover missed bubble rows only during a thorough scan; doing up to three extra
+                // OCR inferences for every visible bubble made real-time reading feel frozen.
+                if (bands.isNotEmpty() && !fastMode) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
                 val joinedText = lines.sortedBy { it.cy }.joinToString(" ") { it.text }
                     .replace(Regex("\\s+"), " ").trim()
                 if (joinedText.isBlank()) continue
@@ -1709,7 +1711,9 @@ internal class WebModeExtractor(
             PaddleOcrModels.init(wv.context)
             (engine as? RoutingOcrEngine)?.configure(wv.context)
             val core = recognizeCore(bmp, st, fastMode)
-            if (!Prefs.bool(wv.context, "ocrRescan", true)) return core
+            // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
+            // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
+            if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
             if (st.current == OcrScript.JAPANESE &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
