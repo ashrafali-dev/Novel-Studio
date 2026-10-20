@@ -1319,6 +1319,17 @@ internal class WebModeExtractor(
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
             fun finishResult(): PanelOcr {
+                // OCR engines often return one box per line even when the art contains ONE speech
+                // bubble. Fuse spatially adjacent, aligned line boxes across the entire image (including
+                // across OCR slices) BEFORE translation batching and before optional text cleanup.
+                // This prevents the first line being translated alone while the remaining lines arrive
+                // as a second request, which destroys sentence context.
+                val fused = fuseAdjacentBubbleFragments(bubbles)
+                bubbles.clear()
+                bubbles.addAll(fused)
+                texts.clear()
+                texts.addAll(bubbles.map { it.sourceText.trim() }.filter { it.isNotBlank() })
+
                 // Cleaning is opt-in and limited to whole-image OCR. A force-OCR crop has a different
                 // coordinate system and must never be used to rewrite the underlying source image.
                 if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
@@ -1690,6 +1701,86 @@ internal class WebModeExtractor(
             val bl = b.cx - b.w / 2f; val br = b.cx + b.w / 2f
             val horizontalGap = maxOf(0f, maxOf(al, bl) - minOf(ar, br))
             return horizontalGap <= scale * 4f
+        }
+
+        /**
+         * Join OCR fragments that belong to one visually continuous speech bubble.
+         *
+         * OCR recognizers commonly return each line as a separate result. The earlier code only joined
+         * lines when a closed bubble outline was detected; Webtoon captions on plain artwork often have
+         * no outline, so 2-3 lines were sent to the translator independently. Work on the complete panel
+         * result here so lines split between OCR slices are considered together as well.
+         */
+        private fun fuseAdjacentBubbleFragments(input: List<WmBubble>): List<WmBubble> {
+            val out = input.toMutableList()
+            fun normalizedText(b: WmBubble) = WebModeLayout.normalizeOcrText(b.sourceText)
+            fun shouldFuse(a: WmBubble, b: WmBubble): Boolean {
+                if (a.src != b.src || a.sourceText.isBlank() || b.sourceText.isBlank()) return false
+                if (Math.abs(a.angle) >= 6f || Math.abs(b.angle) >= 6f) return false
+                val ta = normalizedText(a)
+                val tb = normalizedText(b)
+                if (ta.isBlank() || tb.isBlank() || ta == tb) return false
+                // Do not merge markedly different lettering sizes; this protects adjacent sound effects.
+                val fa = maxOf(a.font, a.h * 0.55f, 0.001f)
+                val fb = maxOf(b.font, b.h * 0.55f, 0.001f)
+                val ratio = fa / fb
+                if (ratio < 0.58f || ratio > 1.72f) return false
+
+                val al = a.cx - a.w / 2f; val ar = a.cx + a.w / 2f
+                val bl = b.cx - b.w / 2f; val br = b.cx + b.w / 2f
+                val overlapX = maxOf(0f, minOf(ar, br) - maxOf(al, bl))
+                val smallerW = minOf(a.w, b.w).coerceAtLeast(0.001f)
+                val centerDelta = Math.abs(a.cx - b.cx)
+                // Centered lines and left-aligned lines both qualify; random nearby text does not.
+                if (overlapX / smallerW < 0.32f &&
+                    centerDelta > maxOf(a.w, b.w) * 0.22f) return false
+
+                val atop = a.cy - a.h / 2f; val abot = a.cy + a.h / 2f
+                val btop = b.cy - b.h / 2f; val bbot = b.cy + b.h / 2f
+                val verticalOverlap = minOf(abot, bbot) - maxOf(atop, btop)
+                val gap = maxOf(0f, maxOf(atop, btop) - minOf(abot, bbot))
+                val lineH = maxOf(minOf(a.h, b.h), minOf(fa, fb) * 0.62f, 0.001f)
+                // Already-overlapping boxes can be separate OCR lines in a detected bubble interior.
+                if (verticalOverlap <= 0f && gap > lineH * 1.55f) return false
+                // Avoid combining separate blocks that overlap vertically but are far apart horizontally.
+                return true
+            }
+
+            var changed = true
+            var passes = 0
+            while (changed && passes++ < 8) {
+                changed = false
+                val order = out.indices.sortedBy { out[it].cy }
+                outer@ for (oi in 0 until order.size) {
+                    val i = order[oi]
+                    for (oj in oi + 1 until order.size) {
+                        val j = order[oj]
+                        val a = out[i]
+                        val b = out[j]
+                        if (!shouldFuse(a, b)) continue
+                        val first: WmBubble
+                        val second: WmBubble
+                        if (a.cy <= b.cy) { first = a; second = b } else { first = b; second = a }
+                        val left = minOf(first.cx - first.w / 2f, second.cx - second.w / 2f)
+                        val right = maxOf(first.cx + first.w / 2f, second.cx + second.w / 2f)
+                        val top = minOf(first.cy - first.h / 2f, second.cy - second.h / 2f)
+                        val bottom = maxOf(first.cy + first.h / 2f, second.cy + second.h / 2f)
+                        val joined = (first.sourceText.trimEnd() + " " + second.sourceText.trimStart())
+                            .replace(Regex("\\s+"), " ").trim()
+                        out[i] = first.copy(
+                            cx = (left + right) / 2f, cy = (top + bottom) / 2f,
+                            w = right - left, h = bottom - top,
+                            font = maxOf(first.font, second.font),
+                            sourceText = joined,
+                            translatedText = ""
+                        )
+                        out.removeAt(j)
+                        changed = true
+                        break@outer
+                    }
+                }
+            }
+            return out.sortedBy { it.cy }
         }
 
         private fun sameSpot(a: WmBubble, b: WmBubble): Boolean {
