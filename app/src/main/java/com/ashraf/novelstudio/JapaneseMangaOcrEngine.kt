@@ -77,6 +77,22 @@ internal class RoutingOcrEngine : OcrEngine {
         if (mode == "manga") {
             return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
         }
+        if (mode == "paddle_small" || mode == "paddle_heavy") {
+            val tier = if (mode == "paddle_small") "small" else "heavy"
+            val modelPack = PaddleOcrModels.pack(tier)
+            if (modelPack == null || !PaddleOcrModels.isInstalled(modelPack)) {
+                // Do not attempt a doomed native model load on every scan. If a downloaded model
+                // was deleted, release its session on the next OCR request to free the RAM.
+                synchronized(this) {
+                    if (activeMode == mode) {
+                        try { activeCustom?.close() } catch (_: Exception) {}
+                        activeCustom = null
+                        activeMode = ""
+                    }
+                }
+                return mlKit
+            }
+        }
 
         synchronized(this) {
             if (activeCustom == null || activeMode != mode) {

@@ -1,0 +1,40 @@
+name: PaddleOCR integration compile check
+
+on:
+  push:
+    branches:
+      - feature/paddleocr-complete-pipeline
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Create temporary build-only keystore
+        run: |
+          keytool -genkeypair -alias ci-test -keyalg RSA -keysize 2048 \
+            -keystore "$RUNNER_TEMP/ci-test.jks" -storepass ci-test-pass \
+            -keypass ci-test-pass -dname "CN=NovelStudio CI" -validity 2 -noprompt
+          test -s "$RUNNER_TEMP/ci-test.jks"
+
+      - name: Compile app and run unit tests
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/ci-test.jks
+          KEYSTORE_PASSWORD: ci-test-pass
+          KEY_ALIAS: ci-test
+          KEY_PASSWORD: ci-test-pass
+        run: gradle app:assembleDebug app:testDebugUnitTest --no-daemon
