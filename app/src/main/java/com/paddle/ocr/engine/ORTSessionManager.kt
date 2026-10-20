@@ -43,15 +43,20 @@ class ORTSessionManager(
         }
         try {
             val ortEnv = env ?: throw OCRError.ModelLoadFailed("OCR", Exception("Environment not initialized"))
-            val detBytes = readModelAsset(detAssetPath)
-            val recBytes = readModelAsset(recAssetPath)
+            // Downloaded models are absolute file paths (app files dir): let ONNX Runtime read them itself, which
+            // avoids copying a ~130 MB model into the Java heap. Anything else is an APK asset, as before.
+            fun isFile(path: String) = path.startsWith("/") && java.io.File(path).isFile
             try {
-                detSession = ortEnv.createSession(detBytes, opts)
+                detSession = if (isFile(detAssetPath)) ortEnv.createSession(detAssetPath, opts)
+                else ortEnv.createSession(readModelAsset(detAssetPath), opts)
+            } catch (t: OCRError) {
+                throw t
             } catch (t: Throwable) {
                 throw OCRError.ModelLoadFailed("detection", t)
             }
             try {
-                recSession = ortEnv.createSession(recBytes, opts)
+                recSession = if (isFile(recAssetPath)) ortEnv.createSession(recAssetPath, opts)
+                else ortEnv.createSession(readModelAsset(recAssetPath), opts)
             } catch (t: Throwable) {
                 detSession?.close()
                 detSession = null
