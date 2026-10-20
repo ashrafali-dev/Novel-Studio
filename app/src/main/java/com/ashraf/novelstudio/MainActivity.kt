@@ -3545,6 +3545,7 @@ return t.length>=40?'TXT:'+t:'';
             isClickable = true
             setOnClickListener {
                 Langs.save(this@MainActivity, src, tgt)
+                NovelStudioAnalytics.logEvent(this@MainActivity, "target_language_selected", mode = analyticsModeNow(), targetLanguage = tgt)
                 dlg.dismiss()
                 toast("Translating " + (if (src == Langs.AUTO) "any language" else src) + " to " + tgt)
             }
@@ -4885,6 +4886,7 @@ return t.length>=40?'TXT:'+t:'';
             .setTitle("OCR Engine")
             .setSingleChoiceItems(labels, selected) { dialog, which ->
                 Prefs.put(this, "ocrEngine", keys[which])
+                NovelStudioAnalytics.logEvent(this, "ocr_model_selected", mode = analyticsModeNow(), ocrModel = keys[which])
                 dialog.dismiss()
                 toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
             }
@@ -7494,6 +7496,7 @@ return t.length>=40?'TXT:'+t:'';
     private fun sendJob(tok: Int, ch: Chapter) {
         // Keep paragraph identity inside the AI request. These markers never reach
         // the novel page and are removed from the final saved/clipboard translation.
+        NovelStudioAnalytics.logEvent(this, "translation_started", mode = analyticsModeNow(), provider = analyticsProviderNow())
         val host = Uri.parse(ch.url).host?.lowercase().orEmpty()
         val isWtrLab = host == "wtr-lab.com" || host.endsWith(".wtr-lab.com")
         val marked = addInternalMarkers(ch.text, splitSingleLines = isWtrLab)
@@ -7815,6 +7818,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 failJob(tok, ch, "Could not read the translation")
                 return@evaluateJavascript
             }
+            NovelStudioAnalytics.logEvent(this, "translation_completed", mode = analyticsModeNow(), provider = analyticsProviderNow(), success = true)
             val aheadTaskKey = keyOf(ch)
             val aheadTask = rtAheadTranslationTasksByJobKey[aheadTaskKey]
             if (aheadTask != null) {
@@ -7865,6 +7869,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String) {
         if (tok != runToken) return
+        NovelStudioAnalytics.logEvent(this, "translation_failed", mode = analyticsModeNow(), provider = analyticsProviderNow(), success = false)
         val aheadTaskKey = keyOf(ch)
         val aheadTask = rtAheadTranslationTasksByJobKey.remove(aheadTaskKey)
         if (aheadTask != null) {
@@ -9676,6 +9681,24 @@ ${rows.take(220).joinToString("\n")}
         }
     }
 
+    private fun analyticsModeNow(): String = when {
+        DeepSeekRealtimeTranslation.isEnabled(this) -> "realtime"
+        webModeOn() -> "scanning"
+        else -> "novel"
+    }
+
+    private fun analyticsProviderNow(): String {
+        val host = Uri.parse(selectedBotBaseUrl()).host?.lowercase().orEmpty()
+        return when {
+            "chatgpt" in host || "openai" in host -> "chatgpt"
+            "gemini" in host || "google" in host -> "gemini"
+            "claude" in host || "anthropic" in host -> "claude"
+            "deepseek" in host -> "deepseek"
+            "grok" in host || "x.com" in host -> "grok"
+            else -> "other"
+        }
+    }
+
     override fun onPause() {
         NovelStudioAnalytics.onBackground()
         activityPausedAtMs = android.os.SystemClock.elapsedRealtime()
@@ -9687,12 +9710,7 @@ ${rows.take(220).joinToString("\n")}
 
     override fun onResume() {
         super.onResume()
-        val analyticsMode = when {
-            DeepSeekRealtimeTranslation.isEnabled(this) -> "realtime"
-            webModeOn() -> "scanning"
-            else -> "novel"
-        }
-        NovelStudioAnalytics.onForeground(this, analyticsMode)
+        NovelStudioAnalytics.onForeground(this, analyticsModeNow())
         // Explicitly resume WebView timers after returning from another app / a long background
         // pause. Some reader sites stop delivering animation, lazy-load and observer callbacks
         // until the WebView is resumed.
