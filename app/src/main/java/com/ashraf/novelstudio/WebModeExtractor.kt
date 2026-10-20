@@ -1767,14 +1767,16 @@ internal class WebModeExtractor(
                         val bottom = maxOf(first.cy + first.h / 2f, second.cy + second.h / 2f)
                         val joined = (first.sourceText.trimEnd() + " " + second.sourceText.trimStart())
                             .replace(Regex("\\s+"), " ").trim()
-                        out[i] = first.copy(
+                        val keep = minOf(i, j)
+                        val drop = maxOf(i, j)
+                        out[keep] = first.copy(
                             cx = (left + right) / 2f, cy = (top + bottom) / 2f,
                             w = right - left, h = bottom - top,
                             font = maxOf(first.font, second.font),
                             sourceText = joined,
                             translatedText = ""
                         )
-                        out.removeAt(j)
+                        out.removeAt(drop)
                         changed = true
                         break@outer
                     }
