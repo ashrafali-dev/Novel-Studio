@@ -302,6 +302,7 @@ internal class WebModeExtractor(
                     while (refs.size > aheadN) refs.removeAt(refs.size - 1)
                     if (refs.isEmpty()) { aheadFinished(); return@evaluateJavascript }
                     aheadWorker.execute {
+                        OcrGate.markBackgroundThread()
                         try { runCatching { processAhead(refs, pageUrl, lang) } } finally { aheadFinished() }
                     }
                 }
@@ -1319,17 +1320,6 @@ internal class WebModeExtractor(
             val texts = ArrayList<String>()
             val bubbles = ArrayList<WmBubble>()
             fun finishResult(): PanelOcr {
-                // OCR engines often return one box per line even when the art contains ONE speech
-                // bubble. Fuse spatially adjacent, aligned line boxes across the entire image (including
-                // across OCR slices) BEFORE translation batching and before optional text cleanup.
-                // This prevents the first line being translated alone while the remaining lines arrive
-                // as a second request, which destroys sentence context.
-                val fused = fuseAdjacentBubbleFragments(bubbles)
-                bubbles.clear()
-                bubbles.addAll(fused)
-                texts.clear()
-                texts.addAll(bubbles.map { it.sourceText.trim() }.filter { it.isNotBlank() })
-
                 // Cleaning is opt-in and limited to whole-image OCR. A force-OCR crop has a different
                 // coordinate system and must never be used to rewrite the underlying source image.
                 if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
@@ -1418,11 +1408,20 @@ internal class WebModeExtractor(
             src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
             firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false
         ) {
+            val tSlice = android.os.SystemClock.elapsedRealtime()
+            val outBefore = out.size
+            var groupMs = 0L
+            var ocrMs = 0L
+            var lineCount = 0
+            try {
             // Audit raw lines BEFORE joining paragraphs. A merged paragraph rectangle hides skipped
             // middle rows from the ink detector. Never discard an edge reading on the assumption that
             // another slice will find it; the fuller overlapping reading can upgrade it below.
+            val tOcr = android.os.SystemClock.elapsedRealtime()
             val blocks = OcrPost.mergeNeighbours(
                 recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }, bmp)
+            ocrMs = android.os.SystemClock.elapsedRealtime() - tOcr
+            lineCount = blocks.size
             if (blocks.isEmpty()) return
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
@@ -1440,25 +1439,16 @@ internal class WebModeExtractor(
             // Lines stacked under each other (touching ranges, centred or left aligned) are ONE sentence.
             // The merged text is placed in the union box of its lines.
             fun joinAdjacentLines(i: Int, pool: List<Int>) {
-                fun aligned(a: OcrBlock, b: OcrBlock): Boolean {
-                    val overlap = Math.min(a.cx + a.w / 2f, b.cx + b.w / 2f) - Math.max(a.cx - a.w / 2f, b.cx - b.w / 2f)
-                    return overlap >= Math.min(a.w, b.w) * 0.3f || Math.abs(a.cx - b.cx) <= Math.max(a.w, b.w) * 0.6f
-                }
-                val grp = linkedSetOf(i)
-                var grow = true
-                while (grow) {
-                    grow = false
-                    for (j in pool) {
-                        if (j in grp || consumed[j]) continue
-                        if (grp.any { p -> likelySameBubbleLine(blocks[p], blocks[j], 1.0f, loose = true) && aligned(blocks[p], blocks[j]) }) {
-                            grp.add(j); grow = true
-                        }
-                    }
-                }
+                fun aligned(a: OcrBlock, b: OcrBlock): Boolean = BubbleGrouping.aligned(a, b)
+                // Non-transitive grouping + image evidence (outline between two lines) -- see BubbleGrouping.groups.
+                val tg = android.os.SystemClock.elapsedRealtime()
+                val grp = BubbleGrouping.groupContaining(blocks, i, pool.filter { !consumed[it] }) { x, y ->
+                    OcrPost.outlineBetween(bmp, x, y)
+                }.toCollection(LinkedHashSet<Int>())
+                groupMs += android.os.SystemClock.elapsedRealtime() - tg
                 if (grp.size < 2) return
                 val ordered = grp.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
-                val text = ordered.joinToString(" ") { blocks[it].text.replace(NEWLINES, " ").trim() }
-                    .replace(Regex("\\s+"), " ").trim()
+                val text = BubbleGrouping.joinLines(ordered.map { blocks[it].text.replace(NEWLINES, " ") })
                 if (text.isBlank()) return
                 var l = Int.MAX_VALUE; var t = Int.MAX_VALUE; var r = Int.MIN_VALUE; var bt = Int.MIN_VALUE
                 for (j in ordered) {
@@ -1487,10 +1477,14 @@ internal class WebModeExtractor(
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
                 val ownFont = if (b.fontPx > 0f) b.fontPx else b.h
-                // Real-time reading cannot afford a flood-fill over a large pixel region for every text
-                // line. It uses geometry-based line joining plus whole-panel fusion at finishResult().
-                // Thorough chapter extraction still searches bubble interiors to recover missed rows.
+                // The exhaustive leftover-ink scan is only useful during a thorough chapter pass.
+                // In realtime mode, passing a band collector forces bubbleInterior to scan every pixel
+                // again and compare it against every OCR box; a tall panel with many bubbles can stall.
+                // Without a collector the helper returns immediately after finding the bubble's fill.
                 val bands: MutableList<IntArray>? = if (fastMode) null else ArrayList()
+                // Realtime screens optimise for latency: flood-filling up to 1.2M pixels around
+                // every OCR block repeatedly was the dominant freeze on long/mobile Webtoon panels.
+                // Keep this expensive interior/leftover audit only for thorough chapter extraction.
                 val inter: IntArray? = if (fastMode) null else try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
                         bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()))
@@ -1537,6 +1531,8 @@ internal class WebModeExtractor(
                 val lines = ordered.mapTo(ArrayList<BubbleLine>()) {
                     BubbleLine(blocks[it].cy, blocks[it].text.replace(NEWLINES, " ").trim())
                 }
+                // Recover missed bubble rows only during a thorough scan; doing up to three extra
+                // OCR inferences for every visible bubble made real-time reading feel frozen.
                 if (bands?.isNotEmpty() == true && !fastMode) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
                 val joinedText = lines.sortedBy { it.cy }.joinToString(" ") { it.text }
                     .replace(Regex("\\s+"), " ").trim()
@@ -1618,6 +1614,12 @@ internal class WebModeExtractor(
                 texts.add(text)
                 out.add(nb)
             }
+            } finally {
+                // Structured diagnostics: counts and timings only, never recognised text.
+                Log.i(TAG, "slice job=$id mode=${if (fastMode) "fast" else "full"} ocrMs=$ocrMs groupingMs=$groupMs " +
+                    "sliceTotalMs=${android.os.SystemClock.elapsedRealtime() - tSlice} lines=$lineCount " +
+                    "groups=${out.size - outBefore} image=${bmp.width}x${bmp.height}")
+            }
         }
 
         /**
@@ -1683,111 +1685,8 @@ internal class WebModeExtractor(
                 OcrLineFusion.agreement(x, y) >= 0.94f
         }
 
-        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock, maxGapFonts: Float = 2.0f, loose: Boolean = false): Boolean {
-            if (a.vertical || b.vertical) return false
-            val maxTilt = if (loose) 20f else 6f
-            if (Math.abs(OcrPost.usableTilt(a.angle)) >= maxTilt ||
-                Math.abs(OcrPost.usableTilt(b.angle)) >= maxTilt) return false
-            val fa = if (a.fontPx > 0f) a.fontPx else a.h
-            val fb = if (b.fontPx > 0f) b.fontPx else b.h
-            if (fa <= 0f || fb <= 0f) return false
-            val ratio = fa / fb
-            if (ratio < (if (loose) 0.4f else 0.55f) || ratio > (if (loose) 2.5f else 1.8f)) return false
-            val scale = maxOf(fa, fb)
-            val atop = a.cy - a.h / 2f
-            val abot = a.cy + a.h / 2f
-            val btop = b.cy - b.h / 2f
-            val bbot = b.cy + b.h / 2f
-            val gap = maxOf(0f, maxOf(atop, btop) - minOf(abot, bbot))
-            if (gap > scale * maxGapFonts) return false
-            val al = a.cx - a.w / 2f; val ar = a.cx + a.w / 2f
-            val bl = b.cx - b.w / 2f; val br = b.cx + b.w / 2f
-            val horizontalGap = maxOf(0f, maxOf(al, bl) - minOf(ar, br))
-            return horizontalGap <= scale * 4f
-        }
-
-        /**
-         * Join OCR fragments that belong to one visually continuous speech bubble.
-         *
-         * OCR recognizers commonly return each line as a separate result. The earlier code only joined
-         * lines when a closed bubble outline was detected; Webtoon captions on plain artwork often have
-         * no outline, so 2-3 lines were sent to the translator independently. Work on the complete panel
-         * result here so lines split between OCR slices are considered together as well.
-         */
-        private fun fuseAdjacentBubbleFragments(input: List<WmBubble>): List<WmBubble> {
-            val out = input.toMutableList()
-            fun normalizedText(b: WmBubble) = WebModeLayout.normalizeOcrText(b.sourceText)
-            fun shouldFuse(a: WmBubble, b: WmBubble): Boolean {
-                if (a.src != b.src || a.sourceText.isBlank() || b.sourceText.isBlank()) return false
-                if (Math.abs(a.angle) >= 6f || Math.abs(b.angle) >= 6f) return false
-                val ta = normalizedText(a)
-                val tb = normalizedText(b)
-                if (ta.isBlank() || tb.isBlank() || ta == tb) return false
-                // Do not merge markedly different lettering sizes; this protects adjacent sound effects.
-                val fa = maxOf(a.font, a.h * 0.55f, 0.001f)
-                val fb = maxOf(b.font, b.h * 0.55f, 0.001f)
-                val ratio = fa / fb
-                if (ratio < 0.58f || ratio > 1.72f) return false
-
-                val al = a.cx - a.w / 2f; val ar = a.cx + a.w / 2f
-                val bl = b.cx - b.w / 2f; val br = b.cx + b.w / 2f
-                val overlapX = maxOf(0f, minOf(ar, br) - maxOf(al, bl))
-                val smallerW = minOf(a.w, b.w).coerceAtLeast(0.001f)
-                val centerDelta = Math.abs(a.cx - b.cx)
-                // Centered lines and left-aligned lines both qualify; random nearby text does not.
-                if (overlapX / smallerW < 0.32f &&
-                    centerDelta > maxOf(a.w, b.w) * 0.22f) return false
-
-                val atop = a.cy - a.h / 2f; val abot = a.cy + a.h / 2f
-                val btop = b.cy - b.h / 2f; val bbot = b.cy + b.h / 2f
-                val verticalOverlap = minOf(abot, bbot) - maxOf(atop, btop)
-                val gap = maxOf(0f, maxOf(atop, btop) - minOf(abot, bbot))
-                val lineH = maxOf(minOf(a.h, b.h), minOf(fa, fb) * 0.62f, 0.001f)
-                // Overlapping boxes are joined only when they substantially occupy the same bubble.
-                // This prevents two different speech bubbles on the same row from being fused together.
-                if (verticalOverlap > 0f) return sameSpot(a, b)
-                if (gap > lineH * 1.55f) return false
-                return true
-            }
-
-            var changed = true
-            var passes = 0
-            while (changed && passes++ < 8) {
-                changed = false
-                val order = out.indices.sortedBy { out[it].cy }
-                outer@ for (oi in 0 until order.size) {
-                    val i = order[oi]
-                    for (oj in oi + 1 until order.size) {
-                        val j = order[oj]
-                        val a = out[i]
-                        val b = out[j]
-                        if (!shouldFuse(a, b)) continue
-                        val first: WmBubble
-                        val second: WmBubble
-                        if (a.cy <= b.cy) { first = a; second = b } else { first = b; second = a }
-                        val left = minOf(first.cx - first.w / 2f, second.cx - second.w / 2f)
-                        val right = maxOf(first.cx + first.w / 2f, second.cx + second.w / 2f)
-                        val top = minOf(first.cy - first.h / 2f, second.cy - second.h / 2f)
-                        val bottom = maxOf(first.cy + first.h / 2f, second.cy + second.h / 2f)
-                        val joined = (first.sourceText.trimEnd() + " " + second.sourceText.trimStart())
-                            .replace(Regex("\\s+"), " ").trim()
-                        val keep = minOf(i, j)
-                        val drop = maxOf(i, j)
-                        out[keep] = first.copy(
-                            cx = (left + right) / 2f, cy = (top + bottom) / 2f,
-                            w = right - left, h = bottom - top,
-                            font = maxOf(first.font, second.font),
-                            sourceText = joined,
-                            translatedText = ""
-                        )
-                        out.removeAt(drop)
-                        changed = true
-                        break@outer
-                    }
-                }
-            }
-            return out.sortedBy { it.cy }
-        }
+        private fun likelySameBubbleLine(a: OcrBlock, b: OcrBlock, maxGapFonts: Float = 2.0f, loose: Boolean = false): Boolean =
+            BubbleGrouping.likelySameBubbleLine(a, b, maxGapFonts, loose)
 
         private fun sameSpot(a: WmBubble, b: WmBubble): Boolean {
             val x = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
@@ -1803,10 +1702,11 @@ internal class WebModeExtractor(
          */
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
             OcrModels.init(wv.context)
+            PaddleOcrModels.init(wv.context)
+            (engine as? RoutingOcrEngine)?.configure(wv.context)
             val core = recognizeCore(bmp, st, fastMode)
-            // Visible scan/read-ahead is latency-sensitive. The uncovered-ink audit can run
-            // several more OCR passes per tile and was keeping the UI at "Reading the page" for
-            // tens of seconds. Thorough/manual chapter scans still retain this quality recovery.
+            // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
+            // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
             if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
             if (st.current == OcrScript.JAPANESE &&
@@ -1833,7 +1733,7 @@ internal class WebModeExtractor(
             } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
-            val result = if (!fastMode && needsOcrRetry(bmp, first)) {
+            val result = if (needsOcrRetry(bmp, first)) {
                 val retry = try { engine.recognizeFallback(bmp, st.current) } catch (_: Exception) {
                     OcrResult(emptyList())
                 }

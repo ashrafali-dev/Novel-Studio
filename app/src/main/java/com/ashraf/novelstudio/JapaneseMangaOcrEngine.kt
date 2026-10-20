@@ -1,5 +1,6 @@
 package com.ashraf.novelstudio
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
 import com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime
@@ -47,40 +48,163 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
  * has been downloaded; everything else (and any manga-model failure or empty result) stays on ML Kit,
  * so real-time scanning keeps working for all languages exactly as before.
  */
-internal class RoutingOcrEngine(
-    private val general: OcrEngine = FallbackOcrEngine(OnnxOcrEngine(), MlKitOcrEngine()),
+internal class RoutingOcrEngine : OcrEngine {
+    @Volatile private var appContext: Context? = null
+    private val mlKit: OcrEngine = MlKitOcrEngine()
     private val manga: OcrEngine = JapaneseMangaOcrEngine()
-) : OcrEngine {
+    @Volatile private var selectedMode: String = "mlkit"
+    private var activeMode: String = ""
+    private var activeCustom: OcrEngine? = null
 
-    private fun wantsManga(script: OcrScript) =
-        script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()
+    /** Called by WebMode before the first OCR pass so the chosen engine follows the Settings value. */
+    @Synchronized
+    fun configure(context: Context) {
+        appContext = context.applicationContext
+        OcrModels.init(context)
+        PaddleOcrModels.init(context)
+        val requested = Prefs.get(context, "ocrEngine", "mlkit")
+        // Only record the new choice. The old engine is released by active() INSIDE OcrGate, i.e. never while an
+        // inference is running (closing here, outside the gate, could free sessions under a running scan; and
+        // waiting for the gate here while holding this monitor would deadlock with active()).
+        if (requested != selectedMode) selectedMode = requested
+    }
 
-    private fun viaManga(bitmap: Bitmap, script: OcrScript): OcrResult? {
-        if (!wantsManga(script)) return null
-        return try {
-            manga.recognize(bitmap, script).takeIf { it.blocks.isNotEmpty() }
+    private fun active(script: OcrScript): OcrEngine {
+        val mode = selectedMode
+        synchronized(this) {
+            if (activeCustom != null && activeMode != mode) {
+                try { activeCustom?.close() } catch (_: Exception) {}
+                activeCustom = null
+                activeMode = ""
+            }
+        }
+        if (mode == "mlkit") return mlKit
+        // The custom legacy ONNX recognizer is not reliable for upright vertical CJK lettering and
+        // runs each detected box separately. Keep Korean/Japanese real-time scans on ML Kit instead.
+        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) return mlKit
+        if (mode == "manga") {
+            return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
+        }
+        if (mode == "paddle_small" || mode == "paddle_heavy") {
+            val tier = if (mode == "paddle_small") "small" else "heavy"
+            val modelPack = PaddleOcrModels.pack(tier)
+            if (modelPack == null || !PaddleOcrModels.isInstalled(modelPack)) {
+                // Do not attempt a doomed native model load on every scan. If a downloaded model
+                // was deleted, release its session on the next OCR request to free the RAM.
+                synchronized(this) {
+                    if (activeMode == mode) {
+                        try { activeCustom?.close() } catch (_: Exception) {}
+                        activeCustom = null
+                        activeMode = ""
+                    }
+                }
+                return mlKit
+            }
+        }
+
+        synchronized(this) {
+            if (activeCustom == null || activeMode != mode) {
+                try { activeCustom?.close() } catch (_: Exception) {}
+                val context = appContext
+                    ?: throw OcrUnavailableException("OCR engine has not been initialized")
+                activeCustom = when (mode) {
+                    "paddle_small" -> PaddleProfileOcrEngine(context, "small")
+                    "paddle_heavy" -> PaddleProfileOcrEngine(context, "heavy")
+                    "rapid_onnx" -> FallbackOcrEngine(OnnxOcrEngine(), MlKitOcrEngine())
+                    else -> mlKit
+                }
+                activeMode = mode
+            }
+            return activeCustom ?: mlKit
+        }
+    }
+
+    private fun useful(result: OcrResult): Boolean =
+        result.blocks.any { it.text.count { ch -> ch.isLetterOrDigit() } >= 2 }
+
+    private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
+        val waited = OcrGate.Waited()
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        var used = "?"
+        var fellBack = false
+        try {
+            return OcrGate.run(waited) {
+                val r = routeInner(bitmap, script, run) { engine, fb -> used = engine; fellBack = fb }
+                r
+            }
+        } finally {
+            // Diagnostic line: ids/timings only, never the recognised text.
+            Log.i("NovelStudioOCR", "requestedEngine=$selectedMode language=${script.name} " +
+                "activeEngine=$used fallbackUsed=$fellBack " +
+                "job=${Thread.currentThread().name} gateWaitMs=${waited.ms} " +
+                "totalMs=${android.os.SystemClock.elapsedRealtime() - t0} " +
+                "image=${bitmap.width}x${bitmap.height}")
+        }
+    }
+
+    private fun routeInner(
+        bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult,
+        report: (String, Boolean) -> Unit
+    ): OcrResult {
+        val chosen = try {
+            active(script)
         } catch (e: Exception) {
-            Log.w("NovelStudioManga", "Manga model failed, using ML Kit: " + e.message)
-            null
+            Log.w("NovelStudioOCR", "Could not select ${selectedMode}: ${e.message}")
+            mlKit
         } catch (_: OutOfMemoryError) {
-            null
+            mlKit
+        }
+        if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit) }
+
+        return try {
+            val primary = run(chosen)
+            if (useful(primary)) {
+                // PaddleProfileOcrEngine hands Korean to ML Kit by design: never label that as Paddle.
+                if (chosen is PaddleProfileOcrEngine && script == OcrScript.KOREAN) report("mlkit(korean-by-design under $selectedMode)", true)
+                else report(selectedMode, false)
+                primary
+            }
+            else { report("mlkit(empty-primary)", true); run(mlKit) }
+        } catch (e: Exception) {
+            Log.w("NovelStudioOCR", "${selectedMode} failed; falling back to ML Kit: ${e.message}")
+            report("mlkit(error)", true)
+            run(mlKit)
+        } catch (e: OutOfMemoryError) {
+            Log.w("NovelStudioOCR", "${selectedMode} ran out of memory; falling back to ML Kit")
+            report("mlkit(oom)", true)
+            run(mlKit)
+        } catch (e: LinkageError) {
+            Log.w("NovelStudioOCR", "${selectedMode} native runtime unavailable; falling back to ML Kit: ${e.message}")
+            report("mlkit(link-error)", true)
+            run(mlKit)
         }
     }
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognize(bitmap, script)
+        route(bitmap, script) { it.recognize(bitmap, script) }
 
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognizeFast(bitmap, script)
+        route(bitmap, script) { it.recognizeFast(bitmap, script) }
 
     override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
-        general.recognizeFallback(bitmap, script)
+        route(bitmap, script) { it.recognizeFallback(bitmap, script) }
 
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
-        viaManga(bitmap, script) ?: general.recognizeRegion(bitmap, script)
+        route(bitmap, script) { it.recognizeRegion(bitmap, script) }
 
+    /** Never frees an engine while it is reading: the release runs on its own thread, behind OcrGate. */
     override fun close() {
-        general.close()
+        Thread({
+            try { OcrGate.run { closeNow() } } catch (_: Throwable) {}
+        }, "ns-ocr-close").apply { isDaemon = true }.start()
+    }
+
+    @Synchronized
+    private fun closeNow() {
+        try { activeCustom?.close() } catch (_: Exception) {}
+        activeCustom = null
+        activeMode = ""
+        mlKit.close()
         manga.close()
     }
 }

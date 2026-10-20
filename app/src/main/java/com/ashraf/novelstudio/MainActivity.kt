@@ -570,7 +570,7 @@ class MainActivity : Activity() {
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr) return
-        val n = (Prefs.get(this, "rtAheadOcr", "3").toIntOrNull() ?: 3).coerceIn(0, 3)
+        val n = (Prefs.get(this, "rtAheadOcr", "3").toIntOrNull() ?: 3).coerceIn(0, 12)
         deepSeekAheadAtMs = System.currentTimeMillis()
         if (n == 0) return
         val token = navToken
@@ -977,6 +977,8 @@ class MainActivity : Activity() {
             chunks.add((i until minOf(i + chunkSize, batch.size)).toMutableList())
             i += chunkSize
         }
+        // One WmBubble = one translation unit; OCR line grouping (BubbleGrouping) decides how many there are.
+        Log.i("NovelStudioOCR", "translationQueue bubbles=${batch.size} requests=${chunks.size} chunkSize=$chunkSize")
         val minChunk = minOf(4, chunkSize)
         if (chunks.isNotEmpty() && chunks.last().size < minChunk) {
             if (!force) {
@@ -1832,8 +1834,8 @@ return t.length>=40?'TXT:'+t:'';
                 // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
                 // Keep the DOM probe light enough that it does not compete with touch scrolling.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
-                    // Keep a bounded OCR/translation pipeline: pre-read a small batch of upcoming panels
-                    // during idle time, without competing with the visible panel's OCR.
+                    // Keep a bounded OCR/translation pipeline: allow the next ten-panel batch
+                    // to be prepared while the previous batch is still being translated.
                     rtAheadTranslationQueue.size < 4 &&
                     System.currentTimeMillis() - deepSeekAheadAtMs >= 220L) {
                     startAheadOcr()
@@ -2005,12 +2007,8 @@ return t.length>=40?'TXT:'+t:'';
         when {
             reOcrBusy -> { text = "Re-reading this screen"; color = 0xFF64B5F6.toInt() }
             sending -> { text = "Sending to chatbot"; color = 0xFFFFAB40.toInt() }
-            keys.contains("visible-ocr") ->
-                { text = "Reading visible panel"; color = 0xFFB388FF.toInt() }
-            keys.contains("read-ahead-ocr") ->
-                { text = "Reading next panels"; color = 0xFF42A5F5.toInt() }
-            keys.contains("next-chapter-ocr") ->
-                { text = "Reading next chapter"; color = 0xFF42A5F5.toInt() }
+            keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
+                { text = "Reading the page"; color = 0xFFB388FF.toInt() }
             keys.contains("placement") -> { text = "Adding the translation"; color = 0xFF64FFDA.toInt() }
             keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } -> {
                 val fresh = android.os.SystemClock.elapsedRealtime() - chatPhaseAtMs < 2_500L
@@ -4862,55 +4860,138 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR models (download / delete)"
+    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR)"
+
+    private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
+        "paddle_small" -> "PaddleOCR Small"
+        "paddle_heavy" -> "PaddleOCR Heavy"
+        "rapid_onnx" -> "RapidOCR / legacy ONNX"
+        "manga" -> "Japanese Manga OCR"
+        else -> "ML Kit · Default"
+    }
+
+    private fun chooseOcrEngine() {
+        val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
+        val labels = arrayOf(
+            "ML Kit — Default (fast, built-in)",
+            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean uses ML Kit)",
+            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
+            "RapidOCR ONNX — legacy optional engine",
+            "Japanese Manga OCR — if its model is installed"
+        )
+        val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("OCR Engine")
+            .setSingleChoiceItems(labels, selected) { dialog, which ->
+                Prefs.put(this, "ocrEngine", keys[which])
+                dialog.dismiss()
+                toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     private fun ocrModelsDialog() {
         OcrModels.init(this)
-        val packs = OcrModels.PACKS
+        PaddleOcrModels.init(this)
+        val legacyPacks = OcrModels.PACKS
+        val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        for (p in packs) {
+        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\\nTap to choose the engine")
+
+        for (p in legacyPacks) {
             val state = when {
                 !p.available -> "link not configured yet"
                 OcrModels.isBusy(p) -> "downloading…"
                 OcrModels.isInstalled(p) -> "installed · " + OcrModels.sizeMb(p) + " MB — tap to delete"
                 else -> "not installed · tap to download (~" + OcrModels.approxMb(p) + " MB)"
             }
-            labels.add(p.label + "\n" + state)
+            labels.add(p.label + "\\n" + state)
         }
+
+        for (p in paddlePacks) {
+            val state = when {
+                PaddleOcrModels.isBusy(p) -> "downloading…"
+                PaddleOcrModels.isInstalled(p) -> "installed · " + PaddleOcrModels.sizeMb(p) + " MB — tap to delete"
+                else -> "not installed · tap to download (~" + p.approximateMb + " MB)"
+            }
+            labels.add("🧠 " + p.label + "\\n" + state)
+        }
+
+        val deleteIndex = 1 + legacyPacks.size + paddlePacks.size
         val err = OcrModels.lastError
-        labels.add("🗑 Delete all models\n" +
-            (if (err.isNotBlank()) "Last ONNX problem: " + err.take(70) else "Without a model, ML Kit reads the page"))
-        listDialog("🧠 OCR models", labels, { i ->
-            if (i == packs.size) {
-                AlertDialog.Builder(this)
-                    .setMessage("Delete all downloaded OCR models? ML Kit will be used instead.")
-                    .setPositiveButton("Delete") { _, _ -> OcrModels.deleteAll(); toast("🗑 OCR models deleted") }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            } else {
-                val p = packs[i]
-                when {
-                    !p.available -> toast("⚠ ${p.label}: download link not configured yet")
-                    OcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
-                    OcrModels.isInstalled(p) -> AlertDialog.Builder(this)
-                        .setMessage("Delete the ${p.label} OCR model? ML Kit will be used for this language.")
-                        .setPositiveButton("Delete") { _, _ -> OcrModels.delete(p); toast("🗑 ${p.label} deleted") }
-                        .setNegativeButton("Cancel", null)
-                        .show()
-                    else -> {
-                        toast("⬇️ Downloading ${p.label}…")
-                        Thread {
-                            try {
-                                OcrModels.download(p) { name, pct ->
-                                    if (pct % 25 == 0) runOnUiThread { toast("⬇️ $name $pct%") }
-                                }
-                                runOnUiThread { toast("✅ ${p.label} installed — Web Mode OCR uses it now") }
-                            } catch (e: Exception) {
-                                runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+        val paddleErr = PaddleOcrModels.lastError
+        val lastError = if (paddleErr.isNotBlank()) paddleErr else err
+        labels.add("🗑 Delete all optional OCR models\\n" +
+            (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
+
+        listDialog("🧠 OCR engine & models", labels, { i ->
+            when {
+                i == 0 -> chooseOcrEngine()
+                i in 1..legacyPacks.size -> {
+                    val p = legacyPacks[i - 1]
+                    when {
+                        !p.available -> toast("⚠ ${p.label}: download link not configured yet")
+                        OcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
+                        OcrModels.isInstalled(p) -> AlertDialog.Builder(this)
+                            .setMessage("Delete the ${p.label} legacy OCR model?")
+                            .setPositiveButton("Delete") { _, _ ->
+                                OcrModels.delete(p)
+                                toast("🗑 ${p.label} deleted")
                             }
-                        }.start()
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                        else -> {
+                            toast("⬇️ Downloading ${p.label}…")
+                            Thread {
+                                try {
+                                    OcrModels.download(p) { name, pct ->
+                                        if (pct % 25 == 0) runOnUiThread { toast("⬇️ $name $pct%") }
+                                    }
+                                    runOnUiThread { toast("✅ ${p.label} installed. Select it in OCR Engine if needed.") }
+                                } catch (e: Exception) {
+                                    runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+                                }
+                            }.start()
+                        }
                     }
                 }
+                i < deleteIndex -> {
+                    val p = paddlePacks[i - (1 + legacyPacks.size)]
+                    when {
+                        PaddleOcrModels.isBusy(p) -> toast("⬇️ ${p.label} is still downloading")
+                        PaddleOcrModels.isInstalled(p) -> AlertDialog.Builder(this)
+                            .setMessage("Delete ${p.label}? ML Kit remains available as fallback.")
+                            .setPositiveButton("Delete") { _, _ ->
+                                PaddleOcrModels.delete(p)
+                                toast("🗑 ${p.label} deleted")
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                        else -> {
+                            toast("⬇️ Downloading ${p.label}…")
+                            Thread {
+                                try {
+                                    PaddleOcrModels.download(p) { name, pct ->
+                                        if (pct % 25 == 0) runOnUiThread { toast("⬇️ PaddleOCR $name $pct%") }
+                                    }
+                                    runOnUiThread { toast("✅ ${p.label} installed. Select it in OCR Engine to use it.") }
+                                } catch (e: Exception) {
+                                    runOnUiThread { toast("❌ ${p.label}: " + (e.message ?: "download failed")) }
+                                }
+                            }.start()
+                        }
+                    }
+                }
+                else -> AlertDialog.Builder(this)
+                    .setMessage("Delete all downloaded optional OCR models? ML Kit will remain as the default engine.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        OcrModels.deleteAll()
+                        PaddleOcrModels.deleteAll()
+                        toast("🗑 Optional OCR models deleted")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         }, null)
     }
@@ -5893,15 +5974,16 @@ return t.length>=40?'TXT:'+t:'';
     private var deepSeekLastFailToastAtMs = 0L
 
     private fun startWebModeExtract(token: Int, useSaved: Boolean = false, realtimeViewport: Boolean = false) {
-        // Foreground OCR always owns the device: stop in-flight read-ahead before reading the visible
-        // panel. Korean/Japanese OCR on the background worker previously competed with visible OCR,
-        // leaving the reader at "Reading the page" for too long.
-        aheadOcrHandle?.cancel()
-        aheadOcrHandle = null
-        aheadOcrSeq++
-        aheadOcrStage = ""
-        aheadOcrPct = -1
+        // In real-time mode the ahead worker has its own low-priority executor and does not scroll
+        // the page. Let it finish caching upcoming panels while the visible panel is scanned and
+        // translated; cancelling it on every viewport change made the 9-panel read-ahead starve.
+        // For a manual/full-chapter extraction, stop read-ahead so foreground extraction gets priority.
         if (!realtimeViewport) {
+            aheadOcrHandle?.cancel()
+            aheadOcrHandle = null
+            aheadOcrSeq++
+            aheadOcrStage = ""
+            aheadOcrPct = -1
             // Full-chapter extraction owns the foreground; don't race the realtime batch worker.
             cancelRealtimeAheadWorker(requeue = false)
             rtAheadTranslationQueue.clear()

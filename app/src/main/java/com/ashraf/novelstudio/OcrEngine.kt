@@ -34,7 +34,9 @@ internal data class OcrBlock(
     val fontPx: Float = 0f,
     val vertical: Boolean = false,
     val confidence: Float = 0f,
-    val observations: Int = 1
+    val observations: Int = 1,
+    /** Optional detector quadrilateral in the same image coordinates as the bounding box. */
+    val polygon: List<Pair<Float, Float>> = emptyList()
 )
 
 internal class OcrResult(val blocks: List<OcrBlock>) {
@@ -142,7 +144,8 @@ internal object OcrPost {
 
     fun scaled(b: OcrBlock, k: Float): OcrBlock = OcrBlock(
         b.text, (b.top * k).toInt(), (b.left * k).toInt(),
-        b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical, b.confidence, b.observations
+        b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical, b.confidence, b.observations,
+        b.polygon.map { Pair(it.first * k, it.second * k) }
     )
 
     /**
@@ -181,7 +184,7 @@ internal object OcrPost {
      * strip differs from the strip's own typical brightness. Returns false (= keep the geometry decision)
      * whenever the strip cannot be sampled.
      */
-    private fun outlineBetween(img: Bitmap, a: OcrBlock, b: OcrBlock): Boolean {
+    fun outlineBetween(img: Bitmap, a: OcrBlock, b: OcrBlock): Boolean {
         try {
             val top = if (a.cy <= b.cy) a else b
             val bot = if (top === a) b else a
