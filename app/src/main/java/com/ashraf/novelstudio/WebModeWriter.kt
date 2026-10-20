@@ -123,7 +123,7 @@ internal object WebModeWriter {
       // OCR bubble bounds can be slightly smaller than the speech bubble, so fit() below
       // measures both axes and shrinks the text instead of letting it spill outside.
       t.style.cssText='display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;'
-        +'text-align:center;line-height:1.35;white-space:normal;word-break:keep-all;text-wrap:balance;'
+        +'text-align:center;line-height:1.25;white-space:normal;word-break:normal;text-wrap:balance;'
         // Bengali vowel signs (ি ী ু ৃ ে ৈ) stick out above and below the line box; room for them
         // stops them being clipped by the box edge or by the gradient's background-clip.
         +'padding:0.16em 0.1em;'
@@ -256,18 +256,55 @@ internal object WebModeWriter {
     }
     // Largest font (up to maxPx) at which the text still fits inside its box.
     function fit(b,maxPx){
-      var t=b.firstChild,lo=3.5,hi=Math.max(4,maxPx),best=3.5;
-      // Binary-search the largest font size that fits horizontally AND vertically.
-      // Checking scrollHeight as well as width prevents multi-line Bengali text from
-      // escaping the speech-bubble overlay when the translated sentence is longer.
-      for(var n=0;n<12;n++){
-        var mid=(lo+hi)/2; t.style.fontSize=mid+'px';
-        var fits=t.scrollWidth<=t.clientWidth+1 &&
-          t.scrollHeight<=b.clientHeight-4 &&
-          t.getBoundingClientRect().height<=b.clientHeight-2;
-        if(fits){best=mid;lo=mid;}else{hi=mid;}
+      var t=b&&b.firstChild;
+      if(!t)return;
+      // The OCR rectangle is not always the full usable speech-balloon interior (curved
+      // edges and connected/two-lobed bubbles are especially easy to overestimate).
+      // Keep a safety inset so Bengali vowel signs and the last wrapped line remain inside.
+      var boxW=b.clientWidth,boxH=b.clientHeight;
+      if(boxW<8||boxH<8)return;
+      var availW=Math.max(12,boxW*0.88);
+      var availH=Math.max(12,boxH*0.86);
+      t.style.width=availW+'px';
+      t.style.maxWidth=availW+'px';
+      t.style.minWidth='0';
+      t.style.height='auto';
+      t.style.maxHeight='none';
+      t.style.boxSizing='border-box';
+      t.style.margin='0 auto';
+      // Start with the OCR-estimated cap, but never let an invalid estimate break fitting.
+      var cap=Number(maxPx);
+      if(!isFinite(cap)||cap<2)cap=4;
+      var lo=1.5,hi=Math.max(lo,cap),best=lo;
+      function fits(){
+        // Read layout after changing font size; DOM metrics account for the loaded Bengali
+        // font and actual line wrapping, unlike character-count estimates.
+        var r=t.getBoundingClientRect();
+        return r.height<=availH+0.5 &&
+          t.scrollHeight<=availH+1 &&
+          t.scrollWidth<=t.clientWidth+1 &&
+          r.width<=availW+1;
+      }
+      // Binary-search the largest size that fits both axes, with a conservative inner box.
+      for(var n=0;n<16;n++){
+        var mid=(lo+hi)/2;
+        t.style.fontSize=mid+'px';
+        if(fits()){best=mid;lo=mid;}else{hi=mid;}
       }
       t.style.fontSize=best+'px';
+      // Final post-layout guard for WebView/font shaping differences: if measured ink/line
+      // metrics still exceed the safe area, reduce a little more rather than clipping text.
+      for(var pass=0;pass<4;pass++){
+        var r=t.getBoundingClientRect();
+        var actualH=Math.max(r.height,t.scrollHeight);
+        var actualW=Math.max(r.width,t.scrollWidth);
+        var scale=Math.min(1,availH/Math.max(1,actualH),availW/Math.max(1,actualW));
+        if(scale>=0.995)break;
+        var current=parseFloat(t.style.fontSize)||best;
+        var next=Math.max(1.5,current*scale*0.96);
+        if(next>=current-0.02)break;
+        t.style.fontSize=next+'px';
+      }
       t.style.overflow='visible';
     }
     var MARGIN=1400;
