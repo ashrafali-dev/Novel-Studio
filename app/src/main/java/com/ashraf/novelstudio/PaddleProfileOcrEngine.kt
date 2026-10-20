@@ -7,8 +7,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 /**
  * Routes PP-OCRv6 Small/Medium to scripts covered by the downloaded PP-OCRv6 pack.
  *
- * Korean and Japanese deliberately use ML Kit's language-specific recognizers here. The old
- * custom ONNX path rotated tall crops and ran one inference per detected box; that was both
+ * PP-OCRv6 officially supports Japanese, so Japanese must use the selected Small/Medium model.
+ * Its published language list does not include Korean, so Korean uses ML Kit's Korean recognizer.
+ * The old custom ONNX path rotated tall crops and ran one inference per detected box; that was both
  * unreliable for upright vertical manga lettering and painfully slow on long webtoon panels.
  * The standalone RapidOCR/legacy option remains separate for explicit testing.
  */
@@ -27,7 +28,7 @@ internal class PaddleProfileOcrEngine(
     }
 
     private fun forLanguage(bitmap: Bitmap, script: OcrScript, call: (OcrEngine) -> OcrResult): OcrResult {
-        val family = if (script == OcrScript.KOREAN || script == OcrScript.JAPANESE) "mlkit-cjk" else "paddle-v6"
+        val family = if (script == OcrScript.KOREAN) "mlkit-korean" else "paddle-v6"
         val readLock = lock.readLock()
         val writeLock = lock.writeLock()
 
@@ -36,7 +37,7 @@ internal class PaddleProfileOcrEngine(
         try {
             if (activeFamily != family) {
                 if (activeFamily == "paddle-v6") runCatching { paddleV6.close() }
-                if (activeFamily == "mlkit-cjk") runCatching { mlKitCjk.close() }
+                if (activeFamily == "mlkit-korean") runCatching { mlKitCjk.close() }
                 activeFamily = family
             }
             readLock.lock()
@@ -45,7 +46,7 @@ internal class PaddleProfileOcrEngine(
         }
 
         try {
-            return if (family == "mlkit-cjk") call(mlKitCjk) else call(paddleV6)
+            return if (family == "mlkit-korean") call(mlKitCjk) else call(paddleV6)
         } finally {
             readLock.unlock()
         }
