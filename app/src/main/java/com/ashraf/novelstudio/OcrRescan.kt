@@ -22,6 +22,15 @@ import android.util.Log
  * again (plain, bright-mask and contrast-stretched looks). Anything new that does not overlap an
  * existing block is added, and the blocks are merged again so a continuation line joins its sentence.
  *
+ * Two kinds of region are read:
+ *  - a line the first pass missed completely (ink that no block explains), and
+ *  - a line the first pass read only PARTLY: leftover ink sits on the same row right next to a block
+ *    ("YOU [DOIN]G?" where only the middle was read). The whole row is read again and, if that gives
+ *    more letters, replaces the fragment. Before, such leftovers were never revisited, so half of a
+ *    sentence stayed in English while the fragment was translated on its own.
+ *
+ * The search repeats (a few rounds) because every recovered line can reveal more unread ink.
+ *
  * Pure addition: if anything fails, the caller keeps the original result.
  */
 internal object OcrRescan {
@@ -38,7 +47,10 @@ internal object OcrRescan {
     private const val DENS_LO = 0.08f     // share of edge pixels in the region's box
     private const val DENS_HI = 0.55f
 
-    internal class Region(val l: Int, val t: Int, val r: Int, val b: Int)
+    /** [anchor] is the block that only partly explains this row (null for a completely unread line). */
+    internal class Region(val l: Int, val t: Int, val r: Int, val b: Int, val anchor: OcrBlock? = null)
+
+    private class Comp(val l: Int, val t: Int, val r: Int, val b: Int, val e: Int, val ok: Boolean, val score: Float)
 
     private fun luma(p: Int): Int =
         (((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10
@@ -114,9 +126,9 @@ internal object OcrRescan {
             }
         }
 
-        // 4) connected components -> line-shaped candidates
-        class Cand(val score: Float, val l: Int, val t: Int, val r: Int, val b: Int)
-        val cands = ArrayList<Cand>()
+        // 4) connected components. Every component with a little ink is kept (small leftovers next to a
+        //    block matter for partly read rows); `ok` marks the ones that look like a whole text line.
+        val comps = ArrayList<Comp>()
         val seen = BooleanArray(gw * gh)
         val stack = IntArray(gw * gh)
         for (start in 0 until gw * gh) {
@@ -140,39 +152,109 @@ internal object OcrRescan {
             }
             val w = maxX - minX + 1
             val h = maxY - minY + 1
-            if (w < MIN_W || h < MIN_H || h > MAX_H) continue
-            if (w.toFloat() / h < MIN_ASPECT) continue
             var e = 0
             for (yy in minY..maxY) {
                 val row = yy * gw
                 for (xx in minX..maxX) if (edge[row + xx]) e++
             }
+            if (e < 6) continue
             val dens = e.toFloat() / (w * h)
-            if (dens < DENS_LO || dens > DENS_HI) continue
+            val ok = w >= MIN_W && h >= MIN_H && h <= MAX_H &&
+                w.toFloat() / h >= MIN_ASPECT && dens >= DENS_LO && dens <= DENS_HI
             val l = (minX / sx).toInt()
             val r = ((maxX + 1) / sx).toInt()
             val t = (minY / sy).toInt()
             val b = ((maxY + 1) / sy).toInt()
-            cands.add(Cand(w * h * dens, l, t, r, b))
+            comps.add(Comp(l, t, r, b, e, ok, w * h * dens))
         }
-        cands.sortByDescending { it.score }
 
-        val out = ArrayList<Region>()
-        for (c in cands) {
-            if (out.size >= maxRegions) break
-            val hPx = c.b - c.t
+        fun region(l0: Int, t0: Int, r0: Int, b0: Int, anchor: OcrBlock?): Region? {
+            val hPx = b0 - t0
             val padX = Math.max(6, (hPx * 0.25f).toInt())
             val padY = Math.max(6, (hPx * 0.35f).toInt())
-            val l = Math.max(0, c.l - padX)
-            val t = Math.max(0, c.t - padY)
-            val r = Math.min(bw, c.r + padX)
-            val b = Math.min(bh, c.b + padY)
-            if (r - l >= 12 && b - t >= 8) out.add(Region(l, t, r, b))
+            val l = Math.max(0, l0 - padX)
+            val t = Math.max(0, t0 - padY)
+            val r = Math.min(bw, r0 + padX)
+            val b = Math.min(bh, b0 + padY)
+            return if (r - l >= 12 && b - t >= 8) Region(l, t, r, b, anchor) else null
+        }
+
+        val out = ArrayList<Region>()
+        val used = BooleanArray(comps.size)
+
+        // 5) partly read rows: leftover ink on the same row, right beside a block, belongs to that line.
+        //    Tall things (bubble outline, artwork) and far-away ink are not part of the row.
+        class Ext(val reg: Region, val size: Int)
+        val exts = ArrayList<Ext>()
+        for (blk in covered) {
+            if (blk.vertical || Math.abs(OcrPost.usableTilt(blk.angle)) >= 6f) continue
+            val lh = if (blk.h > 0f) blk.h else continue
+            if (lh < 8f) continue
+            var L = blk.cx - blk.w / 2f; var R = blk.cx + blk.w / 2f
+            var T = blk.cy - lh / 2f; var B = blk.cy + lh / 2f
+            val mine = ArrayList<Int>()
+            var changed = true
+            while (changed) {
+                changed = false
+                for (i in comps.indices) {
+                    if (used[i] || i in mine) continue
+                    val c = comps[i]
+                    val ch = (c.b - c.t).toFloat()
+                    if (ch > lh * 2.2f || ch < lh * 0.3f) continue
+                    if (Math.abs((c.t + c.b) / 2f - blk.cy) > lh * 0.75f) continue
+                    val gap = Math.max(0f, Math.max(c.l - R, L - c.r))
+                    if (gap > lh * 3f) continue
+                    mine.add(i); changed = true
+                    L = Math.min(L, c.l.toFloat()); R = Math.max(R, c.r.toFloat())
+                    T = Math.min(T, c.t.toFloat()); B = Math.max(B, c.b.toFloat())
+                }
+            }
+            if (mine.isEmpty()) continue
+            // a speck (the tail of a "!", a stray dot) is not worth another OCR pass
+            val leftoverW = mine.sumOf { (comps[it].r - comps[it].l).toDouble() }
+            if (leftoverW < lh * 0.6) continue
+            for (i in mine) used[i] = true
+            region(L.toInt(), T.toInt(), R.toInt(), B.toInt(), blk)?.let { exts.add(Ext(it, mine.size)) }
+        }
+        exts.sortByDescending { (it.reg.r - it.reg.l) * (it.reg.b - it.reg.t) }
+        for (x in exts) { if (out.size >= maxRegions) break; out.add(x.reg) }
+
+        // 6) lines nothing explains at all
+        val order = comps.indices.filter { comps[it].ok && !used[it] }.sortedByDescending { comps[it].score }
+        for (i in order) {
+            if (out.size >= maxRegions) break
+            val c = comps[i]
+            region(c.l, c.t, c.r, c.b, null)?.let { out.add(it) }
         }
         return out
     }
 
-    /** Reads one region: enlarged, then bright-mask and (full scans) contrast-stretched; best look wins. */
+    /** True when the picture's own background (median of its border) is light: dark lettering on paper. */
+    private fun lightBackground(bmp: Bitmap): Boolean {
+        val w = bmp.width
+        val h = bmp.height
+        if (w < 2 || h < 2) return true
+        val v = IntArray(240)
+        var n = 0
+        val step = Math.max(1, (2 * (w + h)) / 200)
+        var x = 0
+        while (x < w && n < v.size - 1) { v[n++] = luma(bmp.getPixel(x, 0)); v[n++] = luma(bmp.getPixel(x, h - 1)); x += step }
+        var y = 0
+        while (y < h && n < v.size - 1) { v[n++] = luma(bmp.getPixel(0, y)); v[n++] = luma(bmp.getPixel(w - 1, y)); y += step }
+        java.util.Arrays.sort(v, 0, n)
+        return v[n / 2] >= 128
+    }
+
+    /**
+     * Reads one region: enlarged, then a second look chosen for the background; the plain look wins
+     * unless another look reads clearly more.
+     *
+     * The bright-mask look keeps only BRIGHT pixels, which is right for white lettering on black and wrong
+     * for ordinary dark lettering in a white bubble: there it turns the bubble black and the letters white,
+     * and the recogniser answers with junk ("DOING" -> "ONIO") that the old "most letters wins" rule could
+     * pick over the good plain reading. So it is only used on dark backgrounds, and a look has to beat the
+     * plain one by a margin.
+     */
     private fun readRegion(
         engine: OcrEngine, bmp: Bitmap, reg: Region, script: OcrScript, fastMode: Boolean
     ): List<OcrBlock> {
@@ -192,20 +274,28 @@ internal object OcrRescan {
             } else crop
             val looks = ArrayList<Bitmap>()
             looks.add(base)
-            val mask = OcrPost.brightMask(base)
-            made.add(mask)
-            looks.add(mask)
-            if (!fastMode) {
-                val boosted = OcrPost.boostContrast(base)
-                made.add(boosted)
-                looks.add(boosted)
+            if (lightBackground(base)) {
+                if (!fastMode) {
+                    val boosted = OcrPost.boostContrast(base)
+                    made.add(boosted)
+                    looks.add(boosted)
+                }
+            } else {
+                val mask = OcrPost.brightMask(base)
+                made.add(mask)
+                looks.add(mask)
+                if (!fastMode) {
+                    val boosted = OcrPost.boostContrast(base)
+                    made.add(boosted)
+                    looks.add(boosted)
+                }
             }
             var best: List<OcrBlock> = emptyList()
             var bestLen = 0
             for (look in looks) {
                 val res = if (fastMode) engine.recognizeFast(look, script) else engine.recognizeRegion(look, script)
                 val len = res.blocks.sumOf { letters(it.text) }
-                if (len > bestLen) { best = res.blocks; bestLen = len }
+                if (len > 0 && (best.isEmpty() || len > bestLen * 1.25f + 1f)) { best = res.blocks; bestLen = len }
             }
             val sc = base.width.toFloat() / cw
             return best.map { b ->
@@ -218,53 +308,99 @@ internal object OcrRescan {
         }
     }
 
+    private fun overlapOfRegions(a: Region, b: Region): Float {
+        val x = Math.min(a.r, b.r) - Math.max(a.l, b.l)
+        val y = Math.min(a.b, b.b) - Math.max(a.t, b.t)
+        if (x <= 0 || y <= 0) return 0f
+        val small = Math.min((a.r - a.l) * (a.b - a.t), (b.r - b.l) * (b.b - b.t))
+        return if (small <= 0) 0f else x.toFloat() * y / small
+    }
+
     /**
      * [base] is the normal OCR result for [bmp]. Returns [base] plus any lines found by the second
-     * look, or [base] itself when nothing new turned up.
+     * look (and completed rows that were only partly read), or [base] itself when nothing changed.
      */
     fun augment(
         ctx: Context, engine: OcrEngine, bmp: Bitmap, base: OcrResult,
         script: OcrScript, fastMode: Boolean
     ): OcrResult {
         val debug = try { Prefs.bool(ctx, "ocrDebug", false) } catch (_: Exception) { false }
-        val regions: List<Region> = try {
-            findUncovered(bmp, base.blocks, if (fastMode) 2 else 5)
-        } catch (_: Exception) {
-            emptyList()
-        } catch (_: OutOfMemoryError) {
-            emptyList()
-        }
-
+        val current = ArrayList<OcrBlock>(base.blocks)
         val found = ArrayList<OcrBlock>()
         val empty = ArrayList<Region>()
-        for (reg in regions) {
-            val got: List<OcrBlock> = try {
-                readRegion(engine, bmp, reg, script, fastMode)
+        val tried = ArrayList<Region>()
+        var budget = if (fastMode) 2 else 5          // OCR reads in total for this picture
+        var changed = false
+        var regionCount = 0
+
+        var round = 0
+        val maxRounds = if (fastMode) 2 else 3
+        while (round < maxRounds && budget > 0) {
+            round++
+            val proposed: List<Region> = try {
+                findUncovered(bmp, current, budget + tried.size)
             } catch (_: Exception) {
                 emptyList()
             } catch (_: OutOfMemoryError) {
                 emptyList()
             }
-            var added = 0
-            for (nb in got) {
-                if (OcrPost.isNoise(nb)) continue
-                if (letters(nb.text) < 2) continue
-                val clash = base.blocks.any { OcrPost.overlapOfSmaller(it, nb) > 0.25f } ||
-                    found.any { OcrPost.overlapOfSmaller(it, nb) > 0.25f }
-                if (clash) continue
-                found.add(nb)
-                added++
+            // a region that already gave nothing is not read a second time
+            val regions = proposed.filter { p -> tried.none { overlapOfRegions(it, p) > 0.6f } }.take(budget)
+            if (regions.isEmpty()) break
+            regionCount += regions.size
+            var progressed = false
+            for (reg in regions) {
+                budget--
+                tried.add(reg)
+                val got: List<OcrBlock> = try {
+                    readRegion(engine, bmp, reg, script, fastMode)
+                } catch (_: Exception) {
+                    emptyList()
+                } catch (_: OutOfMemoryError) {
+                    emptyList()
+                }
+                val anchor = reg.anchor
+                if (anchor != null) {
+                    // A row that was only partly read: the full-row reading replaces the fragment, but only
+                    // when it really contains more text and does not run over another recognised block.
+                    val oldLetters = letters(anchor.text)
+                    val others = current.filter { it !== anchor }
+                    val usable = got.filter { nb ->
+                        !OcrPost.isNoise(nb) && others.none { OcrPost.overlapOfSmaller(it, nb) > 0.25f }
+                    }
+                    if (usable.isNotEmpty() && usable.sumOf { letters(it.text) } > oldLetters) {
+                        current.removeAll { it === anchor }
+                        found.removeAll { it === anchor }
+                        current.addAll(usable)
+                        found.addAll(usable)
+                        progressed = true
+                    } else {
+                        empty.add(reg)
+                    }
+                    continue
+                }
+                var added = 0
+                for (nb in got) {
+                    if (OcrPost.isNoise(nb)) continue
+                    if (letters(nb.text) < 2) continue
+                    val clash = current.any { OcrPost.overlapOfSmaller(it, nb) > 0.25f }
+                    if (clash) continue
+                    current.add(nb)
+                    found.add(nb)
+                    added++
+                }
+                if (added == 0) empty.add(reg) else progressed = true
             }
-            if (added == 0) empty.add(reg)
+            if (progressed) changed = true else break
         }
-        if (regions.isNotEmpty()) {
-            Log.i(TAG, "regions=${regions.size} recovered=${found.size} script=$script fast=$fastMode")
+        if (regionCount > 0) {
+            Log.i(TAG, "rounds=$round regions=$regionCount recovered=${found.size} script=$script fast=$fastMode")
         }
         if (debug) {
             try { saveDebug(ctx, bmp, base.blocks, found, empty) } catch (_: Exception) {} catch (_: OutOfMemoryError) {}
         }
-        if (found.isEmpty()) return base
-        return OcrResult(OcrPost.mergeNeighbours(base.blocks + found, bmp))
+        if (!changed) return base
+        return OcrResult(OcrPost.mergeNeighbours(current, bmp))
     }
 
     // ------------------------------------------------------------------ debug images
