@@ -570,7 +570,7 @@ class MainActivity : Activity() {
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr) return
-        val n = (Prefs.get(this, "rtAheadOcr", "10").toIntOrNull() ?: 10).coerceIn(0, 12)
+        val n = (Prefs.get(this, "rtAheadOcr", "3").toIntOrNull() ?: 3).coerceIn(0, 3)
         deepSeekAheadAtMs = System.currentTimeMillis()
         if (n == 0) return
         val token = navToken
@@ -1832,8 +1832,8 @@ return t.length>=40?'TXT:'+t:'';
                 // Nothing is being read for the visible panel: use the time to OCR the next images ahead.
                 // Keep the DOM probe light enough that it does not compete with touch scrolling.
                 if (hasImages && webModeHandle == null && aheadOcrHandle == null &&
-                    // Keep a bounded OCR/translation pipeline: allow the next ten-panel batch
-                    // to be prepared while the previous batch is still being translated.
+                    // Keep a bounded OCR/translation pipeline: pre-read a small batch of upcoming panels
+                    // during idle time, without competing with the visible panel's OCR.
                     rtAheadTranslationQueue.size < 4 &&
                     System.currentTimeMillis() - deepSeekAheadAtMs >= 220L) {
                     startAheadOcr()
@@ -2005,8 +2005,12 @@ return t.length>=40?'TXT:'+t:'';
         when {
             reOcrBusy -> { text = "Re-reading this screen"; color = 0xFF64B5F6.toInt() }
             sending -> { text = "Sending to chatbot"; color = 0xFFFFAB40.toInt() }
-            keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
-                { text = "Reading the page"; color = 0xFFB388FF.toInt() }
+            keys.contains("visible-ocr") ->
+                { text = "Reading visible panel"; color = 0xFFB388FF.toInt() }
+            keys.contains("read-ahead-ocr") ->
+                { text = "Reading next panels"; color = 0xFF42A5F5.toInt() }
+            keys.contains("next-chapter-ocr") ->
+                { text = "Reading next chapter"; color = 0xFF42A5F5.toInt() }
             keys.contains("placement") -> { text = "Adding the translation"; color = 0xFF64FFDA.toInt() }
             keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } -> {
                 val fresh = android.os.SystemClock.elapsedRealtime() - chatPhaseAtMs < 2_500L
@@ -5889,16 +5893,15 @@ return t.length>=40?'TXT:'+t:'';
     private var deepSeekLastFailToastAtMs = 0L
 
     private fun startWebModeExtract(token: Int, useSaved: Boolean = false, realtimeViewport: Boolean = false) {
-        // In real-time mode the ahead worker has its own low-priority executor and does not scroll
-        // the page. Let it finish caching upcoming panels while the visible panel is scanned and
-        // translated; cancelling it on every viewport change made the 9-panel read-ahead starve.
-        // For a manual/full-chapter extraction, stop read-ahead so foreground extraction gets priority.
+        // Foreground OCR always owns the device: stop in-flight read-ahead before reading the visible
+        // panel. Korean/Japanese OCR on the background worker previously competed with visible OCR,
+        // leaving the reader at "Reading the page" for too long.
+        aheadOcrHandle?.cancel()
+        aheadOcrHandle = null
+        aheadOcrSeq++
+        aheadOcrStage = ""
+        aheadOcrPct = -1
         if (!realtimeViewport) {
-            aheadOcrHandle?.cancel()
-            aheadOcrHandle = null
-            aheadOcrSeq++
-            aheadOcrStage = ""
-            aheadOcrPct = -1
             // Full-chapter extraction owns the foreground; don't race the realtime batch worker.
             cancelRealtimeAheadWorker(requeue = false)
             rtAheadTranslationQueue.clear()
