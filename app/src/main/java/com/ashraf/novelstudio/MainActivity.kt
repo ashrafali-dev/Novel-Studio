@@ -8895,6 +8895,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 26 -> {
                     val enabled = !Prefs.bool(this, "prefetchNextChapter")
                     Prefs.putBool(this, "prefetchNextChapter", enabled)
+                    NovelStudioAnalytics.logEvent(this, "prefetch_toggled", mode = analyticsModeNow(), success = enabled)
                     if (enabled) {
                         lastChapter?.let { schedulePrefetch(it) }
                     } else {
