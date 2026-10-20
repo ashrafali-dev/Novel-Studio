@@ -2711,6 +2711,7 @@ return t.length>=40?'TXT:'+t:'';
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NovelStudioAnalytics.appOpened(this)
         OcrRescan.resetDebug(this)   // OCR debug is a per-session tool: never leave it on by accident
         // Android 13+: lets the "scanning in background" notification show (the service works without it).
         if (Build.VERSION.SDK_INT >= 33 && !Prefs.bool(this, "askedNotifPerm") &&
@@ -9676,6 +9677,7 @@ ${rows.take(220).joinToString("\n")}
     }
 
     override fun onPause() {
+        NovelStudioAnalytics.onBackground()
         activityPausedAtMs = android.os.SystemClock.elapsedRealtime()
         if (!isFinishing) saveCurrentTabState()
         persistBrowserTabs()
@@ -9685,6 +9687,12 @@ ${rows.take(220).joinToString("\n")}
 
     override fun onResume() {
         super.onResume()
+        val analyticsMode = when {
+            DeepSeekRealtimeTranslation.isEnabled(this) -> "realtime"
+            webModeOn() -> "scanning"
+            else -> "novel"
+        }
+        NovelStudioAnalytics.onForeground(this, analyticsMode)
         // Explicitly resume WebView timers after returning from another app / a long background
         // pause. Some reader sites stop delivering animation, lazy-load and observer callbacks
         // until the WebView is resumed.
