@@ -44,7 +44,9 @@ class ActivityChip(context: Context) : LinearLayout(context) {
             setTextColor(Color.WHITE)
             textSize = 12.5f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            maxLines = 1
+            // Long engine/error labels wrap onto up to 4 lines instead of being cut off at the screen edge.
+            maxLines = 4
+            maxWidth = (context.resources.displayMetrics.widthPixels - 110 * d).toInt()
         }
         addView(label, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
         alpha = 0f

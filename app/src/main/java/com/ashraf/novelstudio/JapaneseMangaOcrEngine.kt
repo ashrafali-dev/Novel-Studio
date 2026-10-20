@@ -55,6 +55,18 @@ internal object OcrEngineStatus {
     @Volatile var lastError: String = ""
     @Volatile private var lastToast: String = ""
 
+    @Volatile private var lastCopied: String = ""
+
+    /** Copies the error to the clipboard once per distinct message, so it can be pasted into a bug report. */
+    fun copyOnce(context: Context?, message: String) {
+        if (context == null || message == lastCopied) return
+        lastCopied = message
+        try {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("NovelStudio OCR error", message))
+        } catch (_: Throwable) {}
+    }
+
     /** Shows a long toast once per distinct message (so a failing scan loop does not spam the screen). */
     fun toastOnce(context: Context?, message: String) {
         if (context == null || message == lastToast) return
@@ -207,13 +219,14 @@ internal class RoutingOcrEngine : OcrEngine {
             // "detection: OrtException – <first 70 chars of ONNX Runtime's message>" (no recognised text involved).
             val root = e.cause ?: e
             val stage = Regex("stage '([^']+)'").find(e.message ?: "")?.groupValues?.get(1)
-            val detail = (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(70)
+            val detail = (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(150)
             val why = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName +
                 (if (detail.isNotEmpty()) " – $detail" else "")
             val full = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName + " – " +
                 (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
             OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
             OcrEngineStatus.toastOnce(appContext, "Paddle error → ML Kit\n$full")
+            OcrEngineStatus.copyOnce(appContext, "NovelStudio Paddle error: $full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
             run(mlKit)
