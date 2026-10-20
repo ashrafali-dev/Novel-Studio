@@ -25,6 +25,7 @@ object ImageUtils {
         limitSideLen: Int,
         limitType: String,
         maxSideLimit: Int,
+        maxPixels: Long = Long.MAX_VALUE,
     ): Mat {
         val h = src.rows()
         val w = src.cols()
@@ -41,6 +42,12 @@ object ImageUtils {
             ratio = maxSideLimit.toDouble() / maxOf(newH, newW)
             newH = (newH * ratio).toInt()
             newW = (newW * ratio).toInt()
+        }
+
+        if (newH.toLong() * newW.toLong() > maxPixels) {
+            val r = Math.sqrt(maxPixels.toDouble() / (newH.toDouble() * newW.toDouble()))
+            newH = (newH * r).toInt()
+            newW = (newW * r).toInt()
         }
 
         newH = maxOf(MathUtils.roundHalfToEven(newH / 32.0) * 32, 32)
