@@ -67,7 +67,8 @@ internal class PaddleV6OcrEngine(
             // Unchanged default (3000). "paddleDetMaxSide" lets you try a lower cap on-device WITHOUT a rebuild;
             // it is an experiment, not an established optimisation: compare detInferMs and recognition quality
             // in the NovelStudioPaddle log before changing the default.
-            detMaxSideLimit = (Prefs.get(appContext, "paddleDetMaxSide", "3000").toIntOrNull() ?: 3000).coerceIn(640, 4000),
+            detMaxSideLimit = (Prefs.get(appContext, "paddleDetMaxSide", "2400").toIntOrNull() ?: 2400).coerceIn(640, 4000),
+            detMaxPixels = (Prefs.get(appContext, "paddleDetMaxPixels", "").toLongOrNull() ?: DeviceTier.detMaxPixels(appContext)).coerceIn(300_000L, 6_000_000L),
             detThresh = 0.20f,
             detBoxThresh = 0.45f,
             detUnclipRatio = 1.4f,
@@ -82,7 +83,7 @@ internal class PaddleV6OcrEngine(
             PaddleRuntime(
                 appContext,
                 config,
-                EngineConfig(numThreads = p.threads),
+                EngineConfig(numThreads = DeviceTier.threads(appContext, p.threads)),
                 files.detector.absolutePath,
                 files.recognition.absolutePath,
                 files.config.absolutePath

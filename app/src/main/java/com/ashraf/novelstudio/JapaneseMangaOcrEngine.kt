@@ -87,7 +87,7 @@ internal object OcrEngineStatus {
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
         used.startsWith("mlkit") -> "ML Kit"
         used == "paddle_small" -> "Paddle Small"
-        used == "paddle_heavy" -> "Paddle Heavy"
+        used == "paddle_heavy" -> "Paddle Medium"
         used == "manga" -> "Manga OCR"
         used == "rapid_onnx" -> "RapidOCR"
         else -> ""

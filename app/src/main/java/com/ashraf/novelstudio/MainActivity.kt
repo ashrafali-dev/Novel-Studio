@@ -1886,7 +1886,7 @@ return t.length>=40?'TXT:'+t:'';
         activePlacementIds.remove(id)
     }
 
-    /** " · Paddle Heavy" / " · ML Kit": which engine produced the last OCR result (empty until one ran). */
+    /** " · Paddle Medium" / " · ML Kit": which engine produced the last OCR result (empty until one ran). */
     private fun ocrEngineSuffix(): String = OcrEngineStatus.label.let { if (it.isBlank()) "" else " · $it" }
 
     private fun activityDotStatuses(): List<ActivityDotStatus> {
@@ -4934,7 +4934,7 @@ return t.length>=40?'TXT:'+t:'';
 
     private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
         "paddle_small" -> "PaddleOCR Small"
-        "paddle_heavy" -> "PaddleOCR Heavy"
+        "paddle_heavy" -> "PaddleOCR Medium"
         "rapid_onnx" -> "RapidOCR / legacy ONNX"
         "manga" -> "Japanese Manga OCR"
         else -> "ML Kit · Default"
@@ -4944,20 +4944,49 @@ return t.length>=40?'TXT:'+t:'';
         val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
         val labels = arrayOf(
             "ML Kit — Default (fast, built-in)",
-            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean: install the PP-OCRv5 Korean pack, else ML Kit)",
-            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean: install the PP-OCRv5 Korean pack, else ML Kit)",
+            "PaddleOCR PP-OCRv6 Small — fast, low RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
+            "PaddleOCR PP-OCRv6 Medium — most accurate, needs more RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "RapidOCR ONNX — legacy optional engine",
             "Japanese Manga OCR — if its model is installed"
         )
+        val rec = DeviceTier.recommendedEngine(this)
+        for (i in keys.indices) if (keys[i] == rec) labels[i] = "⭐ Recommended for your phone — " + labels[i]
         val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("OCR Engine")
+            .setTitle("OCR Engine (" + (DeviceTier.totalRamMb(this) / 1024.0).let { "%.1f".format(it) } + " GB RAM)")
             .setSingleChoiceItems(labels, selected) { dialog, which ->
                 Prefs.put(this, "ocrEngine", keys[which])
                 dialog.dismiss()
                 toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
+                if (keys[which].startsWith("paddle_")) offerKoreanPack()
             }
             .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** PP-OCRv6 Small/Medium cannot read Hangul; without the Korean pack Korean pages silently use ML Kit. */
+    private fun offerKoreanPack() {
+        PaddleOcrModels.init(this)
+        val ko = PaddleOcrModels.pack("korean") ?: return
+        if (PaddleOcrModels.isInstalled(ko) || PaddleOcrModels.isBusy(ko)) return
+        AlertDialog.Builder(this)
+            .setTitle("Korean support")
+            .setMessage("PP-OCRv6 does not include Korean. Download the PP-OCRv5 Korean pack (~" + ko.approximateMb +
+                " MB) so Paddle can read Korean pages? Without it, Korean uses ML Kit.")
+            .setPositiveButton("Download") { _, _ ->
+                toast("⬇️ Downloading ${ko.label}…")
+                Thread {
+                    try {
+                        PaddleOcrModels.download(ko) { name, pct ->
+                            if (pct % 25 == 0) runOnUiThread { toast("⬇️ PaddleOCR $name $pct%") }
+                        }
+                        runOnUiThread { toast("✅ ${ko.label} installed. Korean pages now use Paddle.") }
+                    } catch (e: Exception) {
+                        runOnUiThread { toast("❌ ${ko.label}: " + (e.message ?: "download failed")) }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Later", null)
             .show()
     }
 

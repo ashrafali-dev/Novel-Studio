@@ -11,7 +11,8 @@ import java.security.MessageDigest
 /**
  * Download-on-demand PP-OCRv6 ONNX model packs.
  *
- * Small is the low-memory model; Heavy uses PP-OCRv6 medium detector/recognizer.
+ * Small is the low-memory model; Medium (internal id "heavy", kept so saved settings still work) is the largest
+ * PP-OCRv6 tier -- there is no bigger v6 model.
  * Models are never bundled into the APK. Files are validated before an atomic install.
  */
 internal object PaddleOcrModels {
@@ -46,7 +47,7 @@ internal object PaddleOcrModels {
         ),
         Pack(
             id = "heavy",
-            label = "PP-OCRv6 Medium · Heavy",
+            label = "PP-OCRv6 Medium",
             detectorUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/dbee314/inference.onnx",
             recognitionUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/12b418c3792e3ccf3fed807eb17863981051955e/inference.onnx",
             configUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/12b418c3792e3ccf3fed807eb17863981051955e/inference.yml",
