@@ -19,6 +19,8 @@ data class PaddleOCRConfig(
     val detLimitSideLen: Int = 64,
     val detLimitType: String = "min",
     val detMaxSideLimit: Int = 4000,
+    // Cap on total detector input pixels (h*w). Detector activation memory scales with this, not with the longest side.
+    val detMaxPixels: Long = 2_000_000L,
     val detThresh: Float = 0.3f,
     val detBoxThresh: Float = 0.6f,
     val detUnclipRatio: Float = 1.5f,
