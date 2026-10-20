@@ -1476,7 +1476,11 @@ internal class WebModeExtractor(
                 if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
                 val ownFont = if (b.fontPx > 0f) b.fontPx else b.h
-                val bands = ArrayList<IntArray>()
+                // The exhaustive leftover-ink scan is only useful during a thorough chapter pass.
+                // In realtime mode, passing a band collector forces bubbleInterior to scan every pixel
+                // again and compare it against every OCR box; a tall panel with many bubbles can stall.
+                // Without a collector the helper returns immediately after finding the bubble's fill.
+                val bands: MutableList<IntArray>? = if (fastMode) null else ArrayList()
                 val inter: IntArray? = try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
                         bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()))
@@ -1525,7 +1529,7 @@ internal class WebModeExtractor(
                 }
                 // Recover missed bubble rows only during a thorough scan; doing up to three extra
                 // OCR inferences for every visible bubble made real-time reading feel frozen.
-                if (bands.isNotEmpty() && !fastMode) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
+                if (bands?.isNotEmpty() == true && !fastMode) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
                 val joinedText = lines.sortedBy { it.cy }.joinToString(" ") { it.text }
                     .replace(Regex("\\s+"), " ").trim()
                 if (joinedText.isBlank()) continue
