@@ -36,6 +36,11 @@ jobs:
           test -s "$RUNNER_TEMP/novelstudio-release.jks"
 
       - name: Run unit tests
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/novelstudio-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle app:testDebugUnitTest --no-daemon
 
       - name: Build signed release APKs
