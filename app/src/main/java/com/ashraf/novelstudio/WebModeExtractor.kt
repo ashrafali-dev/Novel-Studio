@@ -1740,9 +1740,10 @@ internal class WebModeExtractor(
                 val verticalOverlap = minOf(abot, bbot) - maxOf(atop, btop)
                 val gap = maxOf(0f, maxOf(atop, btop) - minOf(abot, bbot))
                 val lineH = maxOf(minOf(a.h, b.h), minOf(fa, fb) * 0.62f, 0.001f)
-                // Already-overlapping boxes can be separate OCR lines in a detected bubble interior.
-                if (verticalOverlap <= 0f && gap > lineH * 1.55f) return false
-                // Avoid combining separate blocks that overlap vertically but are far apart horizontally.
+                // Overlapping boxes are joined only when they substantially occupy the same bubble.
+                // This prevents two different speech bubbles on the same row from being fused together.
+                if (verticalOverlap > 0f) return sameSpot(a, b)
+                if (gap > lineH * 1.55f) return false
                 return true
             }
 
