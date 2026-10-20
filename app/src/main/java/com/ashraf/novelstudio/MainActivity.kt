@@ -1886,6 +1886,9 @@ return t.length>=40?'TXT:'+t:'';
         activePlacementIds.remove(id)
     }
 
+    /** " · Paddle Heavy" / " · ML Kit": which engine produced the last OCR result (empty until one ran). */
+    private fun ocrEngineSuffix(): String = OcrEngineStatus.label.let { if (it.isBlank()) "" else " · $it" }
+
     private fun activityDotStatuses(): List<ActivityDotStatus> {
         val statuses = ArrayList<ActivityDotStatus>()
         val stage = webModeStage.lowercase()
@@ -2012,10 +2015,10 @@ return t.length>=40?'TXT:'+t:'';
         val text: String?
         val color: Int
         when {
-            reOcrBusy -> { text = "Re-reading this screen"; color = 0xFF64B5F6.toInt() }
+            reOcrBusy -> { text = "Re-reading this screen" + ocrEngineSuffix(); color = 0xFF64B5F6.toInt() }
             sending -> { text = "Sending to chatbot"; color = 0xFFFFAB40.toInt() }
             keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
-                { text = "Reading the page"; color = 0xFFB388FF.toInt() }
+                { text = "Reading the page" + ocrEngineSuffix(); color = 0xFFB388FF.toInt() }
             keys.contains("placement") -> { text = "Adding the translation"; color = 0xFF64FFDA.toInt() }
             keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } -> {
                 val fresh = android.os.SystemClock.elapsedRealtime() - chatPhaseAtMs < 2_500L

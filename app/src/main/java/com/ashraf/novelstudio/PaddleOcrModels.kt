@@ -55,8 +55,26 @@ internal object PaddleOcrModels {
             approximateMb = 140,
             recognitionBatchSize = 4,
             threads = 2
+        ),
+        // Korean: official PP-OCRv5 Korean recognizer (ONNX, CTC, Hangul dictionary in inference.yml, 48 px height --
+        // the same preprocessing/decoder the runtime already uses). The PP-OCRv6 Small detector is reused: text
+        // detection does not depend on the script. Revision pinned; rec SHA-256 from the Hugging Face LFS pointer.
+        Pack(
+            id = "korean",
+            label = "PP-OCRv5 Korean (Hangul)",
+            detectorUrl = "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/5994b4f1a827310b6d38f6b13716af6381847be0/inference.onnx",
+            recognitionUrl = "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx",
+            configUrl = "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.yml",
+            detectorSha256 = "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+            recognitionSha256 = "92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08",
+            approximateMb = 25,
+            recognitionBatchSize = 8,
+            threads = 2
         )
     )
+
+    /** True when the Korean Paddle pack is fully downloaded and valid. */
+    fun koreanInstalled(): Boolean = pack("korean")?.let { isInstalled(it) } == true
 
     @Volatile var version: Int = 0
         private set
