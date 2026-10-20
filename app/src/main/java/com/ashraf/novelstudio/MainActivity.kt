@@ -4872,8 +4872,8 @@ return t.length>=40?'TXT:'+t:'';
         val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
         val labels = arrayOf(
             "ML Kit — Default (fast, built-in)",
-            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese; Korean/Japanese use language packs or ML Kit)",
-            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese; Korean/Japanese use language packs or ML Kit)",
+            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean uses ML Kit)",
+            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
             "RapidOCR ONNX — legacy optional engine",
             "Japanese Manga OCR — if its model is installed"
         )
