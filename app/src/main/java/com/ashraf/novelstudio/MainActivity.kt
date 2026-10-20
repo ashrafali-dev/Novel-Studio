@@ -4991,9 +4991,9 @@ return t.length>=40?'TXT:'+t:'';
         val deleteIndex = 1 + legacyPacks.size + paddlePacks.size
         val err = OcrModels.lastError
         val paddleErr = PaddleOcrModels.lastError
-        val lastError = if (paddleErr.isNotBlank()) paddleErr else err
+        val lastError = if (paddleErr.isNotBlank()) paddleErr else if (err.isNotBlank()) err else OcrEngineStatus.lastError
         labels.add("🗑 Delete all optional OCR models\n" +
-            (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
+            (if (lastError.isNotBlank()) "Last model error: " + lastError.take(220) else "ML Kit stays available as the default engine"))
 
         listDialog("🧠 OCR engine & models", labels, { i ->
             when {

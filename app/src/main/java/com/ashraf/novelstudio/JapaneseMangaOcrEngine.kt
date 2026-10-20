@@ -51,6 +51,8 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
 /** Short, user-visible name of the engine that produced the LAST OCR result (shown in the activity chip). */
 internal object OcrEngineStatus {
     @Volatile var label: String = ""
+    /** Last Paddle failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
+    @Volatile var lastError: String = ""
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
@@ -192,7 +194,13 @@ internal class RoutingOcrEngine : OcrEngine {
             }
             else { report("mlkit(empty-primary)", true); run(mlKit) }
         } catch (e: Exception) {
-            val why = (e.cause ?: e).javaClass.simpleName
+            // "detection: OrtException – <first 70 chars of ONNX Runtime's message>" (no recognised text involved).
+            val root = e.cause ?: e
+            val stage = Regex("stage '([^']+)'").find(e.message ?: "")?.groupValues?.get(1)
+            val detail = (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(70)
+            val why = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName +
+                (if (detail.isNotEmpty()) " – $detail" else "")
+            OcrEngineStatus.lastError = "$selectedMode ${script.name}: $why"
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
             run(mlKit)
