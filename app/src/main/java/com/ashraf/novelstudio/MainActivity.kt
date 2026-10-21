@@ -4947,7 +4947,7 @@ return t.length>=40?'TXT:'+t:'';
             "PaddleOCR PP-OCRv6 Small — fast, low RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "PaddleOCR PP-OCRv6 Medium — most accurate, needs more RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "RapidOCR ONNX — legacy optional engine",
-            "Multilingual Comic OCR — Japanese / Chinese / Korean, if its model is installed"
+            "Multilingual Comic OCR — Japanese / Chinese / Korean; install model and choose matching OCR language"
         )
         val rec = DeviceTier.recommendedEngine(this)
         for (i in keys.indices) if (keys[i] == rec) labels[i] = "⭐ Recommended for your phone — " + labels[i]
