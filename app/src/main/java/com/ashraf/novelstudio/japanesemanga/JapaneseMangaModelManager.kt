@@ -211,8 +211,8 @@ internal class JapaneseMangaModelManager(context: Context) {
         private const val ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
         private val SPECS = listOf(
             Asset("ort.wasm.min.js", ORT + "ort.wasm.min.js", 10000, 200000),
-            Asset("ort-wasm-simd-threaded.wasm", ORT + "ort-wasm-simd-threaded.wasm", 5000000, 40000000),
-            Asset("ort-wasm-simd-threaded.mjs", ORT + "ort-wasm-simd-threaded.mjs", 5000, 200000),
+            Asset("ort-wasm-simd.wasm", ORT + "ort-wasm-simd.wasm", 5000000, 40000000),
+            Asset("ort-wasm-simd.mjs", ORT + "ort-wasm-simd.mjs", 5000, 200000),
             Asset("det/manga_det_v0.2.onnx", HF + "det/manga_det_v0.2.onnx", 1816954, 1816954, "d132078c46e292b226fb5a2ca52a7612ad319262dfdf493e7d8e3be435295978"),
             Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 21167540, 21167540, "de12c84c63e62c80339e882e675983d886670dcb6f0147e1ed041afd6fa81888"),
             Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 74947, 74947, "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"),
