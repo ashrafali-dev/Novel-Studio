@@ -1,11 +1,16 @@
-# Japanese Manga Engine — third-party notices
+# Multilingual Comic OCR Engine — third-party notices
 
-This optional engine is separate from NovelStudio's existing OCR/Webtoon translation pipeline. OCR weights and the runtime are downloaded only after the user opts in, into app-private storage; they are not bundled in the APK.
+This optional engine is used by NovelStudio's OCR/Webtoon translation pipeline when selected. Model weights and runtime are downloaded only after the user opts in, into app-private storage; they are not bundled in the APK. The comic-specific detector is shared across Japanese, Chinese and Korean, while Korean uses a dedicated Hangul recognizer.
 
 ## PP-OCRv6_manga v0.2
 - Model card: https://huggingface.co/Kellenok/PP-OCRv6_manga
 - License declared by the model card: Apache-2.0
 - Files used: det/manga_det_v0.2.onnx, rec/manga_rec_v0.2.onnx, ppocrv6_dict.txt.
+
+## PP-OCRv5 Korean mobile recognizer
+- Model: https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx
+- Dictionary: https://github.com/PaddlePaddle/PaddleOCR/blob/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/korean_dict.txt
+- License: Apache-2.0
 
 ## ONNX Runtime Web 1.23.2
 - Project: https://github.com/microsoft/onnxruntime
@@ -14,4 +19,4 @@ This optional engine is separate from NovelStudio's existing OCR/Webtoon transla
 - Files used: ort.wasm.min.js, ort-wasm-simd-threaded.mjs, ort-wasm-simd-threaded.wasm.
 
 ## Limitations
-The model can still miss or misread tiny furigana, rotated effect lettering, blurred panels and unusual fonts. This initial integration is an isolated OCR/bounding-box test screen. Live translation and placement inside speech bubbles are not connected yet.
+The comic detector and recognizer are trained primarily on Japanese/Chinese comics. Korean uses a general Korean recognizer paired with the comic detector, so stylized Hangul SFX still needs testing and eventual fine-tuning. The engine can still miss tiny furigana, rotated effect lettering, blurred panels and unusual fonts.
