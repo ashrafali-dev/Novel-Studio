@@ -4,6 +4,7 @@ on:
   push:
     branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr, experiment/google-lens-ocr]
 
+# This isolated branch verifies the experimental Google Lens OCR engine; it is not enabled on main.
 jobs:
   build:
     runs-on: ubuntu-latest
