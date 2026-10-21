@@ -147,6 +147,9 @@ internal class JapaneseMangaModelManager(context: Context) {
                     .put("runtime", ORT_VERSION).put("license", "PP-OCRv6_manga (Japanese/Chinese): Apache-2.0; PP-OCRv5 Korean recognizer: Apache-2.0; ONNX Runtime Web: MIT")
                     .put("files", files).toString(2))
                 if (!temporary.renameTo(marker)) error("ইনস্টলেশন মার্কার লেখা যায়নি")
+                // A UI status query may have cached "not installed" while assets were downloading.
+                // Force a fresh hash/manifest verification after the ready marker is committed.
+                invalidateInstalledCache()
                 if (!isInstalled()) error("ইনস্টলেশনের শেষ যাচাই ব্যর্থ")
             } catch (_: CancelledException) {
                 result = Result.Cancelled
