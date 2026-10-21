@@ -168,6 +168,21 @@ object Langs {
         return "Translation target: $tgt. Source language: $sourceDescription.\n\n" + Prefs.DEFAULT_PROMPT
     }
 
+    /**
+     * A separate chapter-wide scanning prompt. Unlike the bubble prompt, it uses the full chapter
+     * as context and explicitly forbids filling OCR gaps with invented story content.
+     */
+    fun scanPrompt(c: Context): String {
+        val src = source(c)
+        val tgt = target(c)
+        val sourceDescription = if (src == AUTO) {
+            "automatically detect the source language from the text"
+        } else {
+            src
+        }
+        return "Translation target: $tgt. Source language: $sourceDescription.\\n\\n" + Prefs.DEFAULT_SCAN_PROMPT
+    }
+
     fun realtimePrompt(c: Context): String {
         if (classic(c)) return Prefs.DEFAULT_REALTIME_PROMPT
         val tgt = target(c)
