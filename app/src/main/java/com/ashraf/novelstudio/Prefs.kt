@@ -81,7 +81,17 @@ Your priority is faithful, context-aware, emotionally accurate, consistent, and 
 
 Priority: Use the full chapter context to translate each sentence accurately, but remain strictly faithful to what the source actually contains. Context may clarify meaning; it must never become an excuse to invent content."""
 
-    const val DEFAULT_REALTIME_PROMPT = """তুমি একজন দক্ষ ওয়েবটুন, ম্যানহো ও কমিক অনুবাদক। ছবির OCR থেকে পাওয়া প্রতিটি লেখা প্রাঞ্জল, স্বাভাবিক বাংলায় অনুবাদ করো।
+    const val DEFAULT_REALTIME_PROMPT = """You are a professional webtoon and comic translator. Translate the provided text into the selected target language naturally and accurately.
+
+- Preserve the original meaning, emotion, tone, and character voice.
+- Use available context to understand dialogue, pronouns, relationships, and implied meaning, but never invent missing content.
+- Keep names, terminology, and forms of address consistent.
+- Translate all provided text, including sound effects and exclamations.
+- Preserve every system-defined marker exactly once and in its original order.
+- Output only the translation. No explanations, notes, or original-text repetition."""
+
+    /** Previous built-in prompt, so existing installs migrate to the shorter default instead of treating it as custom. */
+    private const val LEGACY_DEFAULT_REALTIME_PROMPT = """তুমি একজন দক্ষ ওয়েবটুন, ম্যানহো ও কমিক অনুবাদক। ছবির OCR থেকে পাওয়া প্রতিটি লেখা প্রাঞ্জল, স্বাভাবিক বাংলায় অনুবাদ করো।
 
 নিয়ম:
 - প্রতিটি [001], [002] ইত্যাদি মার্কার হুবহু একই ক্রমে ঠিক একবার রাখবে।
@@ -90,6 +100,9 @@ Priority: Use the full chapter context to translate each sentence accurately, bu
 - মূল ভাষার লেখা পুনরায় লিখবে না; সারাংশ বা ব্যাখ্যাও দেবে না।
 - নিজের চিন্তা, reasoning, status, heading, disclaimer বা অতিরিক্ত কোনো মন্তব্য দেবে না।
 - শুধু মার্কারসহ বাংলা অনুবাদ ফেরত দেবে।"""
+
+    private const val LEGACY_REALTIME_PROMPT_PREFIX =
+        "You are an expert webtoon, manhwa and comic translator. Translate every piece of text read from the images"
 
     private const val LEGACY_DEFAULT_PROMPT = """তুমি একজন দক্ষ নোভেল অনুবাদক। আমি তোমাকে ইংরেজি/জাপানি/কোরিয়ান/চীনা ওয়েব নোভেলের চ্যাপ্টার পাঠাব। প্রতিটি চ্যাপ্টার স্বাভাবিক, সাবলীল বাংলায় অনুবাদ করো।
 
@@ -125,16 +138,32 @@ Priority: Use the full chapter context to translate each sentence accurately, bu
     fun prompt(c: Context): String =
         get(c, "prompt", "").let { if (it.isBlank() || isDefaultNovelPrompt(it)) Langs.novelPrompt(c) else it }
     fun realtimePrompt(c: Context): String =
-        get(c, "realtimePrompt", "").let { if (it.isBlank() || it == DEFAULT_REALTIME_PROMPT) Langs.realtimePrompt(c) else it }
+        get(c, "realtimePrompt", "").let {
+            if (it.isBlank() || isDefaultRealtimePrompt(c, it)) Langs.realtimePrompt(c) else it
+        }
+
+    /** Recognizes current and older built-in real-time prompts without overriding user-written prompts. */
+    fun isDefaultRealtimePrompt(c: Context, value: String): Boolean {
+        val v = value.trim()
+        if (v.isBlank() ||
+            v == DEFAULT_REALTIME_PROMPT ||
+            v == LEGACY_DEFAULT_REALTIME_PROMPT ||
+            v == Langs.realtimePrompt(c).trim()
+        ) return true
+
+        // Older versions generated this template for non-Bengali comic targets.
+        return v.startsWith(LEGACY_REALTIME_PROMPT_PREFIX) &&
+            v.contains("- Keep each marker such as [001], [002] exactly once") &&
+            v.contains("- Return only the translation with the markers")
+    }
 
     /** Recognizes the built-in scanning prompt and legacy comic prompts saved by older versions. */
     fun isDefaultScanPrompt(c: Context, value: String): Boolean {
         val v = value.trim()
         if (v.isBlank() ||
             v == DEFAULT_SCAN_PROMPT ||
-            v == DEFAULT_REALTIME_PROMPT ||
             v == Langs.scanPrompt(c).trim() ||
-            v == Langs.realtimePrompt(c).trim()
+            isDefaultRealtimePrompt(c, v)
         ) return true
 
         // Older versions generated this template for non-Bengali comic targets.
