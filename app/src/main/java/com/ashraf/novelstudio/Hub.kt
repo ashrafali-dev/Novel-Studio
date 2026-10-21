@@ -41,17 +41,19 @@ object Hub {
     }
 
     private fun askDownload(activity: Activity, part: Part) {
+        val pad = activity.dpi(20)
         val input = EditText(activity).apply {
             hint = "https://.../${part.title.lowercase()}.apk"
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setText(Prefs.get(activity, part.prefKey, DEFAULT_URLS[part].orEmpty()))
+            setPadding(pad, activity.dpi(8), pad, 0)
         }
-        val pad = activity.dpi(20)
+
         AlertDialog.Builder(activity)
             .setTitle("${part.title} is not installed")
             .setMessage("Download the ${part.title} app, then tap Install when Android asks.")
-            .setView(input, pad, activity.dpi(8), pad, 0)
+            .setView(input)
             .setPositiveButton("Download") { _, _ ->
                 val url = input.text.toString().trim()
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
