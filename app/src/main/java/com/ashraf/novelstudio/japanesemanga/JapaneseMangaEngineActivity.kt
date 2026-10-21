@@ -24,6 +24,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.ashraf.novelstudio.Prefs
+import com.ashraf.novelstudio.MlKitOcrEngine
+import com.ashraf.novelstudio.OcrScript
 import com.ashraf.novelstudio.WmBubble
 import com.ashraf.novelstudio.WebModeTextRemover
 import org.json.JSONArray
@@ -150,8 +152,8 @@ class JapaneseMangaEngineActivity : Activity() {
     }
 
     private fun chooseLanguage() {
-        val codes = arrayOf("JAPANESE", "CHINESE", "KOREAN")
-        val labels = arrayOf("Japanese", "Chinese", "Korean")
+        val codes = arrayOf("JAPANESE", "CHINESE", "KOREAN", "LATIN")
+        val labels = arrayOf("Japanese", "Chinese", "Korean", "English (ML Kit)")
         val selected = codes.indexOf(selectedScript).coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setTitle("OCR source language")
@@ -159,6 +161,7 @@ class JapaneseMangaEngineActivity : Activity() {
                 selectedScript = codes[which]
                 languageButton.text = "OCR ভাষা: " + labels[which]
                 dialog.dismiss()
+                controls()
             }
             .setNegativeButton("বন্ধ") { dialog, _ -> dialog.dismiss() }
             .show()
@@ -230,7 +233,7 @@ class JapaneseMangaEngineActivity : Activity() {
         val installed = manager.isInstalled()
         installButton.isEnabled = !manager.isDownloading() && !scanning && !scanWhenReady
         deleteButton.isEnabled = manager.hasFiles() && !manager.isDownloading() && !scanning && !scanWhenReady
-        scanButton.isEnabled = installed && page.url?.startsWith("http") == true && !scanning && !scanWhenReady
+        scanButton.isEnabled = (selectedScript == "LATIN" || installed) && page.url?.startsWith("http") == true && !scanning && !scanWhenReady
         cancelButton.isEnabled = manager.isDownloading() || scanning || scanWhenReady
         translateButton.isEnabled = lastResultJson.isNotBlank() && !scanning
     }
@@ -239,7 +242,7 @@ class JapaneseMangaEngineActivity : Activity() {
         if (manager.isInstalled()) { Toast.makeText(this, "ইঞ্জিন আগেই ইনস্টল আছে", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this)
             .setTitle("Multilingual Comic OCR Engine")
-            .setMessage("আনুমানিক ৫২ MB মডেল ও OCR runtime ডাউনলোড হবে। এতে manga-trained Japanese/Chinese OCR এবং Korean recognizer থাকবে। ডাউনলোডের পর OCR Engine মেনু থেকে Multilingual Comic OCR নির্বাচন করলে Realtime/Scan-এ ব্যবহার হবে। সব ফাইল অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে। মডেল Apache-2.0, ONNX Runtime Web MIT।")
+            .setMessage("আনুমানিক ৫২ MB মডেল ও OCR runtime ডাউনলোড হবে। Japanese/Chinese-এর manga-trained OCR ও Korean recognizer থাকবে; English আগে থেকেই থাকা ML Kit ব্যবহার করবে। ডাউনলোডের পর OCR Engine মেনু থেকে Multilingual Comic OCR নির্বাচন করলে Realtime/Scan-এ ব্যবহার হবে। সব ফাইল অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে। মডেল Apache-2.0, ONNX Runtime Web MIT।")
             .setNegativeButton("পরে", null)
             .setPositiveButton("ডাউনলোড") { _, _ -> install() }
             .show()
@@ -312,10 +315,10 @@ class JapaneseMangaEngineActivity : Activity() {
     }
 
     private fun scanPage() {
-        if (!manager.isInstalled()) { confirmInstall(); return }
+        if (selectedScript != "LATIN" && !manager.isInstalled()) { confirmInstall(); return }
         if (!page.url.orEmpty().startsWith("http")) { Toast.makeText(this, "আগে মাঙ্গা পেজ খোলো", Toast.LENGTH_SHORT).show(); return }
         if (scanning) return
-        if (!runtimeReady) {
+        if (selectedScript != "LATIN" && !runtimeReady) {
             scanWhenReady = true
             status.text = "OCR model/runtime লোড হচ্ছে; প্রস্তুত হলেই স্ক্যান শুরু হবে।"
             controls()
@@ -385,7 +388,64 @@ class JapaneseMangaEngineActivity : Activity() {
         val id = "jm-" + requestId + "-" + UUID.randomUUID().toString()
         pending = pending + (id to panel)
         status.text = "${index + 1}/${images.size} ছবি OCR হচ্ছে…"
-        runtime.evaluateJavascript("window.runJapaneseMangaOcr(${JSONObject.quote(panel.localUrl)},${JSONObject.quote(id)},${JSONObject.quote(selectedScript)})", null)
+        if (selectedScript == "LATIN") {
+            runEnglishOcr(panel, id)
+        } else {
+            runtime.evaluateJavascript("window.runJapaneseMangaOcr(${JSONObject.quote(panel.localUrl)},${JSONObject.quote(id)},${JSONObject.quote(selectedScript)})", null)
+        }
+    }
+
+    /**
+     * English text is not part of the downloaded Manga recognizer's intended script set. Test it with
+     * the app's existing offline ML Kit Latin recognizer instead; English can be tested without
+     * downloading the ~52 MB CJK comic model pack.
+     */
+    private fun runEnglishOcr(panel: PanelImage, id: String) {
+        val relPath = Uri.parse(panel.localUrl).path.orEmpty().removePrefix("/manga-engine/")
+        val imageFile = manager.resolve(relPath)
+        worker.execute {
+            var bitmap: Bitmap? = null
+            var payload: String? = null
+            var failure = ""
+            try {
+                val file = imageFile ?: error("English OCR image path is invalid")
+                bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: error("English OCR image decode failed")
+                val engine = MlKitOcrEngine()
+                val result = try { engine.recognize(bitmap, OcrScript.LATIN) } finally { engine.close() }
+                val regions = JSONArray()
+                result.blocks.forEach { block ->
+                    val left = (block.cx - block.w / 2f).toInt().coerceIn(0, (bitmap!!.width - 1).coerceAtLeast(0))
+                    val top = (block.cy - block.h / 2f).toInt().coerceIn(0, (bitmap!!.height - 1).coerceAtLeast(0))
+                    val width = block.w.toInt().coerceAtLeast(1).coerceAtMost(bitmap!!.width - left)
+                    val height = block.h.toInt().coerceAtLeast(1).coerceAtMost(bitmap!!.height - top)
+                    if (block.text.isBlank() || width <= 0 || height <= 0) return@forEach
+                    regions.put(JSONObject()
+                        .put("order", regions.length() + 1)
+                        .put("text", block.text)
+                        .put("recConfidence", block.confidence)
+                        .put("x", left).put("y", top).put("w", width).put("h", height)
+                        .put("vertical", false).put("angle", block.angle))
+                }
+                payload = JSONObject().put("width", bitmap!!.width).put("height", bitmap!!.height)
+                    .put("verticalReading", false).put("regions", regions).toString()
+            } catch (e: Exception) {
+                failure = e.message ?: e.javaClass.simpleName
+            } finally {
+                bitmap?.recycle()
+            }
+            main.post {
+                if (!scanning || isFinishing || isDestroyed) return@post
+                if (payload != null) {
+                    try { acceptOcr(id, payload!!) }
+                    catch (e: Exception) { finishScan("English OCR result error: " + (e.message ?: "invalid result")) }
+                } else {
+                    pending = pending - id
+                    accumulated += "\n⚠️ English OCR failed: " + failure
+                    index++
+                    nextImage()
+                }
+            }
+        }
     }
 
     private fun acceptOcr(id: String, raw: String) {
