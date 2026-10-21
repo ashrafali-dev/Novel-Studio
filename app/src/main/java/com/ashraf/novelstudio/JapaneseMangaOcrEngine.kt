@@ -86,6 +86,7 @@ internal object OcrEngineStatus {
         used.startsWith("mlkit") && fellBack && selected.startsWith("paddle") -> "ML Kit (Paddle fallback)"
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
         used.startsWith("mlkit") -> "ML Kit"
+        used == "google_lens" -> "Google Lens (online)"
         used == "paddle_small" -> "Paddle Small"
         used == "paddle_heavy" -> "Paddle Medium"
         used == "manga" -> "Manga OCR"
@@ -98,9 +99,13 @@ internal class RoutingOcrEngine : OcrEngine {
     @Volatile private var appContext: Context? = null
     private val mlKit: OcrEngine = MlKitOcrEngine()
     private val manga: OcrEngine = JapaneseMangaOcrEngine()
+    private val googleLens: OcrEngine = GoogleLensOcrEngine()
     @Volatile private var selectedMode: String = "mlkit"
     private var activeMode: String = ""
     private var activeCustom: OcrEngine? = null
+
+    /** Google Lens returns text boxes itself, so skip the generic per-line network re-scan for this mode. */
+    fun usesRemoteTextDetection(): Boolean = selectedMode == "google_lens"
 
     /** Called by WebMode before the first OCR pass so the chosen engine follows the Settings value. */
     @Synchronized
@@ -131,6 +136,7 @@ internal class RoutingOcrEngine : OcrEngine {
         if (mode == "manga") {
             return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
         }
+        if (mode == "google_lens") return googleLens
         if (mode == "paddle_small" || mode == "paddle_heavy") {
             val tier = if (mode == "paddle_small") "small" else "heavy"
             val modelPack = PaddleOcrModels.pack(tier)
@@ -225,7 +231,8 @@ internal class RoutingOcrEngine : OcrEngine {
             val full = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName + " – " +
                 (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
             OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
-            OcrEngineStatus.toastOnce(appContext, "Paddle error → ML Kit\n$full")
+            val errorLabel = if (selectedMode == "google_lens") "Google Lens error → ML Kit" else "Paddle error → ML Kit"
+            OcrEngineStatus.toastOnce(appContext, "$errorLabel\n$full")
             OcrEngineStatus.copyOnce(appContext, "NovelStudio Paddle error: $full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
@@ -267,5 +274,6 @@ internal class RoutingOcrEngine : OcrEngine {
         activeMode = ""
         mlKit.close()
         manga.close()
+        googleLens.close()
     }
 }
