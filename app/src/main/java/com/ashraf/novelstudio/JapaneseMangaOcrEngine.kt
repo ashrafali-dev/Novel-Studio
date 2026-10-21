@@ -7,13 +7,18 @@ import com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime
 import org.json.JSONObject
 
 /**
- * Adapter between the downloaded manga model (see [JapaneseMangaRuntime]) and the app's [OcrEngine]
- * surface. Every region the model returns is one speech-bubble-sized block whose text is already in
- * Japanese reading order (vertical columns right-to-left), so nothing downstream has to re-order it.
+ * Adapts the manga-trained detector/recognizer to [OcrEngine] and ensembles it with ML Kit.
+ * Both recognizers use the same screenshot coordinate space; [OcrLineFusion] reconciles overlapping
+ * readings and lets the second recognizer contribute lines the comic detector missed.
  */
 internal class JapaneseMangaOcrEngine : OcrEngine {
-    override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
-        val out = JapaneseMangaRuntime.recognize(bitmap)
+    // A two-engine ensemble: the Manga-trained detector/recognizer is best for Japanese/Chinese art,
+    // while ML Kit can recover ordinary or faint lines the comic detector misses. Korean uses the same
+    // comic detector with its Hangul recognizer plus the Korean ML Kit model as a second opinion.
+    private val supplementary = MlKitOcrEngine()
+
+    private fun run(bitmap: Bitmap, script: OcrScript, fast: Boolean, region: Boolean = false): OcrResult {
+        val out = JapaneseMangaRuntime.recognize(bitmap, script.name)
         val regions = JSONObject(out.json).optJSONArray("regions") ?: return OcrResult(emptyList())
         val k = if (out.scale > 0f) 1f / out.scale else 1f
         val blocks = ArrayList<OcrBlock>()
@@ -25,33 +30,79 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
             val y = r.optDouble("y", 0.0).toFloat() * k
             val w = r.optDouble("w", 0.0).toFloat() * k
             val h = r.optDouble("h", 0.0).toFloat() * k
-            if (w < 4f || h < 4f) continue
+            if (w < 2f || h < 2f) continue
+            val pointArray = r.optJSONArray("points")
+            val polygon = ArrayList<Pair<Float, Float>>()
+            if (pointArray != null) {
+                for (pi in 0 until pointArray.length()) {
+                    val pair = pointArray.optJSONArray(pi) ?: continue
+                    if (pair.length() < 2) continue
+                    polygon.add(Pair(pair.optDouble(0, 0.0).toFloat() * k, pair.optDouble(1, 0.0).toFloat() * k))
+                }
+            }
+            val orientedW = (r.optDouble("orientedW", w.toDouble()).toFloat() * k).coerceAtLeast(1f)
+            val orientedH = (r.optDouble("orientedH", h.toDouble()).toFloat() * k).coerceAtLeast(1f)
+            val angle = OcrPost.foldAngle(r.optDouble("angle", 0.0).toFloat())
+            val vertical = r.optBoolean("vertical", false)
             val font = r.optDouble("font", 0.0).toFloat() * k
             val block = OcrBlock(
                 text = text,
                 top = y.toInt(), left = x.toInt(),
-                cx = x + w / 2f, cy = y + h / 2f,
-                w = w, h = h, angle = 0f,
-                fontPx = if (font > 0f) font else minOf(w, h),
-                vertical = r.optBoolean("vertical", false)
+                cx = r.optDouble("cx", (x + w / 2f).toDouble()).toFloat() * k,
+                cy = r.optDouble("cy", (y + h / 2f).toDouble()).toFloat() * k,
+                w = orientedW, h = orientedH, angle = angle,
+                fontPx = if (font > 0f) font else if (vertical) orientedW else orientedH,
+                vertical = vertical,
+                confidence = r.optDouble("recConfidence", 0.0).toFloat().coerceIn(0f, 1f),
+                polygon = polygon
             )
             if (!OcrPost.isNoise(block)) blocks.add(block)
         }
-        return OcrResult(blocks)
+
+        // Do not stop at the first useful output: reconcile both recognizers so missed text regions
+        // can be recovered and overlapping readings can be resolved by geometry/text agreement.
+        val second = when {
+            region -> supplementary.recognizeRegion(bitmap, script)
+            fast -> supplementary.recognizeFast(bitmap, script)
+            else -> supplementary.recognize(bitmap, script)
+        }
+        OcrLineFusion.addAll(blocks, second.blocks)
+        val verticalVotes = blocks.count { it.vertical }
+        val verticalReading = script != OcrScript.LATIN && blocks.isNotEmpty() &&
+            verticalVotes > blocks.size * 0.45
+        val ordered = if (verticalReading) {
+            blocks.sortedWith(compareByDescending<OcrBlock> { it.cx }.thenBy { it.cy })
+        } else {
+            blocks.sortedWith(compareBy<OcrBlock> { it.cy }.thenBy { it.cx })
+        }
+        return OcrResult(ordered)
     }
 
-    override fun close() {}
-}
+    override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = false)
 
+    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = true)
+
+    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = false)
+
+    override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = false, region = true)
+
+    override fun close() {
+        supplementary.close()
+    }
+}
 /**
- * The engine the scan pipeline actually uses. Japanese pages go to the dedicated manga model when it
- * has been downloaded; everything else (and any manga-model failure or empty result) stays on ML Kit,
+ * The engine the scan pipeline actually uses. Japanese, Chinese and Korean pages use the specialized
+ * comic detector with the appropriate recognizer when installed; other scripts or model failures use ML Kit,
  * so real-time scanning keeps working for all languages exactly as before.
  */
 /** Short, user-visible name of the engine that produced the LAST OCR result (shown in the activity chip). */
 internal object OcrEngineStatus {
     @Volatile var label: String = ""
-    /** Last Paddle failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
+    /** Last custom OCR failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
     @Volatile var lastError: String = ""
     @Volatile private var lastToast: String = ""
 
@@ -77,18 +128,28 @@ internal object OcrEngineStatus {
     }
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
+        used.startsWith("cancelled(interrupted") -> "OCR cancelled"
+        used.startsWith("mlkit(comic-model-unavailable") -> "ML Kit (Comic OCR model unavailable)"
+        used.startsWith("mlkit(comic-script-unsupported") -> "ML Kit (Comic OCR supports Japanese/Chinese/Korean)"
+        used.startsWith("mlkit(paddle-model-unavailable") -> "ML Kit (Paddle model unavailable)"
+        used.startsWith("mlkit(legacy-script-unsupported") -> "ML Kit (legacy OCR doesn't support this script)"
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
         used == "paddle_korean" -> "Paddle Korean v5"
+        used == "mlkit(empty-primary)" && selected == "manga" -> "ML Kit (Comic OCR found no text)"
         used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
+        used == "mlkit(oom)" && selected == "manga" -> "ML Kit (Comic OCR: low RAM)"
         used == "mlkit(oom)" -> "ML Kit (Paddle: low RAM)"
+        used == "mlkit(link-error)" && selected == "manga" -> "ML Kit (Comic OCR runtime unavailable)"
         used == "mlkit(link-error)" -> "ML Kit (Paddle native lib missing)"
+        used.startsWith("mlkit(error:") && selected == "manga" -> "ML Kit (Comic OCR error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit(error:") -> "ML Kit (Paddle error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
+        used.startsWith("mlkit") && fellBack && selected == "manga" -> "ML Kit (Comic OCR fallback)"
         used.startsWith("mlkit") && fellBack && selected.startsWith("paddle") -> "ML Kit (Paddle fallback)"
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
         used.startsWith("mlkit") -> "ML Kit"
         used == "paddle_small" -> "Paddle Small"
         used == "paddle_heavy" -> "Paddle Medium"
-        used == "manga" -> "Manga OCR"
+        used == "manga" -> "Multilingual Comic OCR"
         used == "rapid_onnx" -> "RapidOCR"
         else -> ""
     }
@@ -108,6 +169,10 @@ internal class RoutingOcrEngine : OcrEngine {
         appContext = context.applicationContext
         OcrModels.init(context)
         PaddleOcrModels.init(context)
+        // Initialize the installed comic-model manifest on every app process start; the Activity may
+        // have been closed in a previous process, so relying on it to initialize the runtime breaks
+        // automatic OCR after restarting NovelStudio.
+        JapaneseMangaRuntime.init(context)
         val requested = Prefs.get(context, "ocrEngine", "mlkit")
         // Only record the new choice. The old engine is released by active() INSIDE OcrGate, i.e. never while an
         // inference is running (closing here, outside the gate, could free sessions under a running scan; and
@@ -129,7 +194,9 @@ internal class RoutingOcrEngine : OcrEngine {
         // runs each detected box separately. Keep Korean/Japanese real-time scans on ML Kit instead.
         if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) return mlKit
         if (mode == "manga") {
-            return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
+            val supported = script == OcrScript.JAPANESE ||
+                script == OcrScript.CHINESE || script == OcrScript.KOREAN
+            return if (supported && JapaneseMangaRuntime.isAvailable()) manga else mlKit
         }
         if (mode == "paddle_small" || mode == "paddle_heavy") {
             val tier = if (mode == "paddle_small") "small" else "heavy"
@@ -165,8 +232,13 @@ internal class RoutingOcrEngine : OcrEngine {
         }
     }
 
-    private fun useful(result: OcrResult): Boolean =
-        result.blocks.any { it.text.count { ch -> ch.isLetterOrDigit() } >= 2 }
+    private fun useful(result: OcrResult): Boolean {
+        // Comic SFX and dialogue can legitimately be a single CJK glyph. The general engines keep the
+        // stricter two-character guard to avoid false positives, but don't discard a one-character
+        // result from the manga-trained recognizer after it has already been fused with ML Kit.
+        val minimum = if (selectedMode == "manga") 1 else 2
+        return result.blocks.any { block -> block.text.count { ch -> ch.isLetterOrDigit() } >= minimum }
+    }
 
     private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
         val waited = OcrGate.Waited()
@@ -178,6 +250,14 @@ internal class RoutingOcrEngine : OcrEngine {
                 val r = routeInner(bitmap, script, run) { engine, fb -> used = engine; fellBack = fb }
                 r
             }
+        } catch (e: InterruptedException) {
+            // Read-ahead workers are intentionally interrupted when the page/job is cancelled. OcrGate
+            // waits interruptibly while yielding to a foreground scan; treat that as cancellation, not
+            // a Manga OCR failure and do not launch a fallback recognizer on a cancelled worker.
+            Thread.currentThread().interrupt()
+            used = "cancelled(interrupted)"
+            Log.d("NovelStudioOCR", "OCR job cancelled while waiting for the inference gate")
+            return OcrResult(emptyList())
         } finally {
             OcrEngineStatus.label = OcrEngineStatus.describe(selectedMode, used, fellBack)
             // Diagnostic line: ids/timings only, never the recognised text.
@@ -201,7 +281,21 @@ internal class RoutingOcrEngine : OcrEngine {
         } catch (_: OutOfMemoryError) {
             mlKit
         }
-        if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit) }
+        if (chosen === mlKit) {
+            val reason = when {
+                selectedMode == "manga" && script !in setOf(OcrScript.JAPANESE, OcrScript.CHINESE, OcrScript.KOREAN) ->
+                    "mlkit(comic-script-unsupported)"
+                selectedMode == "manga" && !JapaneseMangaRuntime.isAvailable() ->
+                    "mlkit(comic-model-unavailable)"
+                selectedMode == "paddle_small" || selectedMode == "paddle_heavy" ->
+                    "mlkit(paddle-model-unavailable)"
+                selectedMode == "rapid_onnx" && script != OcrScript.LATIN ->
+                    "mlkit(legacy-script-unsupported)"
+                else -> "mlkit"
+            }
+            report(reason, selectedMode != "mlkit")
+            return run(mlKit)
+        }
 
         return try {
             val primary = run(chosen)
@@ -225,8 +319,9 @@ internal class RoutingOcrEngine : OcrEngine {
             val full = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName + " – " +
                 (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
             OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
-            OcrEngineStatus.toastOnce(appContext, "Paddle error → ML Kit\n$full")
-            OcrEngineStatus.copyOnce(appContext, "NovelStudio Paddle error: $full")
+            val engineName = if (selectedMode == "manga") "Comic OCR" else "Paddle"
+            OcrEngineStatus.toastOnce(appContext, "$engineName error → ML Kit\n$full")
+            OcrEngineStatus.copyOnce(appContext, "NovelStudio $engineName error: $full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
             run(mlKit)

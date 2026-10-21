@@ -294,7 +294,7 @@ internal class WebModeExtractor(
                         val p = arr.optJSONObject(i) ?: continue
                         val s = p.optString("s")
                         if (s.isBlank()) continue
-                        val nk = WebModeLogic.normalizeUrl(s)
+                        val nk = aheadCacheKey(s, lang, pageUrl)
                         if (aheadDone.contains(nk) || aheadBlank.contains(nk)) continue
                         refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
                     }
@@ -326,7 +326,7 @@ internal class WebModeExtractor(
             progress("Read-ahead OCR: preparing ${refs.size} upcoming panels", 0)
             for ((index, p) in refs.withIndex()) {
                 if (!alive()) return
-                val key = WebModeLogic.normalizeUrl(p.src)
+                val key = aheadCacheKey(p.src, lang, pageUrl)
                 // Deliver cached OCR too. A previous successful OCR must not be invisible to the translation cache.
                 val cached = synchronized(aheadCache) { aheadCache[key] }
                 if (cached != null) {
@@ -451,8 +451,50 @@ internal class WebModeExtractor(
                 "zh" -> OcrScript.CHINESE
                 else -> null
             }
-            if (pinned == null) return ScriptState(WebModeLogic.pickScript(lang, url))
+            if (pinned == null) {
+                val guessed = WebModeLogic.pickScript(lang, url)
+                // Keep explicit page language / locale URL choices authoritative. In particular, an /en/
+                // Webtoon must stay Latin so RoutingOcrEngine uses the bundled ML Kit Latin recognizer instead
+                // of trying the Japanese manga recognizer first. Only guess Japanese for an unknown generic
+                // image URL with no document-language metadata and no explicit locale in its path.
+                val selectedEngine = Prefs.get(wv.context, "ocrEngine", "mlkit")
+                val explicitLocale = lang.isNotBlank() ||
+                    Regex("(?i)/(en|ko|ja|zh)(?:/|$)").containsMatchIn(url)
+                val autoScript = if (selectedEngine == "manga" && guessed == OcrScript.LATIN && !explicitLocale)
+                    OcrScript.JAPANESE else guessed
+                return ScriptState(autoScript)
+            }
             return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
+        }
+
+        private fun fallbackScripts(first: OcrScript): List<OcrScript> {
+            if (Prefs.get(wv.context, "ocrEngine", "mlkit") != "manga") {
+                return WebModeLogic.fallbackScripts(first)
+            }
+            // Japanese and Chinese share the Manga recognizer, while Korean has a separate Hangul
+            // recognizer. Try Korean before the other script when a Japanese/Chinese guess reads little;
+            // otherwise real-time fallback spends its only alternate pass on the same weights.
+            return when (first) {
+                OcrScript.JAPANESE -> listOf(OcrScript.KOREAN, OcrScript.LATIN, OcrScript.CHINESE)
+                OcrScript.CHINESE -> listOf(OcrScript.KOREAN, OcrScript.LATIN, OcrScript.JAPANESE)
+                OcrScript.KOREAN -> listOf(OcrScript.JAPANESE, OcrScript.CHINESE, OcrScript.LATIN)
+                OcrScript.LATIN -> listOf(OcrScript.JAPANESE, OcrScript.KOREAN, OcrScript.CHINESE)
+            }.filter { it != first }
+        }
+
+        /**
+         * Read-ahead OCR is cached globally by source image. Include the selected OCR engine, resolved
+         * source script and Manga-model revision so changing settings or replacing the pack cannot reuse
+         * text produced by the previous model.
+         */
+        private fun aheadCacheKey(src: String, lang: String, pageUrl: String): String {
+            val selectedEngine = Prefs.get(wv.context, "ocrEngine", "mlkit")
+            val selectedScript = newScript(lang, pageUrl).current.name
+            val modelRevision = if (selectedEngine == "manga")
+                com.ashraf.novelstudio.japanesemanga.JapaneseMangaModelManager.VERSION
+            else ""
+            val normalizedUrl = WebModeLogic.normalizeUrl(src).ifBlank { src }
+            return "$selectedEngine|$selectedScript|$modelRevision|$normalizedUrl"
         }
 
         private fun scanHost(): String = try {
@@ -624,7 +666,7 @@ internal class WebModeExtractor(
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
                 if (req.visibleOnly && req.forceOcrSrc.isNullOrBlank()) {
                     // Real-time: this panel may already have been read ahead (download + full OCR done).
-                    val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
+                    val hit = synchronized(aheadCache) { aheadCache[aheadCacheKey(p.src, meta.lang, meta.url)] }
                     if (hit != null) {
                         diag.downloaded++; diag.decoded++
                         val ct = hit.text
@@ -1864,8 +1906,10 @@ internal class WebModeExtractor(
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
             // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
             if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
-            // The Japanese manga engine has its own detector; do not run it once per crop.
-            if (st.current == OcrScript.JAPANESE &&
+            // The comic engine has its own detector; do not run a second uncovered-ink scan per crop.
+            if ((st.current == OcrScript.JAPANESE || st.current == OcrScript.CHINESE ||
+                    st.current == OcrScript.KOREAN) &&
+                Prefs.get(wv.context, "ocrEngine", "mlkit") == "manga" &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
             return try {
                 OcrRescan.augment(wv.context, engine, bmp, core, st.current, fastMode)
@@ -1904,7 +1948,7 @@ internal class WebModeExtractor(
                 if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN &&
                     !st.fastFallbackTried) {
                     st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
+                    val script = fallbackScripts(st.current).firstOrNull()
                     if (script != null) {
                         val alternate = try { engine.recognizeFast(bmp, script) }
                             catch (_: Exception) { OcrResult(emptyList()) }
@@ -1922,7 +1966,7 @@ internal class WebModeExtractor(
                 // At most one alternate recognizer for an entirely unreadable realtime scan.
                 if (!st.fastFallbackTried) {
                     st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
+                    val script = fallbackScripts(st.current).firstOrNull()
                     if (script != null) {
                         val alternate = try { engine.recognizeFast(bmp, script) }
                             catch (_: Exception) { OcrResult(emptyList()) }
@@ -1938,7 +1982,7 @@ internal class WebModeExtractor(
             }
             if (!st.locked && st.fallbackBudget > 0) {
                 st.fallbackBudget--
-                for (script in WebModeLogic.fallbackScripts(st.current)) {
+                for (script in fallbackScripts(st.current)) {
                     val alternate = try { engine.recognize(bmp, script) }
                         catch (_: Exception) { OcrResult(emptyList()) }
                     if (alternate.text.count { it.isLetterOrDigit() } >= (if (st.current == OcrScript.LATIN) 10 else 2)) {

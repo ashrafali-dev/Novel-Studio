@@ -138,7 +138,7 @@ internal object OcrPost {
         val core = t.count { !it.isWhitespace() && it !in NEUTRAL_PUNCT }
         if (core >= 3 && letters * 100 < core * 45) return true
         if (b.h < 4f || b.w < 2f) return true
-        if (b.h > b.w * 6f && t.length <= 4) return true    // vertical smear of a few "letters"
+        if (!b.vertical && b.h > b.w * 6f && t.length <= 4) return true    // reject tall horizontal noise, not real vertical CJK columns
         return false
     }
 

@@ -24,7 +24,7 @@ import kotlin.concurrent.withLock
 import kotlin.math.sqrt
 
 /**
- * Process-wide, headless host of the downloaded Japanese manga OCR model (PP-OCRv6_manga on
+ * Process-wide, headless host of the downloaded multilingual comic OCR model (PP-OCRv6_manga plus Korean recognition on
  * ONNX Runtime Web). The regular scan pipeline calls [recognize] from its worker threads, so the
  * dedicated model is used automatically whenever it is installed - no separate screen needed.
  *
@@ -66,6 +66,7 @@ internal object JapaneseMangaRuntime {
     @Volatile private var installedCache = false
     @Volatile private var installedCheckedAt = 0L
     @Volatile private var disabledUntil = 0L
+    @Volatile private var releaseRequested = false
 
     @Synchronized
     fun init(context: Context) {
@@ -81,6 +82,7 @@ internal object JapaneseMangaRuntime {
 
     /** True when the engine files are installed and the runtime has not just failed. */
     fun isAvailable(): Boolean {
+        if (releaseRequested) return false
         val m = manager ?: return false
         val now = SystemClock.elapsedRealtime()
         if (now < disabledUntil) return false
@@ -93,16 +95,45 @@ internal object JapaneseMangaRuntime {
 
     /** Call after install/delete so the next check re-reads the files. */
     fun invalidate() {
+        releaseRequested = false
         installedCheckedAt = 0L
         disabledUntil = 0L
+        // The engine-management screen uses a separate manager instance over the same app-private
+        // directory. Invalidate this manager's integrity cache too after that screen installs/deletes files.
+        manager?.invalidateInstalledCache()
     }
 
-    /** Frees the WebView (e.g. before the engine files are deleted). Safe to call from any thread. */
+    /** Frees the hidden WebView without blocking the caller. Used when leaving the management screen. */
     fun release() {
-        invalidate()
+        // Do not reopen routing while a releaseAndWait() request is in progress (for example when the
+        // management Activity is closing while a delete operation waits for the current OCR call).
+        if (!releaseRequested) invalidate()
         main.post {
             if (ocrLock.tryLock()) {
                 try { destroyViewOnMain() } finally { ocrLock.unlock() }
+            }
+        }
+    }
+
+    /**
+     * Prevent new Manga OCR jobs, wait for the active inference to finish, and destroy its WebView.
+     * Must be called from a worker thread. Model files must not be deleted before this completes,
+     * because an in-flight ONNX session may still be reading the temporary PNG or model directory.
+     */
+    fun releaseAndWait() {
+        check(Looper.myLooper() != Looper.getMainLooper()) {
+            "releaseAndWait must run off the main thread"
+        }
+        releaseRequested = true
+        installedCheckedAt = 0L
+        manager?.invalidateInstalledCache()
+        ocrLock.withLock {
+            val destroyed = CountDownLatch(1)
+            main.post {
+                try { destroyViewOnMain() } finally { destroyed.countDown() }
+            }
+            if (!destroyed.await(10, TimeUnit.SECONDS)) {
+                throw IOException("Timed out while closing the multilingual OCR WebView")
             }
         }
     }
@@ -112,9 +143,10 @@ internal object JapaneseMangaRuntime {
      * the bitmap that was scanned, divided by [Output.scale] when the picture had to be shrunk).
      * Throws on any failure so the caller can fall back to another engine.
      */
-    fun recognize(bitmap: Bitmap): Output {
+    fun recognize(bitmap: Bitmap, script: String = "JAPANESE"): Output {
         val m = manager ?: throw IOException("manga runtime not initialised")
         return ocrLock.withLock {
+            if (releaseRequested) throw IOException("multilingual OCR engine is being released")
             inFlight++
             try {
                 lastUse = SystemClock.elapsedRealtime()
@@ -123,7 +155,7 @@ internal object JapaneseMangaRuntime {
                 val dir = File(m.root, "input")
                 if (!dir.exists() && !dir.mkdirs()) throw IOException("input folder unavailable")
                 val id = "rt-" + UUID.randomUUID().toString()
-                val file = File(dir, "$id.jpg")
+                val file = File(dir, "$id.png")
 
                 var work = bitmap
                 var scale = 1f
@@ -140,10 +172,10 @@ internal object JapaneseMangaRuntime {
                 pending[id] = pend
                 try {
                     FileOutputStream(file).use {
-                        if (!work.compress(Bitmap.CompressFormat.JPEG, 92, it)) throw IOException("JPEG encode failed")
+                        if (!work.compress(Bitmap.CompressFormat.PNG, 100, it)) throw IOException("PNG encode failed")
                     }
-                    val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
-                        "," + JSONObject.quote(id) + ")"
+                    val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".png") +
+                        "," + JSONObject.quote(id) + "," + JSONObject.quote(script.uppercase()) + ")"
                     main.post { view?.evaluateJavascript(js, null) }
                     if (!pend.latch.await(OCR_TIMEOUT_S, TimeUnit.SECONDS)) {
                         fail("manga OCR timeout")
@@ -261,5 +293,10 @@ internal object JapaneseMangaRuntime {
         @JavascriptInterface fun onRuntimeError(message: String) { JapaneseMangaRuntime.signalRuntimeError(message) }
         @JavascriptInterface fun onOcrResult(id: String, json: String) { JapaneseMangaRuntime.signalResult(id, json) }
         @JavascriptInterface fun onOcrError(id: String, message: String) { JapaneseMangaRuntime.signalOcrError(id, message) }
+        @JavascriptInterface fun postProcessDetectorMap(payload: String): String {
+            val context = JapaneseMangaRuntime.appContext
+                ?: return org.json.JSONObject().put("error", "OCR runtime context unavailable").toString()
+            return MangaDetectorPostProcessor.process(context, payload)
+        }
     }
 }

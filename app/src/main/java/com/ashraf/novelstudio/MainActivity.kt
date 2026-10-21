@@ -4924,19 +4924,19 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrLangLabel(): String =
         "🔤 OCR language: " + when (Prefs.get(this, "ocrLang", "auto")) {
             "en" -> "English only"; "ko" -> "Korean only"; "ja" -> "Japanese only"; "zh" -> "Chinese only"
-            else -> "Auto (guess from page)"
+            else -> "Auto (website language/URL, not image text)"
         }
 
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR)"
+    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR / Comic OCR)"
 
     private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
         "paddle_small" -> "PaddleOCR Small"
         "paddle_heavy" -> "PaddleOCR Medium"
         "rapid_onnx" -> "RapidOCR / legacy ONNX"
-        "manga" -> "Japanese Manga OCR"
+        "manga" -> "Multilingual Comic OCR"
         else -> "ML Kit · Default"
     }
 
@@ -4947,7 +4947,7 @@ return t.length>=40?'TXT:'+t:'';
             "PaddleOCR PP-OCRv6 Small — fast, low RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "PaddleOCR PP-OCRv6 Medium — most accurate, needs more RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "RapidOCR ONNX — legacy optional engine",
-            "Japanese Manga OCR — if its model is installed"
+            "Multilingual Comic OCR — Japanese / Chinese / Korean; install model and choose matching OCR language"
         )
         val rec = DeviceTier.recommendedEngine(this)
         for (i in keys.indices) if (keys[i] == rec) labels[i] = "⭐ Recommended for your phone — " + labels[i]
@@ -8844,7 +8844,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Prompt For Live Translation", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
-            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
+            "🌏 Multilingual Comic OCR Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
@@ -8976,7 +8976,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val on = !Prefs.bool(this, "wmTextRemoval", false)
                     Prefs.putBool(this, "wmTextRemoval", on)
                     if (on) {
-                        toast("🧽 Text Remover ON — next Web Mode/Japanese Manga OCR scan will clean only safe text pixels.")
+                        toast("🧽 Text Remover ON — next Web Mode/Comic OCR scan will clean only safe text pixels.")
                     } else {
                         WebModeTextRemovalCache.clear(this)
                         novelWv.evaluateJavascript("(function(){var l=document.getElementById('__ns_wm_clean_layer');if(l&&l.parentNode)l.parentNode.removeChild(l);var w=document.getElementById('__ns_wm_overlay');if(w){var bs=w.querySelectorAll('.__ns_b[data-cl]');for(var i=0;i<bs.length;i++){var b=bs[i],bg=b.getAttribute('data-bg')||'#FFFFFF',sf=b.getAttribute('data-sf')==='1';b.style.background=bg;b.style.borderRadius=sf?'12px':'4px';b.style.boxShadow=sf?'0 0 7px 5px '+bg:'0 0 0 3px '+bg;b.removeAttribute('data-cl');}}})()", null)
@@ -9768,9 +9768,9 @@ ${rows.take(220).joinToString("\n")}
         val raw = data?.getStringExtra(
             com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.EXTRA_RESULT_JSON
         ).orEmpty()
-        if (raw.isBlank()) return toast("⚠️ Japanese Manga OCR result is empty")
+        if (raw.isBlank()) return toast("⚠️ Multilingual Comic OCR result is empty")
         val parsed = JapaneseMangaResultParser.parse(raw)
-            ?: return toast("⚠️ Japanese Manga OCR result is invalid; nothing was sent")
+            ?: return toast("⚠️ Multilingual Comic OCR result is invalid; nothing was sent")
         val pageUrl = parsed.pageUrl
         if (cleanUrl(pageUrl) != cleanUrl(novelWv.url.orEmpty())) {
             toast("⚠️ Page changed while OCR was running; no translation was started")
@@ -9782,14 +9782,14 @@ ${rows.take(220).joinToString("\n")}
         if (sourceText.isBlank()) return toast("⚠️ OCR text is empty")
         WebModeLayoutStore.setScan(pageUrl, layout)
         val host = Uri.parse(pageUrl).host.orEmpty().lowercase().removePrefix("www.")
-        val title = novelWv.title.orEmpty().trim().ifBlank { "Japanese Manga" }
+        val title = novelWv.title.orEmpty().trim().ifBlank { "Multilingual Comic" }
         val chapter = Chapter(
             title = title,
             text = sourceText,
             next = null,
             prev = null,
             url = pageUrl,
-            novel = host.ifBlank { "Japanese Manga" },
+            novel = host.ifBlank { "Multilingual Comic" },
             number = "",
             contentSel = "",
             titleSel = "",
@@ -9797,7 +9797,7 @@ ${rows.take(220).joinToString("\n")}
             prevSel = ""
         )
         JapaneseMangaSession.register(chapter)
-        toast("🎌 Manga OCR: ${layout.bubbles.size} text regions · sending for translation")
+        toast("🌏 Comic OCR: ${layout.bubbles.size} text regions · sending for translation")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
