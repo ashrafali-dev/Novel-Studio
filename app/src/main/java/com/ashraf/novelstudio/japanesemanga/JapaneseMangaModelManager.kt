@@ -183,7 +183,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     }
 
     companion object {
-        const val VERSION = "pp-ocrv6-multilingual-comic-v1"
+        const val VERSION = "pp-ocrv6-multilingual-comic-v2"
         const val ORT_VERSION = "1.23.2"
         private const val HF = "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/main/"
         private const val ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
