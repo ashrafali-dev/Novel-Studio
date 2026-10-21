@@ -24,7 +24,7 @@ import kotlin.math.min
 internal object WebModeTextRemover {
     private const val MAX_WIDTH = 4096
     private const val MAX_HEIGHT = 4096
-    private const val MAX_PIXELS = 3_000_000L
+    private const val MAX_PIXELS = 6_000_000L
     private const val MAX_BYTES = 18 * 1024 * 1024
 
     fun cleanAndCache(
@@ -33,7 +33,7 @@ internal object WebModeTextRemover {
         encoded: ByteArray,
         bubbles: List<WmBubble>
     ): Boolean {
-        if (!Prefs.bool(context, "wmTextRemoval", false)) return false
+        if (!Prefs.bool(context, "wmTextRemoval", true)) return false
         if (sourceUrl.isBlank() || encoded.size !in 1..MAX_BYTES || bubbles.isEmpty()) return false
         if (isAnimatedOrUnsupported(encoded)) return false
 
@@ -57,8 +57,9 @@ internal object WebModeTextRemover {
             bitmap.getPixels(original, 0, width, 0, 0, width, height)
             val output = original.copyOf()
             var totalRemoved = 0
+            val erasedSoft = HashSet<String>()
             val boundedBubbles = bubbles.asSequence()
-                .filter { it.sourceText.isNotBlank() && !it.soft && it.w > 0f && it.h > 0f }
+                .filter { it.sourceText.isNotBlank() && it.w > 0f && it.h > 0f }
                 .take(500)
                 .toList()
 
@@ -77,6 +78,7 @@ internal object WebModeTextRemover {
                 val regionSize = rw.toLong() * rh.toLong()
                 if (rw < 4 || rh < 4 || regionSize > 1_250_000L) continue
 
+                val soft = bubble.soft
                 val bg = opaque(bubble.bg)
                 val fg1 = opaque(bubble.fg)
                 val fg2 = opaque(bubble.fg2)
@@ -100,10 +102,11 @@ internal object WebModeTextRemover {
                     for (rx in 0 until rw) {
                         val p = original[src + rx]
                         val fromBg = distance(p, bg)
-                        if (fromBg < 46) continue
+                        if (fromBg < (if (soft) 52f else 46f)) continue
                         val fromFg = min(distance(p, fg1), distance(p, fg2))
                         // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
-                        if (fromFg <= max(82f, fromBg * 1.08f)) candidate[row + rx] = 1
+                        // On artwork (soft) only pixels that are clearly the lettering colour qualify, so line art survives.
+                        if (fromFg <= (if (soft) 68f else max(82f, fromBg * 1.08f))) candidate[row + rx] = 1
                     }
                 }
 
@@ -155,7 +158,7 @@ internal object WebModeTextRemover {
                 // If the inferred mask covers too much of a region, it is probably art rather than text.
                 // Tight OCR boxes around dense CJK glyphs can legitimately contain more ink than Latin boxes.
                 // The connected-component/size checks above remain the stronger art-protection filters.
-                if (selectedCount < 4 || selectedCount > regionCount * 0.5f) continue
+                if (selectedCount < 4 || selectedCount > regionCount * (if (soft) 0.35f else 0.5f)) continue
 
                 // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
                 // the core pixels, fall outside the strict candidate test, and used to stay as a ghost of the old
@@ -185,6 +188,14 @@ internal object WebModeTextRemover {
                     for (rx in 0 until rw) {
                         val at = ry * rw + rx
                         if (mask[at].toInt() == 0) continue
+                        if (soft) {
+                            // Lettering on artwork: rebuild the picture from the surroundings (sky, shading, screentone
+                            // gradients) by blending the nearest untouched pixels left/right/up/down, nearest weighted most.
+                            output[(y0 + ry) * width + x0 + rx] = 0xFF000000.toInt() or
+                                gradientFill(original, mask, width, x0, y0, rw, rh, rx, ry,
+                                    max(8, (fontPx * 1.6f).toInt()), bg)
+                            continue
+                        }
                         var sampleN = 0
                         var sumR = 0; var sumG = 0; var sumB = 0
                         var radius = 1
@@ -212,6 +223,7 @@ internal object WebModeTextRemover {
                     }
                 }
                 totalRemoved += selectedCount
+                if (soft) erasedSoft.add(WebModeTextRemovalCache.bubbleKey(bubble))
             }
             if (totalRemoved < 8) return false
 
@@ -224,8 +236,10 @@ internal object WebModeTextRemover {
             if (!bitmap.compress(format, 100, bytesOut)) return false
             val cleaned = bytesOut.toByteArray()
             if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return false
-            return WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
+            val stored = WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
                 if (modern) "image/webp" else "image/png")
+            if (stored) WebModeTextRemovalCache.setErased(sourceUrl, erasedSoft)
+            return stored
         } catch (_: OutOfMemoryError) {
             return false
         } catch (_: Exception) {
@@ -233,6 +247,36 @@ internal object WebModeTextRemover {
         } finally {
             bitmap.recycle()
         }
+    }
+
+    /** Colour for one erased pixel on artwork: inverse-distance blend of the nearest kept pixel in each of 4 directions. */
+    private fun gradientFill(
+        original: IntArray, mask: ByteArray, width: Int, x0: Int, y0: Int, rw: Int, rh: Int,
+        rx: Int, ry: Int, maxScan: Int, fallback: Int
+    ): Int {
+        var sr = 0f; var sg = 0f; var sb = 0f; var sw = 0f
+        for (dir in 0 until 4) {
+            val dx = if (dir == 0) -1 else if (dir == 1) 1 else 0
+            val dy = if (dir == 2) -1 else if (dir == 3) 1 else 0
+            var d = 1
+            while (d <= maxScan) {
+                val nx = rx + dx * d
+                val ny = ry + dy * d
+                if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) break
+                if (mask[ny * rw + nx].toInt() == 0) {
+                    val p = original[(y0 + ny) * width + x0 + nx]
+                    val wgt = 1f / d
+                    sr += red(p) * wgt; sg += green(p) * wgt; sb += blue(p) * wgt; sw += wgt
+                    break
+                }
+                d++
+            }
+        }
+        if (sw <= 0f) return fallback and 0x00FFFFFF
+        val r = (sr / sw).toInt().coerceIn(0, 255)
+        val g = (sg / sw).toInt().coerceIn(0, 255)
+        val b = (sb / sw).toInt().coerceIn(0, 255)
+        return (r shl 16) or (g shl 8) or b
     }
 
     private fun isAnimatedOrUnsupported(bytes: ByteArray): Boolean {

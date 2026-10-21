@@ -24,6 +24,22 @@ internal object WebModeTextRemovalCache {
     private data class Entry(val file: File, val mime: String, val bytes: Long)
     private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
     private var usedBytes = 0L
+    /** Per source image: keys of the artwork (soft) bubbles whose lettering the remover really erased. */
+    private val erasedSoft = LinkedHashMap<String, Set<String>>()
+
+    /** Stable id of a bubble by its (rounded) position; the writer looks it up with the same function. */
+    fun bubbleKey(b: WmBubble): String =
+        "${Math.round(b.cx * 1000f)}:${Math.round(b.cy * 1000f)}:${Math.round(b.w * 1000f)}:${Math.round(b.h * 1000f)}"
+
+    @Synchronized
+    fun setErased(sourceUrl: String, keys: Set<String>) {
+        erasedSoft[key(sourceUrl)] = keys
+        while (erasedSoft.size > 200) erasedSoft.remove(erasedSoft.keys.first())
+    }
+
+    @Synchronized
+    fun isErased(sourceUrl: String, bubbleKey: String): Boolean =
+        erasedSoft[key(sourceUrl)]?.contains(bubbleKey) == true
     private var root: File? = null
 
     @Synchronized
@@ -100,6 +116,7 @@ internal object WebModeTextRemovalCache {
     fun clear(context: Context) {
         entries.values.forEach { runCatching { it.file.delete() } }
         entries.clear()
+        erasedSoft.clear()
         usedBytes = 0L
         val dir = root ?: File(context.cacheDir, "wm_text_removed")
         runCatching { if (dir.exists()) dir.deleteRecursively() }

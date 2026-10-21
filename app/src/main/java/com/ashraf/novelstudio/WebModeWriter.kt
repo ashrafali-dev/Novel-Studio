@@ -760,7 +760,8 @@ internal object WebModeWriter {
         val canShowCleanImage = layout.bubbles.withIndex()
             .groupBy { WebModeLogic.normalizeUrl(it.value.src) }
             .mapValues { (_, group) ->
-                group.filter { it.value.sourceText.isNotBlank() && !it.value.soft }
+                group.filter { it.value.sourceText.isNotBlank() &&
+                        (!it.value.soft || WebModeTextRemovalCache.isErased(it.value.src, WebModeTextRemovalCache.bubbleKey(it.value))) }
                     .all { (index, _) -> !translated.getOrNull(index).isNullOrBlank() }
             }
         for ((i, b) in layout.bubbles.withIndex()) {
@@ -772,7 +773,8 @@ internal object WebModeWriter {
                 .put("a", r5(b.angle)).put("f", r5(b.font))
                 .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
                 // Transparent translations are safe only for the flat regions the cleaner can handle.
-                .put("cl", if (!b.soft && canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
+                .put("cl", if ((!b.soft || WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b))) &&
+                    canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
                     WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
