@@ -115,7 +115,7 @@ internal class JapaneseMangaModelManager(context: Context) {
                 }
                 val temporary = File(root, "engine_manifest.part")
                 temporary.writeText(JSONObject().put("ready", true).put("version", VERSION)
-                    .put("runtime", ORT_VERSION).put("license", "PP-OCRv6_manga: Apache-2.0; ONNX Runtime Web: MIT")
+                    .put("runtime", ORT_VERSION).put("license", "PP-OCRv6_manga (Japanese/Chinese): Apache-2.0; PP-OCRv5 Korean recognizer: Apache-2.0; ONNX Runtime Web: MIT")
                     .put("files", files).toString(2))
                 if (!temporary.renameTo(marker)) error("ইনস্টলেশন মার্কার লেখা যায়নি")
                 if (!isInstalled()) error("ইনস্টলেশনের শেষ যাচাই ব্যর্থ")
@@ -168,7 +168,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     }
 
     companion object {
-        const val VERSION = "pp-ocrv6-manga-v0.2"
+        const val VERSION = "pp-ocrv6-multilingual-comic-v1"
         const val ORT_VERSION = "1.23.2"
         private const val HF = "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/main/"
         private const val ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
@@ -178,7 +178,10 @@ internal class JapaneseMangaModelManager(context: Context) {
             Asset("ort-wasm-simd-threaded.mjs", ORT + "ort-wasm-simd-threaded.mjs", 5000, 200000),
             Asset("det/manga_det_v0.2.onnx", HF + "det/manga_det_v0.2.onnx", 500000, 8000000),
             Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 10000000, 30000000),
-            Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 10000, 1000000)
+            Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 10000, 1000000),
+            // Korean uses the comic detector with a script-specific recognition model and dictionary.
+            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 1000000, 20000000),
+            Asset("korean_dict.txt", "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/korean_dict.txt", 10000, 2000000)
         )
     }
 }
