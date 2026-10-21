@@ -12,7 +12,12 @@ import org.json.JSONObject
  * Japanese reading order (vertical columns right-to-left), so nothing downstream has to re-order it.
  */
 internal class JapaneseMangaOcrEngine : OcrEngine {
-    override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
+    // A two-engine ensemble: the Manga-trained detector/recognizer is best for Japanese/Chinese art,
+    // while ML Kit can recover ordinary or faint lines the comic detector misses. Korean uses the same
+    // comic detector with its Hangul recognizer plus the Korean ML Kit model as a second opinion.
+    private val supplementary = MlKitOcrEngine()
+
+    private fun run(bitmap: Bitmap, script: OcrScript, fast: Boolean, region: Boolean = false): OcrResult {
         val out = JapaneseMangaRuntime.recognize(bitmap, script.name)
         val regions = JSONObject(out.json).optJSONArray("regions") ?: return OcrResult(emptyList())
         val k = if (out.scale > 0f) 1f / out.scale else 1f
@@ -33,16 +38,47 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
                 cx = x + w / 2f, cy = y + h / 2f,
                 w = w, h = h, angle = 0f,
                 fontPx = if (font > 0f) font else minOf(w, h),
-                vertical = r.optBoolean("vertical", false)
+                vertical = r.optBoolean("vertical", false),
+                confidence = r.optDouble("recConfidence", 0.0).toFloat().coerceIn(0f, 1f)
             )
             if (!OcrPost.isNoise(block)) blocks.add(block)
         }
-        return OcrResult(blocks)
+
+        // Do not stop at the first useful output: reconcile both recognizers so missed text regions
+        // can be recovered and overlapping readings can be resolved by geometry/text agreement.
+        val second = when {
+            region -> supplementary.recognizeRegion(bitmap, script)
+            fast -> supplementary.recognizeFast(bitmap, script)
+            else -> supplementary.recognize(bitmap, script)
+        }
+        OcrLineFusion.addAll(blocks, second.blocks)
+        val verticalVotes = blocks.count { it.vertical }
+        val verticalReading = script != OcrScript.LATIN && blocks.isNotEmpty() &&
+            verticalVotes > blocks.size * 0.45
+        val ordered = if (verticalReading) {
+            blocks.sortedWith(compareByDescending<OcrBlock> { it.cx }.thenBy { it.cy })
+        } else {
+            blocks.sortedWith(compareBy<OcrBlock> { it.cy }.thenBy { it.cx })
+        }
+        return OcrResult(ordered)
     }
 
-    override fun close() {}
-}
+    override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = false)
 
+    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = true)
+
+    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = false)
+
+    override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
+        run(bitmap, script, fast = false, region = true)
+
+    override fun close() {
+        supplementary.close()
+    }
+}
 /**
  * The engine the scan pipeline actually uses. Japanese, Chinese and Korean pages use the specialized
  * comic detector with the appropriate recognizer when installed; other scripts or model failures use ML Kit,
