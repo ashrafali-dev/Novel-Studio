@@ -77,7 +77,7 @@ class JapaneseMangaEngineActivity : Activity() {
         setupRuntime()
         val firstUrl = intent.getStringExtra(EXTRA_PAGE_URL).orEmpty()
         if (firstUrl.startsWith("https://") || firstUrl.startsWith("http://")) page.loadUrl(firstUrl)
-        else status.text = "প্রথমে NovelStudio-তে একটি মাঙ্গা পেজ খুলে Menu → Japanese Manga Engine নির্বাচন করো।"
+        else status.text = "প্রথমে NovelStudio-তে একটি কমিক পেজ খুলে Menu → Multilingual Comic OCR Engine নির্বাচন করো।"
         controls()
     }
 
@@ -88,7 +88,7 @@ class JapaneseMangaEngineActivity : Activity() {
             setBackgroundColor(0xFF10131C.toInt())
         }
         root.addView(TextView(this).apply {
-            text = "日本語 Manga Engine"
+            text = "Multilingual Comic OCR"
             textSize = 20f
             setTextColor(0xFFF2F4FA.toInt())
             gravity = Gravity.CENTER_VERTICAL
@@ -98,7 +98,7 @@ class JapaneseMangaEngineActivity : Activity() {
             textSize = 12f
             setTextColor(0xFFBEC7D8.toInt())
             setPadding(0, dp(2), 0, dp(7))
-            text = "ঐচ্ছিক মাঙ্গা OCR ইঞ্জিন"
+            text = "ঐচ্ছিক multilingual comic OCR ইঞ্জিন"
         }
         root.addView(status, LinearLayout.LayoutParams(-1, -2))
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -217,8 +217,8 @@ class JapaneseMangaEngineActivity : Activity() {
     private fun confirmInstall() {
         if (manager.isInstalled()) { Toast.makeText(this, "ইঞ্জিন আগেই ইনস্টল আছে", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this)
-            .setTitle("Japanese Manga Engine")
-            .setMessage("আনুমানিক ৩৮ MB মডেল ও OCR runtime ডাউনলোড হবে। সব ফাইল অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে এবং পরে মুছে ফেলা যাবে। PP-OCRv6_manga v0.2 (Apache-2.0), ONNX Runtime Web (MIT)।")
+            .setTitle("Multilingual Comic OCR Engine")
+            .setMessage("আনুমানিক ৪৫ MB মডেল ও OCR runtime ডাউনলোড হবে। এতে manga-trained Japanese/Chinese OCR এবং আলাদা Korean recognizer থাকবে। সব ফাইল অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে এবং পরে মুছে ফেলা যাবে। PP-OCRv6_manga ও PP-OCRv5 Korean (Apache-2.0), ONNX Runtime Web (MIT)।")
             .setNegativeButton("পরে", null)
             .setPositiveButton("ডাউনলোড") { _, _ -> install() }
             .show()
@@ -238,7 +238,7 @@ class JapaneseMangaEngineActivity : Activity() {
             when (result) {
                 JapaneseMangaModelManager.Result.Success -> {
                     JapaneseMangaRuntime.invalidate()
-                    resultView.text = "✅ Japanese Manga Engine ইনস্টল হয়েছে। এখন থেকে Realtime/Scan মোডে জাপানিজ মাঙ্গায় এই মডেল নিজে থেকেই ব্যবহার হবে; অন্য ভাষায় আগের OCR-ই চলবে।"
+                    resultView.text = "✅ Multilingual Comic OCR ইনস্টল হয়েছে। Realtime/Scan মোডে Japanese, Chinese ও Korean-এর জন্য comic detector ব্যবহার হবে; Korean-এ আলাদা recognizer চলবে।"
                     loadRuntime()
                     status.text = "ইঞ্জিন ইনস্টল সম্পন্ন। OCR runtime প্রস্তুত হচ্ছে…"
                 }
