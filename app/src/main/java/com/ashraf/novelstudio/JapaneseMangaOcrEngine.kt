@@ -7,9 +7,9 @@ import com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime
 import org.json.JSONObject
 
 /**
- * Adapter between the downloaded manga model (see [JapaneseMangaRuntime]) and the app's [OcrEngine]
- * surface. Every region the model returns is one speech-bubble-sized block whose text is already in
- * Japanese reading order (vertical columns right-to-left), so nothing downstream has to re-order it.
+ * Adapts the manga-trained detector/recognizer to [OcrEngine] and ensembles it with ML Kit.
+ * Both recognizers use the same screenshot coordinate space; [OcrLineFusion] reconciles overlapping
+ * readings and lets the second recognizer contribute lines the comic detector missed.
  */
 internal class JapaneseMangaOcrEngine : OcrEngine {
     // A two-engine ensemble: the Manga-trained detector/recognizer is best for Japanese/Chinese art,
