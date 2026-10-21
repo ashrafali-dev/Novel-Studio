@@ -22,7 +22,7 @@ This optional engine is used by NovelStudio's OCR/Webtoon translation pipeline w
 - Project: https://github.com/microsoft/onnxruntime
 - Package: https://www.npmjs.com/package/onnxruntime-web/v/1.23.2
 - License: MIT
-- Files used: ort.wasm.min.js, ort-wasm-simd-threaded.mjs, ort-wasm-simd-threaded.wasm.
+- Files used: ort.wasm.min.js, ort-wasm-simd.mjs, ort-wasm-simd.wasm (single-thread SIMD build for WebView compatibility).
 
 ## Limitations
 The comic detector and recognizer are trained primarily on Japanese/Chinese comics. Korean uses a general Korean recognizer paired with the comic detector, so stylized Hangul SFX still needs testing and eventual fine-tuning. The detector is preprocessed according to the model example and now uses NovelStudio's OpenCV-backed DBPostProcess for contour scoring, polygon expansion (unclip), rotated rectangles and coordinate scaling. It also applies NovelStudio's multiline split heuristic. The separate upstream furigana filter is not yet ported, and end-to-end Japanese/Chinese/Korean CER on NovelStudio has not been measured; upstream CER benchmarks must not be read as NovelStudio accuracy. The engine can still miss tiny furigana, rotated effect lettering, blurred panels and unusual fonts.
