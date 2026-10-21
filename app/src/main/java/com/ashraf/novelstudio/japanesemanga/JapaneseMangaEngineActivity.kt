@@ -36,7 +36,7 @@ import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
 
-/** Optional, isolated test screen. It does not call or modify the app's existing OCR/Webtoon pipeline. */
+/** Model-management and test screen for the multilingual comic OCR engine used by live scans when selected. */
 class JapaneseMangaEngineActivity : Activity() {
     private lateinit var manager: JapaneseMangaModelManager
     private lateinit var assetLoader: JapaneseMangaAssetLoader
@@ -237,7 +237,7 @@ class JapaneseMangaEngineActivity : Activity() {
         if (manager.isInstalled()) { Toast.makeText(this, "ইঞ্জিন আগেই ইনস্টল আছে", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this)
             .setTitle("Multilingual Comic OCR Engine")
-            .setMessage("আনুমানিক ৪৫ MB মডেল ও OCR runtime ডাউনলোড হবে। এতে manga-trained Japanese/Chinese OCR এবং আলাদা Korean recognizer থাকবে। সব ফাইল অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে এবং পরে মুছে ফেলা যাবে। PP-OCRv6_manga ও PP-OCRv5 Korean (Apache-2.0), ONNX Runtime Web (MIT)।")
+            .setMessage("আনুমানিক ৫২ MB মডেল ও OCR runtime ডাউনলোড হবে। এতে manga-trained Japanese/Chinese OCR এবং Korean recognizer থাকবে। ডাউনলোডের পর OCR Engine মেনু থেকে Multilingual Comic OCR নির্বাচন করলে Realtime/Scan-এ ব্যবহার হবে। সব ফাইল অ্যাপের ব্যক্তিগত স্টোরেজে থাকবে। মডেল Apache-2.0, ONNX Runtime Web MIT।")
             .setNegativeButton("পরে", null)
             .setPositiveButton("ডাউনলোড") { _, _ -> install() }
             .show()
@@ -257,7 +257,7 @@ class JapaneseMangaEngineActivity : Activity() {
             when (result) {
                 JapaneseMangaModelManager.Result.Success -> {
                     JapaneseMangaRuntime.invalidate()
-                    resultView.text = "✅ Multilingual Comic OCR ইনস্টল হয়েছে। Realtime/Scan মোডে Japanese, Chinese ও Korean-এর জন্য comic detector ব্যবহার হবে; Korean-এ আলাদা recognizer চলবে।"
+                    resultView.text = "✅ Multilingual Comic OCR ইনস্টল হয়েছে। OCR Engine মেনু থেকে এটি নির্বাচন করো। Japanese/Chinese-এর জন্য manga recognizer, Korean-এর জন্য Hangul recognizer এবং তিন ভাষার জন্য ML Kit ensemble চলবে।"
                     loadRuntime()
                     status.text = "ইঞ্জিন ইনস্টল সম্পন্ন। OCR runtime প্রস্তুত হচ্ছে…"
                 }
