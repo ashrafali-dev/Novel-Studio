@@ -95,6 +95,9 @@ internal object JapaneseMangaRuntime {
     fun invalidate() {
         installedCheckedAt = 0L
         disabledUntil = 0L
+        // The engine-management screen uses a separate manager instance over the same app-private
+        // directory. Invalidate this manager's integrity cache too after that screen installs/deletes files.
+        manager?.invalidateInstalledCache()
     }
 
     /** Frees the WebView (e.g. before the engine files are deleted). Safe to call from any thread. */
