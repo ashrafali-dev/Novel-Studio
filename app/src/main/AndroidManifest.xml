@@ -4,6 +4,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Hub: lets the app see whether the Webtoon / Novel apps are installed -->
+    <queries>
+        <package android:name="app.taihon" />
+        <package android:name="app.taihon.foss" />
+        <package android:name="app.taihon.dev" />
+        <package android:name="app.taihon.debug" />
+        <package android:name="com.rajarsheechatterjee.LNReader" />
+    </queries>
+
     <application
         android:label="Novel Studio"
         android:icon="@mipmap/novel_studio_icon"
@@ -26,6 +35,13 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- Hub: the Novel app (lnreader) opens novels here: novelstudio://open?url=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="novelstudio" android:host="open" />
             </intent-filter>
         </activity>
         <activity
