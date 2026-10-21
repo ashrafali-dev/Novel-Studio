@@ -294,7 +294,7 @@ internal class WebModeExtractor(
                         val p = arr.optJSONObject(i) ?: continue
                         val s = p.optString("s")
                         if (s.isBlank()) continue
-                        val nk = WebModeLogic.normalizeUrl(s)
+                        val nk = aheadCacheKey(s, lang, pageUrl)
                         if (aheadDone.contains(nk) || aheadBlank.contains(nk)) continue
                         refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
                     }
@@ -326,7 +326,7 @@ internal class WebModeExtractor(
             progress("Read-ahead OCR: preparing ${refs.size} upcoming panels", 0)
             for ((index, p) in refs.withIndex()) {
                 if (!alive()) return
-                val key = WebModeLogic.normalizeUrl(p.src)
+                val key = aheadCacheKey(p.src, lang, pageUrl)
                 // Deliver cached OCR too. A previous successful OCR must not be invisible to the translation cache.
                 val cached = synchronized(aheadCache) { aheadCache[key] }
                 if (cached != null) {
@@ -453,6 +453,21 @@ internal class WebModeExtractor(
             }
             if (pinned == null) return ScriptState(WebModeLogic.pickScript(lang, url))
             return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
+        }
+
+        /**
+         * Read-ahead OCR is cached globally by source image. Include the selected OCR engine, resolved
+         * source script and Manga-model revision so changing settings or replacing the pack cannot reuse
+         * text produced by the previous model.
+         */
+        private fun aheadCacheKey(src: String, lang: String, pageUrl: String): String {
+            val selectedEngine = Prefs.get(wv.context, "ocrEngine", "mlkit")
+            val selectedScript = newScript(lang, pageUrl).current.name
+            val modelRevision = if (selectedEngine == "manga")
+                com.ashraf.novelstudio.japanesemanga.JapaneseMangaModelManager.VERSION
+            else ""
+            val normalizedUrl = WebModeLogic.normalizeUrl(src).ifBlank { src }
+            return "$selectedEngine|$selectedScript|$modelRevision|$normalizedUrl"
         }
 
         private fun scanHost(): String = try {
@@ -624,7 +639,7 @@ internal class WebModeExtractor(
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
                 if (req.visibleOnly && req.forceOcrSrc.isNullOrBlank()) {
                     // Real-time: this panel may already have been read ahead (download + full OCR done).
-                    val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
+                    val hit = synchronized(aheadCache) { aheadCache[aheadCacheKey(p.src, meta.lang, meta.url)] }
                     if (hit != null) {
                         diag.downloaded++; diag.decoded++
                         val ct = hit.text
