@@ -171,7 +171,7 @@ internal class RoutingOcrEngine : OcrEngine {
         if (mode == "mlkit") return mlKit
         // The custom legacy ONNX recognizer is not reliable for upright vertical CJK lettering and
         // runs each detected box separately. Keep Korean/Japanese real-time scans on ML Kit instead.
-        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE || script == OcrScript.CHINESE)) return mlKit
+        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) return mlKit
         if (mode == "manga") {
             val supported = script == OcrScript.JAPANESE ||
                 script == OcrScript.CHINESE || script == OcrScript.KOREAN
