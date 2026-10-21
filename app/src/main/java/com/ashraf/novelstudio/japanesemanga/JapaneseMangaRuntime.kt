@@ -261,5 +261,10 @@ internal object JapaneseMangaRuntime {
         @JavascriptInterface fun onRuntimeError(message: String) { JapaneseMangaRuntime.signalRuntimeError(message) }
         @JavascriptInterface fun onOcrResult(id: String, json: String) { JapaneseMangaRuntime.signalResult(id, json) }
         @JavascriptInterface fun onOcrError(id: String, message: String) { JapaneseMangaRuntime.signalOcrError(id, message) }
+        @JavascriptInterface fun postProcessDetectorMap(payload: String): String {
+            val context = JapaneseMangaRuntime.appContext
+                ?: return org.json.JSONObject().put("error", "OCR runtime context unavailable").toString()
+            return MangaDetectorPostProcessor.process(context, payload)
+        }
     }
 }
