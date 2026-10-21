@@ -28,7 +28,7 @@ internal class JapaneseMangaModelManager(context: Context) {
         object Cancelled : Result()
         data class Failure(val message: String) : Result()
     }
-    private data class Asset(val path: String, val url: String, val min: Long, val max: Long)
+    private data class Asset(val path: String, val url: String, val min: Long, val max: Long, val sha256: String? = null)
 
     fun isDownloading() = busy
     fun hasFiles(): Boolean = root.exists() && (root.list()?.isNotEmpty() == true)
@@ -38,8 +38,17 @@ internal class JapaneseMangaModelManager(context: Context) {
         if (!marker.isFile) return false
         return try {
             val meta = JSONObject(marker.readText())
+            val installedFiles = meta.optJSONObject("files") ?: return false
             meta.optString("version") == VERSION && meta.optBoolean("ready") &&
-                SPECS.all { s -> safeFile(s.path)?.let { it.isFile && it.length() in s.min..s.max } == true }
+                SPECS.all { s ->
+                    val file = safeFile(s.path)
+                    val entry = installedFiles.optJSONObject(s.path)
+                    file?.let {
+                        it.isFile && it.length() in s.min..s.max &&
+                            entry != null && entry.optLong("bytes", -1L) == it.length() &&
+                            (s.sha256 == null || entry.optString("sha256") == s.sha256)
+                    } == true
+                }
         } catch (_: Exception) { false }
     }
 
@@ -64,7 +73,7 @@ internal class JapaneseMangaModelManager(context: Context) {
                 SPECS.forEachIndexed { i, spec ->
                     checkCancel()
                     val target = safeFile(spec.path) ?: error("অবৈধ ফাইল পাথ")
-                    if (target.isFile && target.length() in spec.min..spec.max) {
+                    if (target.isFile && validAsset(target, spec)) {
                         onProgress(Progress(i + 1, SPECS.size, spec.path, target.length(), target.length()))
                     } else {
                         target.parentFile?.let { if (!it.exists() && !it.mkdirs()) error("ফোল্ডার তৈরি করা যায়নি") }
@@ -102,7 +111,7 @@ internal class JapaneseMangaModelManager(context: Context) {
                             connection.disconnect()
                         }
                         checkCancel()
-                        if (part.length() !in spec.min..spec.max) error("ফাইল যাচাই ব্যর্থ · " + spec.path)
+                        if (!validAsset(part, spec)) error("মডেল/ডিকশনারি যাচাই ব্যর্থ · " + spec.path)
                         if (!part.renameTo(target)) error("ফাইল সংরক্ষণ ব্যর্থ · " + spec.path)
                     }
                 }
@@ -110,7 +119,7 @@ internal class JapaneseMangaModelManager(context: Context) {
                 val files = JSONObject()
                 SPECS.forEach { spec ->
                     val f = safeFile(spec.path) ?: error("অবৈধ ফাইল পাথ")
-                    if (!f.isFile || f.length() !in spec.min..spec.max) error("ফাইল যাচাই ব্যর্থ · " + spec.path)
+                    if (!f.isFile || !validAsset(f, spec)) error("মডেল/ডিকশনারি যাচাই ব্যর্থ · " + spec.path)
                     files.put(spec.path, JSONObject().put("bytes", f.length()).put("sha256", sha256(f)))
                 }
                 val temporary = File(root, "engine_manifest.part")
@@ -158,6 +167,12 @@ internal class JapaneseMangaModelManager(context: Context) {
     private fun checkCancel() { if (cancelled.get() || Thread.currentThread().isInterrupted) throw CancelledException() }
     private class CancelledException : Exception()
 
+    private fun validAsset(file: File, asset: Asset): Boolean {
+        if (!file.isFile || file.length() !in asset.min..asset.max) return false
+        val expected = asset.sha256 ?: return true
+        return runCatching { sha256(file).equals(expected, ignoreCase = true) }.getOrDefault(false)
+    }
+
     private fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         FileInputStream(file).use { stream ->
@@ -180,8 +195,8 @@ internal class JapaneseMangaModelManager(context: Context) {
             Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 10000000, 30000000),
             Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 10000, 1000000),
             // Korean uses the comic detector with a script-specific recognition model and dictionary.
-            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 1000000, 40000000),
-            Asset("korean_dict.txt", "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/korean_dict.txt", 10000, 2000000)
+            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 1000000, 20000000, "92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08"),
+            Asset("korean_dict.txt", "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/49043b4cb8eaf8388a6399394ebdc014851c217c/paddle/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile/ppocrv5_korean_dict.txt", 47000, 50000, "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7")
         )
     }
 }
