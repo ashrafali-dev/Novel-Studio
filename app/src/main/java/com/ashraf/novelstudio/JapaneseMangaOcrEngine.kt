@@ -128,6 +128,7 @@ internal object OcrEngineStatus {
     }
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
+        used.startsWith("cancelled(interrupted") -> "OCR cancelled"
         used.startsWith("mlkit(comic-model-unavailable") -> "ML Kit (Comic OCR model unavailable)"
         used.startsWith("mlkit(comic-script-unsupported") -> "ML Kit (Comic OCR supports Japanese/Chinese/Korean)"
         used.startsWith("mlkit(paddle-model-unavailable") -> "ML Kit (Paddle model unavailable)"
@@ -249,6 +250,14 @@ internal class RoutingOcrEngine : OcrEngine {
                 val r = routeInner(bitmap, script, run) { engine, fb -> used = engine; fellBack = fb }
                 r
             }
+        } catch (e: InterruptedException) {
+            // Read-ahead workers are intentionally interrupted when the page/job is cancelled. OcrGate
+            // waits interruptibly while yielding to a foreground scan; treat that as cancellation, not
+            // a Manga OCR failure and do not launch a fallback recognizer on a cancelled worker.
+            Thread.currentThread().interrupt()
+            used = "cancelled(interrupted)"
+            Log.d("NovelStudioOCR", "OCR job cancelled while waiting for the inference gate")
+            OcrResult(emptyList())
         } finally {
             OcrEngineStatus.label = OcrEngineStatus.describe(selectedMode, used, fellBack)
             // Diagnostic line: ids/timings only, never the recognised text.
