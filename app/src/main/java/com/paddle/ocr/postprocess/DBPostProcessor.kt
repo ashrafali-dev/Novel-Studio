@@ -106,16 +106,18 @@ object DBPostProcessor {
                 val rectPoints = Array(4) { Point() }
                 rect.points(rectPoints)
                 val orderedPoints = QuadGeometry.orderMinAreaRectPoints(rectPoints)
-                val score = if (normalizedScoreMode == "slow") {
-                    computeBoxScore(rawProb, contour.toList())
-                } else {
-                    computeBoxScore(rawProb, orderedPoints)
+                // splitMultiLine creates a pixel cloud in row-major order, not a polygon boundary.
+                // Polygon scoring that cloud as if it were a contour traces a zig-zag and gives bad scores.
+                val isSplitContour = extraContours.any { it === contour }
+                val score = when {
+                    unclipContour && isSplitContour -> computePointCloudScore(pred, pW, pH, contour.toList())
+                    normalizedScoreMode == "slow" -> computeBoxScore(rawProb, contour.toList())
+                    else -> computeBoxScore(rawProb, orderedPoints)
                 }
                 if (score < boxThresh) continue
 
                 // PP-OCR's DB post-process expands the source contour before the final min-area rectangle.
                 // The legacy Paddle path keeps its previous rectangle expansion unless explicitly opted in.
-                val isSplitContour = extraContours.any { it === contour }
                 val unclipSource = when {
                     !unclipContour -> orderedPoints
                     isSplitContour -> convexHullPoints(contour)
@@ -287,6 +289,23 @@ object DBPostProcessor {
             MathUtils.roundHalfToEven(point.x * scaleX).coerceIn(0, originalW).toFloat(),
             MathUtils.roundHalfToEven(point.y * scaleY).coerceIn(0, originalH).toFloat(),
         )
+    }
+
+    private fun computePointCloudScore(pred: FloatArray, pW: Int, pH: Int, points: List<Point>): Float {
+        if (points.isEmpty() || pW <= 0 || pH <= 0) return 0f
+        var sum = 0.0
+        var count = 0
+        for (p in points) {
+            val x = p.x.toInt()
+            val y = p.y.toInt()
+            if (x !in 0 until pW || y !in 0 until pH) continue
+            val index = y * pW + x
+            if (index in pred.indices) {
+                sum += pred[index].toDouble()
+                count++
+            }
+        }
+        return if (count == 0) 0f else (sum / count).toFloat()
     }
 
     private fun computeBoxScore(probMap: Mat, points: List<Point>): Float {
