@@ -113,6 +113,10 @@ internal object OcrEngineStatus {
     }
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
+        used.startsWith("mlkit(comic-model-unavailable") -> "ML Kit (Comic OCR model unavailable)"
+        used.startsWith("mlkit(comic-script-unsupported") -> "ML Kit (Comic OCR supports Japanese/Chinese/Korean)"
+        used.startsWith("mlkit(paddle-model-unavailable") -> "ML Kit (Paddle model unavailable)"
+        used.startsWith("mlkit(legacy-script-unsupported") -> "ML Kit (legacy OCR doesn't support this script)"
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
         used == "paddle_korean" -> "Paddle Korean v5"
         used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
@@ -167,7 +171,7 @@ internal class RoutingOcrEngine : OcrEngine {
         if (mode == "mlkit") return mlKit
         // The custom legacy ONNX recognizer is not reliable for upright vertical CJK lettering and
         // runs each detected box separately. Keep Korean/Japanese real-time scans on ML Kit instead.
-        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) return mlKit
+        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE || script == OcrScript.CHINESE)) return mlKit
         if (mode == "manga") {
             val supported = script == OcrScript.JAPANESE ||
                 script == OcrScript.CHINESE || script == OcrScript.KOREAN
@@ -243,7 +247,21 @@ internal class RoutingOcrEngine : OcrEngine {
         } catch (_: OutOfMemoryError) {
             mlKit
         }
-        if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit) }
+        if (chosen === mlKit) {
+            val reason = when {
+                selectedMode == "manga" && script !in setOf(OcrScript.JAPANESE, OcrScript.CHINESE, OcrScript.KOREAN) ->
+                    "mlkit(comic-script-unsupported)"
+                selectedMode == "manga" && !JapaneseMangaRuntime.isAvailable() ->
+                    "mlkit(comic-model-unavailable)"
+                selectedMode == "paddle_small" || selectedMode == "paddle_heavy" ->
+                    "mlkit(paddle-model-unavailable)"
+                selectedMode == "rapid_onnx" && script != OcrScript.LATIN ->
+                    "mlkit(legacy-script-unsupported)"
+                else -> "mlkit"
+            }
+            report(reason, selectedMode != "mlkit")
+            return run(mlKit)
+        }
 
         return try {
             val primary = run(chosen)
