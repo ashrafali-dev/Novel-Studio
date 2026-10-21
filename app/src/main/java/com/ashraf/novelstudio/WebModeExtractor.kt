@@ -1713,7 +1713,8 @@ internal class WebModeExtractor(
             val core = recognizeCore(bmp, st, fastMode)
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
             // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
-            if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
+            if (fastMode || (engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true ||
+                !Prefs.bool(wv.context, "ocrRescan", true)) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
             if (st.current == OcrScript.JAPANESE &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
