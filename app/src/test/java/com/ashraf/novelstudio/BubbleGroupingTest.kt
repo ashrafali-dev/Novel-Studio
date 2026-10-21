@@ -116,4 +116,16 @@ class BubbleGroupingTest {
         assertEquals(blocks.size, all.size)
         assertEquals(blocks.size, all.toSet().size)
     }
+
+    @Test fun shortVerticalJapaneseTextIsNotFilteredAsTallHorizontalNoise() {
+        val vertical = OcrBlock("はい", top = 0, left = 0, cx = 10f, cy = 40f,
+            w = 10f, h = 80f, vertical = true)
+        assertFalse(OcrPost.isNoise(vertical))
+    }
+
+    @Test fun tallUnmarkedNoiseIsStillFiltered() {
+        val noise = OcrBlock("AB", top = 0, left = 0, cx = 10f, cy = 40f,
+            w = 10f, h = 80f, vertical = false)
+        assertTrue(OcrPost.isNoise(noise))
+    }
 }
