@@ -451,8 +451,32 @@ internal class WebModeExtractor(
                 "zh" -> OcrScript.CHINESE
                 else -> null
             }
-            if (pinned == null) return ScriptState(WebModeLogic.pickScript(lang, url))
+            if (pinned == null) {
+                val guessed = WebModeLogic.pickScript(lang, url)
+                // A generic image-hosting URL often has no page language metadata. When Comic OCR is
+                // selected, don't silently send such pages to Latin-only ML Kit; use the manga recognizer
+                // as the first guess and try the Korean recognizer first if it yields little useful text.
+                val selectedEngine = Prefs.get(wv.context, "ocrEngine", "mlkit")
+                val autoScript = if (selectedEngine == "manga" && guessed == OcrScript.LATIN)
+                    OcrScript.JAPANESE else guessed
+                return ScriptState(autoScript)
+            }
             return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
+        }
+
+        private fun fallbackScripts(first: OcrScript): List<OcrScript> {
+            if (Prefs.get(wv.context, "ocrEngine", "mlkit") != "manga") {
+                return WebModeLogic.fallbackScripts(first)
+            }
+            // Japanese and Chinese share the Manga recognizer, while Korean has a separate Hangul
+            // recognizer. Try Korean before the other script when a Japanese/Chinese guess reads little;
+            // otherwise real-time fallback spends its only alternate pass on the same weights.
+            return when (first) {
+                OcrScript.JAPANESE -> listOf(OcrScript.KOREAN, OcrScript.LATIN, OcrScript.CHINESE)
+                OcrScript.CHINESE -> listOf(OcrScript.KOREAN, OcrScript.LATIN, OcrScript.JAPANESE)
+                OcrScript.KOREAN -> listOf(OcrScript.JAPANESE, OcrScript.CHINESE, OcrScript.LATIN)
+                OcrScript.LATIN -> listOf(OcrScript.JAPANESE, OcrScript.KOREAN, OcrScript.CHINESE)
+            }.filter { it != first }
         }
 
         /**
@@ -1921,7 +1945,7 @@ internal class WebModeExtractor(
                 if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN &&
                     !st.fastFallbackTried) {
                     st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
+                    val script = fallbackScripts(st.current).firstOrNull()
                     if (script != null) {
                         val alternate = try { engine.recognizeFast(bmp, script) }
                             catch (_: Exception) { OcrResult(emptyList()) }
@@ -1939,7 +1963,7 @@ internal class WebModeExtractor(
                 // At most one alternate recognizer for an entirely unreadable realtime scan.
                 if (!st.fastFallbackTried) {
                     st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
+                    val script = fallbackScripts(st.current).firstOrNull()
                     if (script != null) {
                         val alternate = try { engine.recognizeFast(bmp, script) }
                             catch (_: Exception) { OcrResult(emptyList()) }
@@ -1955,7 +1979,7 @@ internal class WebModeExtractor(
             }
             if (!st.locked && st.fallbackBudget > 0) {
                 st.fallbackBudget--
-                for (script in WebModeLogic.fallbackScripts(st.current)) {
+                for (script in fallbackScripts(st.current)) {
                     val alternate = try { engine.recognize(bmp, script) }
                         catch (_: Exception) { OcrResult(emptyList()) }
                     if (alternate.text.count { it.isLetterOrDigit() } >= (if (st.current == OcrScript.LATIN) 10 else 2)) {
