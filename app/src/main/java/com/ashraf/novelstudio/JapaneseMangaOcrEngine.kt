@@ -108,6 +108,10 @@ internal class RoutingOcrEngine : OcrEngine {
         appContext = context.applicationContext
         OcrModels.init(context)
         PaddleOcrModels.init(context)
+        // Initialize the installed comic-model manifest on every app process start; the Activity may
+        // have been closed in a previous process, so relying on it to initialize the runtime breaks
+        // automatic OCR after restarting NovelStudio.
+        JapaneseMangaRuntime.init(context)
         val requested = Prefs.get(context, "ocrEngine", "mlkit")
         // Only record the new choice. The old engine is released by active() INSIDE OcrGate, i.e. never while an
         // inference is running (closing here, outside the gate, could free sessions under a running scan; and
