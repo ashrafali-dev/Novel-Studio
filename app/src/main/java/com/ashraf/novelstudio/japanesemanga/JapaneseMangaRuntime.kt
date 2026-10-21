@@ -66,6 +66,7 @@ internal object JapaneseMangaRuntime {
     @Volatile private var installedCache = false
     @Volatile private var installedCheckedAt = 0L
     @Volatile private var disabledUntil = 0L
+    @Volatile private var releaseRequested = false
 
     @Synchronized
     fun init(context: Context) {
@@ -81,6 +82,7 @@ internal object JapaneseMangaRuntime {
 
     /** True when the engine files are installed and the runtime has not just failed. */
     fun isAvailable(): Boolean {
+        if (releaseRequested) return false
         val m = manager ?: return false
         val now = SystemClock.elapsedRealtime()
         if (now < disabledUntil) return false
@@ -93,6 +95,7 @@ internal object JapaneseMangaRuntime {
 
     /** Call after install/delete so the next check re-reads the files. */
     fun invalidate() {
+        releaseRequested = false
         installedCheckedAt = 0L
         disabledUntil = 0L
         // The engine-management screen uses a separate manager instance over the same app-private
@@ -100,12 +103,35 @@ internal object JapaneseMangaRuntime {
         manager?.invalidateInstalledCache()
     }
 
-    /** Frees the WebView (e.g. before the engine files are deleted). Safe to call from any thread. */
+    /** Frees the hidden WebView without blocking the caller. Used when leaving the management screen. */
     fun release() {
         invalidate()
         main.post {
             if (ocrLock.tryLock()) {
                 try { destroyViewOnMain() } finally { ocrLock.unlock() }
+            }
+        }
+    }
+
+    /**
+     * Prevent new Manga OCR jobs, wait for the active inference to finish, and destroy its WebView.
+     * Must be called from a worker thread. Model files must not be deleted before this completes,
+     * because an in-flight ONNX session may still be reading the temporary PNG or model directory.
+     */
+    fun releaseAndWait() {
+        check(Looper.myLooper() != Looper.getMainLooper()) {
+            "releaseAndWait must run off the main thread"
+        }
+        releaseRequested = true
+        installedCheckedAt = 0L
+        manager?.invalidateInstalledCache()
+        ocrLock.withLock {
+            val destroyed = CountDownLatch(1)
+            main.post {
+                try { destroyViewOnMain() } finally { destroyed.countDown() }
+            }
+            if (!destroyed.await(10, TimeUnit.SECONDS)) {
+                throw IOException("Timed out while closing the multilingual OCR WebView")
             }
         }
     }
@@ -118,6 +144,7 @@ internal object JapaneseMangaRuntime {
     fun recognize(bitmap: Bitmap, script: String = "JAPANESE"): Output {
         val m = manager ?: throw IOException("manga runtime not initialised")
         return ocrLock.withLock {
+            if (releaseRequested) throw IOException("multilingual OCR engine is being released")
             inFlight++
             try {
                 lastUse = SystemClock.elapsedRealtime()
