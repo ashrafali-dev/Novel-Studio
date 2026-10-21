@@ -265,11 +265,17 @@
       const image=new Image();image.decoding='async';image.src=url;
       await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('Local panel image could not load'));});
       const boxes=await detect(image),regions=[];
+      let lastRecognitionError='';
       for(const b of boxes){
         let reading=null;
-        try{reading=await recognize(image,b,script);}catch(_){}
+        try{reading=await recognize(image,b,script);}
+        catch(e){lastRecognitionError=e&&e.message?e.message:String(e);}
         if(reading&&reading.text)regions.push({order:0,text:reading.text,recConfidence:reading.confidence,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
       }
+      // Do not silently report an empty success when every crop failed because the ONNX output and dictionary
+      // do not agree (for example, after a corrupt/incompatible model download).
+      if(boxes.length>0&&regions.length===0&&lastRecognitionError)
+        throw new Error('All detected regions failed recognition: '+lastRecognitionError);
       const vertical=regions.filter(r=>r.vertical).length>regions.length*0.45;
       regions.sort((a,b)=>{
         if(vertical){const dx=b.x-a.x;return Math.abs(dx)>Math.max(a.w,b.w)*0.55?dx:a.y-b.y;}
