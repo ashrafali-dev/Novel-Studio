@@ -184,6 +184,7 @@ class MainActivity : Activity() {
         }
         val expectedToken = chapterAfterBubbleJobNavToken
         val expectedActive = activeBubbleJobChapter
+        scanRegionChapter = null
         rememberChapterAfterBubbleJob(null)
         // An SPA can replace a chapter without changing the page URL. Restore only if this exact
         // temporary bubble chapter is still active, not merely because the URL stayed the same.
@@ -229,8 +230,8 @@ class MainActivity : Activity() {
         src: String, x: Float, y: Float, w: Float, h: Float,
         fromReOcr: Boolean = false, onFinished: (() -> Unit)? = null
     ) {
-        if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
-            toast("🔎 Force OCR needs Web Mode + Real-time translation enabled")
+        if (!webModeOn()) {
+            toast("🔎 Area re-scan needs Scanning or Real-time mode")
             return
         }
         if (!fromReOcr && (webModeHandle != null || running != null || queue.isNotEmpty())) {
@@ -310,6 +311,8 @@ class MainActivity : Activity() {
                                 deepSeekVisibleSignature = ""
                                 toast("🔎 OCR refreshed · sending ${selected.size} bubble(s) to translate…")
                                 rememberChapterAfterBubbleJob(lastChapter?.takeIf { cleanUrl(it.url) == cleanUrl(chapter.url) }, chapter)
+                                // Scanning mode: translate just this area and merge it into the bubbles already placed.
+                                scanRegionChapter = if (DeepSeekRealtimeTranslation.isEnabled(this)) null else chapter
                                 handleChapter(chapter, useSavedTranslation = false)
                             }
                         }
@@ -331,10 +334,10 @@ class MainActivity : Activity() {
      */
     private fun reOcrVisiblePanels() {
         if (!DeepSeekRealtimeTranslation.isEnabled(this) || !webModeOn()) {
-            toast("⟳ এই বাটন Real-time মোডে কাজ করে")
+            toast("⟳ This button works in Real-time mode")
             return
         }
-        if (reOcrBusy) { toast("⟳ আগের OCR এখনো চলছে"); return }
+        if (reOcrBusy) { toast("⟳ The previous OCR is still running"); return }
         val pageUrl = novelWv.url.orEmpty()
         if (!pageUrl.startsWith("http", ignoreCase = true)) return
         reOcrBusy = true
@@ -342,7 +345,7 @@ class MainActivity : Activity() {
         rtPausedForReOcr = true
         aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
         aheadOcrStage = ""; aheadOcrPct = -1
-        toast("⟳ এই স্ক্রিনের প্যানেল আবার OCR হচ্ছে — বাকি কাজ থেমে আছে")
+        toast("⟳ Re-reading the panels on this screen — other work is paused")
 
         fun finish(msg: String?) {
             if (run != reOcrRun) return
@@ -360,11 +363,11 @@ class MainActivity : Activity() {
                 interruptRealtimeAheadForVisiblePanel()
             }
             if (webModeHandle == null && running == null && queue.isEmpty()) { block(); return }
-            if (attempt >= 300) { finish("⚠️ চ্যাটবট ব্যস্ত ছিল, আবার চেষ্টা কর"); return }
+            if (attempt >= 300) { finish("⚠️ The chatbot was busy, please try again"); return }
             handler.postDelayed({ whenIdle(attempt + 1, block) }, 400L)
         }
         // Safety net: background work must never stay paused for good.
-        handler.postDelayed({ if (run == reOcrRun && reOcrBusy) finish("⟳ থেমে থাকা কাজ আবার চালু") }, 240_000L)
+        handler.postDelayed({ if (run == reOcrRun && reOcrBusy) finish("⟳ Paused work resumed") }, 240_000L)
 
         val js = "(function(){var vh=window.innerHeight||0,vw=window.innerWidth||0,out=[],ims=document.images;" +
             "for(var i=0;i<ims.length;i++){var im=ims[i],r=im.getBoundingClientRect();" +
@@ -381,10 +384,10 @@ class MainActivity : Activity() {
                 val arr = JSONArray(decode(raw))
                 for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let { srcs.add(it) }
             } catch (_: Exception) { }
-            if (srcs.isEmpty()) { finish("⚠️ স্ক্রিনে কোনো প্যানেল পাওয়া যায়নি"); return@evaluateJavascript }
+            if (srcs.isEmpty()) { finish("⚠️ No panels found on the screen"); return@evaluateJavascript }
             fun step(i: Int) {
                 whenIdle(0) {
-                    if (i >= srcs.size) { finish("✅ OCR শেষ — বাকি কাজ আবার চলছে"); return@whenIdle }
+                    if (i >= srcs.size) { finish("✅ OCR finished — other work is running again"); return@whenIdle }
                     requestForceOcrArea(srcs[i], 0f, 0f, 1f, 1f, fromReOcr = true) {
                         // OCR is done; its translation (if any text was found) is now with the chatbot.
                         handler.postDelayed({ step(i + 1) }, 700L)
@@ -393,6 +396,241 @@ class MainActivity : Activity() {
             }
             step(0)
         }
+    }
+
+    // ------------------------------------------------------------------ re-scan one area (6-dot frame)
+
+    private fun showRescanSelector() {
+        if (!webModeOn()) {
+            toast("🔎 Open a comic in Scanning or Real-time mode first")
+            return
+        }
+        if (rescanOverlay != null) return
+        if (reOcrBusy) { toast("⟳ The previous OCR is still running"); return }
+        val host = reOcrBtn?.parent as? FrameLayout ?: return
+        // Everything pauses while the frame is on screen: no read-ahead OCR, no read-ahead translation.
+        rtPausedForReOcr = true
+        aheadOcrHandle?.cancel(); aheadOcrHandle = null; aheadOcrSeq++
+        aheadOcrStage = ""; aheadOcrPct = -1
+        val sel = RescanSelector(this, UiTheme.accentA, { fl, ft, fr, fb ->
+            val ov = rescanOverlay
+            if (ov != null) {
+                val a = IntArray(2); val w = IntArray(2)
+                ov.getLocationOnScreen(a); novelWv.getLocationOnScreen(w)
+                val vw = novelWv.width.toFloat().coerceAtLeast(1f)
+                val vh = novelWv.height.toFloat().coerceAtLeast(1f)
+                val x0 = ((fl * ov.width + a[0] - w[0]) / vw).coerceIn(0f, 1f)
+                val x1 = ((fr * ov.width + a[0] - w[0]) / vw).coerceIn(0f, 1f)
+                val y0 = ((ft * ov.height + a[1] - w[1]) / vh).coerceIn(0f, 1f)
+                val y1 = ((fb * ov.height + a[1] - w[1]) / vh).coerceIn(0f, 1f)
+                closeRescanSelector(false)
+                reOcrRegion(x0, y0, x1, y1)
+            }
+        }, { closeRescanSelector(true) })
+        rescanOverlay = sel
+        host.addView(sel, FrameLayout.LayoutParams(MP, MP))
+        sel.elevation = dp(30).toFloat()
+        sel.bringToFront()
+        toast("Drag the dots over the bubble, then tap Read this area")
+    }
+
+    private fun closeRescanSelector(resume: Boolean) {
+        val sel = rescanOverlay ?: return
+        rescanOverlay = null
+        (sel.parent as? ViewGroup)?.removeView(sel)
+        if (resume && !reOcrBusy) {
+            rtPausedForReOcr = false
+            if (DeepSeekRealtimeTranslation.isEnabled(this)) scheduleRealtimeAheadPump(0L)
+        }
+    }
+
+    /** Reads only the framed part of the page again (fractions of the WebView) and sends it for translation. */
+    private fun reOcrRegion(fx0: Float, fy0: Float, fx1: Float, fy1: Float) {
+        val pageUrl = novelWv.url.orEmpty()
+        if (!pageUrl.startsWith("http", ignoreCase = true)) { rtPausedForReOcr = false; return }
+        reOcrBusy = true
+        val run = ++reOcrRun
+        rtPausedForReOcr = true
+        toast("⟳ Reading the selected area — other work is paused")
+        fun finish(msg: String?) {
+            if (run != reOcrRun) return
+            reOcrBusy = false
+            rtPausedForReOcr = false
+            deepSeekVisibleSignature = ""
+            if (DeepSeekRealtimeTranslation.isEnabled(this)) scheduleRealtimeAheadPump(0L)
+            if (msg != null) toast(msg)
+        }
+        fun stillHere() = run == reOcrRun && cleanUrl(novelWv.url.orEmpty()) == cleanUrl(pageUrl)
+        fun whenIdle(attempt: Int, block: () -> Unit) {
+            if (!stillHere()) { finish(null); return }
+            if (attempt == 0 && running?.let { rtAheadTranslationTasksByJobKey.containsKey(keyOf(it)) } == true) {
+                interruptRealtimeAheadForVisiblePanel()
+            }
+            if (webModeHandle == null && running == null && queue.isEmpty()) { block(); return }
+            if (attempt >= 300) { finish("⚠️ The chatbot was busy, please try again"); return }
+            handler.postDelayed({ whenIdle(attempt + 1, block) }, 400L)
+        }
+        handler.postDelayed({ if (run == reOcrRun && reOcrBusy) finish("⟳ Paused work resumed") }, 240_000L)
+        val js = "(function(a,b,c,d){var vw=window.innerWidth||0,vh=window.innerHeight||0," +
+            "L=a*vw,T=b*vh,R=c*vw,B=d*vh,best=null,ba=0,ims=document.images;" +
+            "for(var i=0;i<ims.length;i++){var im=ims[i],r=im.getBoundingClientRect();" +
+            "if(r.width<60||r.height<60)continue;" +
+            "var il=Math.max(L,r.left),it=Math.max(T,r.top),ir=Math.min(R,r.right),ib=Math.min(B,r.bottom);" +
+            "if(ir<=il||ib<=it)continue;var ar=(ir-il)*(ib-it);" +
+            "if(ar>ba){ba=ar;best={s:(im.currentSrc||im.src||''),x:(il-r.left)/r.width,y:(it-r.top)/r.height,w:(ir-il)/r.width,h:(ib-it)/r.height};}}" +
+            "return best?JSON.stringify(best):'';})($fx0,$fy0,$fx1,$fy1)"
+        novelWv.evaluateJavascript(js) { raw ->
+            val txt = decode(raw)
+            val o = try { JSONObject(txt) } catch (_: Exception) { null }
+            if (o == null || o.optString("s").isBlank()) { finish("⚠️ No page image under the frame"); return@evaluateJavascript }
+            whenIdle(0) {
+                requestForceOcrArea(
+                    o.optString("s"), o.optDouble("x").toFloat(), o.optDouble("y").toFloat(),
+                    o.optDouble("w").toFloat(), o.optDouble("h").toFloat(), fromReOcr = true
+                ) { handler.postDelayed({ finish("✅ Area read — other work is running again") }, 700L) }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ glossary of the chapter on screen
+
+    private fun chapterGlossaryDialog() {
+        val key = pageKey(novelWv.url.orEmpty())
+        val items = ChapterGlossary.list(this, key)
+        val labels = items.map { it.type + ": " + it.source + "  →  " + it.value }
+        val b = AlertDialog.Builder(this)
+            .setTitle("Glossary — this chapter")
+            .setPositiveButton("Add") { _, _ -> chapterGlossaryAdd(key) }
+            .setNegativeButton("Close", null)
+        if (labels.isEmpty()) b.setMessage("Names, places and pronouns saved here are added to the prompt only for this chapter.")
+        else b.setItems(labels.toTypedArray()) { _, i ->
+            AlertDialog.Builder(this)
+                .setMessage("Delete \"" + items[i].source + "\"?")
+                .setPositiveButton("Delete") { _, _ -> ChapterGlossary.remove(this, key, i); chapterGlossaryDialog() }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        b.show()
+    }
+
+    private fun chapterGlossaryAdd(key: String) {
+        AlertDialog.Builder(this)
+            .setTitle("What are you adding?")
+            .setItems(ChapterGlossary.TYPES.toTypedArray()) { _, ti ->
+                val type = ChapterGlossary.TYPES[ti]
+                val pronoun = type.startsWith("Pronoun")
+                val col = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(20), dp(8), dp(20), 0)
+                }
+                val src = EditText(this).apply { hint = if (pronoun) "Character name" else "Original text, as it appears"; setSingleLine() }
+                val dst = EditText(this).apply { hint = if (pronoun) "he / she / they" else "Translate as"; setSingleLine() }
+                col.addView(src); col.addView(dst)
+                AlertDialog.Builder(this)
+                    .setTitle(type)
+                    .setView(col)
+                    .setPositiveButton("Save") { _, _ ->
+                        val a = src.text.toString().trim()
+                        val v = dst.text.toString().trim()
+                        if (a.isEmpty() || v.isEmpty()) toast("Fill in both fields")
+                        else { ChapterGlossary.add(this, key, ChapterGlossary.Entry(type, a, v)); toast("✅ Added to this chapter's glossary") }
+                        chapterGlossaryDialog()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            .show()
+    }
+
+    // ------------------------------------------------------------------ community
+
+    private fun openCommunityLink(url: String) {
+        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        catch (_: Exception) { toast("⚠️ Could not open the link") }
+    }
+
+    private fun showCommunityChooser() {
+        AlertDialog.Builder(this)
+            .setTitle("Join the community")
+            .setItems(arrayOf("Telegram group", "Reddit community")) { _, i ->
+                openCommunityLink(if (i == 0) communityTelegram else communityReddit)
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /** Asked once in the lifetime of the install, never again, whatever the answer. */
+    private fun maybeAskCommunity(attempt: Int = 0) {
+        if (isFinishing || Prefs.bool(this, "communityAsked")) return
+        // Do not stack on the first-run language sheet / tour: wait a little (about 2 minutes at most).
+        val busy = !Langs.setupDone(this) || (::tourOverlay.isInitialized && tourOverlay.isRunning())
+        if (busy && attempt < 15) {
+            handler.postDelayed({ maybeAskCommunity(attempt + 1) }, 8_000L)
+            return
+        }
+        Prefs.putBool(this, "communityAsked", true)
+        AlertDialog.Builder(this)
+            .setTitle("Join the Novel Studio community?")
+            .setMessage("Get help, share prompts and glossaries, and hear about updates in our Telegram group and on Reddit.")
+            .setPositiveButton("Join now") { _, _ -> showCommunityChooser() }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    // ------------------------------------------------------------------ in-app update
+
+    private fun checkForUpdate(manual: Boolean) {
+        if (Updater.repo(this).isBlank()) {
+            if (!manual) return
+            val et = EditText(this).apply { hint = "owner/repository"; setSingleLine() }
+            val col = LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(et) }
+            AlertDialog.Builder(this)
+                .setTitle("GitHub repository for updates")
+                .setMessage("Where do you publish releases? Example: yourname/Novel-Studio. Attach the APK to each release.")
+                .setView(col)
+                .setPositiveButton("Save") { _, _ ->
+                    Prefs.put(this, "updateRepo", et.text.toString().trim())
+                    checkForUpdate(true)
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+        if (manual) toast("Checking for updates…")
+        Updater.check(this) { info, err ->
+            if (isFinishing) return@check
+            when {
+                info != null -> {
+                    updateInfo = info
+                    AlertDialog.Builder(this)
+                        .setTitle("Update available: v" + info.version)
+                        .setMessage("You have v" + Updater.currentVersion(this) + ".\n\n" + info.notes.ifBlank { "New version." })
+                        .setPositiveButton("Download & install") { _, _ -> downloadAndInstallUpdate(info) }
+                        .setNegativeButton("Later", null)
+                        .show()
+                }
+                err != null -> if (manual) toast("⚠️ $err")
+                else -> if (manual) toast("✅ You have the latest version (v" + Updater.currentVersion(this) + ")")
+            }
+        }
+    }
+
+    private fun downloadAndInstallUpdate(info: Updater.Info) {
+        toast("⬇️ Downloading v" + info.version + "…")
+        Updater.download(this, info, { pct -> toast("⬇️ Update $pct%") }) { file, err ->
+            if (isFinishing) return@download
+            if (file == null) { toast("❌ " + (err ?: "Download failed")); return@download }
+            if (!Updater.install(this, file)) toast("Allow installs from Novel Studio, come back, and tap Check for Updates again")
+        }
+    }
+
+    /** Once a day, quietly: only speaks up when there really is a newer release. */
+    private fun maybeAutoCheckUpdate() {
+        if (Updater.repo(this).isBlank()) return
+        val last = Prefs.get(this, "updateCheckedAt", "0").toLongOrNull() ?: 0L
+        if (System.currentTimeMillis() - last < 24L * 3600_000L) return
+        Prefs.put(this, "updateCheckedAt", System.currentTimeMillis().toString())
+        checkForUpdate(false)
     }
 
     private fun requestBubbleRetranslate(src: String, cx: Float, cy: Float, w: Float, h: Float) {
@@ -1647,7 +1885,7 @@ one-word translation. Each marker must stay faithful to its own English text, wo
                     deepSeekPendingSig = stalledSignature
                     deepSeekPendingSince = System.currentTimeMillis()
                     deepSeekLastOcrAtMs = System.currentTimeMillis()
-                    toast("⚠️ OCR একই প্যানেলে আটকে আছে; বারবার retry বন্ধ করেছি। স্ক্রল বা reload করলে আবার চেষ্টা করবে।")
+                    toast("⚠️ OCR is stuck on the same panel, so retries stopped. Scroll or reload to try again.")
                 }
             }
             if (pageKeyNow != cleanUrl(deepSeekPollUrl)) {
@@ -1886,9 +2124,6 @@ return t.length>=40?'TXT:'+t:'';
         activePlacementIds.remove(id)
     }
 
-    /** " · Paddle Medium" / " · ML Kit": which engine produced the last OCR result (empty until one ran). */
-    private fun ocrEngineSuffix(): String = OcrEngineStatus.label.let { if (it.isBlank()) "" else " · $it" }
-
     private fun activityDotStatuses(): List<ActivityDotStatus> {
         val statuses = ArrayList<ActivityDotStatus>()
         val stage = webModeStage.lowercase()
@@ -2006,19 +2241,24 @@ return t.length>=40?'TXT:'+t:'';
         CrashLog.context = novelWv.url.orEmpty().take(160) + " | mode=" + mode + " | webMode=" + webModeOn() +
             " | realtime=" + DeepSeekRealtimeTranslation.isEnabled(this) + " | forceLoad=" + forceLoadOn()
         reOcrBtn?.let { b ->
-            val show = webModeOn() && mode == Mode.NOVEL && DeepSeekRealtimeTranslation.isEnabled(this)
+            val show = webModeOn() && mode == Mode.NOVEL
             val want = if (show) View.VISIBLE else View.GONE
+            if (b.visibility != want) b.visibility = want
+        }
+        glossaryFab?.let { b ->
+            val want = if (webModeOn() && mode == Mode.NOVEL) View.VISIBLE else View.GONE
             if (b.visibility != want) b.visibility = want
         }
         val sending = chatSendingAtMs > 0L && System.currentTimeMillis() - chatSendingAtMs < 15_000L
         val keys = statuses.map { it.key }
+        trackLongReading(keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" })
         val text: String?
         val color: Int
         when {
-            reOcrBusy -> { text = "Re-reading this screen" + ocrEngineSuffix(); color = 0xFF64B5F6.toInt() }
+            reOcrBusy -> { text = "Re-reading this screen"; color = 0xFF64B5F6.toInt() }
             sending -> { text = "Sending to chatbot"; color = 0xFFFFAB40.toInt() }
             keys.any { it == "visible-ocr" || it == "read-ahead-ocr" || it == "next-chapter-ocr" } ->
-                { text = "Reading the page" + ocrEngineSuffix(); color = 0xFFB388FF.toInt() }
+                { text = "Reading the page"; color = 0xFFB388FF.toInt() }
             keys.contains("placement") -> { text = "Adding the translation"; color = 0xFF64FFDA.toInt() }
             keys.any { it == "chatbot-translation" || it == "ahead-translation" || it == "prefetch-translation" } -> {
                 val fresh = android.os.SystemClock.elapsedRealtime() - chatPhaseAtMs < 2_500L
@@ -2331,6 +2571,62 @@ return t.length>=40?'TXT:'+t:'';
     private var reOcrBusy = false
     private var reOcrRun = 0
     private var reOcrBtn: android.widget.ImageView? = null
+    private var glossaryFab: android.widget.ImageView? = null
+    private var rescanOverlay: RescanSelector? = null
+    private var updateInfo: Updater.Info? = null
+
+    // ---- early-user tips: a few short pop-ups during the first hours of real use, then never again
+    private val usageTick = object : Runnable {
+        override fun run() {
+            val m = (Prefs.get(this@MainActivity, "usageMin", "0").toIntOrNull() ?: 0) + 1
+            Prefs.put(this@MainActivity, "usageMin", m.toString())
+            maybeShowEarlyTip(m)
+            if ((Prefs.get(this@MainActivity, "tipCount", "0").toIntOrNull() ?: 0) < 3) handler.postDelayed(this, 60_000L)
+        }
+    }
+
+    private fun startUsageClock() {
+        handler.removeCallbacks(usageTick)
+        if ((Prefs.get(this, "tipCount", "0").toIntOrNull() ?: 0) < 3) handler.postDelayed(usageTick, 60_000L)
+    }
+
+    private fun stopUsageClock() { handler.removeCallbacks(usageTick) }
+
+    /** Shown after about 10, 40 and 100 minutes of use (time inside the app). */
+    private fun maybeShowEarlyTip(usageMin: Int) {
+        val shown = Prefs.get(this, "tipCount", "0").toIntOrNull() ?: 0
+        val due = intArrayOf(10, 40, 100)
+        if (shown >= due.size || usageMin < due[shown] || isFinishing) return
+        if (!Langs.setupDone(this) || (::tourOverlay.isInitialized && tourOverlay.isRunning())) return
+        Prefs.put(this, "tipCount", (shown + 1).toString())
+        AlertDialog.Builder(this)
+            .setTitle("Quick tip")
+            .setMessage("If translation fails, text is not placed on the page, or the reading page keeps running for a long time, close the app completely and open it again. That fixes most stuck states.")
+            .setPositiveButton("Got it", null)
+            .show()
+    }
+
+    // ---- "reading the page" that never ends: point new users to the search (re-scan) button
+    private var readingSinceMs = 0L
+
+    private fun trackLongReading(reading: Boolean) {
+        if (!reading) { readingSinceMs = 0L; return }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (readingSinceMs == 0L) { readingSinceMs = now; return }
+        if (now - readingSinceMs < 75_000L || !webModeOn() || isFinishing) return
+        val shown = Prefs.get(this, "ocrTipCount", "0").toIntOrNull() ?: 0
+        val usage = Prefs.get(this, "usageMin", "0").toIntOrNull() ?: 0
+        if (shown >= 2 || usage > 180) return
+        readingSinceMs = now + 600_000L   // not again for 10 minutes
+        Prefs.put(this, "ocrTipCount", (shown + 1).toString())
+        AlertDialog.Builder(this)
+            .setTitle("Taking a long time?")
+            .setMessage("If the reading animation keeps running, tap the search button on the right side of the screen and frame the bubble, so the model can find it. Not every text sits in a bubble — sometimes it is plain text on the image.")
+            .setPositiveButton("Got it", null)
+            .show()
+    }
+    private val communityTelegram = "https://t.me/c/4373541125/2"
+    private val communityReddit = "https://www.reddit.com/r/NovelStudio/s/BWuOYCZSUe"
     private var autoSendImeFlagOn = false
     // True while the app itself dispatches a MotionEvent into the chatbot pane (Send rescue tap).
     // Such a tap is NOT the user touching the pane, so it must not disable keyboard suppression.
@@ -2456,7 +2752,7 @@ return t.length>=40?'TXT:'+t:'';
             chatRequestCount = 0
             val base = selectedBotBaseUrl()
             if (base.startsWith("http", true)) {
-                toast("🔄 নতুন চ্যাট উইন্ডো খোলা হচ্ছে ($chatNewWindowEvery টি রিকুয়েস্ট পূর্ণ)")
+                toast("🔄 Opening a new chat window ($chatNewWindowEvery requests used)")
                 var resumed = false
                 val resume = {
                     if (!resumed) {
@@ -2487,7 +2783,7 @@ return t.length>=40?'TXT:'+t:'';
                                     handler.postDelayed({ probeComposer(attempt + 1) }, 250L)
                                 } else {
                                     copy(text)
-                                    toast("⚠️ নতুন চ্যাট প্রস্তুত হয়নি; লেখাটি কপি করা হয়েছে, পুনরায় পাঠানো হয়নি")
+                                    toast("⚠️ The new chat was not ready; the text was copied and not sent again")
                                     onResult("nobox")
                                 }
                             }
@@ -2580,61 +2876,6 @@ return t.length>=40?'TXT:'+t:'';
         lastToastElapsedMs = now
 
         var text = m
-        val translations = listOf(
-            "🔄 Reloading both pages" to "🔄 Reloading both pages",
-            "🔄 Reloading chatbot…" to "🔄 Reloading chatbot…",
-            "🔄 Reloading novel page…" to "🔄 Reloading novel page…",
-            "🔐 Log in here; your session stays in the app" to "🔐 Log in here; your session stays in the app",
-            "🕘 History is empty" to "🕘 History is empty",
-            "আর কোনো chapter নেই" to "No more chapters",
-            "WebNovel chapter link পাওয়া যায়নি" to "WebNovel chapter link not found",
-            "এই পেজে চ্যাপ্টারের লেখা পাওয়া যায়নি" to "Chapter text was not found on this page",
-            "নতুন chapter এখনো আসেনি — আবার ● চাপো" to "The next chapter has not loaded yet. Tap ● again.",
-            "আগে নোভেলের একটা চ্যাপ্টার পেজ খোলো" to "Open a novel chapter page first",
-            "নতুন chapter লোড হয়নি" to "The next chapter did not load",
-            "WebNovel book URL বোঝা যায়নি" to "Could not identify the WebNovel book URL",
-            "বাটন পাইনি — URL নম্বর দিয়ে অনুমান করছি" to "Navigation button not found; guessing from the URL",
-            "নতুন chapter link পাওয়া যায়নি" to "Next chapter link not found",
-            "নতুন চ্যাপ্টারের লেখা আসেনি — ● চেপে আবার চেষ্টা করো" to "Next chapter text has not appeared. Tap ● to retry.",
-            "নতুন চ্যাপ্টারের লেখা পাওয়া যায়নি — ● চেপে আবার চেষ্টা করো" to "Next chapter text was not found. Tap ● to retry.",
-            "এই চ্যাপ্টারের লেখা এনক্রিপ্টেড ফন্টে — অনুবাদ ভুল হবে" to "This chapter uses an encoded font; translation may be inaccurate",
-            "গ্লোসারি: ${Glossary.lastMatchCount} টা টার্ম প্রম্পটে গেল" to "Glossary: ${Glossary.lastMatchCount} terms added to the prompt",
-            "কপি হয়েছে: " to "Copied: ",
-            "অক্ষর" to "characters",
-            "চ্যাপ্টার কপি করে রাখলাম — নিজে চ্যাটে পেস্ট করে Copy → 💾 করো" to "Chapter copied. Paste it into the chatbot and tap Copy → 💾.",
-            "চ্যাট বক্স পাইনি — কপি হয়ে আছে, নিজে পেস্ট করো" to "Chat input not found. Text is copied; paste it manually.",
-            "অনুবাদ সেভ হয়েছে" to "Translation saved",
-            "অটো অনুবাদ বন্ধ করলাম" to "Background translation stopped",
-            "অনুবাদ বসানো গেল না — লাইব্রেরিতে সেভ আছে" to "Could not insert the translation; it is saved in the library",
-            "অটো অনুবাদ চালু — ▶ চাপলেই ব্যাকগ্রাউন্ডে অনুবাদ হয়ে সাইটে বসবে" to "Background translation enabled — tap ▶ to translate and insert into the site",
-            "কপি মোড — ▶ চাপলে চ্যাপ্টার কপি হবে" to "Copy mode — tap ▶ to copy the chapter",
-            "ক্লিপবোর্ডে অনুবাদ নেই — আগে চ্যাটবটের উত্তরের Copy বাটন চাপো" to "No translation in clipboard. Copy the chatbot's answer first.",
-            "এটা তো সোর্স টেক্সট — চ্যাটবটের উত্তরের Copy বাটন চাপো" to "This is source text. Copy the chatbot's answer instead.",
-            "লাইব্রেরিতে সেভ:" to "Saved to library:",
-            "আগে একটা চ্যাপ্টার খোলো" to "Open a chapter first",
-            "আবার অনুবাদে দেওয়া হলো" to "Chapter added to the translation queue",
-            "লিস্ট নামাচ্ছি…" to "Updating the block list…",
-            "টা হোস্ট যোগ হয়েছে" to " hosts added",
-            "আপডেট হয়নি" to "Update failed",
-            "চ্যাটবট রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো" to "Chatbot report copied — paste it here",
-            "রিপোর্ট কপি হয়েছে — আমাকে পেস্ট করো" to "Report copied — paste it here",
-            "ঠিক ডোমেইন লেখো" to "Enter a valid domain",
-            "সেভ হয়েছে — পেজ রিলোড করে ● চাপো" to "Saved — reload the page and tap ●",
-            "মুছে ফেলা হয়েছে" to "Deleted",
-            "গ্লোসারি চালু" to "Glossary enabled",
-            "গ্লোসারি বন্ধ" to "Glossary disabled",
-            "গ্লোসারি কপি হয়েছে" to "Glossary copied",
-            "Delete" to "Delete",
-            "যোগ হয়েছে" to "Added",
-            "গ্লোসারি বদলানো হয়েছে" to "Glossary updated",
-            "লাইব্রেরি খালি — অনুবাদ হলে এখানে জমবে" to "Library is empty. Translations will appear here when saved.",
-            "এক্সপোর্ট করার মতো অনুবাদ নেই" to "There are no translations to export",
-            "এক্সপোর্ট হয়েছে" to "Export completed",
-            "ব্যর্থ" to "Failed",
-            "সেভ হয়েছে:" to "Saved:",
-            "বুকমার্ক খালি" to "Bookmarks are empty"
-        )
-        translations.forEach { (from, to) -> text = text.replace(from, to) }
         if (Regex("[\\u0980-\\u09FF]").containsMatchIn(text)) {
             text = "Action completed or failed. Please check the page and try again."
         }
@@ -3244,7 +3485,7 @@ return t.length>=40?'TXT:'+t:'';
                 it.setMargins(0, dp(10), dp(10), 0)
             })
             reOcrBtn = android.widget.ImageView(this@MainActivity).apply {
-                setImageDrawable(IconDrawable(Ic.RELOAD, UiTheme.iconIdle))
+                setImageDrawable(IconDrawable(Ic.SEARCH, UiTheme.iconIdle))
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
                     setColor(0xEE232739.toInt())
@@ -3253,12 +3494,30 @@ return t.length>=40?'TXT:'+t:'';
                 val pad = dp(10)
                 setPadding(pad, pad, pad, pad)
                 elevation = dp(10).toFloat()
-                contentDescription = "OCR this screen again"
+                contentDescription = "Re-scan a bubble area"
                 visibility = View.GONE
-                setOnClickListener { reOcrVisiblePanels() }
+                setOnClickListener { showRescanSelector() }
             }
             addView(reOcrBtn, FrameLayout.LayoutParams(dp(42), dp(42), Gravity.BOTTOM or Gravity.END).also {
                 it.setMargins(0, 0, dp(12), dp(134))
+            })
+            // Glossary for the chapter on screen (Scanning + Real-time).
+            glossaryFab = android.widget.ImageView(this@MainActivity).apply {
+                setImageDrawable(IconDrawable(Ic.BOOK, UiTheme.iconIdle))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(0xEE232739.toInt())
+                    setStroke(dp(1), UiTheme.stroke)
+                }
+                val pad = dp(9)
+                setPadding(pad, pad, pad, pad)
+                elevation = dp(10).toFloat()
+                contentDescription = "Glossary for this chapter"
+                visibility = View.GONE
+                setOnClickListener { chapterGlossaryDialog() }
+            }
+            addView(glossaryFab, FrameLayout.LayoutParams(dp(38), dp(38), Gravity.BOTTOM or Gravity.END).also {
+                it.setMargins(0, 0, dp(14), dp(184))
             })
             activityChip = ActivityChip(this@MainActivity)
             addView(activityChip, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.START).also {
@@ -3432,6 +3691,8 @@ return t.length>=40?'TXT:'+t:'';
         handleIntent(intent)
         // Ask once, before any reading starts: which language to which language.
         if (!Langs.setupDone(this)) handler.postDelayed({ if (!isFinishing) showLanguageSheet(true) }, 500L)
+        handler.postDelayed({ if (!isFinishing) maybeAutoCheckUpdate() }, 6000L)
+        handler.postDelayed({ maybeAskCommunity() }, 12_000L)
     }
 
     // ------------------------------------------------------------------ home screen
@@ -3467,14 +3728,26 @@ return t.length>=40?'TXT:'+t:'';
         TourOverlay.Step("Bolt button", "Tap it to read the page and send it for translation. It works in Novel and Scan modes.") {
             tourOverlay.rectOf(extractBtn)
         },
+        TourOverlay.Step("Ahead", "Bottom left. When it says Ahead ON, the app quietly loads the next chapter and translates it while you read, so it is ready when you go on. It uses more chatbot messages and works in Novel and Scan mode (not Live). Tap it to switch ON or OFF.") {
+            if (::prefetchChip.isInitialized && prefetchChip.isShown) tourOverlay.rectOf(prefetchChip) else null
+        },
         TourOverlay.Step("Scan", "For webtoons and comics. Tap Scan, open the comic, then tap the bolt button to start scanning.") {
             tourOverlay.rectOf(modeCapsule, modeCapsule.segmentBounds(1))
+        },
+        TourOverlay.Step("Missed a bubble?", "In Scan and Live mode this search button appears on the right. If a bubble was missed or only half translated, tap it, drag the six dots over that bubble, then tap Read this area. Only that spot is read and translated again; the rest of the page stays as it is, and other work pauses meanwhile.") {
+            reOcrBtn?.takeIf { it.isShown }?.let { tourOverlay.rectOf(it) }
         },
         TourOverlay.Step("Live", "Real-time mode for webtoons. Turn it on while the comic page is open, then wait a few seconds. If the text takes too long to appear, refresh the page once.") {
             tourOverlay.rectOf(modeCapsule, modeCapsule.segmentBounds(2))
         },
         TourOverlay.Step("View", "Switch between the page, the page and chatbot side by side, or the chatbot alone. Handy for checking what was sent.") {
             tourOverlay.rectOf(modeBtn)
+        },
+        TourOverlay.Step("Prompts", "Menu → Edit Prompt For Novel / Live / Scanning Translation. The defaults already name your language; edit them only if you want different rules.") {
+            menuBtnView?.let { tourOverlay.rectOf(it) }
+        },
+        TourOverlay.Step("Next button", "On a new novel site, tap the site's own Next button once yourself. The app learns which control it is, so from then on ▶ skips the ads that some sites put on their Next link.") {
+            tourOverlay.rectOf(extractBtn)
         },
         TourOverlay.Step("Menu", "Library, bookmarks, translation language and settings. Technical options are tucked away under Advanced.") {
             menuBtnView?.let { tourOverlay.rectOf(it) }
@@ -3544,7 +3817,7 @@ return t.length>=40?'TXT:'+t:'';
                 background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x14FFFFFF, 16, UiTheme.strokeSoft), 16)
                 isClickable = true
                 setOnClickListener {
-                    listDialog(caption, options, { i -> set(options[i]); value.text = get() }, null)
+                    searchListDialog(caption, options) { picked -> set(picked); value.text = get() }
                 }
                 addView(texts, LinearLayout.LayoutParams(0, WC, 1f))
                 addView(chev, LinearLayout.LayoutParams(dp(18), dp(18)))
@@ -3577,11 +3850,37 @@ return t.length>=40?'TXT:'+t:'';
                 Langs.save(this@MainActivity, src, tgt)
                 dlg.dismiss()
                 toast("Translating " + (if (src == Langs.AUTO) "any language" else src) + " to " + tgt)
+                downloadLanguageFont(tgt)
+                if (firstRun) handler.postDelayed({ if (!isFinishing) showFirstPromptChoice() }, 400L)
             }
         }
         col.addView(save, LinearLayout.LayoutParams(MP, dp(52)).also { it.topMargin = dp(18) })
         dlg = Sheets.create(this, col)
         dlg.show()
+    }
+
+    /** Fetches the font of the target language (once) so translated text looks right. */
+    private fun downloadLanguageFont(lang: String) {
+        if (lang == Langs.DEFAULT_TARGET || LangFonts.familyFor(lang) == null || LangFonts.installed(this, lang)) return
+        toast("⬇️ Downloading a font for $lang…")
+        LangFonts.ensure(this, lang) { ok, family ->
+            if (isFinishing) return@ensure
+            fontB64.keys.removeAll { it.startsWith("dl_") }
+            toast(if (ok) "✅ Font ready: $family" else "⚠️ Font download failed — the page's own font will be used. Tap Translation Font in the menu to retry.")
+            val ch = lastChapter
+            if (ok && ch != null && hasTr) shownTrRaw?.let { applyTranslation(ch, it, false) }
+        }
+    }
+
+    /** First run, right after the language: use the default novel prompt, or write one. */
+    private fun showFirstPromptChoice() {
+        AlertDialog.Builder(this)
+            .setTitle("Novel translation prompt")
+            .setMessage("The default prompt already asks for ${Langs.target(this)}. Use it, or write your own now. You can change it any time: Menu → Edit Prompt For Novel Translation.")
+            .setPositiveButton("Use default prompt", null)
+            .setNegativeButton("Write my own") { _, _ -> editPrompt() }
+            .setCancelable(false)
+            .show()
     }
 
     private fun refreshHome() {
@@ -4930,11 +5229,11 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR)"
+    private fun menuOcrModelsLabel(): String = "🧠 OCR Engine & Models: " + currentOcrEngineLabel()
 
     private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
         "paddle_small" -> "PaddleOCR Small"
-        "paddle_heavy" -> "PaddleOCR Medium"
+        "paddle_heavy" -> "PaddleOCR Heavy"
         "rapid_onnx" -> "RapidOCR / legacy ONNX"
         "manga" -> "Japanese Manga OCR"
         else -> "ML Kit · Default"
@@ -4944,49 +5243,20 @@ return t.length>=40?'TXT:'+t:'';
         val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
         val labels = arrayOf(
             "ML Kit — Default (fast, built-in)",
-            "PaddleOCR PP-OCRv6 Small — fast, low RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
-            "PaddleOCR PP-OCRv6 Medium — most accurate, needs more RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
+            "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean uses ML Kit)",
+            "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
             "RapidOCR ONNX — legacy optional engine",
             "Japanese Manga OCR — if its model is installed"
         )
-        val rec = DeviceTier.recommendedEngine(this)
-        for (i in keys.indices) if (keys[i] == rec) labels[i] = "⭐ Recommended for your phone — " + labels[i]
         val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("OCR Engine (" + (DeviceTier.totalRamMb(this) / 1024.0).let { "%.1f".format(it) } + " GB RAM)")
+            .setTitle("OCR Engine")
             .setSingleChoiceItems(labels, selected) { dialog, which ->
                 Prefs.put(this, "ocrEngine", keys[which])
                 dialog.dismiss()
                 toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
-                if (keys[which].startsWith("paddle_")) offerKoreanPack()
             }
             .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    /** PP-OCRv6 Small/Medium cannot read Hangul; without the Korean pack Korean pages silently use ML Kit. */
-    private fun offerKoreanPack() {
-        PaddleOcrModels.init(this)
-        val ko = PaddleOcrModels.pack("korean") ?: return
-        if (PaddleOcrModels.isInstalled(ko) || PaddleOcrModels.isBusy(ko)) return
-        AlertDialog.Builder(this)
-            .setTitle("Korean support")
-            .setMessage("PP-OCRv6 does not include Korean. Download the PP-OCRv5 Korean pack (~" + ko.approximateMb +
-                " MB) so Paddle can read Korean pages? Without it, Korean uses ML Kit.")
-            .setPositiveButton("Download") { _, _ ->
-                toast("⬇️ Downloading ${ko.label}…")
-                Thread {
-                    try {
-                        PaddleOcrModels.download(ko) { name, pct ->
-                            if (pct % 25 == 0) runOnUiThread { toast("⬇️ PaddleOCR $name $pct%") }
-                        }
-                        runOnUiThread { toast("✅ ${ko.label} installed. Korean pages now use Paddle.") }
-                    } catch (e: Exception) {
-                        runOnUiThread { toast("❌ ${ko.label}: " + (e.message ?: "download failed")) }
-                    }
-                }.start()
-            }
-            .setNegativeButton("Later", null)
             .show()
     }
 
@@ -4996,7 +5266,7 @@ return t.length>=40?'TXT:'+t:'';
         val legacyPacks = OcrModels.PACKS
         val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose the engine")
+        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose · ML Kit is built in: fast on every phone, ★★★☆☆. Language files download together with each model.")
 
         for (p in legacyPacks) {
             val state = when {
@@ -5005,7 +5275,7 @@ return t.length>=40?'TXT:'+t:'';
                 OcrModels.isInstalled(p) -> "installed · " + OcrModels.sizeMb(p) + " MB — tap to delete"
                 else -> "not installed · tap to download (~" + OcrModels.approxMb(p) + " MB)"
             }
-            labels.add(p.label + "\n" + state)
+            labels.add(p.label + "\n" + state + " · " + ocrPackHint(OcrModels.approxMb(p)))
         }
 
         for (p in paddlePacks) {
@@ -5014,15 +5284,15 @@ return t.length>=40?'TXT:'+t:'';
                 PaddleOcrModels.isInstalled(p) -> "installed · " + PaddleOcrModels.sizeMb(p) + " MB — tap to delete"
                 else -> "not installed · tap to download (~" + p.approximateMb + " MB)"
             }
-            labels.add("🧠 " + p.label + "\n" + state)
+            labels.add("🧠 " + p.label + "\n" + state + " · " + ocrPackHint(p.approximateMb))
         }
 
         val deleteIndex = 1 + legacyPacks.size + paddlePacks.size
         val err = OcrModels.lastError
         val paddleErr = PaddleOcrModels.lastError
-        val lastError = if (paddleErr.isNotBlank()) paddleErr else if (err.isNotBlank()) err else OcrEngineStatus.lastError
+        val lastError = if (paddleErr.isNotBlank()) paddleErr else err
         labels.add("🗑 Delete all optional OCR models\n" +
-            (if (lastError.isNotBlank()) "Last model error: " + lastError.take(220) else "ML Kit stays available as the default engine"))
+            (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
 
         listDialog("🧠 OCR engine & models", labels, { i ->
             when {
@@ -5095,6 +5365,13 @@ return t.length>=40?'TXT:'+t:'';
         }, null)
     }
 
+    /** One-line advice shown next to every downloadable OCR model. */
+    private fun ocrPackHint(mb: Int): String = when {
+        mb >= 60 -> "★★★★★ most accurate · needs a powerful phone (4 GB+ RAM)"
+        mb >= 25 -> "★★★★☆ accurate · good on mid-range phones"
+        else -> "★★★☆☆ light · fast on any phone"
+    }
+
     private fun menuOcrDebugLabel(): String =
         (if (Prefs.bool(this, "ocrDebug", false)) "✅" else "⬜") + " 🔬 OCR debug (marked images, private folder)"
 
@@ -5149,6 +5426,7 @@ return t.length>=40?'TXT:'+t:'';
             WebModeWriter.bottomInsetPx = insetCss
             novelWv.evaluateJavascript("try{document.documentElement.style.setProperty('--ns-bi','" + insetCss + "px');}catch(e){}", null)
             reOcrBtn?.let { b -> (b.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(134) + botH; b.layoutParams = it } }
+            glossaryFab?.let { b -> (b.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(184) + botH; b.layoutParams = it } }
             activityChip?.let { c -> (c.layoutParams as? FrameLayout.LayoutParams)?.let { it.bottomMargin = dp(14) + botH; c.layoutParams = it } }
             (progressBox.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; progressBox.layoutParams = it }
             (scanDot.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; scanDot.layoutParams = it }
@@ -5305,27 +5583,72 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private inner class ChatChrome : WebChromeClient() {
-        override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
-            if (!isUserGesture || resultMsg == null) return false
-            val popup = WebView(this@MainActivity)
-            setup(popup)
-            popup.webViewClient = ChatClient()
-            val box = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(popup, LinearLayout.LayoutParams(MP, 0, 1f))
-            }
-            val dialog = AlertDialog.Builder(this@MainActivity)
-                .setTitle("🔐 Login")
-                .setView(box)
-                .setNegativeButton("Close") { _, _ -> popup.stopLoading(); popup.destroy() }
-                .create()
-            dialog.setOnDismissListener { popup.stopLoading(); popup.destroy() }
-            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-            transport.webView = popup
-            resultMsg.sendToTarget()
-            dialog.show()
-            return true
+        override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean =
+            openChatLoginPopup(isUserGesture, resultMsg)
+    }
+
+    /**
+     * "Continue with Google/Apple" on a chatbot opens a pop-up window. It used to sit inside a dialog whose WebView had
+     * height 0, so Google never rendered, and nothing handled window.close(), so a finished login could never return.
+     * Now the pop-up is a full-screen window with its own title bar, closes itself when the page calls window.close(),
+     * and can open further windows (the Google account chooser does).
+     */
+    private fun openChatLoginPopup(isUserGesture: Boolean, resultMsg: Message?): Boolean {
+        if (!isUserGesture || resultMsg == null) return false
+        val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+        val popup = WebView(this)
+        setup(popup)
+        popup.settings.setSupportMultipleWindows(true)
+        popup.settings.javaScriptCanOpenWindowsAutomatically = true
+        popup.webViewClient = ChatClient()
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar)
+        var destroyed = false
+        fun cleanup() {
+            if (destroyed) return
+            destroyed = true
+            try { popup.stopLoading() } catch (_: Exception) {}
+            (popup.parent as? ViewGroup)?.removeView(popup)
+            try { popup.destroy() } catch (_: Exception) {}
+            CookieManager.getInstance().flush()
         }
+        popup.webChromeClient = object : WebChromeClient() {
+            override fun onCloseWindow(window: WebView?) { dialog.dismiss() }
+            override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean =
+                openChatLoginPopup(isUserGesture, resultMsg)
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(0xFF141726.toInt())
+            setPadding(dp(16), dp(8), dp(8), dp(8))
+            addView(TextView(this@MainActivity).apply {
+                text = "🔐 Login"
+                textSize = 16f
+                typeface = boldMedium
+                setTextColor(Color.WHITE)
+            }, LinearLayout.LayoutParams(0, WC, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = "Close"
+                textSize = 15f
+                typeface = boldMedium
+                setTextColor(UiTheme.accentA)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                setOnClickListener { dialog.dismiss() }
+            })
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0B0D14.toInt())
+            addView(bar, LinearLayout.LayoutParams(MP, WC))
+            addView(popup, LinearLayout.LayoutParams(MP, 0, 1f))
+        }
+        dialog.setContentView(box)
+        dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        dialog.setOnDismissListener { cleanup() }
+        transport.webView = popup
+        resultMsg.sendToTarget()
+        dialog.show()
+        return true
     }
 
     // ================================================================== navigation / search
@@ -7179,6 +7502,7 @@ return t.length>=40?'TXT:'+t:'';
      */
     private fun schedulePrefetch(ch: Chapter) {
         if (!Prefs.bool(this, "prefetchNextChapter")) return
+        if (rescanOverlay != null || reOcrBusy) return   // an area re-scan has the app's full attention
         val currentUrl = novelWv.url.orEmpty()
         val currentNumber = ch.number
         val samePage = cleanUrl(ch.url) == cleanUrl(currentUrl) ||
@@ -7511,7 +7835,10 @@ return t.length>=40?'TXT:'+t:'';
         if (pua > 20 && pua * 20 > chapterText.length) {
             toast("⚠ This chapter uses an encoded font; translation may be inaccurate")
         }
-        val g = if (Prefs.glossaryOn(this)) Glossary.block(this, chapterText) else ""
+        val g0 = if (Prefs.glossaryOn(this)) Glossary.block(this, chapterText) else ""
+        // Webtoon chapters (Scanning / Real-time) also get the small glossary of the chapter on screen.
+        val cg = if (webModeOn()) ChapterGlossary.block(this, pageKey(novelWv.url.orEmpty())) else ""
+        val g = listOf(g0, cg).filter { it.isNotEmpty() }.joinToString("\n\n")
         if (Prefs.glossaryOn(this) && Glossary.count > 0)
             toast("📖 Glossary: ${Glossary.lastMatchCount} terms added to the prompt")
         return prompt + "\n\n" + (if (g.isNotEmpty()) g + "\n\n" else "") + "---\n\n"
@@ -7594,7 +7921,7 @@ return t.length>=40?'TXT:'+t:'';
                 val recentSubmit = sendState == "pending" ||
                     (sendState.startsWith("sent:") && sendAgeMs in 0L..8_000L)
                 if (streaming || recentSubmit) {
-                    if (n == 20) toast("⏳ আগের chatbot উত্তর শেষ হওয়ার অপেক্ষা চলছে…")
+                    if (n == 20) toast("⏳ Waiting for the previous chatbot answer to finish…")
                     if (n >= 720) {
                         failJob(
                             tok, ch,
@@ -7920,7 +8247,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val livePanelBatch = isDeepSeekLivePanel(ch)
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
-                failJob(tok, ch, "The chatbot returned no translated bubble text. Tap ⚡ to retry.")
+                failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
                 return@evaluateJavascript
             }
             if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
@@ -7997,7 +8324,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
-    private fun failJob(tok: Int, ch: Chapter, msg: String, fallback: Boolean = false) {
+    private fun failJob(tok: Int, ch: Chapter, msg: String, fallback: Boolean = false, autoRetry: Boolean = false) {
         if (tok != runToken) return
         val aheadTaskKey = keyOf(ch)
         val aheadTask = rtAheadTranslationTasksByJobKey.remove(aheadTaskKey)
@@ -8034,8 +8361,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         queue.clear()
         running = null
         if (!isDeepSeekLivePanel(ch)) lastFailedChapter = ch
+        if (isScanRegionBatch(ch)) { scanRegionChapter = null; restoreChapterAfterBubbleJob(ch.url) }
         if (fallback) {
             handleScanFallback(ch, retryList)
+            return
+        }
+        if (autoRetry) {
+            // Nothing for the reader to do: the visible page is scanned and sent again by the app itself.
+            chatWv.evaluateJavascript(Js.clearSendState(), null)
+            chatWv.evaluateJavascript(Js.clearBox(), null)
+            deepSeekVisibleSignature = ""
+            toast("⏳ $msg")
+            updateProgressUi()
+            restoreChapterAfterBubbleJob()
+            handler.postDelayed({ pumpRealtimeAheadTranslation() }, 600L)
             return
         }
         val manualText = promptWithGlossary(Prefs.activeTranslationPrompt(this), ch.text) + ch.text
@@ -8144,9 +8483,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     // ---- put the translation into the novel page itself
+    /** Scanning mode: the one-area re-scan batch currently being translated (matched by page + text). */
+    private var scanRegionChapter: Chapter? = null
+
+    private fun isScanRegionBatch(ch: Chapter): Boolean {
+        val r = scanRegionChapter ?: return false
+        return ch.contentSel.isBlank() && cleanUrl(r.url) == cleanUrl(ch.url) && r.text == ch.text
+    }
+
     private fun isDeepSeekLivePanel(ch: Chapter): Boolean =
-        !JapaneseMangaSession.isManaged(ch) &&
-            DeepSeekRealtimeTranslation.isEnabled(this) && webModeOn() && ch.contentSel.isBlank()
+        !JapaneseMangaSession.isManaged(ch) && webModeOn() && ch.contentSel.isBlank() &&
+            (DeepSeekRealtimeTranslation.isEnabled(this) || isScanRegionBatch(ch))
 
     /**
      * Safety net for a mis-cropped screenshot or reader UI rendered as image text.
@@ -8263,7 +8610,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             if (livePanelBatch) {
                 if (wmLayout == null || wmPlaced == null) {
                     releaseDeepSeekHashBatch(ch)
-                    toast("⚠️ এই ব্যাচের অনুবাদ বাবলের সঙ্গে মেলেনি; ভুল জায়গায় বসানো হয়নি")
+                    toast("⚠️ This batch did not match the bubbles; nothing was placed in the wrong spot")
                     restoreChapterAfterBubbleJob(ch.url)
                     return
                 }
@@ -8531,11 +8878,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private fun injectBengaliFont() {
         val name = Prefs.fontFile(this)
         if (name.isEmpty()) return
-        val b64 = fontB64.getOrPut(name) {
-            try {
-                android.util.Base64.encodeToString(
-                    assets.open("fonts/$name.ttf").use { it.readBytes() }, android.util.Base64.NO_WRAP)
+        var b64 = fontB64[name].orEmpty()
+        if (b64.isEmpty()) {
+            b64 = try {
+                val bytes = if (name.startsWith("dl_")) LangFonts.file(this, name.removePrefix("dl_")).readBytes()
+                else assets.open("fonts/$name.ttf").use { it.readBytes() }
+                android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
             } catch (_: Exception) { "" }
+            if (b64.isNotEmpty()) fontB64[name] = b64
         }
         if (b64.isEmpty()) return
         val js = "(function(n,b){try{if(window.__nsFontName===n||window.__nsFontLoading===n)return 'have';var s=atob(b),l=s.length,u=new Uint8Array(l);" +
@@ -8850,7 +9200,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "🐞 Copy crash / freeze log", menuBatchLabel(),
             "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
             menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel(), menuOcrModelsLabel(),
-            "📝 Edit Prompt For Scanning Translation"
+            "📝 Edit Prompt For Scanning Translation",
+            "⬆️ Check for Updates (v" + Updater.currentVersion(this) + ")",
+            "💬 Join the Community (Telegram · Reddit)"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -8859,17 +9211,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
+            "COMMUNITY" to listOf(56),
             "LIBRARY" to listOf(0, 4, 1, 3),
             "TRANSLATE" to listOf(5, 33, 54, 7),
-            "READER" to listOf(9, 20, 23)
+            "OCR" to listOf(53, 50),
+            "READER" to listOf(9, 20, 23),
+            "APP" to listOf(55)
         )
         val advanced = listOf(
             "TRANSLATION" to listOf(47, 12, 19, 14, 26, 30, 39, 40, 44, 46),
-            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 41, 43, 48, 49, 50, 51, 53),
+            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 41, 43, 48, 49, 51),
             "BROWSER" to listOf(15, 16, 21, 24, 29, 35),
             "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45, 52)
         )
@@ -8939,6 +9294,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
                 54 -> { dlg.dismiss(); editScanPrompt() }
+                55 -> { dlg.dismiss(); checkForUpdate(true) }
+                56 -> { dlg.dismiss(); showCommunityChooser() }
                 35 -> {
                     dlg.dismiss()
                     startAiAdBlockScan()
@@ -9086,6 +9443,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 }
                 19 -> { dlg.dismiss(); glossaryDialog() }
                 20 -> {
+                    if (Langs.target(this) != Langs.DEFAULT_TARGET) {
+                        downloadLanguageFont(Langs.target(this))
+                        refresh(i, menuFontLabel())
+                        return
+                    }
                     Prefs.put(this, "trFont", ((Prefs.fontIdx(this) + 1) % Prefs.FONT_FILES.size).toString())
                     refresh(i, menuFontLabel())
                     val ch = lastChapter
@@ -9556,8 +9918,12 @@ ${rows.take(220).joinToString("\n")}
     private fun menuSizeLabel(): String =
         "🔠 Translation Text Size: " + Prefs.sizePx(this) + "px"
 
-    private fun menuFontLabel(): String =
-        "🔤 Translation Font: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)]
+    private fun menuFontLabel(): String {
+        val t = Langs.target(this)
+        if (t == Langs.DEFAULT_TARGET) return "🔤 Translation Font: " + Prefs.FONT_NAMES[Prefs.fontIdx(this)]
+        val fam = LangFonts.familyFor(t) ?: return "🔤 Translation Font: System default ($t)"
+        return "🔤 Translation Font: " + if (LangFonts.installed(this, t)) fam else "$fam (tap to download)"
+    }
 
     private fun glossaryDialog() {
         val opts = arrayOf(
@@ -9637,6 +10003,62 @@ ${rows.take(220).joinToString("\n")}
         (if (Prefs.bool(this, "wmTextRemoval", false)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
 
     /** Glass bottom sheet with one tappable row per label (long-press optional). */
+    /** A sheet with a search box on top; used for the long language lists. */
+    private fun searchListDialog(title: String, options: List<String>, onPick: (String) -> Unit) {
+        lateinit var dlg: Dialog
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Sheets.sheetBackground(this@MainActivity)
+            setPadding(dp(14), dp(10), dp(14), dp(16))
+        }
+        col.addView(sheetHandle())
+        col.addView(TextView(this).apply {
+            text = title
+            textSize = 20f
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+            setPadding(dp(6), dp(2), dp(6), dp(8))
+        })
+        val et = EditText(this).apply {
+            hint = "Search language"
+            setSingleLine()
+            textSize = 15f
+            setTextColor(UiTheme.text)
+            setHintTextColor(UiTheme.faint)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = Glass.solid(this@MainActivity, 0x14FFFFFF, 14, UiTheme.strokeSoft)
+        }
+        col.addView(et, LinearLayout.LayoutParams(MP, WC).also { it.bottomMargin = dp(8) })
+        var shown: List<String> = options
+        val list = ListView(this).apply { divider = null }
+        val adapter = object : android.widget.BaseAdapter() {
+            override fun getCount() = shown.size
+            override fun getItem(position: Int) = shown[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View =
+                ((convertView as? TextView) ?: TextView(this@MainActivity)).apply {
+                    text = shown[position]
+                    textSize = 16f
+                    setTextColor(UiTheme.text)
+                    setPadding(dp(14), dp(13), dp(14), dp(13))
+                }
+        }
+        list.adapter = adapter
+        list.setOnItemClickListener { _, _, i, _ -> dlg.dismiss(); onPick(shown[i]) }
+        et.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(e: Editable?) {
+                val q = e?.toString().orEmpty().trim().lowercase()
+                shown = if (q.isEmpty()) options else options.filter { it.lowercase().contains(q) }
+                adapter.notifyDataSetChanged()
+            }
+        })
+        col.addView(list, LinearLayout.LayoutParams(MP, dp(360)))
+        dlg = Sheets.create(this, col)
+        dlg.show()
+    }
+
     private fun listDialog(title: String, labels: List<String>, onClick: (Int) -> Unit, onLong: ((Int) -> Unit)?) {
         lateinit var dlg: Dialog
         val col = LinearLayout(this).apply {
@@ -9897,6 +10319,7 @@ ${rows.take(220).joinToString("\n")}
     }
 
     override fun onPause() {
+        stopUsageClock()
         activityPausedAtMs = android.os.SystemClock.elapsedRealtime()
         if (!isFinishing) saveCurrentTabState()
         persistBrowserTabs()
@@ -9906,6 +10329,7 @@ ${rows.take(220).joinToString("\n")}
 
     override fun onResume() {
         super.onResume()
+        startUsageClock()
         // Explicitly resume WebView timers after returning from another app / a long background
         // pause. Some reader sites stop delivering animation, lazy-load and observer callbacks
         // until the WebView is resumed.

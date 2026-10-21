@@ -91,7 +91,10 @@ class ReaderActivity : Activity() {
             setTextIsSelectable(true)
         }
         Prefs.fontFile(this).takeIf { it.isNotEmpty() }?.let {
-            try { body.typeface = Typeface.createFromAsset(assets, "fonts/$it.ttf") } catch (e: Exception) { }
+            try {
+                body.typeface = if (it.startsWith("dl_")) Typeface.createFromFile(LangFonts.file(this, it.removePrefix("dl_")))
+                else Typeface.createFromAsset(assets, "fonts/$it.ttf")
+            } catch (e: Exception) { }
         }
 
         readBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {

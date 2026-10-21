@@ -107,7 +107,7 @@ object Store {
         val raw = (ch?.novel ?: "").ifBlank { "Unknown" }
         val novel = Prefs.get(c, "alias_$raw", raw)
         val number = ch?.number ?: ""
-        val title = ch?.title ?: "অনুবাদ"
+        val title = ch?.title ?: "Translation"
         val url = ch?.url ?: ""
         val items = list(c).toMutableList()
         val normTitle = title.trim().lowercase().replace(Regex("\\s+"), " ")

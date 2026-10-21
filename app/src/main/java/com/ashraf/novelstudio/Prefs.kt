@@ -51,9 +51,13 @@ object Prefs {
 
     // Bengali font for the translated text: 0 = normal, 1..3 = bundled fonts in assets/fonts
     val FONT_FILES = arrayOf("", "tiro", "hind", "galada")
-    val FONT_NAMES = arrayOf("সাধারণ", "Tiro Bangla (সেরিফ)", "Hind Siliguri (পরিষ্কার)", "Galada (স্টাইলিশ)")
+    val FONT_NAMES = arrayOf("Default", "Tiro Bangla (serif)", "Hind Siliguri (clean)", "Galada (stylish)")
     fun fontIdx(c: Context): Int = (get(c, "trFont", "1").toIntOrNull() ?: 1).coerceIn(0, FONT_FILES.size - 1)
-    fun fontFile(c: Context): String = FONT_FILES[fontIdx(c)]
+    /** Bengali uses the bundled fonts; every other target language uses its downloaded font (or the page's own font). */
+    fun fontFile(c: Context): String {
+        val t = Langs.target(c)
+        return if (t == Langs.DEFAULT_TARGET) FONT_FILES[fontIdx(c)] else LangFonts.nameFor(c, t)
+    }
     val SIZES = intArrayOf(16, 18, 20, 22, 24)
     fun sizeIdx(c: Context): Int = (get(c, "trSize", "1").toIntOrNull() ?: 1).coerceIn(0, SIZES.size - 1)
     fun sizePx(c: Context): Int = SIZES[sizeIdx(c)]
