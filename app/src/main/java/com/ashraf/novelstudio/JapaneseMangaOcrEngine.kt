@@ -119,10 +119,15 @@ internal object OcrEngineStatus {
         used.startsWith("mlkit(legacy-script-unsupported") -> "ML Kit (legacy OCR doesn't support this script)"
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
         used == "paddle_korean" -> "Paddle Korean v5"
+        used == "mlkit(empty-primary)" && selected == "manga" -> "ML Kit (Comic OCR found no text)"
         used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
+        used == "mlkit(oom)" && selected == "manga" -> "ML Kit (Comic OCR: low RAM)"
         used == "mlkit(oom)" -> "ML Kit (Paddle: low RAM)"
+        used == "mlkit(link-error)" && selected == "manga" -> "ML Kit (Comic OCR runtime unavailable)"
         used == "mlkit(link-error)" -> "ML Kit (Paddle native lib missing)"
+        used.startsWith("mlkit(error:") && selected == "manga" -> "ML Kit (Comic OCR error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit(error:") -> "ML Kit (Paddle error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
+        used.startsWith("mlkit") && fellBack && selected == "manga" -> "ML Kit (Comic OCR fallback)"
         used.startsWith("mlkit") && fellBack && selected.startsWith("paddle") -> "ML Kit (Paddle fallback)"
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
         used.startsWith("mlkit") -> "ML Kit"
@@ -285,8 +290,9 @@ internal class RoutingOcrEngine : OcrEngine {
             val full = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName + " – " +
                 (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
             OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
-            OcrEngineStatus.toastOnce(appContext, "Paddle error → ML Kit\n$full")
-            OcrEngineStatus.copyOnce(appContext, "NovelStudio Paddle error: $full")
+            val engineName = if (selectedMode == "manga") "Comic OCR" else "Paddle"
+            OcrEngineStatus.toastOnce(appContext, "$engineName error → ML Kit\n$full")
+            OcrEngineStatus.copyOnce(appContext, "NovelStudio $engineName error: $full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
             run(mlKit)
