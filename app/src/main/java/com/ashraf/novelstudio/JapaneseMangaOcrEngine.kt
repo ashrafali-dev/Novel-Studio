@@ -13,7 +13,7 @@ import org.json.JSONObject
  */
 internal class JapaneseMangaOcrEngine : OcrEngine {
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult {
-        val out = JapaneseMangaRuntime.recognize(bitmap)
+        val out = JapaneseMangaRuntime.recognize(bitmap, script.name)
         val regions = JSONObject(out.json).optJSONArray("regions") ?: return OcrResult(emptyList())
         val k = if (out.scale > 0f) 1f / out.scale else 1f
         val blocks = ArrayList<OcrBlock>()
@@ -44,8 +44,8 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
 }
 
 /**
- * The engine the scan pipeline actually uses. Japanese pages go to the dedicated manga model when it
- * has been downloaded; everything else (and any manga-model failure or empty result) stays on ML Kit,
+ * The engine the scan pipeline actually uses. Japanese, Chinese and Korean pages use the specialized
+ * comic detector with the appropriate recognizer when installed; other scripts or model failures use ML Kit,
  * so real-time scanning keeps working for all languages exactly as before.
  */
 /** Short, user-visible name of the engine that produced the LAST OCR result (shown in the activity chip). */
@@ -88,7 +88,7 @@ internal object OcrEngineStatus {
         used.startsWith("mlkit") -> "ML Kit"
         used == "paddle_small" -> "Paddle Small"
         used == "paddle_heavy" -> "Paddle Medium"
-        used == "manga" -> "Manga OCR"
+        used == "manga" -> "Multilingual Comic OCR"
         used == "rapid_onnx" -> "RapidOCR"
         else -> ""
     }
@@ -129,7 +129,9 @@ internal class RoutingOcrEngine : OcrEngine {
         // runs each detected box separately. Keep Korean/Japanese real-time scans on ML Kit instead.
         if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) return mlKit
         if (mode == "manga") {
-            return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
+            val supported = script == OcrScript.JAPANESE ||
+                script == OcrScript.CHINESE || script == OcrScript.KOREAN
+            return if (supported && JapaneseMangaRuntime.isAvailable()) manga else mlKit
         }
         if (mode == "paddle_small" || mode == "paddle_heavy") {
             val tier = if (mode == "paddle_small") "small" else "heavy"
