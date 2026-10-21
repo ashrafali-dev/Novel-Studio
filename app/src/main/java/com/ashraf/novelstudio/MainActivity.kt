@@ -3872,7 +3872,7 @@ return t.length>=40?'TXT:'+t:'';
                 dlg.dismiss()
                 toast("Translating " + (if (src == Langs.AUTO) "any language" else src) + " to " + tgt)
                 downloadLanguageFont(tgt)
-                if (firstRun) handler.postDelayed({ if (!isFinishing) showFirstPromptChoice() }, 400L)
+                if (firstRun) this@MainActivity.handler.postDelayed({ if (!isFinishing) showFirstPromptChoice() }, 400L)
             }
         }
         col.addView(save, LinearLayout.LayoutParams(MP, dp(52)).also { it.topMargin = dp(18) })
