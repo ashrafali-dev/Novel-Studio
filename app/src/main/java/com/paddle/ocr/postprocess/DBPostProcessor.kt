@@ -179,7 +179,7 @@ object DBPostProcessor {
         return try {
             Imgproc.convexHull(contour, indices, false)
             val points = contour.toArray()
-            indices.toArray().mapNotNull { index -> points.getOrNull(index) }
+            indices.toArray().map { index -> points.getOrNull(index) }.filterNotNull()
         } finally {
             indices.release()
         }
