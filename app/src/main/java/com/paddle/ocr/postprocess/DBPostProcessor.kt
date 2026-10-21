@@ -43,6 +43,7 @@ object DBPostProcessor {
         originalH: Int,
         originalW: Int,
         unclipContour: Boolean = false,
+        minSizeAfterUnclip: Float = MIN_SIZE_AFTER_UNCLIP,
     ): List<OCRBox> {
         require(boxType == "quad") { "Only DBPostProcess box_type=quad is supported" }
 
@@ -114,7 +115,12 @@ object DBPostProcessor {
 
                 // PP-OCR's DB post-process expands the source contour before the final min-area rectangle.
                 // The legacy Paddle path keeps its previous rectangle expansion unless explicitly opted in.
-                val unclipSource = if (unclipContour) contour.toList() else orderedPoints
+                val isSplitContour = extraContours.any { it === contour }
+                val unclipSource = when {
+                    !unclipContour -> orderedPoints
+                    isSplitContour -> convexHullPoints(contour)
+                    else -> contour.toList()
+                }
                 val expandedPts = PolygonUnclip.unclip(unclipSource, unclipRatio)
                 val expandedRect = MatOfPoint2f().let { expanded2f ->
                     try {
@@ -125,7 +131,7 @@ object DBPostProcessor {
                     }
                 }
                 val sside2 = minOf(expandedRect.size.width, expandedRect.size.height)
-                if (sside2 < MIN_SIZE_AFTER_UNCLIP) continue
+                if (sside2 < minSizeAfterUnclip) continue
 
                 val expandedBox = Array(4) { Point() }
                 expandedRect.points(expandedBox)
@@ -159,6 +165,21 @@ object DBPostProcessor {
             extraContours.forEach { it.release() }
             mask.release()
             rawProb.release()
+        }
+    }
+
+    /**
+     * splitMultiLine builds row-major pixel clouds rather than an ordered boundary contour.
+     * Convert only those synthetic pieces to an ordered convex hull before polygon unclip.
+     */
+    private fun convexHullPoints(contour: MatOfPoint): List<Point> {
+        val indices = org.opencv.core.MatOfInt()
+        return try {
+            Imgproc.convexHull(contour, indices, false)
+            val points = contour.toArray()
+            indices.toArray().mapNotNull { index -> points.getOrNull(index) }
+        } finally {
+            indices.release()
         }
     }
 
