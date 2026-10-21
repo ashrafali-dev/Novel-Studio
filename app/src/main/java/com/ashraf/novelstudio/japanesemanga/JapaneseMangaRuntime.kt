@@ -24,7 +24,7 @@ import kotlin.concurrent.withLock
 import kotlin.math.sqrt
 
 /**
- * Process-wide, headless host of the downloaded Japanese manga OCR model (PP-OCRv6_manga on
+ * Process-wide, headless host of the downloaded multilingual comic OCR model (PP-OCRv6_manga plus Korean recognition on
  * ONNX Runtime Web). The regular scan pipeline calls [recognize] from its worker threads, so the
  * dedicated model is used automatically whenever it is installed - no separate screen needed.
  *
@@ -112,7 +112,7 @@ internal object JapaneseMangaRuntime {
      * the bitmap that was scanned, divided by [Output.scale] when the picture had to be shrunk).
      * Throws on any failure so the caller can fall back to another engine.
      */
-    fun recognize(bitmap: Bitmap): Output {
+    fun recognize(bitmap: Bitmap, script: String = "JAPANESE"): Output {
         val m = manager ?: throw IOException("manga runtime not initialised")
         return ocrLock.withLock {
             inFlight++
@@ -143,7 +143,7 @@ internal object JapaneseMangaRuntime {
                         if (!work.compress(Bitmap.CompressFormat.JPEG, 92, it)) throw IOException("JPEG encode failed")
                     }
                     val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
-                        "," + JSONObject.quote(id) + ")"
+                        "," + JSONObject.quote(id) + "," + JSONObject.quote(script.uppercase()) + ")"
                     main.post { view?.evaluateJavascript(js, null) }
                     if (!pend.latch.await(OCR_TIMEOUT_S, TimeUnit.SECONDS)) {
                         fail("manga OCR timeout")
