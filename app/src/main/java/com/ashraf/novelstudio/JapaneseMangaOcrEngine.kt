@@ -257,7 +257,7 @@ internal class RoutingOcrEngine : OcrEngine {
             Thread.currentThread().interrupt()
             used = "cancelled(interrupted)"
             Log.d("NovelStudioOCR", "OCR job cancelled while waiting for the inference gate")
-            OcrResult(emptyList())
+            return OcrResult(emptyList())
         } finally {
             OcrEngineStatus.label = OcrEngineStatus.describe(selectedMode, used, fellBack)
             // Diagnostic line: ids/timings only, never the recognised text.
