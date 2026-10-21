@@ -147,7 +147,7 @@ object Langs {
         val p = Prefs.get(c, "prompt", "")
         val r = Prefs.get(c, "realtimePrompt", "")
         val sc = Prefs.get(c, "scanPrompt", "")
-        return (p.isNotBlank() && !Prefs.isDefaultNovelPrompt(p)) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT) || (sc.isNotBlank() && !Prefs.isDefaultScanPrompt(c, sc))
+        return (p.isNotBlank() && !Prefs.isDefaultNovelPrompt(p)) || (r.isNotBlank() && !Prefs.isDefaultRealtimePrompt(c, r)) || (sc.isNotBlank() && !Prefs.isDefaultScanPrompt(c, sc))
     }
 
     private fun classic(c: Context) = source(c) == AUTO && target(c) == DEFAULT_TARGET
@@ -184,17 +184,14 @@ object Langs {
     }
 
     fun realtimePrompt(c: Context): String {
-        if (classic(c)) return Prefs.DEFAULT_REALTIME_PROMPT
+        val src = source(c)
         val tgt = target(c)
-        return """You are an expert webtoon, manhwa and comic translator. Translate every piece of text read from the images${fromPart(c)} into clear, natural $tgt.
-
-Rules:
-- Keep each marker such as [001], [002] exactly once, in exactly the same order.
-- Do not skip any text: dialogue, narration, system windows and sound effects all count.
-- Keep the emotion, each character's voice and the meaning of the scene. Keep translations short and natural so they fit speech bubbles.
-- Do not rewrite the original text and do not add summaries or explanations.
-- Do not output your own thoughts, reasoning, status lines, headings, disclaimers or any extra commentary.
-- Return only the translation with the markers, in $tgt."""
+        val sourceDescription = if (src == AUTO) {
+            "automatically detect the source language from the text"
+        } else {
+            src
+        }
+        return "Translation target: $tgt. Source language: $sourceDescription.\\n\\n" + Prefs.DEFAULT_REALTIME_PROMPT
     }
 
     /**
