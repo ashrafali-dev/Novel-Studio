@@ -106,7 +106,7 @@ class JapaneseMangaEngineActivity : Activity() {
         languageButton = button("OCR ভাষা: Japanese") { chooseLanguage() }
         root.addView(languageButton, LinearLayout.LayoutParams(-1, dp(38)).apply { bottomMargin = dp(4) })
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        installButton = button("ডাউনলোড (~45 MB)") { confirmInstall() }
+        installButton = button("ডাউনলোড (~52 MB)") { confirmInstall() }
         deleteButton = button("ইঞ্জিন মুছুন") { confirmDelete() }
         row1.addView(installButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
         row1.addView(deleteButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(4) })
