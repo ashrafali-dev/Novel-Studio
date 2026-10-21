@@ -216,8 +216,13 @@ internal class RoutingOcrEngine : OcrEngine {
         }
     }
 
-    private fun useful(result: OcrResult): Boolean =
-        result.blocks.any { it.text.count { ch -> ch.isLetterOrDigit() } >= 2 }
+    private fun useful(result: OcrResult): Boolean {
+        // Comic SFX and dialogue can legitimately be a single CJK glyph. The general engines keep the
+        // stricter two-character guard to avoid false positives, but don't discard a one-character
+        // result from the manga-trained recognizer after it has already been fused with ML Kit.
+        val minimum = if (selectedMode == "manga") 1 else 2
+        return result.blocks.any { block -> block.text.count { ch -> ch.isLetterOrDigit() } >= minimum }
+    }
 
     private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
         val waited = OcrGate.Waited()
