@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, Mihon]
+    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr]
 
 jobs:
   build:
@@ -60,12 +60,13 @@ jobs:
             exit 1
           fi
 
+          # This fingerprint was verified against previously published release APKs.
           EXPECTED_CERT_SHA256="3e783739eb6e9aadf8bd9f5b23f8fb99a65c4cfabdcb8ec8fb09c2921dcbb44b"
           SIGNATURE_REPORT="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
           printf '%s\n' "$SIGNATURE_REPORT"
           ACTUAL_CERT_SHA256="$(printf '%s\n' "$SIGNATURE_REPORT" | awk '/certificate SHA-256 digest:/ {print tolower($NF); exit}')"
           if [ "$ACTUAL_CERT_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
-            echo "::error::Signing certificate changed. This APK will not be published as an updatable release."
+            echo "::error::Signing certificate changed. This APK would not update the established Novel Studio release."
             echo "::error::Expected SHA-256: $EXPECTED_CERT_SHA256"
             echo "::error::Actual SHA-256: ${ACTUAL_CERT_SHA256:-missing}"
             exit 1
