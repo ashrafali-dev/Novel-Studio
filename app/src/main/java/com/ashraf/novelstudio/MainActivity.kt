@@ -607,6 +607,11 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ community update notice
 
     private fun showUpdateNotice() {
+        NovelStudioAnalytics.track(
+            this, "app_update_seen",
+            mode = analyticsReadMode(),
+            provider = currentBotKey
+        )
         AlertDialog.Builder(this)
             .setTitle("App Updates")
             .setMessage(
@@ -3683,6 +3688,11 @@ return t.length>=40?'TXT:'+t:'';
         Langs.applyRuntime(this)
         refreshHome()
         handleIntent(intent)
+        NovelStudioAnalytics.track(
+            this, "app_open",
+            mode = analyticsReadMode(),
+            provider = currentBotKey
+        )
         // Ask once, before any reading starts: which language to which language.
         // New installs: the quick tour comes first and the language question follows it (see startTour).
         // Existing installs that already finished the tour but never chose a language are asked right away.
@@ -3853,6 +3863,12 @@ return t.length>=40?'TXT:'+t:'';
             isClickable = true
             setOnClickListener {
                 Langs.save(this@MainActivity, src, tgt)
+                NovelStudioAnalytics.track(
+                    this@MainActivity, "target_language_selected",
+                    mode = analyticsReadMode(),
+                    targetLanguage = tgt,
+                    provider = currentBotKey
+                )
                 dlg.dismiss()
                 toast("Translating " + (if (src == Langs.AUTO) "any language" else src) + " to " + tgt)
                 downloadLanguageFont(tgt)
@@ -4881,6 +4897,20 @@ return t.length>=40?'TXT:'+t:'';
         else -> ReadMode.NOVEL
     }
 
+    private fun analyticsReadMode(): String = when (currentReadMode()) {
+        ReadMode.NOVEL -> "novel"
+        ReadMode.SCAN -> "scanning"
+        ReadMode.REALTIME -> "realtime"
+    }
+
+    private fun trackReadModeSelection() {
+        NovelStudioAnalytics.track(
+            this, "mode_selected",
+            mode = analyticsReadMode(),
+            provider = currentBotKey
+        )
+    }
+
     /** Slot of the raised centre button inside the dock (it is slightly wider than the dock is tall). */
     private fun extractLp() = LinearLayout.LayoutParams(dp(74), dp(74)).also { it.setMargins(dp(-3), 0, dp(-3), 0) }
 
@@ -5030,6 +5060,7 @@ return t.length>=40?'TXT:'+t:'';
         }
         if (target != ReadMode.NOVEL) Prefs.put(this, "lastToonSub", if (target == ReadMode.REALTIME) "rt" else "scan")
         refreshModeChip()
+        trackReadModeSelection()
     }
 
     private fun showModeSheet() {
@@ -7944,6 +7975,12 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     private fun sendJob(tok: Int, ch: Chapter) {
+        NovelStudioAnalytics.track(
+            this, "translation_started",
+            mode = analyticsReadMode(),
+            targetLanguage = Langs.target(this),
+            provider = currentBotKey
+        )
         // Keep paragraph identity inside the AI request. These markers never reach
         // the novel page and are removed from the final saved/clipboard translation.
         val host = Uri.parse(ch.url).host?.lowercase().orEmpty()
@@ -8293,6 +8330,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             // A live batch is only the newly visible bubbles; saving it against the whole chapter URL
             // would overwrite the library entry with a partial translation.
             val savedTranslation = if (livePanelBatch) null else Store.save(this, ch, rawTranslation)
+            NovelStudioAnalytics.track(
+                this, "translation_completed",
+                mode = analyticsReadMode(),
+                targetLanguage = Langs.target(this),
+                provider = currentBotKey,
+                success = true
+            )
             if (DeepSeekRealtimeTranslation.isEnabled(this) && !livePanelBatch) {
                 // Full text fallback: the chatbot reply itself completes the normalized text hash.
                 completeDeepSeekHashBatch(ch)
@@ -8331,6 +8375,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     // on failure: stop the queue, keep the chapter on the clipboard so you can do it by hand
     private fun failJob(tok: Int, ch: Chapter, msg: String, fallback: Boolean = false, autoRetry: Boolean = false) {
         if (tok != runToken) return
+        NovelStudioAnalytics.track(
+            this, "translation_failed",
+            mode = analyticsReadMode(),
+            targetLanguage = Langs.target(this),
+            provider = currentBotKey,
+            success = false
+        )
         val aheadTaskKey = keyOf(ch)
         val aheadTask = rtAheadTranslationTasksByJobKey.remove(aheadTaskKey)
         if (aheadTask != null) {
@@ -9296,6 +9347,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     applyWebModeFlag(on)
                     refresh(i, menuWebModeLabel())
                     refreshModeChip()
+                    trackReadModeSelection()
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
@@ -9344,6 +9396,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         refreshModeChip()
                         toast("📖 AI Real-time Translation OFF — previous settings restored")
                     }
+                    trackReadModeSelection()
                 }
                 36 -> {
                     val on = !Prefs.bool(this, "rtSendPrompt", true)
@@ -10343,6 +10396,7 @@ ${rows.take(220).joinToString("\n")}
 
     override fun onPause() {
         stopUsageClock()
+        NovelStudioAnalytics.stopPresence()
         activityPausedAtMs = android.os.SystemClock.elapsedRealtime()
         if (!isFinishing) saveCurrentTabState()
         persistBrowserTabs()
@@ -10353,6 +10407,7 @@ ${rows.take(220).joinToString("\n")}
     override fun onResume() {
         super.onResume()
         startUsageClock()
+        NovelStudioAnalytics.startPresence(this) { analyticsReadMode() }
         // Explicitly resume WebView timers after returning from another app / a long background
         // pause. Some reader sites stop delivering animation, lazy-load and observer callbacks
         // until the WebView is resumed.
