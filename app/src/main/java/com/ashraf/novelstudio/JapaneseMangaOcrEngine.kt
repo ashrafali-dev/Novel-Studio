@@ -31,15 +31,30 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
             val w = r.optDouble("w", 0.0).toFloat() * k
             val h = r.optDouble("h", 0.0).toFloat() * k
             if (w < 4f || h < 4f) continue
+            val pointArray = r.optJSONArray("points")
+            val polygon = ArrayList<Pair<Float, Float>>()
+            if (pointArray != null) {
+                for (pi in 0 until pointArray.length()) {
+                    val pair = pointArray.optJSONArray(pi) ?: continue
+                    if (pair.length() < 2) continue
+                    polygon.add(Pair(pair.optDouble(0, 0.0).toFloat() * k, pair.optDouble(1, 0.0).toFloat() * k))
+                }
+            }
+            val orientedW = (r.optDouble("orientedW", w.toDouble()).toFloat() * k).coerceAtLeast(1f)
+            val orientedH = (r.optDouble("orientedH", h.toDouble()).toFloat() * k).coerceAtLeast(1f)
+            val angle = OcrPost.foldAngle(r.optDouble("angle", 0.0).toFloat())
+            val vertical = r.optBoolean("vertical", false)
             val font = r.optDouble("font", 0.0).toFloat() * k
             val block = OcrBlock(
                 text = text,
                 top = y.toInt(), left = x.toInt(),
-                cx = x + w / 2f, cy = y + h / 2f,
-                w = w, h = h, angle = 0f,
-                fontPx = if (font > 0f) font else minOf(w, h),
-                vertical = r.optBoolean("vertical", false),
-                confidence = r.optDouble("recConfidence", 0.0).toFloat().coerceIn(0f, 1f)
+                cx = r.optDouble("cx", (x + w / 2f).toDouble()).toFloat() * k,
+                cy = r.optDouble("cy", (y + h / 2f).toDouble()).toFloat() * k,
+                w = orientedW, h = orientedH, angle = angle,
+                fontPx = if (font > 0f) font else if (vertical) orientedW else orientedH,
+                vertical = vertical,
+                confidence = r.optDouble("recConfidence", 0.0).toFloat().coerceIn(0f, 1f),
+                polygon = polygon
             )
             if (!OcrPost.isNoise(block)) blocks.add(block)
         }
