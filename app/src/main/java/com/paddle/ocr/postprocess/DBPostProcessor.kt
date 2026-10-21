@@ -54,6 +54,7 @@ object DBPostProcessor {
         val rawProb = Mat(pH, pW, CvType.CV_32FC1)
         val mask = Mat(pH, pW, CvType.CV_8UC1)
         val contours = mutableListOf<MatOfPoint>()
+        val extraContours = mutableListOf<MatOfPoint>()
         val hierarchy = Mat()
         var contourMask = mask
 
@@ -81,8 +82,16 @@ object DBPostProcessor {
             Imgproc.findContours(contourMask, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE)
             val boxes = mutableListOf<OCRBox>()
             val numContours = minOf(contours.size, maxCandidates)
+            // A low threshold makes two tightly spaced lines of one bubble bridge into ONE blob. The recogniser then
+            // reads a two-line crop as a single line and the second line silently disappears. Split such blobs at the
+            // empty rows between the lines so each line is detected and recognised on its own.
+            val pieces = ArrayList<MatOfPoint>()
             for (index in 0 until numContours) {
                 val contour = contours[index]
+                val parts = splitMultiLine(contour, pred, pW, pH)
+                if (parts == null) pieces.add(contour) else { pieces.addAll(parts); extraContours.addAll(parts) }
+            }
+            for (contour in pieces) {
                 val contour2f = MatOfPoint2f(*contour.toArray())
                 val rect = try {
                     Imgproc.minAreaRect(contour2f)
@@ -143,9 +152,103 @@ object DBPostProcessor {
                 contourMask.release()
             }
             contours.forEach { it.release() }
+            extraContours.forEach { it.release() }
             mask.release()
             rawProb.release()
         }
+    }
+
+    private const val CORE_PROB = 0.5f
+    private const val MIN_BAND_ROWS = 6
+
+    /**
+     * Returns per-line point sets when [contour] covers two or more stacked text lines (rows with almost no
+     * confident text pixels between them), or null when it is a single line / not worth splitting.
+     * Horizontal text only: tall blobs (vertical text) are left alone.
+     */
+    private fun splitMultiLine(contour: MatOfPoint, pred: FloatArray, pW: Int, pH: Int): List<MatOfPoint>? {
+        val r = Imgproc.boundingRect(contour)
+        if (r.width < 8 || r.height < MIN_BAND_ROWS * 2 + 2) return null
+        if (r.height > r.width * 1.5) return null
+        val fill = Mat.zeros(r.height, r.width, CvType.CV_8UC1)
+        try {
+            Imgproc.drawContours(
+                fill, listOf(contour), 0, Scalar(255.0), -1, Imgproc.LINE_8, Mat(), Int.MAX_VALUE,
+                Point(-r.x.toDouble(), -r.y.toDouble()),
+            )
+            val bytes = ByteArray(r.width * r.height)
+            fill.get(0, 0, bytes)
+            val counts = IntArray(r.height)
+            for (y in 0 until r.height) {
+                val rowBase = (r.y + y) * pW + r.x
+                var c = 0
+                for (x in 0 until r.width) {
+                    if (bytes[y * r.width + x].toInt() != 0) {
+                        val idx = rowBase + x
+                        if (idx in pred.indices && pred[idx] >= CORE_PROB) c++
+                    }
+                }
+                counts[y] = c
+            }
+            val splits = findSplitRows(counts) ?: return null
+            // cut points -> bands; each band keeps the blob's own pixels (above the threshold) in that row range
+            val bounds = ArrayList<Int>()
+            bounds.add(0); bounds.addAll(splits); bounds.add(r.height)
+            val out = ArrayList<MatOfPoint>()
+            for (i in 0 until bounds.size - 1) {
+                val y0 = bounds[i]
+                val y1 = bounds[i + 1]
+                if (y1 - y0 < 3) continue
+                val pts = ArrayList<Point>()
+                for (y in y0 until y1) {
+                    for (x in 0 until r.width) {
+                        if (bytes[y * r.width + x].toInt() != 0) pts.add(Point((r.x + x).toDouble(), (r.y + y).toDouble()))
+                    }
+                }
+                if (pts.size < 6) continue
+                out.add(MatOfPoint().also { it.fromList(pts) })
+            }
+            return if (out.size >= 2) out else null
+        } finally {
+            fill.release()
+        }
+    }
+
+    /** Rows (relative to the blob top) at which to cut, or null when the blob is a single line. */
+    private fun findSplitRows(counts: IntArray): List<Int>? {
+        val n = counts.size
+        val sm = DoubleArray(n)
+        for (y in 0 until n) {
+            var sum = 0.0; var k = 0
+            for (d in -1..1) { val yy = y + d; if (yy in 0 until n) { sum += counts[yy]; k++ } }
+            sm[y] = sum / k
+        }
+        val peak = sm.maxOrNull() ?: 0.0
+        if (peak < 6.0) return null
+        val low = peak * 0.12
+        val cuts = ArrayList<Int>()
+        var y = 0
+        var bandStart = 0
+        while (y < n) {
+            if (sm[y] > low) { y++; continue }
+            var e = y
+            while (e < n && sm[e] <= low) e++
+            // [y, e) is an empty run. Interior runs separate two lines; runs touching the edge are just margin.
+            if (y > 0 && e < n) {
+                val above = (bandStart until y).maxOfOrNull { sm[it] } ?: 0.0
+                val belowEnd = run { var t = e; while (t < n && sm[t] > low) t++; t }
+                val below = (e until belowEnd).maxOfOrNull { sm[it] } ?: 0.0
+                val aboveRows = y - bandStart
+                val belowRows = belowEnd - e
+                val minRows = maxOf(MIN_BAND_ROWS, (n * 0.2).toInt())
+                if (above >= 6.0 && below >= 6.0 && aboveRows >= minRows && belowRows >= minRows) {
+                    cuts.add((y + e) / 2)
+                    bandStart = e
+                }
+            }
+            y = e
+        }
+        return if (cuts.isEmpty()) null else cuts
     }
 
     private fun scalePoint(
