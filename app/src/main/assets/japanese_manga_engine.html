@@ -29,8 +29,8 @@
     // Android WebView appassets content cannot rely on cross-origin isolation.
     // Use the single-thread SIMD backend so SharedArrayBuffer is not required.
     ort.env.wasm.wasmPaths = {
-      mjs: BASE + 'ort-wasm-simd.mjs',
-      wasm: BASE + 'ort-wasm-simd.wasm'
+      mjs: BASE + 'ort-wasm-simd-threaded.mjs',
+      wasm: BASE + 'ort-wasm-simd-threaded.wasm'
     };
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
