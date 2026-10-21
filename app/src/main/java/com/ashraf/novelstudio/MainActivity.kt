@@ -4930,13 +4930,13 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR)"
+    private fun menuOcrModelsLabel(): String = "🧠 OCR engine & models (ML Kit / PaddleOCR / Comic OCR)"
 
     private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
         "paddle_small" -> "PaddleOCR Small"
         "paddle_heavy" -> "PaddleOCR Medium"
         "rapid_onnx" -> "RapidOCR / legacy ONNX"
-        "manga" -> "Japanese Manga OCR"
+        "manga" -> "Multilingual Comic OCR"
         else -> "ML Kit · Default"
     }
 
@@ -4947,7 +4947,7 @@ return t.length>=40?'TXT:'+t:'';
             "PaddleOCR PP-OCRv6 Small — fast, low RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "PaddleOCR PP-OCRv6 Medium — most accurate, needs more RAM (English/Chinese/Japanese; Korean uses the PP-OCRv5 Korean pack)",
             "RapidOCR ONNX — legacy optional engine",
-            "Japanese Manga OCR — if its model is installed"
+            "Multilingual Comic OCR — Japanese / Chinese / Korean, if its model is installed"
         )
         val rec = DeviceTier.recommendedEngine(this)
         for (i in keys.indices) if (keys[i] == rec) labels[i] = "⭐ Recommended for your phone — " + labels[i]
@@ -8844,7 +8844,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Prompt For Live Translation", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
-            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
+            "🌏 Multilingual Comic OCR Engine (optional)", menuTextRemovalLabel(),
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
@@ -9768,9 +9768,9 @@ ${rows.take(220).joinToString("\n")}
         val raw = data?.getStringExtra(
             com.ashraf.novelstudio.japanesemanga.JapaneseMangaEngineActivity.EXTRA_RESULT_JSON
         ).orEmpty()
-        if (raw.isBlank()) return toast("⚠️ Japanese Manga OCR result is empty")
+        if (raw.isBlank()) return toast("⚠️ Multilingual Comic OCR result is empty")
         val parsed = JapaneseMangaResultParser.parse(raw)
-            ?: return toast("⚠️ Japanese Manga OCR result is invalid; nothing was sent")
+            ?: return toast("⚠️ Multilingual Comic OCR result is invalid; nothing was sent")
         val pageUrl = parsed.pageUrl
         if (cleanUrl(pageUrl) != cleanUrl(novelWv.url.orEmpty())) {
             toast("⚠️ Page changed while OCR was running; no translation was started")
@@ -9782,7 +9782,7 @@ ${rows.take(220).joinToString("\n")}
         if (sourceText.isBlank()) return toast("⚠️ OCR text is empty")
         WebModeLayoutStore.setScan(pageUrl, layout)
         val host = Uri.parse(pageUrl).host.orEmpty().lowercase().removePrefix("www.")
-        val title = novelWv.title.orEmpty().trim().ifBlank { "Japanese Manga" }
+        val title = novelWv.title.orEmpty().trim().ifBlank { "Multilingual Comic" }
         val chapter = Chapter(
             title = title,
             text = sourceText,
@@ -9797,7 +9797,7 @@ ${rows.take(220).joinToString("\n")}
             prevSel = ""
         )
         JapaneseMangaSession.register(chapter)
-        toast("🎌 Manga OCR: ${layout.bubbles.size} text regions · sending for translation")
+        toast("🌏 Comic OCR: ${layout.bubbles.size} text regions · sending for translation")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
