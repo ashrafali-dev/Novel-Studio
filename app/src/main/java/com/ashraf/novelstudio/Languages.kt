@@ -147,7 +147,7 @@ object Langs {
         val p = Prefs.get(c, "prompt", "")
         val r = Prefs.get(c, "realtimePrompt", "")
         val sc = Prefs.get(c, "scanPrompt", "")
-        return (p.isNotBlank() && !Prefs.isDefaultNovelPrompt(p)) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT) || sc.isNotBlank()
+        return (p.isNotBlank() && !Prefs.isDefaultNovelPrompt(p)) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT) || (sc.isNotBlank() && !Prefs.isDefaultScanPrompt(c, sc))
     }
 
     private fun classic(c: Context) = source(c) == AUTO && target(c) == DEFAULT_TARGET
