@@ -20,4 +20,4 @@ This optional engine is used by NovelStudio's OCR/Webtoon translation pipeline w
 - Files used: ort.wasm.min.js, ort-wasm-simd-threaded.mjs, ort-wasm-simd-threaded.wasm.
 
 ## Limitations
-The comic detector and recognizer are trained primarily on Japanese/Chinese comics. Korean uses a general Korean recognizer paired with the comic detector, so stylized Hangul SFX still needs testing and eventual fine-tuning. The engine can still miss tiny furigana, rotated effect lettering, blurred panels and unusual fonts.
+The comic detector and recognizer are trained primarily on Japanese/Chinese comics. Korean uses a general Korean recognizer paired with the comic detector, so stylized Hangul SFX still needs testing and eventual fine-tuning. The WebView integration currently uses a custom connected-component/bounding-box post-processor rather than the reference implementation's full DBPostProcess polygon scoring and furigana filter; therefore the upstream CER benchmarks must not be read as NovelStudio accuracy. The engine can still miss tiny furigana, rotated effect lettering, blurred panels and unusual fonts.
