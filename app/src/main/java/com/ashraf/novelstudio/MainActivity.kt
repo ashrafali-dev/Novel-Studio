@@ -1445,7 +1445,7 @@ Never use "~", "-", or another placeholder to represent unreadable or non-dialog
 Do not invent text. Keep each translation short enough to fit a speech bubble.
 Translate ONLY the words that are written under each marker. Never add names, sentences or meaning from the
 story, from other markers or from your own guess; a one-word marker (a shout, a sound effect, a title) gets a
-one-word translation. Each marker must stay faithful to its own ${Langs.sourceLabel(this)} text, word for word in meaning.
+one-word translation. Each marker must stay faithful to its own ${Langs.source(this)} text, word for word in meaning.
 """.trimIndent()
         // This is a separate chatbot page with no prior prompt in its conversation, so always include
         // the full active translation prompt, even if the visible-chat option normally sends it once.
