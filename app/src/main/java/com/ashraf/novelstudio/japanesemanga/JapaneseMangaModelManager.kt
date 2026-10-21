@@ -39,9 +39,9 @@ internal class JapaneseMangaModelManager(context: Context) {
 
     @Synchronized fun isInstalled(): Boolean {
         val now = SystemClock.elapsedRealtime()
-        // Hash the downloaded bundle only when first checked / invalidated. OCR asks this during routing,
-        // so doing a full 50 MB digest on every frame would cause avoidable stalls.
-        if (installedCacheCheckedAt > 0L && now - installedCacheCheckedAt < 30_000L) return installedCacheValue
+        // Hash the downloaded bundle once per process lifetime (or after explicit install/delete invalidation).
+        // Routing queries this frequently during realtime OCR; repeated multi-file hashing causes stalls and heat.
+        if (installedCacheCheckedAt > 0L) return installedCacheValue
         installedCacheValue = try {
             if (!marker.isFile) false else {
                 val meta = JSONObject(marker.readText())
