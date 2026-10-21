@@ -9,6 +9,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import android.os.SystemClock
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -21,6 +22,8 @@ internal class JapaneseMangaModelManager(context: Context) {
     private val active = AtomicReference<HttpURLConnection?>(null)
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "japanese-manga-models").apply { isDaemon = true } }
     @Volatile private var busy = false
+    @Volatile private var installedCacheCheckedAt = 0L
+    @Volatile private var installedCacheValue = false
 
     data class Progress(val index: Int, val count: Int, val name: String, val read: Long, val total: Long)
     sealed class Result {
@@ -35,21 +38,37 @@ internal class JapaneseMangaModelManager(context: Context) {
     fun packageBytes(): Long = SPECS.sumOf { safeFile(it.path)?.takeIf { file -> file.isFile }?.length() ?: 0L }
 
     @Synchronized fun isInstalled(): Boolean {
-        if (!marker.isFile) return false
-        return try {
-            val meta = JSONObject(marker.readText())
-            val installedFiles = meta.optJSONObject("files") ?: return false
-            meta.optString("version") == VERSION && meta.optBoolean("ready") &&
-                SPECS.all { s ->
-                    val file = safeFile(s.path)
-                    val entry = installedFiles.optJSONObject(s.path)
-                    file?.let {
-                        it.isFile && it.length() in s.min..s.max &&
-                            entry != null && entry.optLong("bytes", -1L) == it.length() &&
-                            (s.sha256 == null || entry.optString("sha256") == s.sha256)
-                    } == true
-                }
+        val now = SystemClock.elapsedRealtime()
+        // Hash the downloaded bundle only when first checked / invalidated. OCR asks this during routing,
+        // so doing a full 50 MB digest on every frame would cause avoidable stalls.
+        if (now - installedCacheCheckedAt < 30_000L) return installedCacheValue
+        installedCacheValue = try {
+            if (!marker.isFile) false else {
+                val meta = JSONObject(marker.readText())
+                val installedFiles = meta.optJSONObject("files")
+                installedFiles != null &&
+                    meta.optString("version") == VERSION && meta.optBoolean("ready") &&
+                    SPECS.all { s ->
+                        val file = safeFile(s.path)
+                        val entry = installedFiles.optJSONObject(s.path)
+                        file?.let {
+                            val savedHash = entry?.optString("sha256").orEmpty()
+                            it.isFile && it.length() in s.min..s.max &&
+                                entry != null && entry.optLong("bytes", -1L) == it.length() &&
+                                savedHash.matches(Regex("[0-9a-fA-F]{64}")) &&
+                                sha256(it).equals(savedHash, ignoreCase = true) &&
+                                (s.sha256 == null || savedHash.equals(s.sha256, ignoreCase = true))
+                        } == true
+                    }
+            }
         } catch (_: Exception) { false }
+        installedCacheCheckedAt = now
+        return installedCacheValue
+    }
+
+    private fun invalidateInstalledCache() {
+        installedCacheValue = false
+        installedCacheCheckedAt = 0L
     }
 
     fun cancel() {
@@ -70,6 +89,7 @@ internal class JapaneseMangaModelManager(context: Context) {
             try {
                 if (!root.exists() && !root.mkdirs()) error("ইঞ্জিন ফোল্ডার তৈরি করা যায়নি")
                 marker.delete()
+                invalidateInstalledCache()
                 SPECS.forEachIndexed { i, spec ->
                     checkCancel()
                     val target = safeFile(spec.path) ?: error("অবৈধ ফাইল পাথ")
@@ -145,6 +165,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     @Synchronized fun deleteEngine(): Boolean {
         if (busy) return false
         marker.delete()
+        invalidateInstalledCache()
         return !root.exists() || root.deleteRecursively()
     }
 
@@ -159,6 +180,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     }
 
     private fun cleanupPartial() {
+        invalidateInstalledCache()
         SPECS.forEach { s -> safeFile(s.path)?.let { File(it.parentFile, it.name + ".part").delete() } }
         File(root, "engine_manifest.part").delete()
         marker.delete()
