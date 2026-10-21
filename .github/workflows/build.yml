@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, fix/whole-bubble-translation-context]
+    branches: [main, master, Mihon]
 
 jobs:
   build:
@@ -19,7 +19,7 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Validate release signing key
+      - name: Validate permanent release signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           for variable in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
             if [ -z "${!variable:-}" ]; then
-              echo "::error::$variable GitHub Secret is missing. Refusing to build an APK that cannot update existing installs."
+              echo "::error::$variable GitHub Secret is missing. Refusing to create an incompatible APK."
               exit 1
             fi
           done
@@ -37,10 +37,8 @@ jobs:
           KEYSTORE_PATH="$RUNNER_TEMP/novelstudio-release.jks"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
           test -s "$KEYSTORE_PATH"
-
-          # Validate the keystore password and alias without printing any secrets.
           keytool -list -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
-          echo "Release keystore and alias validated."
+          echo "Permanent release keystore and alias validated."
 
       - name: Build signed release APK
         env:
@@ -50,7 +48,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon
 
-      - name: Verify APK signature
+      - name: Verify APK package and permanent signing certificate
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
@@ -62,8 +60,18 @@ jobs:
             exit 1
           fi
 
-          # Prints the public certificate fingerprint only; never prints private key material.
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          EXPECTED_CERT_SHA256="3e783739eb6e9aadf8bd9f5b23f8fb99a65c4cfabdcb8ec8fb09c2921dcbb44b"
+          SIGNATURE_REPORT="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+          printf '%s\n' "$SIGNATURE_REPORT"
+          ACTUAL_CERT_SHA256="$(printf '%s\n' "$SIGNATURE_REPORT" | awk '/certificate SHA-256 digest:/ {print tolower($NF); exit}')"
+          if [ "$ACTUAL_CERT_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::Signing certificate changed. This APK will not be published as an updatable release."
+            echo "::error::Expected SHA-256: $EXPECTED_CERT_SHA256"
+            echo "::error::Actual SHA-256: ${ACTUAL_CERT_SHA256:-missing}"
+            exit 1
+          fi
+
+          echo "PASS: APK uses the permanent Novel Studio release signing certificate."
 
       - uses: actions/upload-artifact@v4
         with:
