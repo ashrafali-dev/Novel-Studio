@@ -126,7 +126,7 @@ internal object JapaneseMangaRuntime {
                 val dir = File(m.root, "input")
                 if (!dir.exists() && !dir.mkdirs()) throw IOException("input folder unavailable")
                 val id = "rt-" + UUID.randomUUID().toString()
-                val file = File(dir, "$id.jpg")
+                val file = File(dir, "$id.png")
 
                 var work = bitmap
                 var scale = 1f
@@ -143,9 +143,9 @@ internal object JapaneseMangaRuntime {
                 pending[id] = pend
                 try {
                     FileOutputStream(file).use {
-                        if (!work.compress(Bitmap.CompressFormat.JPEG, 92, it)) throw IOException("JPEG encode failed")
+                        if (!work.compress(Bitmap.CompressFormat.PNG, 100, it)) throw IOException("PNG encode failed")
                     }
-                    val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".jpg") +
+                    val js = "window.runJapaneseMangaOcr(" + JSONObject.quote(INPUT_URL + id + ".png") +
                         "," + JSONObject.quote(id) + "," + JSONObject.quote(script.uppercase()) + ")"
                     main.post { view?.evaluateJavascript(js, null) }
                     if (!pend.latch.await(OCR_TIMEOUT_S, TimeUnit.SECONDS)) {
