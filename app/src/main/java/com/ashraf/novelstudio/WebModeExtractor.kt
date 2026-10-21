@@ -1730,7 +1730,11 @@ internal class WebModeExtractor(
         private fun recognizeCore(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
             // Real-time (fastMode) used to run the full 4-pass engine for English: the main reason a screen took
             // seconds. The light engine (plain + one enlarged view) plus the targeted rescan reads the same text.
-            val first = if (fastMode) engine.recognizeFast(bmp, st.current)
+            val first = if ((engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true) {
+                // Lens already detects text and geometry in one remote request; do not run a second
+                // identical request through the fast-first path for short CJK replies.
+                engine.recognize(bmp, st.current)
+            } else if (fastMode) engine.recognizeFast(bmp, st.current)
             else if (st.current == OcrScript.LATIN) engine.recognize(bmp, st.current)
             else if (scanFastFirst()) {
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
