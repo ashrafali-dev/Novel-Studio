@@ -180,7 +180,7 @@ object Langs {
         } else {
             src
         }
-        return "Translation target: $tgt. Source language: $sourceDescription.\\n\\n" + Prefs.DEFAULT_SCAN_PROMPT
+        return "Translation target: $tgt. Source language: $sourceDescription.\n\n" + Prefs.DEFAULT_SCAN_PROMPT
     }
 
     fun realtimePrompt(c: Context): String {
@@ -191,7 +191,7 @@ object Langs {
         } else {
             src
         }
-        return "Translation target: $tgt. Source language: $sourceDescription.\\n\\n" + Prefs.DEFAULT_REALTIME_PROMPT
+        return "Translation target: $tgt. Source language: $sourceDescription.\n\n" + Prefs.DEFAULT_REALTIME_PROMPT
     }
 
     /**
