@@ -409,9 +409,10 @@ class JapaneseMangaEngineActivity : Activity() {
             var failure = ""
             try {
                 val file = imageFile ?: error("English OCR image path is invalid")
-                bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: error("English OCR image decode failed")
+                val decoded = BitmapFactory.decodeFile(file.absolutePath) ?: error("English OCR image decode failed")
+                bitmap = decoded
                 val engine = MlKitOcrEngine()
-                val result = try { engine.recognize(bitmap, OcrScript.LATIN) } finally { engine.close() }
+                val result = try { engine.recognize(decoded, OcrScript.LATIN) } finally { engine.close() }
                 val regions = JSONArray()
                 result.blocks.forEach { block ->
                     val left = (block.cx - block.w / 2f).toInt().coerceIn(0, (bitmap!!.width - 1).coerceAtLeast(0))
