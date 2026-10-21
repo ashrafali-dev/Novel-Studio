@@ -213,12 +213,12 @@ internal class JapaneseMangaModelManager(context: Context) {
             Asset("ort.wasm.min.js", ORT + "ort.wasm.min.js", 10000, 200000),
             Asset("ort-wasm-simd-threaded.wasm", ORT + "ort-wasm-simd-threaded.wasm", 5000000, 40000000),
             Asset("ort-wasm-simd-threaded.mjs", ORT + "ort-wasm-simd-threaded.mjs", 5000, 200000),
-            Asset("det/manga_det_v0.2.onnx", HF + "det/manga_det_v0.2.onnx", 500000, 8000000),
-            Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 10000000, 30000000),
-            Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 10000, 1000000),
+            Asset("det/manga_det_v0.2.onnx", HF + "det/manga_det_v0.2.onnx", 1816954, 1816954, "d132078c46e292b226fb5a2ca52a7612ad319262dfdf493e7d8e3be435295978"),
+            Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 21167540, 21167540, "de12c84c63e62c80339e882e675983d886670dcb6f0147e1ed041afd6fa81888"),
+            Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 74947, 74947, "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"),
             // Korean uses the comic detector with a script-specific recognition model and dictionary.
-            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 1000000, 20000000, "92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08"),
-            Asset("korean_dict.txt", "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv5_korean_dict.txt", 47000, 50000, "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7")
+            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 13418787, 13418787, "92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08"),
+            Asset("korean_dict.txt", "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv5_korean_dict.txt", 47451, 47451, "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7")
         )
     }
 }
