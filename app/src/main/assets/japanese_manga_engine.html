@@ -216,9 +216,23 @@
     if(vocab!==activeDictionary.length)throw new Error('Recognizer/dictionary mismatch for '+script+': model='+vocab+' dictionary='+activeDictionary.length);
     let prev=-1,text='',confidenceTotal=0,confidenceCount=0;
     for(let t=0;t<steps;t++){
-      let best=0,bestValue=-Infinity,offset=t*vocab;
-      for(let k=0;k<vocab;k++){const v=values[offset+k];if(v>bestValue){bestValue=v;best=k;}}
-      if(best!==0&&best!==prev&&activeDictionary[best]!==undefined){text+=activeDictionary[best];confidenceTotal+=bestValue;confidenceCount++;}
+      let best=0,bestValue=-Infinity,offset=t*vocab,rowSum=0,minValue=Infinity;
+      for(let k=0;k<vocab;k++){
+        const v=values[offset+k];
+        rowSum+=v;minValue=Math.min(minValue,v);
+        if(v>bestValue){bestValue=v;best=k;}
+      }
+      if(best!==0&&best!==prev&&activeDictionary[best]!==undefined){
+        // Some exports return softmax probabilities, others return logits. Normalize only logits so the
+        // geometry/text fusion receives a meaningful 0..1 confidence instead of every logit >1 being clamped to 1.
+        let confidence=bestValue;
+        if(minValue < -1e-6 || Math.abs(rowSum-1)>0.05){
+          let expSum=0;
+          for(let k=0;k<vocab;k++)expSum+=Math.exp(values[offset+k]-bestValue);
+          confidence=expSum>0?1/expSum:0;
+        }
+        text+=activeDictionary[best];confidenceTotal+=confidence;confidenceCount++;
+      }
       prev=best;
     }
     return {text:text.trim(),confidence:confidenceCount?Math.max(0,Math.min(1,confidenceTotal/confidenceCount)):0};
