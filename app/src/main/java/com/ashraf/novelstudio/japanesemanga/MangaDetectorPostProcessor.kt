@@ -60,7 +60,8 @@ internal object MangaDetectorPostProcessor {
                 // DBPostProcessor maps detector-map pixels back to the resized detector input. We then
                 // scale those points to the original source bitmap below.
                 originalH = resizedH,
-                originalW = resizedW
+                originalW = resizedW,
+                unclipContour = true
             )
 
             val out = JSONArray()
