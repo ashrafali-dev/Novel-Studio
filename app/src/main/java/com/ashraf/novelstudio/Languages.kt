@@ -147,7 +147,7 @@ object Langs {
         val p = Prefs.get(c, "prompt", "")
         val r = Prefs.get(c, "realtimePrompt", "")
         val sc = Prefs.get(c, "scanPrompt", "")
-        return (p.isNotBlank() && p != Prefs.DEFAULT_PROMPT) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT) || sc.isNotBlank()
+        return (p.isNotBlank() && !Prefs.isDefaultNovelPrompt(p)) || (r.isNotBlank() && r != Prefs.DEFAULT_REALTIME_PROMPT) || sc.isNotBlank()
     }
 
     private fun classic(c: Context) = source(c) == AUTO && target(c) == DEFAULT_TARGET
@@ -158,17 +158,14 @@ object Langs {
     }
 
     fun novelPrompt(c: Context): String {
-        if (classic(c)) return Prefs.DEFAULT_PROMPT
+        val src = source(c)
         val tgt = target(c)
-        return """You are an expert novel translator. I will send you chapters of web novels${fromPart(c)}. Translate every chapter into natural, fluent $tgt.
-
-Rules:
-- Do not skip anything and do not summarize. Translate the whole chapter.
-- Keep character names and special terms (skills, ranks, place names) identical in every chapter.
-- Keep the tone of the dialogue and the narration the same as the original.
-- Reply with the translation only, with no extra comments.
-
-From now on, translate whatever I send."""
+        val sourceDescription = if (src == AUTO) {
+            "automatically detect the source language from the text"
+        } else {
+            src
+        }
+        return "Translation target: $tgt. Source language: $sourceDescription.\\n\\n" + Prefs.DEFAULT_PROMPT
     }
 
     fun realtimePrompt(c: Context): String {
