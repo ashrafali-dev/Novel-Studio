@@ -19,16 +19,28 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Prepare release keystore
+      - name: Validate release signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "KEYSTORE_BASE64 GitHub Secret is missing."
-            exit 1
-          fi
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/novelstudio-release.jks"
-          test -s "$RUNNER_TEMP/novelstudio-release.jks"
+          set -euo pipefail
+          for variable in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!variable:-}" ]; then
+              echo "::error::$variable GitHub Secret is missing. Refusing to build an APK that cannot update existing installs."
+              exit 1
+            fi
+          done
+
+          KEYSTORE_PATH="$RUNNER_TEMP/novelstudio-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+
+          # Validate the keystore password and alias without printing any secrets.
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+          echo "Release keystore and alias validated."
 
       - name: Build signed release APK
         env:
@@ -38,7 +50,23 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon
 
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+
+          APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo "::error::Android apksigner was not found."
+            exit 1
+          fi
+
+          # Prints the public certificate fingerprint only; never prints private key material.
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: NovelStudio-v1.6.3-63-apk
+          name: NovelStudio-signed-release-v1.6.3-63
           path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
