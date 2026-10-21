@@ -453,11 +453,14 @@ internal class WebModeExtractor(
             }
             if (pinned == null) {
                 val guessed = WebModeLogic.pickScript(lang, url)
-                // A generic image-hosting URL often has no page language metadata. When Comic OCR is
-                // selected, don't silently send such pages to Latin-only ML Kit; use the manga recognizer
-                // as the first guess and try the Korean recognizer first if it yields little useful text.
+                // Keep explicit page language / locale URL choices authoritative. In particular, an /en/
+                // Webtoon must stay Latin so RoutingOcrEngine uses the bundled ML Kit Latin recognizer instead
+                // of trying the Japanese manga recognizer first. Only guess Japanese for an unknown generic
+                // image URL with no document-language metadata and no explicit locale in its path.
                 val selectedEngine = Prefs.get(wv.context, "ocrEngine", "mlkit")
-                val autoScript = if (selectedEngine == "manga" && guessed == OcrScript.LATIN)
+                val explicitLocale = lang.isNotBlank() ||
+                    Regex("(?i)/(en|ko|ja|zh)(?:/|$)").containsMatchIn(url)
+                val autoScript = if (selectedEngine == "manga" && guessed == OcrScript.LATIN && !explicitLocale)
                     OcrScript.JAPANESE else guessed
                 return ScriptState(autoScript)
             }
