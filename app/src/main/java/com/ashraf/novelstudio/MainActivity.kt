@@ -604,60 +604,18 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ------------------------------------------------------------------ in-app update
+    // ------------------------------------------------------------------ community update notice
 
-    private fun checkForUpdate(manual: Boolean) {
-        if (Updater.repo(this).isBlank()) {
-            if (!manual) return
-            val et = EditText(this).apply { hint = "owner/repository"; setSingleLine() }
-            val col = LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(et) }
-            AlertDialog.Builder(this)
-                .setTitle("GitHub repository for updates")
-                .setMessage("Where do you publish releases? Example: yourname/Novel-Studio. Attach the APK to each release.")
-                .setView(col)
-                .setPositiveButton("Save") { _, _ ->
-                    Prefs.put(this, "updateRepo", et.text.toString().trim())
-                    checkForUpdate(true)
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            return
-        }
-        if (manual) toast("Checking for updates…")
-        Updater.check(this) { info, err ->
-            if (isFinishing) return@check
-            when {
-                info != null -> {
-                    updateInfo = info
-                    AlertDialog.Builder(this)
-                        .setTitle("Update available: v" + info.version)
-                        .setMessage("You have v" + Updater.currentVersion(this) + ".\n\n" + info.notes.ifBlank { "New version." })
-                        .setPositiveButton("Download & install") { _, _ -> downloadAndInstallUpdate(info) }
-                        .setNegativeButton("Later", null)
-                        .show()
-                }
-                err != null -> if (manual) toast("⚠️ $err")
-                else -> if (manual) toast("✅ You have the latest version (v" + Updater.currentVersion(this) + ")")
-            }
-        }
-    }
-
-    private fun downloadAndInstallUpdate(info: Updater.Info) {
-        toast("⬇️ Downloading v" + info.version + "…")
-        Updater.download(this, info, { pct -> toast("⬇️ Update $pct%") }) { file, err ->
-            if (isFinishing) return@download
-            if (file == null) { toast("❌ " + (err ?: "Download failed")); return@download }
-            if (!Updater.install(this, file)) toast("Allow installs from Novel Studio, come back, and tap Check for Updates again")
-        }
-    }
-
-    /** Once a day, quietly: only speaks up when there really is a newer release. */
-    private fun maybeAutoCheckUpdate() {
-        if (Updater.repo(this).isBlank()) return
-        val last = Prefs.get(this, "updateCheckedAt", "0").toLongOrNull() ?: 0L
-        if (System.currentTimeMillis() - last < 24L * 3600_000L) return
-        Prefs.put(this, "updateCheckedAt", System.currentTimeMillis().toString())
-        checkForUpdate(false)
+    private fun showUpdateNotice() {
+        AlertDialog.Builder(this)
+            .setTitle("App Updates")
+            .setMessage(
+                "Please keep an eye on our community for updates. A new update is coming very soon!\n\n" +
+                "Novel Studio is completely free, and its future depends on you. Your feedback helps us improve " +
+                "the app and move it forward. Please share your suggestions with the community."
+            )
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun requestBubbleRetranslate(src: String, cx: Float, cy: Float, w: Float, h: Float) {
@@ -2609,7 +2567,6 @@ return t.length>=40?'TXT:'+t:'';
     private var reOcrBtn: android.widget.ImageView? = null
     private var glossaryFab: android.widget.ImageView? = null
     private var rescanOverlay: RescanSelector? = null
-    private var updateInfo: Updater.Info? = null
 
     // ---- early-user tips: a few short pop-ups during the first hours of real use, then never again
     private val usageTick = object : Runnable {
@@ -3732,7 +3689,6 @@ return t.length>=40?'TXT:'+t:'';
         if (!Langs.setupDone(this) && Prefs.bool(this, "tourDone")) {
             handler.postDelayed({ if (!isFinishing) showLanguageSheet(true) }, 500L)
         }
-        handler.postDelayed({ if (!isFinishing) maybeAutoCheckUpdate() }, 6000L)
         handler.postDelayed({ maybeAskCommunity() }, 12_000L)
     }
 
@@ -9250,7 +9206,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✨ Apply recommended settings", menuScanFastLabel(), menuBarsLabel(),
             menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel(), menuOcrModelsLabel(),
             "📝 Edit Prompt For Scanning Translation",
-            "⬆️ Check for Updates (v" + Updater.currentVersion(this) + ")",
+            "⬆️ App Updates (Community)",
             "💬 Join the Community (Telegram · Reddit)",
             "🧠 What the App Learned About This Site"
         )
@@ -9344,7 +9300,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
                 54 -> { dlg.dismiss(); editScanPrompt() }
-                55 -> { dlg.dismiss(); checkForUpdate(true) }
+                55 -> { dlg.dismiss(); showUpdateNotice() }
                 56 -> { dlg.dismiss(); showCommunityChooser() }
                 57 -> {
                     dlg.dismiss()
