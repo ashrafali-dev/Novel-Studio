@@ -228,7 +228,7 @@ class MainActivity : Activity() {
 
     private fun requestForceOcrArea(
         src: String, x: Float, y: Float, w: Float, h: Float,
-        fromReOcr: Boolean = false, onFinished: (() -> Unit)? = null
+        fromReOcr: Boolean = false, expanded: Boolean = false, onFinished: (() -> Unit)? = null
     ) {
         if (!webModeOn()) {
             toast("🔎 Area re-scan needs Scanning or Real-time mode")
@@ -282,10 +282,26 @@ class MainActivity : Activity() {
                     updateProgressUi()
                 }
             },
-            onDone = { out ->
+            onDone = onDone@{ out ->
                 if (token == navToken) {
                     webModeHandle = null
                     clearWebModeProgress()
+                    // The user deliberately marked this spot, so there IS text here. When the tight read finds
+                    // nothing, read it once more with a much wider margin before reporting failure.
+                    val nothingFound = !expanded && (
+                        (out is WebModeOutcome.Failure && out.error == WebModeError.OCR_EMPTY) ||
+                        (out is WebModeOutcome.Success &&
+                            WebModeLayoutStore.getScan(out.chapter.url)?.bubbles.orEmpty().none { it.sourceText.isNotBlank() }))
+                    if (nothingFound) {
+                        val ex = 0.35f
+                        val nx = (rawX - rawW * ex).coerceIn(0f, 0.994f)
+                        val ny = (rawY - rawH * ex).coerceIn(0f, 0.994f)
+                        val nw = (rawW * (1f + 2f * ex)).coerceIn(0.006f, 1f - nx)
+                        val nh = (rawH * (1f + 2f * ex)).coerceIn(0.006f, 1f - ny)
+                        toast("🔎 Nothing found yet — reading a wider area…")
+                        requestForceOcrArea(src, nx, ny, nw, nh, fromReOcr = true, expanded = true, onFinished = onFinished)
+                        return@onDone
+                    }
                     when (out) {
                         is WebModeOutcome.Failure -> toast("⚠️ Force OCR failed: ${out.message}")
                         is WebModeOutcome.Success -> {
@@ -431,6 +447,17 @@ class MainActivity : Activity() {
         host.addView(sel, FrameLayout.LayoutParams(MP, MP))
         sel.elevation = dp(30).toFloat()
         sel.bringToFront()
+        // The bottom dock is drawn over this overlay in the webtoon view: keep the buttons above it.
+        val liftBar = {
+            try {
+                val a = IntArray(2); val dk = IntArray(2)
+                sel.getLocationOnScreen(a); dockWrapView.getLocationOnScreen(dk)
+                val overlap = a[1] + sel.height - dk[1]
+                sel.setBarLift(if (dockWrapView.isShown && overlap > 0) overlap + dp(10) else 0)
+            } catch (_: Exception) { }
+        }
+        liftBar()
+        sel.viewTreeObserver.addOnGlobalLayoutListener { if (sel.isAttachedToWindow) liftBar() }
         toast("Drag the dots over the bubble, then tap Read this area")
     }
 
@@ -1418,7 +1445,7 @@ Never use "~", "-", or another placeholder to represent unreadable or non-dialog
 Do not invent text. Keep each translation short enough to fit a speech bubble.
 Translate ONLY the words that are written under each marker. Never add names, sentences or meaning from the
 story, from other markers or from your own guess; a one-word marker (a shout, a sound effect, a title) gets a
-one-word translation. Each marker must stay faithful to its own English text, word for word in meaning.
+one-word translation. Each marker must stay faithful to its own ${Langs.sourceLabel(this)} text, word for word in meaning.
 """.trimIndent()
         // This is a separate chatbot page with no prior prompt in its conversation, so always include
         // the full active translation prompt, even if the visible-chat option normally sends it once.
@@ -3608,6 +3635,7 @@ return t.length>=40?'TXT:'+t:'';
             background = floatingBarBg(34)
             elevation = dp(12).toFloat()
             clipChildren = false   // the raised centre button may poke out above the dock
+            clipToPadding = false  // dock has side padding, so clipToPadding (default true) would still cut the button at the dock's top edge
             addView(modeChip, LinearLayout.LayoutParams(0, dp(42), 1.9f).also { it.setMargins(0, 0, dp(2), 0) })
             addView(modeBtn)
             addView(dockBtn(Ic.BACK, "Previous chapter") { step("prev") })
@@ -3699,7 +3727,11 @@ return t.length>=40?'TXT:'+t:'';
         refreshHome()
         handleIntent(intent)
         // Ask once, before any reading starts: which language to which language.
-        if (!Langs.setupDone(this)) handler.postDelayed({ if (!isFinishing) showLanguageSheet(true) }, 500L)
+        // New installs: the quick tour comes first and the language question follows it (see startTour).
+        // Existing installs that already finished the tour but never chose a language are asked right away.
+        if (!Langs.setupDone(this) && Prefs.bool(this, "tourDone")) {
+            handler.postDelayed({ if (!isFinishing) showLanguageSheet(true) }, 500L)
+        }
         handler.postDelayed({ if (!isFinishing) maybeAutoCheckUpdate() }, 6000L)
         handler.postDelayed({ maybeAskCommunity() }, 12_000L)
     }
@@ -3763,16 +3795,24 @@ return t.length>=40?'TXT:'+t:'';
         }
     )
 
-    private fun startTour(manual: Boolean) {
+    private fun startTour(manual: Boolean, attempt: Int = 0) {
         if (!::tourOverlay.isInitialized || tourOverlay.isRunning()) return
         hideHome()
         handler.postDelayed({
             if (isFinishing) return@postDelayed
             if (!modeCapsule.isShown || !extractBtn.isShown) {
                 if (manual) toast("Open any page first, then start the tour again")
+                else if (attempt < 6 && !Prefs.bool(this, "tourDone")) {
+                    // The page chrome is not ready yet: try again shortly instead of never asking for the language.
+                    handler.postDelayed({ if (!isFinishing) startTour(false, attempt + 1) }, 1500L)
+                } else if (!Langs.setupDone(this)) showLanguageSheet(true)
                 return@postDelayed
             }
-            tourOverlay.start(tourSteps()) { Prefs.putBool(this, "tourDone", true) }
+            tourOverlay.start(tourSteps()) {
+                Prefs.putBool(this, "tourDone", true)
+                // The tour is over: now ask which language to translate from / to.
+                if (!Langs.setupDone(this)) handler.postDelayed({ if (!isFinishing) showLanguageSheet(true) }, 300L)
+            }
         }, 350L)
     }
 
@@ -5195,7 +5235,7 @@ return t.length>=40?'TXT:'+t:'';
             floatBoltHost.animate().cancel()
             if (extractBtn.parent === floatBoltHost) {
                 floatBoltHost.removeView(extractBtn)
-                extractBtn.translationY = -dp(10).toFloat()
+                extractBtn.translationY = -dp(8).toFloat()   // same lift as the initial build
                 dockBar.addView(extractBtn, 3, extractLp())
             }
             floatBoltHost.visibility = View.GONE

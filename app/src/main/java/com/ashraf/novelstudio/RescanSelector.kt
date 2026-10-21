@@ -30,6 +30,9 @@ class RescanSelector(
     private var r = 0f
     private var b = 0f
     private var ready = false
+    private val bar: LinearLayout
+    private val baseBarMargin = (28 * d).toInt()
+    private var lift = 0
     private var drag = -1                 // 0..5 = dot, 6 = whole frame
     private var lx = 0f
     private var ly = 0f
@@ -42,7 +45,7 @@ class RescanSelector(
     init {
         setWillNotDraw(false)
         isClickable = true
-        val bar = LinearLayout(ctx).apply {
+        bar = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding((10 * d).toInt(), (8 * d).toInt(), (10 * d).toInt(), (8 * d).toInt())
@@ -69,6 +72,19 @@ class RescanSelector(
         addView(bar, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also {
             it.bottomMargin = (28 * d).toInt()
         })
+    }
+
+    /**
+     * Raises the Cancel / Read-this-area bar by [px] so it never hides behind the bottom dock
+     * (in the webtoon view the page is drawn full-height UNDER the dock).
+     */
+    fun setBarLift(px: Int) {
+        val v = px.coerceAtLeast(0)
+        if (v == lift) return
+        lift = v
+        val lp = bar.layoutParams as? LayoutParams ?: return
+        lp.bottomMargin = baseBarMargin + lift
+        bar.layoutParams = lp
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
