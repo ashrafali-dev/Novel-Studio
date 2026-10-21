@@ -1418,10 +1418,20 @@ internal class WebModeExtractor(
             // middle rows from the ink detector. Never discard an edge reading on the assumption that
             // another slice will find it; the fuller overlapping reading can upgrade it below.
             val tOcr = android.os.SystemClock.elapsedRealtime()
-            val blocks = OcrPost.mergeNeighbours(
-                recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }, bmp)
+            val firstPass = recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }
+            // Engine-independent completeness check: a line of ink right above/below a read line that no block
+            // explains is read on its own. Costs nothing when the engine already got every line.
+            val blocks = OcrPost.mergeNeighbours(completeMissingLines(bmp, st, firstPass), bmp)
             ocrMs = android.os.SystemClock.elapsedRealtime() - tOcr
             lineCount = blocks.size
+            // Diagnostics (geometry and text LENGTH only, never the text): shows whether a missing line was never
+            // read by the engine, or was read but not grouped/placed. Filter logcat by "NsWebMode blocks".
+            try {
+                Log.i(TAG, "blocks job=$id n=${blocks.size} " + blocks.joinToString(" | ") { b ->
+                    "[cx=${b.cx.toInt()} cy=${b.cy.toInt()} w=${b.w.toInt()} h=${b.h.toInt()} f=${b.fontPx.toInt()} " +
+                        "a=${b.angle.toInt()} len=${b.text.trim().length}]"
+                })
+            } catch (_: Throwable) {}
             if (blocks.isEmpty()) return
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
@@ -1658,6 +1668,164 @@ internal class WebModeExtractor(
                     if (up != null && up !== strip && !up.isRecycled) up.recycle()
                     if (strip != null && strip !== bmp && !strip.isRecycled) strip.recycle()
                 }
+            }
+        }
+
+        /**
+         * Accuracy safety net that works for EVERY engine (ML Kit, Paddle, RapidOCR ...). Engines occasionally drop
+         * one line of a bubble (or fuse two lines into one box and read only one). For each read line we look at the
+         * strip directly above and below it in the PICTURE: if there is a text-sized row of ink on bubble-coloured
+         * background that no other block covers, that strip alone is cropped, enlarged and read. Pages where the
+         * engine found everything only pay for cheap pixel scans, no extra OCR call.
+         */
+        private fun completeMissingLines(bmp: Bitmap, st: ScriptState, blocks: List<OcrBlock>): List<OcrBlock> {
+            if (blocks.isEmpty() || bmp.width < 40 || bmp.height < 40) return blocks
+            val all = ArrayList(blocks)
+            val queue = java.util.ArrayDeque<OcrBlock>()
+            for (b in blocks) if (!b.vertical && Math.abs(OcrPost.usableTilt(b.angle)) < 6f) queue.add(b)
+            val probed = HashSet<String>()
+            var budget = 4          // extra OCR calls per slice, hard cap
+            var guard = 0
+            while (!queue.isEmpty() && budget > 0 && guard++ < 40 && alive()) {
+                val b = queue.poll() ?: break
+                for (dir in intArrayOf(1, -1)) {
+                    if (budget <= 0) break
+                    var rect: IntArray? = null
+                    try { rect = probeLine(bmp, b, dir, all) } catch (_: Throwable) { }
+                    if (rect == null) continue
+                    val key = "${rect[0] / 8}:${rect[1] / 8}:${rect[2] / 8}:${rect[3] / 8}"
+                    if (!probed.add(key)) continue
+                    budget--
+                    var got: List<OcrBlock> = emptyList()
+                    try { got = readStrip(bmp, st, rect) } catch (_: Throwable) { }
+                    for (g in got) { all.add(g); queue.add(g) }
+                }
+            }
+            return if (all.size == blocks.size) blocks else all
+        }
+
+        private fun lumaOf(p: Int): Int = (((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10
+
+        /** Pixel rectangle [x0, y0, x1, y1] of an unexplained text-sized ink row next to [b], or null. */
+        private fun probeLine(bmp: Bitmap, b: OcrBlock, dir: Int, all: List<OcrBlock>): IntArray? {
+            val W = bmp.width; val H = bmp.height
+            val bl = (b.cx - b.w / 2f).toInt().coerceIn(0, W - 1)
+            val br = (b.cx + b.w / 2f).toInt().coerceIn(bl + 1, W)
+            val bt = (b.cy - b.h / 2f).toInt().coerceIn(0, H - 1)
+            val bb = (b.cy + b.h / 2f).toInt().coerceIn(bt + 1, H)
+            val bw = br - bl; val bh = bb - bt
+            if (bw < 8 || bh < 6) return null
+            val own = IntArray(bw * bh)
+            bmp.getPixels(own, 0, bw, bl, bt, bw, bh)
+            val samples = ArrayList<Int>()
+            var i = 0
+            while (i < own.size) { samples.add(lumaOf(own[i])); i += 3 }
+            samples.sort()
+            val bg = samples[samples.size / 2]     // text is the minority colour, so the median is the bubble fill
+            // tight vertical extent of the line's own ink (engine boxes may be padded or tight)
+            var tTop = -1; var tBot = -1
+            val minRowInk = Math.max(2, bw / 100)
+            for (y in 0 until bh) {
+                var c = 0
+                for (x in 0 until bw) if (Math.abs(lumaOf(own[y * bw + x]) - bg) > 70) c++
+                if (c >= minRowInk) { if (tTop < 0) tTop = y; tBot = y }
+            }
+            if (tTop < 0) return null
+            val lh = tBot - tTop + 1
+            if (lh < 6) return null
+            val inkTop = bt + tTop; val inkBot = bt + tBot
+
+            val ex = Math.max(bw * 0.8f, lh * 4f).toInt()
+            val x0 = (bl - ex).coerceAtLeast(0)
+            val x1 = (br + ex).coerceAtMost(W)
+            val reach = (lh * 2.2f).toInt()
+            val y0: Int; val y1: Int
+            if (dir > 0) { y0 = (inkBot + 1).coerceAtMost(H); y1 = (inkBot + 1 + reach).coerceAtMost(H) }
+            else { y1 = inkTop.coerceAtLeast(0); y0 = (inkTop - reach).coerceAtLeast(0) }
+            val ww = x1 - x0; val wh = y1 - y0
+            if (ww < 16 || wh < Math.max(5, (lh * 0.5f).toInt())) return null
+            val win = IntArray(ww * wh)
+            bmp.getPixels(win, 0, ww, x0, y0, ww, wh)
+            // Must look like the inside of a bubble (mostly the same fill colour), not artwork.
+            var near = 0
+            for (p in win) if (Math.abs(lumaOf(p) - bg) <= 30) near++
+            if (near * 100 < win.size * 50) return null
+            val rowInk = IntArray(wh)
+            val rowMin = Math.max(2, ww / 250)
+            for (y in 0 until wh) {
+                var c = 0
+                for (x in 0 until ww) if (Math.abs(lumaOf(win[y * ww + x]) - bg) > 70) c++
+                rowInk[y] = c
+            }
+            // first text-sized band of ink, scanning outward from the line we already have
+            val minBand = Math.max(5, (lh * 0.4f).toInt())
+            var r0 = -1; var r1 = -1
+            val order = if (dir > 0) (0 until wh) else (wh - 1 downTo 0)
+            var runStart = -1; var runEnd = -1
+            for (y in order) {
+                if (rowInk[y] >= rowMin) {
+                    if (runStart < 0) runStart = y
+                    runEnd = y
+                } else if (runStart >= 0) {
+                    if (Math.abs(runEnd - runStart) + 1 >= minBand) { r0 = Math.min(runStart, runEnd); r1 = Math.max(runStart, runEnd); break }
+                    runStart = -1; runEnd = -1
+                }
+            }
+            if (r0 < 0 && runStart >= 0 && Math.abs(runEnd - runStart) + 1 >= minBand) {
+                r0 = Math.min(runStart, runEnd); r1 = Math.max(runStart, runEnd)
+            }
+            if (r0 < 0) return null
+            val bandH = r1 - r0 + 1
+            if (bandH > lh * 1.8f) return null     // too tall for one line: artwork or a second bubble
+            var cMin = ww; var cMax = -1; var inkPx = 0
+            for (x in 0 until ww) {
+                var any = false
+                for (y in r0..r1) if (Math.abs(lumaOf(win[y * ww + x]) - bg) > 70) { any = true; inkPx++ }
+                if (any) { if (x < cMin) cMin = x; cMax = x }
+            }
+            if (cMax < 0 || (cMax - cMin + 1) < lh * 1.2f) return null
+            val density = inkPx.toFloat() / ((cMax - cMin + 1) * bandH)
+            if (density < 0.04f || density > 0.6f) return null
+            val gx0 = x0 + cMin; val gx1 = x0 + cMax + 1; val gy0 = y0 + r0; val gy1 = y0 + r1 + 1
+            val xc = (gx0 + gx1) / 2f; val yc = (gy0 + gy1) / 2f
+            // already explained by some other block (or by this one's own ink)?
+            for (o in all) {
+                if (xc >= o.cx - o.w / 2f && xc <= o.cx + o.w / 2f && yc >= o.cy - o.h / 2f && yc <= o.cy + o.h / 2f) return null
+            }
+            val pad = Math.max(3, (lh * 0.25f).toInt())
+            return intArrayOf((gx0 - pad).coerceAtLeast(0), (gy0 - pad).coerceAtLeast(0),
+                (gx1 + pad).coerceAtMost(W), (gy1 + pad).coerceAtMost(H))
+        }
+
+        private fun readStrip(bmp: Bitmap, st: ScriptState, rect: IntArray): List<OcrBlock> {
+            val x0 = rect[0]; val y0 = rect[1]
+            val cw = rect[2] - x0; val ch = rect[3] - y0
+            if (cw < 8 || ch < 6) return emptyList()
+            var strip: Bitmap? = null
+            var up: Bitmap? = null
+            try {
+                strip = Bitmap.createBitmap(bmp, x0, y0, cw, ch)
+                val f = Math.max(1f, Math.min(Math.min(4f, Math.max(2f, 96f / ch)), 2400f / cw))
+                up = Bitmap.createScaledBitmap(strip, (cw * f).toInt().coerceAtLeast(2), (ch * f).toInt().coerceAtLeast(2), true)
+                val out = ArrayList<OcrBlock>()
+                for (g in engine.recognizeFast(up, st.current).blocks) {
+                    if (g.vertical || OcrPost.isNoise(g)) continue
+                    val text = g.text.replace(NEWLINES, " ").trim()
+                    if (text.count { it.isLetterOrDigit() } < 1) continue
+                    val gw = g.w / f; val gh = g.h / f
+                    val gcx = x0 + g.cx / f; val gcy = y0 + g.cy / f
+                    out.add(OcrBlock(
+                        text = text,
+                        top = (gcy - gh / 2f).toInt().coerceAtLeast(0), left = (gcx - gw / 2f).toInt().coerceAtLeast(0),
+                        cx = gcx, cy = gcy, w = gw, h = gh, angle = 0f,
+                        fontPx = if (g.fontPx > 0f) g.fontPx / f else gh,
+                        vertical = false, confidence = g.confidence
+                    ))
+                }
+                return out
+            } finally {
+                if (up != null && up !== strip && !up.isRecycled) up.recycle()
+                if (strip != null && strip !== bmp && !strip.isRecycled) strip.recycle()
             }
         }
 
