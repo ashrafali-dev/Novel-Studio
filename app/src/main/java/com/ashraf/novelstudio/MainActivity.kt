@@ -10340,7 +10340,7 @@ ${rows.take(220).joinToString("\n")}
             .setView(et)
             .setPositiveButton("Save") { _, _ ->
                 val t = et.text.toString()
-                Prefs.put(this, "scanPrompt", if (t.trim() == Langs.realtimePrompt(this).trim()) "" else t)
+                Prefs.put(this, "scanPrompt", if (t.trim() == Langs.scanPrompt(this).trim()) "" else t)
                 toast("✅ Scanning prompt saved")
             }
             .setNeutralButton("Reset") { _, _ ->
