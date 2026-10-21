@@ -38,7 +38,7 @@ internal object JapaneseMangaRuntime {
     private const val PAGE = "https://appassets.androidplatform.net/assets/japanese_manga_engine.html"
     private const val INPUT_URL = "https://appassets.androidplatform.net/manga-engine/input/"
     private const val READY_TIMEOUT_S = 90L
-    private const val OCR_TIMEOUT_S = 60L
+    private const val OCR_TIMEOUT_S = 150L
     private const val IDLE_RELEASE_MS = 180_000L
     private const val COOL_DOWN_MS = 120_000L
     private const val MAX_PIXELS = 9_000_000L
