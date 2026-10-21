@@ -59,6 +59,28 @@ Before responding, silently verify that the translation preserves the complete m
 
 Your priority is faithful, context-aware, emotionally accurate, consistent, and natural literary translation—not word-for-word rendering."""
 
+    const val DEFAULT_SCAN_PROMPT = """You are a professional literary translator translating a complete novel chapter extracted through OCR.
+
+## Read the Whole Chapter for Context
+- Read and understand the entire supplied chapter before translating. Use chapter-wide context to interpret dialogue, pronouns, character relationships, names, titles, terminology, references, tone, and ambiguous sentences.
+- Keep names, terminology, forms of address, character voices, facts, and narrative details consistent throughout the chapter.
+- Translate into fluent, natural, literary prose in the selected target language while preserving the author's meaning, style, pacing, atmosphere, emotion, and intent.
+
+## Stay Faithful to the Actual Source
+- Translate only content that is actually present in the supplied source. Never invent, add, expand, summarize, censor, embellish, or rewrite story content.
+- Use context to understand the source, not as permission to add missing dialogue, descriptions, thoughts, explanations, or plot details.
+- Do not guess what an OCR-skipped line might have said. Correct an obvious OCR mistake only when the intended text is strongly supported by the visible wording and surrounding context; otherwise, translate only the meaning that can be reliably recovered.
+- Do not omit, merge, split, reorder, or duplicate source content. Preserve meaningful repetitions and all recoverable passages.
+- Do not intrude on the author's story by explaining, improving, moralizing, resolving ambiguities, or adding details that are not in the text.
+
+## Markers and Output
+- Preserve every system-defined marker exactly once and in its original order.
+- Never translate, alter, remove, duplicate, or move markers. Keep each translation aligned with its corresponding source segment.
+- Follow all system instructions for markers, glossary, formatting, paragraph structure, and output alignment.
+- Output only the completed translation in the selected target language. Do not include analysis, explanations, notes, summaries, headings, or extra commentary.
+
+Priority: Use the full chapter context to translate each sentence accurately, but remain strictly faithful to what the source actually contains. Context may clarify meaning; it must never become an excuse to invent content."""
+
     const val DEFAULT_REALTIME_PROMPT = """তুমি একজন দক্ষ ওয়েবটুন, ম্যানহো ও কমিক অনুবাদক। ছবির OCR থেকে পাওয়া প্রতিটি লেখা প্রাঞ্জল, স্বাভাবিক বাংলায় অনুবাদ করো।
 
 নিয়ম:
@@ -105,9 +127,27 @@ Your priority is faithful, context-aware, emotionally accurate, consistent, and 
     fun realtimePrompt(c: Context): String =
         get(c, "realtimePrompt", "").let { if (it.isBlank() || it == DEFAULT_REALTIME_PROMPT) Langs.realtimePrompt(c) else it }
 
-    /** Scanning (Web Mode, not real-time) has its own prompt; until edited it follows the comic-style default. */
+    /** Recognizes the built-in scanning prompt and legacy comic prompts saved by older versions. */
+    fun isDefaultScanPrompt(c: Context, value: String): Boolean {
+        val v = value.trim()
+        if (v.isBlank() ||
+            v == DEFAULT_SCAN_PROMPT ||
+            v == DEFAULT_REALTIME_PROMPT ||
+            v == Langs.scanPrompt(c).trim() ||
+            v == Langs.realtimePrompt(c).trim()
+        ) return true
+
+        // Older versions generated this template for non-Bengali comic targets.
+        return v.startsWith("You are an expert webtoon, manhwa and comic translator. Translate every piece of text read from the images") &&
+            v.contains("- Keep each marker such as [001], [002] exactly once") &&
+            v.contains("- Return only the translation with the markers, in ")
+    }
+
+    /** Scanning (chapter-wide Web Mode) has a separate default from bubble/realtime translation. */
     fun scanPrompt(c: Context): String =
-        get(c, "scanPrompt", "").let { if (it.isBlank()) Langs.realtimePrompt(c) else it }
+        get(c, "scanPrompt", "").let {
+            if (it.isBlank() || isDefaultScanPrompt(c, it)) Langs.scanPrompt(c) else it
+        }
 
     /** Real-time, Scanning and Novel each use their own editable prompt. */
     fun activeTranslationPrompt(c: Context): String = when {
