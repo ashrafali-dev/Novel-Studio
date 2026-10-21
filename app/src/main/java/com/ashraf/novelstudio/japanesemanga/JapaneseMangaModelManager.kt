@@ -180,7 +180,7 @@ internal class JapaneseMangaModelManager(context: Context) {
             Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 10000000, 30000000),
             Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 10000, 1000000),
             // Korean uses the comic detector with a script-specific recognition model and dictionary.
-            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 1000000, 20000000),
+            Asset("rec/korean_PP-OCRv5_mobile_rec.onnx", "https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx/resolve/5c6f574b8e2230adf4287b33e736d71b9fabd28e/inference.onnx", 1000000, 40000000),
             Asset("korean_dict.txt", "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/korean_dict.txt", 10000, 2000000)
         )
     }
