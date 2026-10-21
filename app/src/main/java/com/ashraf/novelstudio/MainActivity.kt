@@ -9406,7 +9406,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                           else "📝 Only the text is sent (no prompt) — scan & real-time")
                 }
                 38 -> {
-                    val on = !Prefs.bool(this, "wmTextRemoval", false)
+                    val on = !Prefs.bool(this, "wmTextRemoval", true)
                     Prefs.putBool(this, "wmTextRemoval", on)
                     if (on) {
                         toast("🧽 Text Remover ON — next Web Mode/Japanese Manga OCR scan will clean only safe text pixels.")
@@ -10076,7 +10076,7 @@ ${rows.take(220).joinToString("\n")}
         (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
 
     private fun menuTextRemovalLabel(): String =
-        (if (Prefs.bool(this, "wmTextRemoval", false)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
+        (if (Prefs.bool(this, "wmTextRemoval", true)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
 
     /** Glass bottom sheet with one tappable row per label (long-press optional). */
     /** A sheet with a search box on top; used for the long language lists. */

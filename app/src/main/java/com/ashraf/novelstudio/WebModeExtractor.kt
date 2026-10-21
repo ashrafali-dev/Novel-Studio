@@ -1340,7 +1340,7 @@ internal class WebModeExtractor(
             fun finishResult(): PanelOcr {
                 // Cleaning is opt-in and limited to whole-image OCR. A force-OCR crop has a different
                 // coordinate system and must never be used to rewrite the underlying source image.
-                if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
+                if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", true) &&
                     (src.startsWith("https://", true) || src.startsWith("http://", true))) {
                     try {
                         WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
