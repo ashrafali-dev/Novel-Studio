@@ -27,8 +27,8 @@
   async function loadModels() {
     if (!window.ort) throw new Error('ONNX Runtime WASM could not load');
     ort.env.wasm.wasmPaths = {
-      mjs: BASE + 'ort-wasm-simd-threaded.mjs',
-      wasm: BASE + 'ort-wasm-simd-threaded.wasm'
+      mjs: BASE + 'ort-wasm-simd.mjs',
+      wasm: BASE + 'ort-wasm-simd.wasm'
     };
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
