@@ -163,19 +163,11 @@ internal object OcrPost {
             loop@ for (i in 0 until work.size) {
                 for (j in i + 1 until work.size) {
                     val a = work[i]; val b = work[j]
-                    if (a.vertical && b.vertical) {
-                        // Neighbouring columns of one tategaki bubble. Same outline check as for stacked rows,
-                        // but looked for in the strip BETWEEN the columns.
-                        if (!joinableColumns(a, b)) continue
-                        if (image != null && outlineBetweenColumns(image, a, b)) continue
-                        work[i] = joinColumns(a, b)
-                    } else {
-                        if (!joinable(a, b)) continue
-                        // Two stacked speech bubbles are close enough to look like one paragraph by geometry alone.
-                        // If the picture shows a bubble outline / artwork between the two texts they are separate.
-                        if (image != null && outlineBetween(image, a, b)) continue
-                        work[i] = join(a, b)
-                    }
+                    if (!joinable(a, b)) continue
+                    // Two stacked speech bubbles are close enough to look like one paragraph by geometry alone.
+                    // If the picture shows a bubble outline / artwork between the two texts they are separate.
+                    if (image != null && !a.vertical && outlineBetween(image, a, b)) continue
+                    work[i] = join(a, b)
                     work.removeAt(j)
                     changed = true
                     break@loop
@@ -250,104 +242,31 @@ internal object OcrPost {
     private fun luma(p: Int): Int = (((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10
 
     /**
-     * Side-by-side vertical columns that belong to ONE speech bubble: same glyph width, a gap of about one
-     * glyph or less, and they share part of their height. Pure geometry (no Android types), unit-tested.
+     * Two upright columns of the same speech bubble (Japanese manga): similar column width, they overlap in height and
+     * sit right next to each other. Before, vertical blocks were never joined, so each column became its own bubble:
+     * one got the translation and the other kept its original lettering, and the sentence reached the chatbot in pieces.
      */
-    fun joinableColumns(a: OcrBlock, b: OcrBlock): Boolean {
-        if (!a.vertical || !b.vertical) return false
+    private fun joinableColumns(a: OcrBlock, b: OcrBlock): Boolean {
+        if (Math.abs(a.angle) >= 6f || Math.abs(b.angle) >= 6f) return false
         val fa = if (a.fontPx > 0f) a.fontPx else a.w
         val fb = if (b.fontPx > 0f) b.fontPx else b.w
         if (fa <= 0f || fb <= 0f) return false
         val ratio = fa / fb
-        if (ratio < 0.5f || ratio > 2.0f) return false
+        if (ratio < 0.6f || ratio > 1.7f) return false
         val f = Math.max(fa, fb)
         val left = if (a.cx <= b.cx) a else b
         val right = if (left === a) b else a
-        val gap = (right.cx - right.w / 2f) - (left.cx + left.w / 2f)
-        if (gap > f * 1.1f || gap < -f * 0.9f) return false
-        val oy = Math.min(a.cy + a.h / 2f, b.cy + b.h / 2f) - Math.max(a.cy - a.h / 2f, b.cy - b.h / 2f)
+        val gap = (right.cx - right.w / 2) - (left.cx + left.w / 2)
+        if (gap > f * 0.9f || gap < -f * 0.5f) return false
+        val oy = Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2)
         val shorter = Math.min(a.h, b.h)
-        return shorter > 0f && oy >= shorter * 0.3f
-    }
-
-    /** Japanese vertical text reads right column first; no space is inserted between CJK columns. */
-    fun joinColumns(a: OcrBlock, b: OcrBlock): OcrBlock {
-        val right = if (a.cx >= b.cx) a else b
-        val left = if (right === a) b else a
-        val rt = right.text.trim()
-        val lt = left.text.trim()
-        val bothLatin = rt.isNotEmpty() && lt.isNotEmpty() &&
-            rt.last().code < 128 && rt.last().isLetterOrDigit() && lt.first().code < 128 && lt.first().isLetterOrDigit()
-        val l = Math.min(a.cx - a.w / 2f, b.cx - b.w / 2f)
-        val r = Math.max(a.cx + a.w / 2f, b.cx + b.w / 2f)
-        val t = Math.min(a.cy - a.h / 2f, b.cy - b.h / 2f)
-        val bt = Math.max(a.cy + a.h / 2f, b.cy + b.h / 2f)
-        return OcrBlock(
-            rt + (if (bothLatin) " " else "") + lt, t.toInt(), l.toInt(),
-            (l + r) / 2f, (t + bt) / 2f, r - l, bt - t, 0f,
-            Math.max(a.fontPx, b.fontPx), true,
-            Math.min(a.confidence, b.confidence)
-        )
-    }
-
-    /**
-     * Column twin of [outlineBetween]: looks at the strip between two vertical columns. Columns of one bubble
-     * have clean paper between them; two bubbles have an outline there. Returns false (= keep the geometry
-     * decision) whenever the strip cannot be sampled.
-     */
-    fun outlineBetweenColumns(img: Bitmap, a: OcrBlock, b: OcrBlock): Boolean {
-        try {
-            val left = if (a.cx <= b.cx) a else b
-            val right = if (left === a) b else a
-            val x0 = (left.cx + left.w / 2f).toInt()
-            val x1 = (right.cx - right.w / 2f).toInt()
-            val gap = x1 - x0
-            val font = Math.max(
-                if (a.fontPx > 0f) a.fontPx else a.w,
-                if (b.fontPx > 0f) b.fontPx else b.w
-            )
-            // Tight columns never hold an outline: the strip would only contain the glyph edges themselves.
-            if (gap < Math.max(10f, font * 0.5f)) return false
-            val top = Math.max(a.cy - a.h / 2f, b.cy - b.h / 2f)
-            val bottom = Math.min(a.cy + a.h / 2f, b.cy + b.h / 2f)
-            val ya = top.toInt().coerceIn(0, img.height - 1)
-            val yb = bottom.toInt().coerceIn(ya + 1, img.height)
-            val xa = (x0 + gap * 0.2f).toInt().coerceIn(0, img.width - 1)
-            val xb = (x1 - gap * 0.2f).toInt().coerceIn(xa + 1, img.width)
-            if (yb - ya < 6 || xb - xa < 2) return false
-            val stepY = Math.max(1, (yb - ya) / 48)
-            val all = ArrayList<Int>()
-            var xx = xa
-            while (xx < xb) {
-                var yy = ya
-                while (yy < yb) { all.add(luma(img.getPixel(xx, yy))); yy += stepY }
-                xx += Math.max(1, (xb - xa) / 12)
-            }
-            if (all.size < 12) return false
-            val med = all.sorted()[all.size / 2]
-            // an outline is a (nearly) continuous line down the strip: one COLUMN that differs from the paper
-            var x = xa
-            while (x < xb) {
-                var off = 0
-                var n = 0
-                var y = ya
-                while (y < yb) {
-                    if (Math.abs(luma(img.getPixel(x, y)) - med) > 70) off++
-                    n++
-                    y += stepY
-                }
-                if (n >= 6 && off * 100 >= n * 60) return true
-                x++
-            }
-            return false
-        } catch (_: Exception) {
-            return false
-        }
+        return shorter > 0f && oy >= shorter * 0.4f
     }
 
     private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
-        if (a.vertical || b.vertical) return false
-        if (Math.abs(a.angle) >= 10f || Math.abs(b.angle) >= 10f) return false   // clearly tilted text stays as it is
+        if (a.vertical != b.vertical) return false
+        if (a.vertical) return joinableColumns(a, b)
+        if (Math.abs(a.angle) >= 6f || Math.abs(b.angle) >= 6f) return false   // clearly tilted text stays as it is
         val fa = if (a.fontPx > 0f) a.fontPx else a.h
         val fb = if (b.fontPx > 0f) b.fontPx else b.h
         if (fa <= 0f || fb <= 0f) return false
@@ -357,7 +276,7 @@ internal object OcrPost {
         val top = if (a.cy <= b.cy) a else b
         val bot = if (top === a) b else a
         val gap = (bot.cy - bot.h / 2) - (top.cy + top.h / 2)
-        if (gap > f * 1.7f || gap < -f * 0.9f) return false   // Paddle boxes are unclipped (padded), so tight lines overlap
+        if (gap > f * 1.7f || gap < -f * 0.6f) return false
         val ox = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
         val narrow = Math.min(a.w, b.w)
         if (narrow <= 0f || ox < narrow * 0.3f) return false
@@ -367,6 +286,20 @@ internal object OcrPost {
     }
 
     private fun join(a: OcrBlock, b: OcrBlock): OcrBlock {
+        if (a.vertical && b.vertical) {
+            // Japanese columns are read from the right one to the left one.
+            val rightB = if (a.cx >= b.cx) a else b
+            val leftB = if (rightB === a) b else a
+            val l = Math.min(a.cx - a.w / 2, b.cx - b.w / 2)
+            val r = Math.max(a.cx + a.w / 2, b.cx + b.w / 2)
+            val t = Math.min(a.cy - a.h / 2, b.cy - b.h / 2)
+            val bt = Math.max(a.cy + a.h / 2, b.cy + b.h / 2)
+            return OcrBlock(
+                rightB.text.trim() + " " + leftB.text.trim(), t.toInt(), l.toInt(),
+                (l + r) / 2f, (t + bt) / 2f, r - l, bt - t, 0f,
+                Math.max(a.fontPx, b.fontPx), true
+            )
+        }
         val top = if (a.cy <= b.cy) a else b
         val bot = if (top === a) b else a
         val l = Math.min(a.cx - a.w / 2, b.cx - b.w / 2)
@@ -424,9 +357,7 @@ internal class MlKitOcrEngine : OcrEngine {
      * Each optional view is awaited before recycling, with a bounded pixel budget.
      */
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
-        // Japanese needs the enlarged, tiled view as much as Latin: manga lettering is small, and a single
-        // plain pass over a whole page misses tiny columns and sound effects.
-        readViews(bitmap, script, thorough = script == OcrScript.LATIN || script == OcrScript.JAPANESE, light = true)
+        readViews(bitmap, script, thorough = script == OcrScript.LATIN, light = true)
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
         readViews(bitmap, script, thorough = true)
@@ -485,6 +416,8 @@ internal class MlKitOcrEngine : OcrEngine {
                         (crop.width * factor).toInt(), (crop.height * factor).toInt(), true) else crop
                     scan(up, y = top, originalW = crop.width, originalH = crop.height)
                     if (light) continue
+                    // Japanese/Chinese/Korean: plain + enlarged view is enough; the extra contrast pass only cost seconds.
+                    if (script != OcrScript.LATIN && !region) continue
                     contrast = OcrPost.boostContrast(up)
                     scan(contrast, y = top, originalW = crop.width, originalH = crop.height)
                     if (script == OcrScript.LATIN) {
@@ -527,21 +460,7 @@ internal class MlKitOcrEngine : OcrEngine {
         for (b in vt.textBlocks) {
             val t = b.text.trim()
             if (t.isEmpty()) continue
-            var whole = toBlock(t, b)
-            if (whole.vertical && script != OcrScript.LATIN && b.lines.size > 1) {
-                // Do not rely on the order ML Kit lists columns in: Japanese reads the RIGHT column first.
-                // Only when every line really is a column, so mixed blocks are left exactly as they were.
-                val cols = ArrayList<Pair<Float, String>>()
-                for (l in b.lines) {
-                    val g = geo(l.cornerPoints, l.boundingBox) ?: break
-                    val lt = l.text.trim()
-                    if (lt.isEmpty() || g.h <= g.w * 1.6f) break
-                    cols.add(Pair(g.cx, lt))
-                }
-                if (cols.size == b.lines.size) {
-                    whole = whole.copy(text = cols.sortedByDescending { it.first }.joinToString("") { it.second })
-                }
-            }
+            val whole = toBlock(t, b)
             if ((whole.vertical && script != OcrScript.LATIN) || b.lines.isEmpty() || Math.abs(whole.angle) >= 6f) { out.add(whole); continue }
             for (l in b.lines) {
                 val lt = l.text.trim()

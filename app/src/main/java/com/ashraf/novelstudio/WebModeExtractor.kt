@@ -269,6 +269,7 @@ internal class WebModeExtractor(
         // ---- read-ahead (real-time): OCR the next images below the screen, without scrolling anything
         fun beginAhead() {
             try {
+                if (SiteLearner.screenPreferred(wv.context, hostOf(wv.url.orEmpty()))) { aheadFinished(); return }
                 ensureBridge(wv)
                 val aheadN = req.ahead.coerceIn(1, 12)
                 // Look at up to 3x the batch size below the screen; the first aheadN panels that are still
@@ -451,7 +452,12 @@ internal class WebModeExtractor(
                 "zh" -> OcrScript.CHINESE
                 else -> null
             }
-            if (pinned == null) return ScriptState(WebModeLogic.pickScript(lang, url))
+            if (pinned == null) {
+                val learned = SiteLearner.script(wv.context, hostOf(url))
+                    ?.let { n -> OcrScript.values().firstOrNull { it.name == n } }
+                // Only the starting guess: the usual checks still run if the page turns out to be in another script.
+                return ScriptState(learned ?: WebModeLogic.pickScript(lang, url))
+            }
             return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
         }
 
@@ -597,6 +603,16 @@ internal class WebModeExtractor(
 
         private fun processInner(panels: List<PanelRef>, meta: PageMeta) {
             val total = panels.size
+            val liveView = req.visibleOnly && req.forceOcrSrc.isNullOrBlank()
+            if (liveView) {
+                // This site already refused our image downloads a moment ago: read the screen's own pixels at once
+                // instead of waiting for every panel to time out again.
+                if (SiteLearner.preferScreen(wv.context, hostOf(meta.url))) {
+                    progress("Learned: reading this site straight from the screen", 3)
+                    fail(WebModeError.IMAGES_NOT_LOADED, "Learned for this site: image downloads fail, reading the screen directly")
+                    return
+                }
+            }
             // Download in parallel (a few images ahead of the OCR) instead of one at a time: OCR of panel N
             // now overlaps the download of panels N+1..N+FETCH_AHEAD. Real-time viewport jobs stay serial
             // because they only ever read 1-3 panels.
@@ -634,6 +650,7 @@ internal class WebModeExtractor(
                         continue
                     }
                 }
+                val tFetch = SystemClock.elapsedRealtime()
                 progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
                 submitFetch(i)
                 submitFetch(i + FETCH_AHEAD)
@@ -645,7 +662,10 @@ internal class WebModeExtractor(
                     fetchFailed++; diag.failed++
                     // The first panels all refuse to download (hotlink / CORS / TLS block): do not burn
                     // minutes on the other panels, switch to reading the WebView's own pixels right away.
-                    if (diag.downloaded == 0 && fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed) {
+                    // Real-time sees only 1-3 panels, so the old "4 failures" rule never fired and EVERY visible panel
+                    // went through the whole timeout ladder (roughly 25 s each) before the screen was read instead.
+                    if (diag.downloaded == 0 && (liveView || (fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed))) {
+                        if (liveView) SiteLearner.recordDownload(wv.context, hostOf(meta.url), false, SystemClock.elapsedRealtime() - tFetch)
                         fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
                         return
                     }
@@ -677,6 +697,7 @@ internal class WebModeExtractor(
                     if (t.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += t.length }
                     texts[i] = t
                     layouts[i] = po.bubbles
+                    if (liveView && t.isNotBlank()) SiteLearner.recordDownload(wv.context, hostOf(meta.url), true, SystemClock.elapsedRealtime() - tFetch)
                 } catch (e: OcrUnavailableException) {
                     fail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label)
                     return
@@ -693,6 +714,7 @@ internal class WebModeExtractor(
                 }
             }
             if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
+            if (script.locked) SiteLearner.saveScript(wv.context, hostOf(meta.url), script.current.name)
             progress("Collecting recognized text", 99)
             when {
                 diag.downloaded == 0 -> { fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded"); return }
@@ -996,6 +1018,7 @@ internal class WebModeExtractor(
         }
 
         private fun processForce() {
+            val forceStart = SystemClock.elapsedRealtime()
             // A viewport-only recovery needs chapter metadata, not a full-page inventory. Defer
             // candidate collection until JS_FORCE_INFO so CSS-background panels are not lost to
             // cands()' 1200 ms background-probe throttle between these two calls.
@@ -1082,6 +1105,7 @@ internal class WebModeExtractor(
                 number = WebModeLogic.episodeNumber(title, meta.url), contentSel = ""
             )
             Log.i(TAG, "force " + diag.summary())
+            if (req.visibleOnly) SiteLearner.recordScreen(wv.context, hostOf(meta.url), SystemClock.elapsedRealtime() - forceStart)
             onMain { req.onDone(WebModeOutcome.Success(ch, diag, 0)) }
         }
 
@@ -1159,14 +1183,8 @@ internal class WebModeExtractor(
                     httpGet(u, pageUrl, quick = true)
                 } catch (e: IOException) {
                     if (!alive()) return null
-                    val msg = e.message.orEmpty()
-                    val definitive = Regex("http\\s+(401|403|404|410|451)").containsMatchIn(msg)
-                    try {
-                        fetchViaPage(u, timeoutMs = 3500L)
-                    } catch (_: Exception) {
-                        if (!alive() || definitive) null
-                        else try { httpGet(u, pageUrl, medium = true) } catch (_: Exception) { null }
-                    }
+                    // One page-side attempt, then give up: the caller switches to reading the screen itself.
+                    try { fetchViaPage(u, timeoutMs = 2500L) } catch (_: Exception) { null }
                 } catch (_: Exception) { null }
             }
             // A failed image used to spend up to three rounds of 15–25 s HTTP timeouts plus
@@ -1418,20 +1436,10 @@ internal class WebModeExtractor(
             // middle rows from the ink detector. Never discard an edge reading on the assumption that
             // another slice will find it; the fuller overlapping reading can upgrade it below.
             val tOcr = android.os.SystemClock.elapsedRealtime()
-            val firstPass = recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }
-            // Engine-independent completeness check: a line of ink right above/below a read line that no block
-            // explains is read on its own. Costs nothing when the engine already got every line.
-            val blocks = OcrPost.mergeNeighbours(completeMissingLines(bmp, st, firstPass), bmp)
+            val blocks = OcrPost.mergeNeighbours(
+                recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }, bmp)
             ocrMs = android.os.SystemClock.elapsedRealtime() - tOcr
             lineCount = blocks.size
-            // Diagnostics (geometry and text LENGTH only, never the text): shows whether a missing line was never
-            // read by the engine, or was read but not grouped/placed. Filter logcat by "NsWebMode blocks".
-            try {
-                Log.i(TAG, "blocks job=$id n=${blocks.size} " + blocks.joinToString(" | ") { b ->
-                    "[cx=${b.cx.toInt()} cy=${b.cy.toInt()} w=${b.w.toInt()} h=${b.h.toInt()} f=${b.fontPx.toInt()} " +
-                        "a=${b.angle.toInt()} len=${b.text.trim().length}]"
-                })
-            } catch (_: Throwable) {}
             if (blocks.isEmpty()) return
             val rects = blocks.map { WmBubbleStyle.rectOf(it, bmp.width, bmp.height) }
             val k = sample.toFloat()
@@ -1671,164 +1679,6 @@ internal class WebModeExtractor(
             }
         }
 
-        /**
-         * Accuracy safety net that works for EVERY engine (ML Kit, Paddle, RapidOCR ...). Engines occasionally drop
-         * one line of a bubble (or fuse two lines into one box and read only one). For each read line we look at the
-         * strip directly above and below it in the PICTURE: if there is a text-sized row of ink on bubble-coloured
-         * background that no other block covers, that strip alone is cropped, enlarged and read. Pages where the
-         * engine found everything only pay for cheap pixel scans, no extra OCR call.
-         */
-        private fun completeMissingLines(bmp: Bitmap, st: ScriptState, blocks: List<OcrBlock>): List<OcrBlock> {
-            if (blocks.isEmpty() || bmp.width < 40 || bmp.height < 40) return blocks
-            val all = ArrayList(blocks)
-            val queue = java.util.ArrayDeque<OcrBlock>()
-            for (b in blocks) if (!b.vertical && Math.abs(OcrPost.usableTilt(b.angle)) < 6f) queue.add(b)
-            val probed = HashSet<String>()
-            var budget = 4          // extra OCR calls per slice, hard cap
-            var guard = 0
-            while (!queue.isEmpty() && budget > 0 && guard++ < 40 && alive()) {
-                val b = queue.poll() ?: break
-                for (dir in intArrayOf(1, -1)) {
-                    if (budget <= 0) break
-                    var rect: IntArray? = null
-                    try { rect = probeLine(bmp, b, dir, all) } catch (_: Throwable) { }
-                    if (rect == null) continue
-                    val key = "${rect[0] / 8}:${rect[1] / 8}:${rect[2] / 8}:${rect[3] / 8}"
-                    if (!probed.add(key)) continue
-                    budget--
-                    var got: List<OcrBlock> = emptyList()
-                    try { got = readStrip(bmp, st, rect) } catch (_: Throwable) { }
-                    for (g in got) { all.add(g); queue.add(g) }
-                }
-            }
-            return if (all.size == blocks.size) blocks else all
-        }
-
-        private fun lumaOf(p: Int): Int = (((p shr 16) and 255) * 3 + ((p shr 8) and 255) * 6 + (p and 255)) / 10
-
-        /** Pixel rectangle [x0, y0, x1, y1] of an unexplained text-sized ink row next to [b], or null. */
-        private fun probeLine(bmp: Bitmap, b: OcrBlock, dir: Int, all: List<OcrBlock>): IntArray? {
-            val W = bmp.width; val H = bmp.height
-            val bl = (b.cx - b.w / 2f).toInt().coerceIn(0, W - 1)
-            val br = (b.cx + b.w / 2f).toInt().coerceIn(bl + 1, W)
-            val bt = (b.cy - b.h / 2f).toInt().coerceIn(0, H - 1)
-            val bb = (b.cy + b.h / 2f).toInt().coerceIn(bt + 1, H)
-            val bw = br - bl; val bh = bb - bt
-            if (bw < 8 || bh < 6) return null
-            val own = IntArray(bw * bh)
-            bmp.getPixels(own, 0, bw, bl, bt, bw, bh)
-            val samples = ArrayList<Int>()
-            var i = 0
-            while (i < own.size) { samples.add(lumaOf(own[i])); i += 3 }
-            samples.sort()
-            val bg = samples[samples.size / 2]     // text is the minority colour, so the median is the bubble fill
-            // tight vertical extent of the line's own ink (engine boxes may be padded or tight)
-            var tTop = -1; var tBot = -1
-            val minRowInk = Math.max(2, bw / 100)
-            for (y in 0 until bh) {
-                var c = 0
-                for (x in 0 until bw) if (Math.abs(lumaOf(own[y * bw + x]) - bg) > 70) c++
-                if (c >= minRowInk) { if (tTop < 0) tTop = y; tBot = y }
-            }
-            if (tTop < 0) return null
-            val lh = tBot - tTop + 1
-            if (lh < 6) return null
-            val inkTop = bt + tTop; val inkBot = bt + tBot
-
-            val ex = Math.max(bw * 0.8f, lh * 4f).toInt()
-            val x0 = (bl - ex).coerceAtLeast(0)
-            val x1 = (br + ex).coerceAtMost(W)
-            val reach = (lh * 2.2f).toInt()
-            val y0: Int; val y1: Int
-            if (dir > 0) { y0 = (inkBot + 1).coerceAtMost(H); y1 = (inkBot + 1 + reach).coerceAtMost(H) }
-            else { y1 = inkTop.coerceAtLeast(0); y0 = (inkTop - reach).coerceAtLeast(0) }
-            val ww = x1 - x0; val wh = y1 - y0
-            if (ww < 16 || wh < Math.max(5, (lh * 0.5f).toInt())) return null
-            val win = IntArray(ww * wh)
-            bmp.getPixels(win, 0, ww, x0, y0, ww, wh)
-            // Must look like the inside of a bubble (mostly the same fill colour), not artwork.
-            var near = 0
-            for (p in win) if (Math.abs(lumaOf(p) - bg) <= 30) near++
-            if (near * 100 < win.size * 50) return null
-            val rowInk = IntArray(wh)
-            val rowMin = Math.max(2, ww / 250)
-            for (y in 0 until wh) {
-                var c = 0
-                for (x in 0 until ww) if (Math.abs(lumaOf(win[y * ww + x]) - bg) > 70) c++
-                rowInk[y] = c
-            }
-            // first text-sized band of ink, scanning outward from the line we already have
-            val minBand = Math.max(5, (lh * 0.4f).toInt())
-            var r0 = -1; var r1 = -1
-            val order = if (dir > 0) (0 until wh) else (wh - 1 downTo 0)
-            var runStart = -1; var runEnd = -1
-            for (y in order) {
-                if (rowInk[y] >= rowMin) {
-                    if (runStart < 0) runStart = y
-                    runEnd = y
-                } else if (runStart >= 0) {
-                    if (Math.abs(runEnd - runStart) + 1 >= minBand) { r0 = Math.min(runStart, runEnd); r1 = Math.max(runStart, runEnd); break }
-                    runStart = -1; runEnd = -1
-                }
-            }
-            if (r0 < 0 && runStart >= 0 && Math.abs(runEnd - runStart) + 1 >= minBand) {
-                r0 = Math.min(runStart, runEnd); r1 = Math.max(runStart, runEnd)
-            }
-            if (r0 < 0) return null
-            val bandH = r1 - r0 + 1
-            if (bandH > lh * 1.8f) return null     // too tall for one line: artwork or a second bubble
-            var cMin = ww; var cMax = -1; var inkPx = 0
-            for (x in 0 until ww) {
-                var any = false
-                for (y in r0..r1) if (Math.abs(lumaOf(win[y * ww + x]) - bg) > 70) { any = true; inkPx++ }
-                if (any) { if (x < cMin) cMin = x; cMax = x }
-            }
-            if (cMax < 0 || (cMax - cMin + 1) < lh * 1.2f) return null
-            val density = inkPx.toFloat() / ((cMax - cMin + 1) * bandH)
-            if (density < 0.04f || density > 0.6f) return null
-            val gx0 = x0 + cMin; val gx1 = x0 + cMax + 1; val gy0 = y0 + r0; val gy1 = y0 + r1 + 1
-            val xc = (gx0 + gx1) / 2f; val yc = (gy0 + gy1) / 2f
-            // already explained by some other block (or by this one's own ink)?
-            for (o in all) {
-                if (xc >= o.cx - o.w / 2f && xc <= o.cx + o.w / 2f && yc >= o.cy - o.h / 2f && yc <= o.cy + o.h / 2f) return null
-            }
-            val pad = Math.max(3, (lh * 0.25f).toInt())
-            return intArrayOf((gx0 - pad).coerceAtLeast(0), (gy0 - pad).coerceAtLeast(0),
-                (gx1 + pad).coerceAtMost(W), (gy1 + pad).coerceAtMost(H))
-        }
-
-        private fun readStrip(bmp: Bitmap, st: ScriptState, rect: IntArray): List<OcrBlock> {
-            val x0 = rect[0]; val y0 = rect[1]
-            val cw = rect[2] - x0; val ch = rect[3] - y0
-            if (cw < 8 || ch < 6) return emptyList()
-            var strip: Bitmap? = null
-            var up: Bitmap? = null
-            try {
-                strip = Bitmap.createBitmap(bmp, x0, y0, cw, ch)
-                val f = Math.max(1f, Math.min(Math.min(4f, Math.max(2f, 96f / ch)), 2400f / cw))
-                up = Bitmap.createScaledBitmap(strip, (cw * f).toInt().coerceAtLeast(2), (ch * f).toInt().coerceAtLeast(2), true)
-                val out = ArrayList<OcrBlock>()
-                for (g in engine.recognizeFast(up, st.current).blocks) {
-                    if (g.vertical || OcrPost.isNoise(g)) continue
-                    val text = g.text.replace(NEWLINES, " ").trim()
-                    if (text.count { it.isLetterOrDigit() } < 1) continue
-                    val gw = g.w / f; val gh = g.h / f
-                    val gcx = x0 + g.cx / f; val gcy = y0 + g.cy / f
-                    out.add(OcrBlock(
-                        text = text,
-                        top = (gcy - gh / 2f).toInt().coerceAtLeast(0), left = (gcx - gw / 2f).toInt().coerceAtLeast(0),
-                        cx = gcx, cy = gcy, w = gw, h = gh, angle = 0f,
-                        fontPx = if (g.fontPx > 0f) g.fontPx / f else gh,
-                        vertical = false, confidence = g.confidence
-                    ))
-                }
-                return out
-            } finally {
-                if (up != null && up !== strip && !up.isRecycled) up.recycle()
-                if (strip != null && strip !== bmp && !strip.isRecycled) strip.recycle()
-            }
-        }
-
         /** True when two OCR readings are (nearly) the same text; false when they are different lines. */
         private fun sameOcrText(a: String, b: String): Boolean {
             val x = WebModeLayout.normalizeOcrText(a)
@@ -1885,7 +1735,7 @@ internal class WebModeExtractor(
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
                 // multi-pass engine; bubbles that still hide ink are re-read one by one afterwards.
                 val quick = engine.recognizeFast(bmp, st.current)
-                if (quick.text.count { it.isLetterOrDigit() } >= 12) quick else engine.recognize(bmp, st.current)
+                if (quick.text.count { it.isLetterOrDigit() } >= 6) quick else engine.recognize(bmp, st.current)
             } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.

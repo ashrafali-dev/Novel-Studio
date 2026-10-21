@@ -2273,11 +2273,20 @@ return t.length>=40?'TXT:'+t:'';
         }
         if (text != null) {
             chipIdleTicks = 0
-            chip.update(text, color)
+            // Show how long this stage has been running, so "which step is slow?" is answered on the screen itself:
+            // Reading the page 25s = download/OCR; Waiting for the chatbot 25s = the chatbot, not the OCR.
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            if (text != chipStageText) { chipStageText = text; chipStageSinceMs = nowMs }
+            val secs = ((nowMs - chipStageSinceMs) / 1000L).toInt()
+            chip.update(if (secs >= 3) "$text · ${secs}s" else text, color)
         } else if (++chipIdleTicks >= 2) {
+            chipStageText = ""
             chip.update(null, 0)
         }
     }
+
+    private var chipStageText = ""
+    private var chipStageSinceMs = 0L
 
     private val scanIndicatorRunnable = object : Runnable {
         override fun run() {
@@ -9202,7 +9211,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             menuOcrLangLabel(), menuOcrRescanLabel(), menuOcrDebugLabel(), menuOcrModelsLabel(),
             "📝 Edit Prompt For Scanning Translation",
             "⬆️ Check for Updates (v" + Updater.currentVersion(this) + ")",
-            "💬 Join the Community (Telegram · Reddit)"
+            "💬 Join the Community (Telegram · Reddit)",
+            "🧠 What the App Learned About This Site"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -9211,14 +9221,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE, 57 to Ic.SEARCH
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
             "COMMUNITY" to listOf(56),
             "LIBRARY" to listOf(0, 4, 1, 3),
             "TRANSLATE" to listOf(5, 33, 54, 7),
-            "OCR" to listOf(53, 50),
+            "OCR" to listOf(53, 50, 57),
             "READER" to listOf(9, 20, 23),
             "APP" to listOf(55)
         )
@@ -9296,6 +9306,23 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 54 -> { dlg.dismiss(); editScanPrompt() }
                 55 -> { dlg.dismiss(); checkForUpdate(true) }
                 56 -> { dlg.dismiss(); showCommunityChooser() }
+                57 -> {
+                    dlg.dismiss()
+                    val host = try { Uri.parse(novelWv.url.orEmpty()).host.orEmpty().removePrefix("www.") } catch (_: Exception) { "" }
+                    AlertDialog.Builder(this)
+                        .setTitle("What the app learned")
+                        .setMessage(if (host.isBlank()) "Open a comic page first." else SiteLearner.explain(this, host))
+                        .setPositiveButton("OK", null)
+                        .setNeutralButton("Forget this site") { _, _ ->
+                            try {
+                                val o = org.json.JSONObject(Prefs.get(this, "siteLearn", "{}"))
+                                o.remove(host)
+                                Prefs.put(this, "siteLearn", o.toString())
+                                toast("Forgotten — the app will learn this site again")
+                            } catch (_: Exception) {}
+                        }
+                        .show()
+                }
                 35 -> {
                     dlg.dismiss()
                     startAiAdBlockScan()
