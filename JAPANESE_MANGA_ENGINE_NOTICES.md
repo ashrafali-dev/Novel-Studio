@@ -9,7 +9,7 @@ This optional engine is used by NovelStudio's OCR/Webtoon translation pipeline w
 
 ## PP-OCRv5 Korean mobile recognizer
 - Model: https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx
-- Matching PP-OCRv5 dictionary: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/49043b4cb8eaf8388a6399394ebdc014851c217c/paddle/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile/ppocrv5_korean_dict.txt
+- Matching PP-OCRv5 dictionary (official PaddleOCR, pinned revision): https://github.com/PaddlePaddle/PaddleOCR/blob/dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf/ppocr/utils/dict/ppocrv5_korean_dict.txt
 - Dictionary SHA-256: `a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7`
 - License: Apache-2.0
 
