@@ -222,7 +222,7 @@
     const x=Math.max(0,Math.floor(box.x)),y=Math.max(0,Math.floor(box.y));
     const w=Math.min(image.naturalWidth-x,Math.max(1,Math.ceil(box.w)));
     const h=Math.min(image.naturalHeight-y,Math.max(1,Math.ceil(box.h)));
-    if(w<2||h<2)return '';
+    if(w<2||h<2)return {text:'',confidence:0};
     let crop=canvasOf(w,h);
     crop.getContext('2d').drawImage(image,x,y,w,h,0,0,w,h);
     if(h>w){
@@ -250,7 +250,7 @@
       if(best!==0&&best!==prev&&activeDictionary[best]!==undefined){text+=activeDictionary[best];confidenceTotal+=bestValue;confidenceCount++;}
       prev=best;
     }
-    return text.trim();
+    return {text:text.trim(),confidence:confidenceCount?Math.max(0,Math.min(1,confidenceTotal/confidenceCount)):0};
   }
 
   async function run(url,id,requestedScript) {
