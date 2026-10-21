@@ -15,8 +15,8 @@ android {
         applicationId 'com.ashraf.novelstudio'
         minSdk 24
         targetSdk 33
-        versionCode 67
-        versionName '1.6.7'
+        versionCode 63
+        versionName '1.6.3'
 
         // Build one ARM APK compatible with both 32-bit and 64-bit ARM devices.
         ndk {
@@ -64,10 +64,12 @@ dependencies {
     implementation 'androidx.browser:browser:1.8.0'
 
     // Web Mode OCR: on-device ML Kit, one bundled model per script (Latin / Chinese / Japanese / Korean).
-    implementation 'com.google.mlkit:text-recognition:16.0.0'
-    implementation 'com.google.mlkit:text-recognition-chinese:16.0.0'
-    implementation 'com.google.mlkit:text-recognition-japanese:16.0.0'
-    implementation 'com.google.mlkit:text-recognition-korean:16.0.0'
+    // OCR models live in Google Play Services and are SHARED with every other app on the phone (Translate, Lens ...):
+    // nothing is bundled in this APK, nothing is loaded into this app's own memory. Same classes, same code.
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.1'
 
     // Primary Web Mode OCR: PP-OCR style ONNX models, downloaded by the user (ML Kit is the fallback).
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.21.1'
