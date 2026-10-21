@@ -352,14 +352,13 @@ class JapaneseMangaEngineActivity : Activity() {
         val json = JSONObject(raw)
         val w = json.optInt("width"); val h = json.optInt("height")
         val regions = json.optJSONArray("regions") ?: JSONArray()
-        val removalBubbles = if (Prefs.bool(this, "wmTextRemoval", false)) {
+        val removalBubbles = if (Prefs.bool(this, "wmTextRemoval", true)) {
             mangaRemovalBubbles(panel.sourceUrl, regions, w, h)
         } else emptyList()
 
         // Image decode, pixel masking, and WebP encoding must not run on the UI thread.
         val shouldAttempt = removalBubbles.isNotEmpty() &&
-            panel.sourceWidth == w && panel.sourceHeight == h &&
-            panel.sourceWidth <= 4096 && panel.sourceHeight <= 4096 &&
+            panel.sourceWidth <= 4096 && panel.sourceHeight <= 20000 &&
             panel.sourceWidth.toLong() * panel.sourceHeight.toLong() <= MAX_CLEAN_PIXELS
         if (!shouldAttempt) {
             deleteLocal(panel.localUrl)
@@ -376,8 +375,9 @@ class JapaneseMangaEngineActivity : Activity() {
                 if (file != null && file.length() <= MAX_IMAGE_BYTES) {
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFile(file.absolutePath, bounds)
-                    if (bounds.outWidth == panel.sourceWidth && bounds.outHeight == panel.sourceHeight &&
-                        bounds.outWidth == w && bounds.outHeight == h) {
+                    // OCR may have run on a downsampled copy (tall strips); boxes are stored as fractions,
+                    // so they map onto the full-size original unchanged.
+                    if (bounds.outWidth == panel.sourceWidth && bounds.outHeight == panel.sourceHeight) {
                         WebModeTextRemover.cleanAndCache(this@JapaneseMangaEngineActivity,
                             panel.sourceUrl, file.readBytes(), removalBubbles)
                     }
@@ -491,8 +491,8 @@ class JapaneseMangaEngineActivity : Activity() {
             finally { bitmap.recycle() }
             // Keep the original compressed source only while this optional remover is enabled and
             // the frame is small enough to be cleaned safely. The JPEG used by OCR stays separate.
-            if (Prefs.bool(this, "wmTextRemoval", false) &&
-                bounds.outWidth <= 4096 && bounds.outHeight <= 4096 &&
+            if (Prefs.bool(this, "wmTextRemoval", true) &&
+                bounds.outWidth <= 4096 && bounds.outHeight <= 20000 &&
                 bounds.outWidth.toLong() * bounds.outHeight.toLong() <= MAX_CLEAN_PIXELS) {
                 // If preserving the original fails, fall back to OCR only; the cleaner won't use the
                 // lower-quality temporary JPEG unless its dimensions/geometry were checked above.
@@ -576,6 +576,6 @@ class JapaneseMangaEngineActivity : Activity() {
         const val REQUEST_CODE = 43
         private const val MAX_IMAGE_BYTES = 20L * 1024 * 1024
         private const val MAX_PIXELS = 10L * 1024 * 1024
-        private const val MAX_CLEAN_PIXELS = 3_000_000L
+        private const val MAX_CLEAN_PIXELS = 14_000_000L
     }
 }
