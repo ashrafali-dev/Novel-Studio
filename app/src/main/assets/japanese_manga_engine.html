@@ -247,7 +247,7 @@
     for(let t=0;t<steps;t++){
       let best=0,bestValue=-Infinity,offset=t*vocab;
       for(let k=0;k<vocab;k++){const v=values[offset+k];if(v>bestValue){bestValue=v;best=k;}}
-      if(best!==0&&best!==prev&&activeDictionary[best]!==undefined)text+=activeDictionary[best];
+      if(best!==0&&best!==prev&&activeDictionary[best]!==undefined){text+=activeDictionary[best];confidenceTotal+=bestValue;confidenceCount++;}
       prev=best;
     }
     return text.trim();
