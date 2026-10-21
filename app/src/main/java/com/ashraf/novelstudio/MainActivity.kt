@@ -4924,7 +4924,7 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrLangLabel(): String =
         "🔤 OCR language: " + when (Prefs.get(this, "ocrLang", "auto")) {
             "en" -> "English only"; "ko" -> "Korean only"; "ja" -> "Japanese only"; "zh" -> "Chinese only"
-            else -> "Auto (guess from page)"
+            else -> "Auto (website language/URL, not image text)"
         }
 
     private fun menuOcrRescanLabel(): String =
