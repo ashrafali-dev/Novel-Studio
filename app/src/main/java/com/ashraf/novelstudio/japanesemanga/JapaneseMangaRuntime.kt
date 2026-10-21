@@ -105,7 +105,9 @@ internal object JapaneseMangaRuntime {
 
     /** Frees the hidden WebView without blocking the caller. Used when leaving the management screen. */
     fun release() {
-        invalidate()
+        // Do not reopen routing while a releaseAndWait() request is in progress (for example when the
+        // management Activity is closing while a delete operation waits for the current OCR call).
+        if (!releaseRequested) invalidate()
         main.post {
             if (ocrLock.tryLock()) {
                 try { destroyViewOnMain() } finally { ocrLock.unlock() }
