@@ -40,5 +40,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NovelStudio-v1.6.5-65-apk
+          name: NovelStudio-v1.6.6-66-apk
           path: app/build/outputs/apk/release/app-release.apk
