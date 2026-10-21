@@ -21,6 +21,7 @@ This optional engine is used by NovelStudio's OCR/Webtoon translation pipeline w
 ## ONNX Runtime Web 1.23.2
 - Project: https://github.com/microsoft/onnxruntime
 - Package: https://www.npmjs.com/package/onnxruntime-web/v/1.23.2
+- Runtime asset download base: `https://unpkg.com/onnxruntime-web@1.23.2/dist/` (not jsDelivr; jsDelivr returned HTTP 404 for the threaded `.mjs` asset in the app's download test).
 - License: MIT
 - Files used: `ort.wasm.min.js`, `ort-wasm-simd-threaded.mjs`, `ort-wasm-simd-threaded.wasm` from the published 1.23.2 package. The appassets loader applies same-origin COOP/COEP headers to the hidden OCR document; the runtime sets `numThreads = 1` to limit CPU use.
 
