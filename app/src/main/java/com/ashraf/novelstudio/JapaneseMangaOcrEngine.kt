@@ -30,7 +30,7 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
             val y = r.optDouble("y", 0.0).toFloat() * k
             val w = r.optDouble("w", 0.0).toFloat() * k
             val h = r.optDouble("h", 0.0).toFloat() * k
-            if (w < 4f || h < 4f) continue
+            if (w < 2f || h < 2f) continue
             val pointArray = r.optJSONArray("points")
             val polygon = ArrayList<Pair<Float, Float>>()
             if (pointArray != null) {
