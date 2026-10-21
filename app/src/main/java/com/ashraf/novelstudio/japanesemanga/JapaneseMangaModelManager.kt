@@ -66,7 +66,7 @@ internal class JapaneseMangaModelManager(context: Context) {
         return installedCacheValue
     }
 
-    private fun invalidateInstalledCache() {
+    internal fun invalidateInstalledCache() {
         installedCacheValue = false
         installedCacheCheckedAt = 0L
     }
