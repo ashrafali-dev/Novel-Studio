@@ -26,13 +26,11 @@
 
   async function loadModels() {
     if (!window.ort) throw new Error('ONNX Runtime WASM could not load');
-    // This app uses the actual threaded SIMD files published by onnxruntime-web@1.23.2.
-    // JapaneseMangaAssetLoader gives this same-origin page COOP/COEP headers for SharedArrayBuffer.
-    if (typeof SharedArrayBuffer === 'undefined' || !self.crossOriginIsolated)
-      throw new Error('ONNX WASM needs cross-origin isolation; reopen the updated OCR runtime');
+    // Android WebView appassets content cannot rely on cross-origin isolation.
+    // Use the single-thread SIMD backend so SharedArrayBuffer is not required.
     ort.env.wasm.wasmPaths = {
-      mjs: BASE + 'ort-wasm-simd-threaded.mjs',
-      wasm: BASE + 'ort-wasm-simd-threaded.wasm'
+      mjs: BASE + 'ort-wasm-simd.mjs',
+      wasm: BASE + 'ort-wasm-simd.wasm'
     };
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.proxy = false;
