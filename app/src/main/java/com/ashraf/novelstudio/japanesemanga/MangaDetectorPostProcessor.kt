@@ -61,7 +61,9 @@ internal object MangaDetectorPostProcessor {
                 // scale those points to the original source bitmap below.
                 originalH = resizedH,
                 originalW = resizedW,
-                unclipContour = true
+                unclipContour = true,
+                // The upstream Manga detector has no 5-pixel post-unclip cutoff; keep small/fine text.
+                minSizeAfterUnclip = 3f
             )
 
             val out = JSONArray()
