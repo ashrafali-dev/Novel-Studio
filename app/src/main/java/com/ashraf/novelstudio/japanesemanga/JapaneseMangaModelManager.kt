@@ -90,6 +90,13 @@ internal class JapaneseMangaModelManager(context: Context) {
                 if (!root.exists() && !root.mkdirs()) error("ইঞ্জিন ফোল্ডার তৈরি করা যায়নি")
                 marker.delete()
                 invalidateInstalledCache()
+                // Reinstall is a clean transaction. A previous model-pack version may contain a
+                // same-named but incompatible dictionary; never reuse files just because their size fits.
+                SPECS.forEach { spec ->
+                    val oldTarget = safeFile(spec.path) ?: error("অবৈধ ফাইল পাথ")
+                    if (oldTarget.exists() && !oldTarget.delete()) error("পুরোনো মডেল ফাইল মুছতে পারিনি · " + spec.path)
+                    File(oldTarget.parentFile, oldTarget.name + ".part").delete()
+                }
                 SPECS.forEachIndexed { i, spec ->
                     checkCancel()
                     val target = safeFile(spec.path) ?: error("অবৈধ ফাইল পাথ")
@@ -208,7 +215,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     }
 
     companion object {
-        const val VERSION = "pp-ocrv6-multilingual-comic-v2"
+        const val VERSION = "pp-ocrv6-multilingual-comic-v3"
         const val ORT_VERSION = "1.23.2"
         private const val HF = "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/ba1d479e8a61a20e8318c9758c73fbbbd290b98d/"
         private const val ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
