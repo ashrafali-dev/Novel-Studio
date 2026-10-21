@@ -106,8 +106,11 @@ internal class GoogleLensOcrEngine : OcrEngine {
     }
 
     private fun buildRequest(png: ByteArray, width: Int, height: Int): ByteArray {
+        // LensOverlayRequestId.uuid is protobuf field 1 (string), not a timestamp varint.
+        // Encoding it as a varint makes the request structurally invalid and can cause Lens to reject it.
         val requestId = ProtoWriter().apply {
-            varint(1, System.currentTimeMillis())
+            string(1, System.currentTimeMillis().toString() +
+                java.util.concurrent.ThreadLocalRandom.current().nextInt(100000, 1_000_000))
             varint(2, 1)
             varint(3, 1)
         }.bytes()
