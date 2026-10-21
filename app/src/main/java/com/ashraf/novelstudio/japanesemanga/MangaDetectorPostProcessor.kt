@@ -92,7 +92,7 @@ internal object MangaDetectorPostProcessor {
                 }
                 val w = maxX - minX
                 val h = maxY - minY
-                if (w < 4f || h < 4f || mapped.size != 4) continue
+                if (w < 2f || h < 2f || mapped.size != 4) continue
                 // Keep the same quadrilateral geometry convention as the existing native Paddle adapter:
                 // axis-aligned bounds are for clipping, while oriented edge sizes/angle drive OCR overlays.
                 val p0 = mapped[0]
