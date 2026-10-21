@@ -41,7 +41,7 @@ internal class JapaneseMangaModelManager(context: Context) {
         val now = SystemClock.elapsedRealtime()
         // Hash the downloaded bundle only when first checked / invalidated. OCR asks this during routing,
         // so doing a full 50 MB digest on every frame would cause avoidable stalls.
-        if (now - installedCacheCheckedAt < 30_000L) return installedCacheValue
+        if (installedCacheCheckedAt > 0L && now - installedCacheCheckedAt < 30_000L) return installedCacheValue
         installedCacheValue = try {
             if (!marker.isFile) false else {
                 val meta = JSONObject(marker.readText())
