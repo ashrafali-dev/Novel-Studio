@@ -243,6 +243,7 @@
     const tensor=out[activeRecognizer.outputNames[0]],dims=tensor.dims;
     if(dims.length<3)throw new Error('Unexpected recognizer output '+JSON.stringify(dims));
     const steps=dims[dims.length-2],vocab=dims[dims.length-1],values=tensor.data;
+    if(vocab!==activeDictionary.length)throw new Error('Recognizer/dictionary mismatch for '+script+': model='+vocab+' dictionary='+activeDictionary.length);
     let prev=-1,text='',confidenceTotal=0,confidenceCount=0;
     for(let t=0;t<steps;t++){
       let best=0,bestValue=-Infinity,offset=t*vocab;
