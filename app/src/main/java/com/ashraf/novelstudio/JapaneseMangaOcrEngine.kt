@@ -233,9 +233,16 @@ internal class RoutingOcrEngine : OcrEngine {
             val full = (if (stage != null) "$stage: " else "") + root.javaClass.simpleName + " – " +
                 (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
             OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
-            val errorLabel = if (selectedMode == "google_lens") "Google Lens error → ML Kit" else "Paddle error → ML Kit"
-            OcrEngineStatus.toastOnce(appContext, "$errorLabel\n$full")
-            OcrEngineStatus.copyOnce(appContext, "NovelStudio Paddle error: $full")
+            val engineLabel = when (selectedMode) {
+                "google_lens" -> "Google Lens OCR"
+                "manga" -> "Japanese Manga OCR"
+                "rapid_onnx" -> "RapidOCR"
+                "paddle_small" -> "PaddleOCR Small"
+                "paddle_heavy" -> "PaddleOCR Medium"
+                else -> selectedMode
+            }
+            OcrEngineStatus.toastOnce(appContext, "$engineLabel error → ML Kit fallback\n$full")
+            OcrEngineStatus.copyOnce(appContext, "NovelStudio $engineLabel error: $full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
             run(mlKit)
