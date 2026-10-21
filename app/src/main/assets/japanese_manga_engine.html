@@ -292,7 +292,14 @@
         let reading=null;
         try{reading=await recognize(image,b,script);}
         catch(e){lastRecognitionError=e&&e.message?e.message:String(e);}
-        if(reading&&reading.text)regions.push({order:0,text:reading.text,recConfidence:reading.confidence,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
+        if(reading&&reading.text)regions.push({order:0,text:reading.text,recConfidence:reading.confidence,
+          x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),
+          cx:Number.isFinite(b.cx)?b.cx:b.x+b.w/2,cy:Number.isFinite(b.cy)?b.cy:b.y+b.h/2,
+          orientedW:Number.isFinite(b.orientedW)?b.orientedW:b.w,
+          orientedH:Number.isFinite(b.orientedH)?b.orientedH:b.h,
+          angle:Number.isFinite(b.angle)?b.angle:0,
+          vertical:Number.isFinite(b.orientedW)&&Number.isFinite(b.orientedH)?b.orientedH>b.orientedW*1.25:!!b.vertical,
+          score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
       }
       // Do not silently report an empty success when every crop failed because the ONNX output and dictionary
       // do not agree (for example, after a corrupt/incompatible model download).
