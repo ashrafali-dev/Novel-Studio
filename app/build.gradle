@@ -15,8 +15,8 @@ android {
         applicationId 'com.ashraf.novelstudio'
         minSdk 24
         targetSdk 33
-        versionCode 65
-        versionName '1.6.5'
+        versionCode 66
+        versionName '1.6.6'
 
         // Build one ARM APK compatible with both 32-bit and 64-bit ARM devices.
         ndk {
