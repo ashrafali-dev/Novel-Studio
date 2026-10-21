@@ -1,7 +1,6 @@
 package com.ashraf.novelstudio
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -74,8 +73,6 @@ internal class GoogleLensOcrEngine : OcrEngine {
             setRequestProperty("User-Agent", USER_AGENT)
             setRequestProperty("Accept", "*/*")
             setRequestProperty("Accept-Language", "en-US,en;q=0.9")
-            setRequestProperty("Origin", "https://lens.google.com")
-            setRequestProperty("Referer", "https://lens.google.com/")
             cookieHeader.takeIf(String::isNotBlank)?.let { setRequestProperty("Cookie", it) }
         }
         try {
@@ -267,7 +264,7 @@ internal class GoogleLensOcrEngine : OcrEngine {
                     1 -> { requireRemaining(8); cursor += 8 }
                     2 -> {
                         val length = readVarint()
-                        if (length < 0 || length > input.size - cursor) throw IOException("Invalid protobuf length")
+                        if (length < 0 || length > (input.size - cursor).toLong()) throw IOException("Invalid protobuf length")
                         val value = input.copyOfRange(cursor, cursor + length.toInt())
                         cursor += length.toInt()
                         out.add(ProtoField(number, wire, bytes = value, string = String(value, Charsets.UTF_8)))
