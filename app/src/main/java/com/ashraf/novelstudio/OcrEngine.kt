@@ -243,7 +243,7 @@ internal object OcrPost {
 
     private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
         if (a.vertical || b.vertical) return false
-        if (Math.abs(a.angle) >= 6f || Math.abs(b.angle) >= 6f) return false   // clearly tilted text stays as it is
+        if (Math.abs(a.angle) >= 10f || Math.abs(b.angle) >= 10f) return false   // clearly tilted text stays as it is
         val fa = if (a.fontPx > 0f) a.fontPx else a.h
         val fb = if (b.fontPx > 0f) b.fontPx else b.h
         if (fa <= 0f || fb <= 0f) return false
@@ -253,7 +253,7 @@ internal object OcrPost {
         val top = if (a.cy <= b.cy) a else b
         val bot = if (top === a) b else a
         val gap = (bot.cy - bot.h / 2) - (top.cy + top.h / 2)
-        if (gap > f * 1.7f || gap < -f * 0.6f) return false
+        if (gap > f * 1.7f || gap < -f * 0.9f) return false   // Paddle boxes are unclipped (padded), so tight lines overlap
         val ox = Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
         val narrow = Math.min(a.w, b.w)
         if (narrow <= 0f || ox < narrow * 0.3f) return false
