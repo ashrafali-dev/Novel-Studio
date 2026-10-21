@@ -193,10 +193,33 @@
     const w=Math.min(image.naturalWidth-x,Math.max(1,Math.ceil(box.w)));
     const h=Math.min(image.naturalHeight-y,Math.max(1,Math.ceil(box.h)));
     if(w<2||h<2)return {text:'',confidence:0};
-    let crop=canvasOf(w,h);
-    crop.getContext('2d').drawImage(image,x,y,w,h,0,0,w,h);
-    if(h>w){
-      const rotated=canvasOf(h,w),ctx=rotated.getContext('2d');
+    let crop;
+    const points=Array.isArray(box.points)&&box.points.length===4?box.points:null;
+    if(points&&points.every(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(p[0])&&Number.isFinite(p[1]))){
+      // The native DB postprocessor returns an ordered rotated quadrilateral. Rectangular AABB crops
+      // include neighbouring art and chop rotated SFX, so rotate the full image into the detected line's
+      // coordinate frame and crop there. A small margin preserves outlines that touch the detected edge.
+      const p0=points[0],p1=points[1],p3=points[3];
+      const dx=p1[0]-p0[0],dy=p1[1]-p0[1];
+      const lineW=Math.hypot(dx,dy),lineH=Math.hypot(p3[0]-p0[0],p3[1]-p0[1]);
+      if(lineW>=2&&lineH>=2&&Number.isFinite(lineW)&&Number.isFinite(lineH)){
+        const pad=Math.max(2,Math.min(8,Math.round(Math.min(lineW,lineH)*0.08)));
+        const cw=Math.max(2,Math.ceil(lineW+2*pad)),ch=Math.max(2,Math.ceil(lineH+2*pad));
+        crop=canvasOf(cw,ch);
+        const ctx=crop.getContext('2d');
+        const angle=Math.atan2(dy,dx),cs=Math.cos(angle),sn=Math.sin(angle);
+        ctx.setTransform(cs,-sn,sn,cs,pad-cs*p0[0]-sn*p0[1],pad+sn*p0[0]-cs*p0[1]);
+        ctx.drawImage(image,0,0);
+        ctx.setTransform(1,0,0,1,0,0);
+      }
+    }
+    if(!crop){
+      // Compatibility safety net for malformed quadrilaterals; the regular path uses oriented points.
+      crop=canvasOf(w,h);
+      crop.getContext('2d').drawImage(image,x,y,w,h,0,0,w,h);
+    }
+    if(crop.height>crop.width){
+      const rotated=canvasOf(crop.height,crop.width),ctx=rotated.getContext('2d');
       ctx.translate(0,rotated.height);ctx.rotate(-Math.PI/2);ctx.drawImage(crop,0,0);crop=rotated;
     }
     const naturalW=Math.round(48*crop.width/Math.max(1,crop.height));
