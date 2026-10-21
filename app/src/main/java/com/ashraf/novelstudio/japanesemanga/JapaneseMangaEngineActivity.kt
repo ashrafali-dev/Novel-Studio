@@ -222,6 +222,8 @@ class JapaneseMangaEngineActivity : Activity() {
         @JavascriptInterface fun onOcrError(id: String, message: String) { main.post {
             finishScan("OCR failed\n" + message.take(400))
         } }
+        @JavascriptInterface fun postProcessDetectorMap(payload: String): String =
+            MangaDetectorPostProcessor.process(this@JapaneseMangaEngineActivity, payload)
     }
 
     private fun controls() {
