@@ -185,7 +185,7 @@ internal class JapaneseMangaModelManager(context: Context) {
     companion object {
         const val VERSION = "pp-ocrv6-multilingual-comic-v2"
         const val ORT_VERSION = "1.23.2"
-        private const val HF = "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/main/"
+        private const val HF = "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/ba1d479e8a61a20e8318c9758c73fbbbd290b98d/"
         private const val ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
         private val SPECS = listOf(
             Asset("ort.wasm.min.js", ORT + "ort.wasm.min.js", 10000, 200000),
