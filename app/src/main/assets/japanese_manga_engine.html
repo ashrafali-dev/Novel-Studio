@@ -62,10 +62,10 @@
     if (!koreanDictionary) {
       const response = await fetch(BASE + 'korean_dict.txt');
       if (!response.ok) throw new Error('Korean character dictionary unavailable (' + response.status + ')');
-      const rows = (await response.text()).replace(/^\\uFEFF/, '').split(/\\r?\\n/);
+      const rows = (await response.text()).replace(/^\uFEFF/, '').split(/\r?\n/);
       while (rows.length && rows[rows.length - 1] === '') rows.pop();
       koreanDictionary = [''];
-      for (const row of rows) koreanDictionary.push(row.replace(/\\r$/, ''));
+      for (const row of rows) koreanDictionary.push(row.replace(/\r$/, ''));
       koreanDictionary.push(' ');
       if (koreanDictionary.length < 1000) throw new Error('Korean character dictionary is incomplete');
     }
@@ -240,7 +240,7 @@
     const activeRecognizer = script === 'KOREAN' ? koreanRecognizer : recognizer;
     const activeDictionary = script === 'KOREAN' ? koreanDictionary : dictionary;
     const out=await activeRecognizer.run({[activeRecognizer.inputNames[0]]:new ort.Tensor('float32',arr,[1,3,48,tw])});
-    const tensor=out[recognizer.outputNames[0]],dims=tensor.dims;
+    const tensor=out[activeRecognizer.outputNames[0]],dims=tensor.dims;
     if(dims.length<3)throw new Error('Unexpected recognizer output '+JSON.stringify(dims));
     const steps=dims[dims.length-2],vocab=dims[dims.length-1],values=tensor.data;
     let prev=-1,text='';
