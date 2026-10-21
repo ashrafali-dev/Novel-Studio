@@ -68,14 +68,20 @@ internal object MangaDetectorPostProcessor {
             val sy = imageH.toFloat() / resizedH.toFloat()
             for (box in boxes) {
                 val points = JSONArray()
+                val mapped = ArrayList<PointF>(4)
                 var minX = Float.POSITIVE_INFINITY
                 var minY = Float.POSITIVE_INFINITY
                 var maxX = Float.NEGATIVE_INFINITY
                 var maxY = Float.NEGATIVE_INFINITY
+                var cx = 0f
+                var cy = 0f
                 for (point: PointF in box.points) {
                     val x = (point.x * sx).coerceIn(0f, imageW.toFloat())
                     val y = (point.y * sy).coerceIn(0f, imageH.toFloat())
                     points.put(JSONArray().put(x.toDouble()).put(y.toDouble()))
+                    mapped.add(PointF(x, y))
+                    cx += x
+                    cy += y
                     minX = minOf(minX, x)
                     minY = minOf(minY, y)
                     maxX = maxOf(maxX, x)
@@ -83,13 +89,26 @@ internal object MangaDetectorPostProcessor {
                 }
                 val w = maxX - minX
                 val h = maxY - minY
-                if (w < 4f || h < 4f) continue
+                if (w < 4f || h < 4f || mapped.size != 4) continue
+                // Keep the same quadrilateral geometry convention as the existing native Paddle adapter:
+                // axis-aligned bounds are for clipping, while oriented edge sizes/angle drive OCR overlays.
+                val p0 = mapped[0]
+                val p1 = mapped[1]
+                val p2 = mapped[2]
+                val orientedW = kotlin.math.hypot((p1.x - p0.x).toDouble(), (p1.y - p0.y).toDouble()).toFloat()
+                val orientedH = kotlin.math.hypot((p2.x - p1.x).toDouble(), (p2.y - p1.y).toDouble()).toFloat()
+                val angle = Math.toDegrees(kotlin.math.atan2((p1.y - p0.y).toDouble(), (p1.x - p0.x).toDouble())).toFloat()
                 out.put(
                     JSONObject()
                         .put("x", minX.toDouble())
                         .put("y", minY.toDouble())
                         .put("w", w.toDouble())
                         .put("h", h.toDouble())
+                        .put("cx", (cx / mapped.size).toDouble())
+                        .put("cy", (cy / mapped.size).toDouble())
+                        .put("orientedW", orientedW.toDouble())
+                        .put("orientedH", orientedH.toDouble())
+                        .put("angle", angle.toDouble())
                         .put("points", points)
                 )
             }
