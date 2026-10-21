@@ -113,6 +113,7 @@ class HomeView(private val ctx: Context) : FrameLayout(ctx) {
     var onOpen: (String) -> Unit = {}
     var onSearch: (String) -> Unit = {}
     var onMenu: () -> Unit = {}
+    var onHub: (Hub.Part) -> Unit = {}
 
     private val mp = ViewGroup.LayoutParams.MATCH_PARENT
     private val wc = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -536,6 +537,30 @@ class HomeView(private val ctx: Context) : FrameLayout(ctx) {
         return row
     }
 
+    // ---------------------------------------------------------------- hub (Webtoon | Novel)
+
+    private fun hubButton(part: Hub.Part, primary: Boolean): View {
+        val t = TextView(ctx).apply {
+            text = part.title
+            textSize = 15f
+            typeface = bold
+            gravity = Gravity.CENTER
+            setTextColor(if (primary) Color.WHITE else UiTheme.text)
+            background = if (primary)
+                GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(UiTheme.accentA, UiTheme.accentB)).apply { cornerRadius = ctx.dpf(22) }
+            else Glass.solid(ctx, UiTheme.sheet, 22, UiTheme.stroke)
+        }
+        pressable(t) { onHub(part) }
+        return t
+    }
+
+    private fun hubBar(): View = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        setPadding(ctx.dpi(14), ctx.dpi(6), ctx.dpi(14), ctx.dpi(4))
+        addView(hubButton(Hub.Part.WEBTOON, false), LinearLayout.LayoutParams(0, ctx.dpi(44), 1f).also { it.marginEnd = ctx.dpi(8) })
+        addView(hubButton(Hub.Part.NOVEL, false), LinearLayout.LayoutParams(0, ctx.dpi(44), 1f))
+    }
+
     // ---------------------------------------------------------------- public
 
     fun render(recents: List<HomeRecent>, novelSites: List<HomeSite>, comicSites: List<HomeSite>) {
@@ -543,6 +568,7 @@ class HomeView(private val ctx: Context) : FrameLayout(ctx) {
         riseIndex = 0
         content.removeAllViews()
         content.addView(header(), LinearLayout.LayoutParams(mp, wc))
+        content.addView(hubBar(), LinearLayout.LayoutParams(mp, wc))
         if (recents.isEmpty()) {
             content.addView(rise(welcome()), LinearLayout.LayoutParams(mp, wc))
             content.addView(rise(label("Novel sites")), LinearLayout.LayoutParams(mp, wc))
