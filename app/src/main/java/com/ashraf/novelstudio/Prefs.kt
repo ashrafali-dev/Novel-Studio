@@ -80,7 +80,7 @@ Your priority is faithful, context-aware, emotionally accurate, consistent, and 
 এখন থেকে আমি যা পাঠাব সেটাই অনুবাদ করবে।"""
 
     private val LEGACY_LANGUAGE_NOVEL_PROMPT = Regex(
-        """(?s)^You are an expert novel translator\\. I will send you chapters of web novels(?: \\(detect the source language automatically\\)| written in .+?)\\. Translate every chapter into natural, fluent .+?\\.\\n\\nRules:\\n- Do not skip anything and do not summarize\\. Translate the whole chapter\\.\\n- Keep character names and special terms \\(skills, ranks, place names\\) identical in every chapter\\.\\n- Keep the tone of the dialogue and the narration the same as the original\\.\\n- Reply with the translation only, with no extra comments\\.\\n\\nFrom now on, translate whatever I send\\.$"""
+        """(?s)^You are an expert novel translator\. I will send you chapters of web novels(?: \(detect the source language automatically\)| written in .+?)\. Translate every chapter into natural, fluent .+?\.\n\nRules:\n- Do not skip anything and do not summarize\. Translate the whole chapter\.\n- Keep character names and special terms \(skills, ranks, place names\) identical in every chapter\.\n- Keep the tone of the dialogue and the narration the same as the original\.\n- Reply with the translation only, with no extra comments\.\n\nFrom now on, translate whatever I send\.$"""
     )
 
     /** Recognizes built-in prompts saved by older versions or by an unchanged prompt editor. */
@@ -88,11 +88,11 @@ Your priority is faithful, context-aware, emotionally accurate, consistent, and 
         val v = value.trim()
         return v == DEFAULT_PROMPT ||
             v == LEGACY_DEFAULT_PROMPT ||
-            (v.startsWith("Translation target: ") && v.endsWith("\\n\\n$DEFAULT_PROMPT")) ||
+            (v.startsWith("Translation target: ") && v.endsWith("\n\n$DEFAULT_PROMPT")) ||
             LEGACY_LANGUAGE_NOVEL_PROMPT.matches(v)
     }
 
-        private fun sp(c: Context) = c.getSharedPreferences("ns", Context.MODE_PRIVATE)
+    private fun sp(c: Context) = c.getSharedPreferences("ns", Context.MODE_PRIVATE)
 
     fun get(c: Context, k: String, def: String = ""): String = sp(c).getString(k, def) ?: def
     fun put(c: Context, k: String, v: String) = sp(c).edit().putString(k, v).apply()
