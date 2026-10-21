@@ -165,7 +165,7 @@ object Langs {
         } else {
             src
         }
-        return "Translation target: $tgt. Source language: $sourceDescription.\\n\\n" + Prefs.DEFAULT_PROMPT
+        return "Translation target: $tgt. Source language: $sourceDescription.\n\n" + Prefs.DEFAULT_PROMPT
     }
 
     fun realtimePrompt(c: Context): String {
