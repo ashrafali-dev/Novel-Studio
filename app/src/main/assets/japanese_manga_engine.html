@@ -86,12 +86,13 @@
     ctx.drawImage(image, 0, 0, rw, rh);
     const rgba = ctx.getImageData(0, 0, rw, rh).data;
     const plane = rw * rh, data = new Float32Array(3 * plane);
-    // The model's reference path reads BGR pixels and applies these per-channel statistics.
+    // PP-OCRv6_manga reference converts BGR input to RGB before applying ImageNet statistics.
+    // Canvas ImageData is already RGBA/RGB, so keep R,G,B plane order here (unlike the BGR recognizer).
     const mean = [0.485,0.456,0.406], std = [0.229,0.224,0.225];
     for (let i=0,p=0; i<rgba.length; i+=4,p++) {
-      data[p] = (rgba[i+2]/255-mean[0])/std[0];
+      data[p] = (rgba[i]/255-mean[0])/std[0];
       data[plane+p] = (rgba[i+1]/255-mean[1])/std[1];
-      data[2*plane+p] = (rgba[i]/255-mean[2])/std[2];
+      data[2*plane+p] = (rgba[i+2]/255-mean[2])/std[2];
     }
     return {tensor:new ort.Tensor('float32', data, [1,3,rh,rw]), rw,rh,W,H};
   }
