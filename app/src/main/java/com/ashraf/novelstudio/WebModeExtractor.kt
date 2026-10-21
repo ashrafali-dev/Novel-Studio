@@ -1864,8 +1864,10 @@ internal class WebModeExtractor(
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
             // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
             if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
-            // The Japanese manga engine has its own detector; do not run it once per crop.
-            if (st.current == OcrScript.JAPANESE &&
+            // The comic engine has its own detector; do not run a second uncovered-ink scan per crop.
+            if ((st.current == OcrScript.JAPANESE || st.current == OcrScript.CHINESE ||
+                    st.current == OcrScript.KOREAN) &&
+                Prefs.get(wv.context, "ocrEngine", "mlkit") == "manga" &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
             return try {
                 OcrRescan.augment(wv.context, engine, bmp, core, st.current, fastMode)
