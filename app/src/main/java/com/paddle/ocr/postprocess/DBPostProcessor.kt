@@ -42,6 +42,7 @@ object DBPostProcessor {
         boxType: String,
         originalH: Int,
         originalW: Int,
+        unclipContour: Boolean = false,
     ): List<OCRBox> {
         require(boxType == "quad") { "Only DBPostProcess box_type=quad is supported" }
 
@@ -111,7 +112,10 @@ object DBPostProcessor {
                 }
                 if (score < boxThresh) continue
 
-                val expandedPts = PolygonUnclip.unclip(orderedPoints, unclipRatio)
+                // PP-OCR's DB post-process expands the source contour before the final min-area rectangle.
+                // The legacy Paddle path keeps its previous rectangle expansion unless explicitly opted in.
+                val unclipSource = if (unclipContour) contour.toList() else orderedPoints
+                val expandedPts = PolygonUnclip.unclip(unclipSource, unclipRatio)
                 val expandedRect = MatOfPoint2f().let { expanded2f ->
                     try {
                         expanded2f.fromList(expandedPts)
