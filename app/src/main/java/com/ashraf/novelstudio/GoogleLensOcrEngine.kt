@@ -32,7 +32,8 @@ internal class GoogleLensOcrEngine : OcrEngine {
             val response = postLens(out.toByteArray(), uploaded.width, uploaded.height)
             val blocks = parseTextBlocks(response, uploaded.width, uploaded.height, bitmap.width, bitmap.height)
             Log.i(TAG, "Google Lens OCR: image=${bitmap.width}x${bitmap.height}, returned=${blocks.size} blocks")
-            return OcrResult(blocks.sortedWith(compareBy<OcrBlock> { it.top }.thenBy { it.left }))
+            // Preserve Lens' own text-layout order; sorting left-to-right would reverse vertical Japanese columns.
+            return OcrResult(blocks)
         } finally {
             if (uploaded !== bitmap && !uploaded.isRecycled) uploaded.recycle()
         }
