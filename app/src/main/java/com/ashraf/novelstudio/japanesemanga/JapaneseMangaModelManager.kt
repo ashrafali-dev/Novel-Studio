@@ -215,14 +215,14 @@ internal class JapaneseMangaModelManager(context: Context) {
     }
 
     companion object {
-        const val VERSION = "pp-ocrv6-multilingual-comic-v3"
+        const val VERSION = "pp-ocrv6-multilingual-comic-v4"
         const val ORT_VERSION = "1.23.2"
         private const val HF = "https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/ba1d479e8a61a20e8318c9758c73fbbbd290b98d/"
         private const val ORT = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/"
         private val SPECS = listOf(
             Asset("ort.wasm.min.js", ORT + "ort.wasm.min.js", 10000, 200000),
-            Asset("ort-wasm-simd.wasm", ORT + "ort-wasm-simd.wasm", 5000000, 40000000),
-            Asset("ort-wasm-simd.mjs", ORT + "ort-wasm-simd.mjs", 5000, 200000),
+            Asset("ort-wasm-simd-threaded.wasm", ORT + "ort-wasm-simd-threaded.wasm", 5000000, 40000000),
+            Asset("ort-wasm-simd-threaded.mjs", ORT + "ort-wasm-simd-threaded.mjs", 5000, 200000),
             Asset("det/manga_det_v0.2.onnx", HF + "det/manga_det_v0.2.onnx", 500000, 8000000),
             Asset("rec/manga_rec_v0.2.onnx", HF + "rec/manga_rec_v0.2.onnx", 10000000, 30000000),
             Asset("ppocrv6_dict.txt", HF + "ppocrv6_dict.txt", 10000, 1000000),
