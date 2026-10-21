@@ -32,5 +32,18 @@ internal class JapaneseMangaAssetLoader(context: Context, private val manager: J
         })
         .build()
 
-    fun intercept(uri: android.net.Uri): WebResourceResponse? = loader.shouldInterceptRequest(uri)
+    fun intercept(uri: android.net.Uri): WebResourceResponse? {
+        val response = loader.shouldInterceptRequest(uri) ?: return null
+        // ONNX Runtime's threaded SIMD WASM build uses SharedArrayBuffer. Give the hidden, same-origin
+        // OCR page the response headers Chromium needs for cross-origin isolation. All runtime resources
+        // are served from this same appassets origin, not third-party hosts.
+        if (uri.path == "/assets/japanese_manga_engine.html") {
+            val headers = LinkedHashMap(response.responseHeaders ?: emptyMap())
+            headers["Cross-Origin-Opener-Policy"] = "same-origin"
+            headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+            headers["Origin-Agent-Cluster"] = "?1"
+            response.responseHeaders = headers
+        }
+        return response
+    }
 }
