@@ -1,0 +1,37 @@
+name: OCR compile check
+
+on:
+  push:
+    branches:
+      - feature/stylized-multilingual-comic-ocr
+    paths:
+      - "app/**"
+      - ".github/workflows/ocr-multilingual-compile.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - ".github/workflows/ocr-multilingual-compile.yml"
+
+jobs:
+  compile-debug:
+    runs-on: ubuntu-latest
+    env:
+      # Build script requires non-empty release signing configuration even for debug builds;
+      # these placeholders are never used by assembleDebug.
+      KEYSTORE_FILE: /tmp/unused-signing.jks
+      KEYSTORE_PASSWORD: unused
+      KEY_ALIAS: unused
+      KEY_PASSWORD: unused
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Assemble debug APK
+        run: gradle :app:assembleDebug --no-daemon
