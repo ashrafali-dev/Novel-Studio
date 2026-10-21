@@ -109,10 +109,17 @@ The goal is to make the entire reading and translation process possible inside a
 
 ## APK Build
 
-Go to the GitHub repository:
+**For updating an existing installation, download only the signed Release APK. Do not install `app-debug.apk` or any Debug APK over the existing app.** Debug builds use a different signing certificate and may require uninstalling the previous app.
 
-**Actions → Build APK → Artifacts → app-debug.apk**
+1. Open the repository's **Actions** tab.
+2. Open the latest successful **Build APK** run for the branch you want.
+3. Under **Artifacts**, download **`NovelStudio-SIGNED-RELEASE-APK`**.
+4. Extract the ZIP and install `app-release.apk`.
+
+The workflow checks that the release keystore and credentials are configured and verifies the APK signature before uploading the artifact. If that check fails, do not install an older or Debug artifact.
 
 Before installing a new APK, you can back up your saved translations using:
 
 **☰ → Export All Translations (.txt)**
+
+The release keystore must remain the same across builds to update an existing installation. If Android still asks you to uninstall the app after installing the signed Release APK, the configured GitHub signing key does not match the key used by the installed app.
