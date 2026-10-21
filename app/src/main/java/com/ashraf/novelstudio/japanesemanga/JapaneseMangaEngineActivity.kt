@@ -50,6 +50,8 @@ class JapaneseMangaEngineActivity : Activity() {
     private lateinit var scanButton: Button
     private lateinit var cancelButton: Button
     private lateinit var translateButton: Button
+    private lateinit var languageButton: Button
+    private var selectedScript = "JAPANESE"
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "japanese-manga-image").apply { isDaemon = true } }
     @Volatile private var scanning = false
@@ -101,8 +103,10 @@ class JapaneseMangaEngineActivity : Activity() {
             text = "ঐচ্ছিক multilingual comic OCR ইঞ্জিন"
         }
         root.addView(status, LinearLayout.LayoutParams(-1, -2))
+        languageButton = button("OCR ভাষা: Japanese") { chooseLanguage() }
+        root.addView(languageButton, LinearLayout.LayoutParams(-1, dp(38)).apply { bottomMargin = dp(4) })
         val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        installButton = button("ডাউনলোড (~38 MB)") { confirmInstall() }
+        installButton = button("ডাউনলোড (~45 MB)") { confirmInstall() }
         deleteButton = button("ইঞ্জিন মুছুন") { confirmDelete() }
         row1.addView(installButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(4) })
         row1.addView(deleteButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply { leftMargin = dp(4) })
@@ -125,7 +129,7 @@ class JapaneseMangaEngineActivity : Activity() {
             textSize = 13f
             setTextColor(0xFFE0E6F0.toInt())
             setPadding(dp(7), dp(8), dp(7), dp(12))
-            text = "OCR ফল এখানে দেখাবে। প্রথমে ইঞ্জিন ডাউনলোড করে পেজ স্ক্যান করো।\n\nডাউনলোড করা থাকলে Realtime/Scan মোড জাপানিজ মাঙ্গায় এই মডেল নিজেই ব্যবহার করে; এই স্ক্রিন শুধু ডাউনলোড/মোছা ও টেস্টের জন্য।"
+            text = "OCR ফল এখানে দেখাবে। প্রথমে ইঞ্জিন ডাউনলোড করে পেজ স্ক্যান করো।\n\nJapanese/Chinese-এর জন্য manga-trained OCR এবং Korean-এর জন্য Korean recognizer ব্যবহার হবে। ভাষা নির্বাচন করে তিনটিই এখানে পরীক্ষা করতে পারবে।"
         }
         scroll.addView(resultView, android.widget.FrameLayout.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1.1f))
@@ -143,6 +147,21 @@ class JapaneseMangaEngineActivity : Activity() {
         isAllCaps = false
         textSize = 12f
         setOnClickListener { action() }
+    }
+
+    private fun chooseLanguage() {
+        val codes = arrayOf("JAPANESE", "CHINESE", "KOREAN")
+        val labels = arrayOf("Japanese", "Chinese", "Korean")
+        val selected = codes.indexOf(selectedScript).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("OCR source language")
+            .setSingleChoiceItems(labels, selected) { dialog, which ->
+                selectedScript = codes[which]
+                languageButton.text = "OCR ভাষা: " + labels[which]
+                dialog.dismiss()
+            }
+            .setNegativeButton("বন্ধ") { dialog, _ -> dialog.dismiss() }
+            .show()
     }
 
     private fun setupPage() {
@@ -342,7 +361,7 @@ class JapaneseMangaEngineActivity : Activity() {
         val id = "jm-" + requestId + "-" + UUID.randomUUID().toString()
         pending = pending + (id to panel)
         status.text = "${index + 1}/${images.size} ছবি OCR হচ্ছে…"
-        runtime.evaluateJavascript("window.runJapaneseMangaOcr(${JSONObject.quote(panel.localUrl)},${JSONObject.quote(id)})", null)
+        runtime.evaluateJavascript("window.runJapaneseMangaOcr(${JSONObject.quote(panel.localUrl)},${JSONObject.quote(id)},${JSONObject.quote(selectedScript)})", null)
     }
 
     private fun acceptOcr(id: String, raw: String) {
