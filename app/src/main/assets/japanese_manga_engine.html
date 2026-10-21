@@ -265,9 +265,9 @@
       await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('Local panel image could not load'));});
       const boxes=await detect(image),regions=[];
       for(const b of boxes){
-        let text='';
-        try{text=await recognize(image,b,script);}catch(_){}
-        if(text)regions.push({order:0,text,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
+        let reading=null;
+        try{reading=await recognize(image,b,script);}catch(_){}
+        if(reading&&reading.text)regions.push({order:0,text:reading.text,recConfidence:reading.confidence,x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.w),h:Math.round(b.h),vertical:!!b.vertical,score:Math.round((b.score||0)*1000)/1000,...sampleColors(image,b)});
       }
       const vertical=regions.filter(r=>r.vertical).length>regions.length*0.45;
       regions.sort((a,b)=>{
