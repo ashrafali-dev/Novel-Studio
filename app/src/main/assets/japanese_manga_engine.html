@@ -169,23 +169,31 @@
 
   async function detect(image) {
     const input = detectorInput(image);
-    const out = await detector.run({[detector.inputNames[0]]: input.tensor});
-    const tensor = out[detector.outputNames[0]], dims = tensor.dims, data = tensor.data;
-    const mh = dims[dims.length - 2], mw = dims[dims.length - 1];
-    if (!mh || !mw || data.length !== mh * mw) throw new Error('Unexpected detector output ' + JSON.stringify(dims));
-    const payload = JSON.stringify({
-      mh, mw, rw: input.rw, rh: input.rh, W: input.W, H: input.H,
-      mapB64: float32MapToBase64(data)
-    });
-    const bridge = window.NsJapaneseMangaBridge;
-    if (!bridge || typeof bridge.postProcessDetectorMap !== 'function')
-      throw new Error('Native DB postprocessor is unavailable');
-    const response = bridge.postProcessDetectorMap(payload);
-    if (!response) throw new Error('Native DB postprocessor returned no result');
-    const parsed = JSON.parse(response);
-    if (parsed.error) throw new Error(parsed.error);
-    if (!Array.isArray(parsed.boxes)) throw new Error('Native DB postprocessor returned invalid boxes');
-    return parsed.boxes.map(b => ({...b, vertical: b.h > b.w * 1.2}));
+    let out = null;
+    try {
+      out = await detector.run({[detector.inputNames[0]]: input.tensor});
+      const tensor = out[detector.outputNames[0]], dims = tensor.dims, data = tensor.data;
+      const mh = dims[dims.length - 2], mw = dims[dims.length - 1];
+      if (!mh || !mw || data.length !== mh * mw) throw new Error('Unexpected detector output ' + JSON.stringify(dims));
+      const payload = JSON.stringify({
+        mh, mw, rw: input.rw, rh: input.rh, W: input.W, H: input.H,
+        mapB64: float32MapToBase64(data)
+      });
+      const bridge = window.NsJapaneseMangaBridge;
+      if (!bridge || typeof bridge.postProcessDetectorMap !== 'function')
+        throw new Error('Native DB postprocessor is unavailable');
+      const response = bridge.postProcessDetectorMap(payload);
+      if (!response) throw new Error('Native DB postprocessor returned no result');
+      const parsed = JSON.parse(response);
+      if (parsed.error) throw new Error(parsed.error);
+      if (!Array.isArray(parsed.boxes)) throw new Error('Native DB postprocessor returned invalid boxes');
+      return parsed.boxes.map(b => ({...b, vertical: b.h > b.w * 1.2}));
+    } finally {
+      // Release ORT inputs/outputs after extracting and decoding the probability map; this scan runs
+      // for many panels in sequence, so lingering native WASM tensors would grow memory chapter-long.
+      try { input.tensor.dispose(); } catch (_) {}
+      if (out) for (const value of Object.values(out)) { try { if (value && value.dispose) value.dispose(); } catch (_) {} }
+    }
   }
 
   async function recognize(image, box, script) {
@@ -232,7 +240,10 @@
     }
     const activeRecognizer = script === 'KOREAN' ? koreanRecognizer : recognizer;
     const activeDictionary = script === 'KOREAN' ? koreanDictionary : dictionary;
-    const out=await activeRecognizer.run({[activeRecognizer.inputNames[0]]:new ort.Tensor('float32',arr,[1,3,48,tw])});
+    const recInput = new ort.Tensor('float32',arr,[1,3,48,tw]);
+    let out = null;
+    try {
+    out=await activeRecognizer.run({[activeRecognizer.inputNames[0]]:recInput});
     const tensor=out[activeRecognizer.outputNames[0]],dims=tensor.dims;
     if(dims.length<3)throw new Error('Unexpected recognizer output '+JSON.stringify(dims));
     const steps=dims[dims.length-2],vocab=dims[dims.length-1],values=tensor.data;
@@ -259,6 +270,10 @@
       prev=best;
     }
     return {text:text.trim(),confidence:confidenceCount?Math.max(0,Math.min(1,confidenceTotal/confidenceCount)):0};
+    } finally {
+      try { recInput.dispose(); } catch (_) {}
+      if (out) for (const value of Object.values(out)) { try { if (value && value.dispose) value.dispose(); } catch (_) {} }
+    }
   }
 
   async function run(url,id,requestedScript) {
