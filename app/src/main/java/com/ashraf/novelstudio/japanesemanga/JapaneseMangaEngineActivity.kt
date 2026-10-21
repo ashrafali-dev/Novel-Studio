@@ -276,16 +276,38 @@ class JapaneseMangaEngineActivity : Activity() {
             .setMessage("ডাউনলোড করা OCR মডেল, runtime, dictionary ও সাময়িক ছবি মুছে যাবে। NovelStudio-র বাকি ফিচার/ডেটা অক্ষত থাকবে।")
             .setNegativeButton("না", null)
             .setPositiveButton("মুছে ফেলো") { _, _ ->
-                JapaneseMangaRuntime.release()
-                val ok = manager.deleteEngine()
-                JapaneseMangaRuntime.invalidate()
-                if (ok) {
-                    runtime.stopLoading()
-                    runtime.loadUrl("about:blank")
-                    resultView.text = "ইঞ্জিন মুছে ফেলা হয়েছে। চাইলে পরে আবার ডাউনলোড করতে পারো।"
-                    status.text = "ইঞ্জিন মুছে ফেলা হয়েছে।"
-                } else status.text = "ইঞ্জিন মুছে ফেলা যায়নি।"
+                status.text = "চলমান OCR কাজ শেষ করে মডেল বন্ধ করা হচ্ছে…"
+                progress.visibility = View.VISIBLE
+                progress.isIndeterminate = true
                 controls()
+                Thread({
+                    var ok = false
+                    var failure = ""
+                    try {
+                        // Never delete ONNX/runtime/temporary input files while the hidden WebView is
+                        // still running a real-time/read-ahead OCR job.
+                        JapaneseMangaRuntime.releaseAndWait()
+                        ok = manager.deleteEngine()
+                    } catch (e: Exception) {
+                        failure = e.message ?: e.javaClass.simpleName
+                    } finally {
+                        JapaneseMangaRuntime.invalidate()
+                    }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        progress.visibility = View.GONE
+                        progress.isIndeterminate = false
+                        if (ok) {
+                            runtime.stopLoading()
+                            runtime.loadUrl("about:blank")
+                            resultView.text = "ইঞ্জিন মুছে ফেলা হয়েছে। চাইলে পরে আবার ডাউনলোড করতে পারো।"
+                            status.text = "ইঞ্জিন মুছে ফেলা হয়েছে।"
+                        } else {
+                            status.text = "ইঞ্জিন মুছে ফেলা যায়নি।" + if (failure.isNotBlank()) "\\n$failure" else ""
+                        }
+                        controls()
+                    }
+                }, "manga-engine-delete").start()
             }.show()
     }
 
