@@ -79,9 +79,11 @@ internal object OcrEngineStatus {
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
         used == "paddle_korean" -> "Paddle Korean v5"
+        used == "mlkit(empty-primary)" && selected == "google_lens" -> "ML Kit (Lens found no text)"
         used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
         used == "mlkit(oom)" -> "ML Kit (Paddle: low RAM)"
         used == "mlkit(link-error)" -> "ML Kit (Paddle native lib missing)"
+        used.startsWith("mlkit(error:") && selected == "google_lens" -> "ML Kit (Lens fallback: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit(error:") -> "ML Kit (Paddle error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit") && fellBack && selected.startsWith("paddle") -> "ML Kit (Paddle fallback)"
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
