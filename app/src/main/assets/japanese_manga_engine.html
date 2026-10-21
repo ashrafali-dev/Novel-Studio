@@ -26,8 +26,11 @@
 
   async function loadModels() {
     if (!window.ort) throw new Error('ONNX Runtime WASM could not load');
-    // Android WebView appassets content cannot rely on cross-origin isolation.
-    // Use the single-thread SIMD backend so SharedArrayBuffer is not required.
+    // This ONNX Runtime package publishes the threaded SIMD pair. The local asset loader supplies
+    // COOP/COEP headers; verify WebView actually enabled isolation before fetching the WASM module.
+    if (typeof SharedArrayBuffer === 'undefined' || !self.crossOriginIsolated) {
+      throw new Error('Android WebView isolation unavailable (SharedArrayBuffer/crossOriginIsolated)');
+    }
     ort.env.wasm.wasmPaths = {
       mjs: BASE + 'ort-wasm-simd-threaded.mjs',
       wasm: BASE + 'ort-wasm-simd-threaded.wasm'
