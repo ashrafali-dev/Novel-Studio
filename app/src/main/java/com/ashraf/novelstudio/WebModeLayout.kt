@@ -166,6 +166,8 @@ internal object WebModeLayoutStore {
     private val pendingCanvasTransitions = LinkedHashMap<String, LinkedHashSet<String>>()
     // Monotonic per-canvas generation lets in-flight replies prove they still target the same bitmap.
     private val canvasGenerationBySource = LinkedHashMap<String, Long>()
+    // Clean screenshots of tainted canvas pixels. This fingerprint works even if Lens/OCR fails.
+    private val canvasPixelSnapshots = LinkedHashMap<String, String>()
 
     // Reader SPAs (MangaDex) rewrite the trailing page number while the page is scrolled:
     // /chapter/<uuid>/1 -> /chapter/<uuid>/8. The layout saved during the scan and the chapter that later
@@ -229,6 +231,47 @@ internal object WebModeLayoutStore {
     @Synchronized
     fun takeCanvasTransitions(url: String): Set<String> =
         pendingCanvasTransitions.remove(key(url))?.toSet().orEmpty()
+
+    /**
+     * Observe a clean, screenshot-derived fingerprint for a tainted manga canvas.
+     * This is independent of OCR success, so a changed page can invalidate old translations even when
+     * Lens is offline or returns no readable text. The signature contains quantised samples and '?' for
+     * pixels outside the visible viewport; comparison uses only locations visible in both frames.
+     */
+    @Synchronized
+    fun observeCanvasFrame(ctx: Context, url: String, src: String, signature: String): Boolean {
+        if (!isShonenJumpPlus(url)) return false
+        val normalizedSource = WebModeLogic.normalizeUrl(src)
+        if (!normalizedSource.startsWith("ns-canvas:") || signature.isBlank()) return false
+        val k = key(url)
+        val sourceKey = "$k|$normalizedSource"
+        val previous = canvasPixelSnapshots.put(sourceKey, signature) ?: return false
+        if (previous.length != signature.length) return false
+
+        var comparable = 0
+        var changed = 0
+        for (i in signature.indices) {
+            val a = previous[i]
+            val b = signature[i]
+            if (a == '?' || b == '?') continue
+            comparable++
+            if (a != b) changed++
+        }
+        // Require a broad change across the canvas, not a few antialiasing pixels or a UI artifact.
+        if (comparable < 16 || changed.toFloat() / comparable.toFloat() < 0.45f) return false
+
+        canvasGenerationBySource[sourceKey] = (canvasGenerationBySource[sourceKey] ?: 0L) + 1L
+        pendingCanvasTransitions.getOrPut(k) { LinkedHashSet() }.add(normalizedSource)
+        val previousLayout = mem[k] ?: get(ctx, url)
+        if (previousLayout != null) {
+            mem[k] = WebModeLayout(previousLayout.titleOffset, previousLayout.bubbles.filterNot {
+                WebModeLogic.normalizeUrl(it.src) == normalizedSource
+            })
+            // Persist removal immediately; do not resurrect the prior page if OCR/chat fails or the app restarts.
+            persist(ctx, url)
+        }
+        return true
+    }
 
     /** Capture the current reader-page generation for each canvas source in this request's layout. */
     @Synchronized
