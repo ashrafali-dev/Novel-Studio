@@ -261,11 +261,22 @@ internal class RoutingOcrEngine : OcrEngine {
                 report("mlkit(lens-error)", true)
                 return run(mlKit)
             }
+            val blockCount = lens?.blocks?.size ?: 0
+            val letterCount = lens?.text?.count { it.isLetterOrDigit() } ?: 0
             if (lens != null && useful(lens)) {
+                OcrEngineStatus.lastLensDiagnostic =
+                    "ROUTER_USE_LENS script=${script.name} image=${bitmap.width}x${bitmap.height} " +
+                    "blocks=$blockCount letters=$letterCount; ${OcrEngineStatus.lastLensDiagnostic}"
+                Log.i("NovelStudioOCR", OcrEngineStatus.lastLensDiagnostic.take(1000))
                 lensThread.set(true)
                 report("lens", false)
                 return lens
             }
+            val emptyWhy = "ROUTER_LENS_EMPTY script=${script.name} image=${bitmap.width}x${bitmap.height} " +
+                "lensNull=${lens == null} blocks=$blockCount letters=$letterCount " +
+                "lensDetail=${OcrEngineStatus.lastLensDiagnostic.take(650)}"
+            OcrEngineStatus.lastLensDiagnostic = emptyWhy
+            Log.w("NovelStudioOCR", emptyWhy)
             report("mlkit(lens-empty)", true)
             return run(mlKit)
         }
