@@ -2,7 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Hub: detect the installed Taihon and LNReader apps. -->
+    <queries>
+        <package android:name="app.taihon" />
+        <package android:name="app.taihon.foss" />
+        <package android:name="app.taihon.dev" />
+        <package android:name="app.taihon.debug" />
+        <package android:name="com.rajarsheechatterjee.LNReader" />
+    </queries>
 
     <application
         android:label="Novel Studio"
@@ -26,6 +36,13 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- Accept shared novel links from the reader hub. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="novelstudio" android:host="open" />
             </intent-filter>
         </activity>
         <activity

@@ -771,9 +771,12 @@ class MainActivity : Activity() {
     // it waits until the viewport OCR has gone quiet (and the chatbot is free).
     // Menu "Realtime batching": 0 Small (fastest first text) .. 3 Max (fewest requests). Default 2 = Big.
     private fun rtBatchLevel(): Int = (Prefs.get(this, "rtBatchLevel", "2").toIntOrNull() ?: 2).coerceIn(0, 3)
-    private val rtVisibleOcrBatchMin: Int get() = intArrayOf(2, 4, 8, 12)[rtBatchLevel()]
-    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
-    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
+    private fun lensRealtimeFastPath(): Boolean = Prefs.get(this, "ocrEngine", "mlkit") == "lens"
+    // Lens already returns all detected text in one remote OCR response; do not hold that result
+    // behind ML-Kit-oriented multi-bubble/idle batching. Keep just a tiny window to join nearby SFX.
+    private val rtVisibleOcrBatchMin: Int get() = if (lensRealtimeFastPath()) 2 else intArrayOf(2, 4, 8, 12)[rtBatchLevel()]
+    private val rtVisibleOcrIdleFlushMs: Long get() = if (lensRealtimeFastPath()) 350L else longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
+    private val rtVisibleOcrMaxHoldMs: Long get() = if (lensRealtimeFastPath()) 500L else longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -798,10 +801,11 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
+    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = if (lensRealtimeFastPath()) 4 else intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
     // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
     // the first usable panel arrives. Panels completed during that window are batched together.
-    private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
+    // Lens gets a short collection window so its completed OCR does not inherit ML Kit batch latency.
+    private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = if (lensRealtimeFastPath()) 450L else longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr) return
@@ -3657,6 +3661,7 @@ return t.length>=40?'TXT:'+t:'';
             onOpen = { u -> go(u) }
             onSearch = { q -> go(q) }
             onMenu = { menu() }
+            onHub = { part -> Hub.open(this@MainActivity, part) }
         }
         val root = FrameLayout(this).apply {
             background = appBackground()
@@ -3946,6 +3951,14 @@ return t.length>=40?'TXT:'+t:'';
     // Browser -> Share -> Novel Studio : open that link in the novel pane
     private fun handleIntent(i: Intent?) {
         val it = i ?: return
+        // LNReader/Taihon hub callback: open the shared novel URL in the novel pane.
+        val hubUrl = Hub.urlFromIntent(it)
+        if (hubUrl != null) {
+            hideHome()
+            setMode(Mode.NOVEL)
+            novelWv.loadUrl(hubUrl)
+            return
+        }
         if (it.action != Intent.ACTION_SEND) return
         val t = it.getStringExtra(Intent.EXTRA_TEXT) ?: return
         val m = Regex("https?://\\S+").find(t) ?: return
@@ -5265,24 +5278,30 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR Engine & Models: " + currentOcrEngineLabel()
+    private fun lastActuallyUsedOcrEngine(): String =
+        OcrEngineStatus.label.takeIf { it.isNotBlank() } ?: "No OCR run yet"
+
+    private fun menuOcrModelsLabel(): String =
+        "🧠 OCR Engine: " + currentOcrEngineLabel() + "\nLast actually used: " + lastActuallyUsedOcrEngine()
 
     private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
         "paddle_small" -> "PaddleOCR Small"
         "paddle_heavy" -> "PaddleOCR Heavy"
         "rapid_onnx" -> "RapidOCR / legacy ONNX"
         "manga" -> "Japanese Manga OCR"
+        "lens" -> "Google Lens (online)"
         else -> "ML Kit · Default"
     }
 
     private fun chooseOcrEngine() {
-        val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
+        val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga", "lens")
         val labels = arrayOf(
             "ML Kit — Default (fast, built-in)",
             "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean uses ML Kit)",
             "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
             "RapidOCR ONNX — legacy optional engine",
-            "Japanese Manga OCR — if its model is installed"
+            "Japanese Manga OCR — if its model is installed",
+            "Google Lens — online, independent OCR engine; reads text and layout from the image"
         )
         val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
         AlertDialog.Builder(this)
@@ -5290,7 +5309,13 @@ return t.length>=40?'TXT:'+t:'';
             .setSingleChoiceItems(labels, selected) { dialog, which ->
                 Prefs.put(this, "ocrEngine", keys[which])
                 dialog.dismiss()
-                toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
+                val engineNote = if (keys[which] == "lens") {
+                    " Google Lens runs independently; it does not merge with ML Kit."
+                } else {
+                    " Unavailable local models automatically fall back to ML Kit."
+                }
+                toast("OCR engine: " + labels[which] + "." + engineNote +
+                    (if (keys[which] == "lens") " Needs internet; the pictures being read are uploaded to Google." else ""))
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -5302,7 +5327,9 @@ return t.length>=40?'TXT:'+t:'';
         val legacyPacks = OcrModels.PACKS
         val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose · ML Kit is built in: fast on every phone, ★★★☆☆. Language files download together with each model.")
+        labels.add("⚙️ Selected engine: " + currentOcrEngineLabel() +
+            "\n✅ Last foreground OCR: " + lastActuallyUsedOcrEngine() +
+            "\nGoogle Lens and ML Kit run independently; read-ahead results do not replace the visible scan status.")
 
         for (p in legacyPacks) {
             val state = when {
@@ -5329,9 +5356,16 @@ return t.length>=40?'TXT:'+t:'';
         val lastError = if (paddleErr.isNotBlank()) paddleErr else err
         labels.add("🗑 Delete all optional OCR models\n" +
             (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
+        val lensDiagnosticIndex = labels.size
+        labels.add("🧪 Google Lens diagnostic — tap to copy\n" +
+            OcrEngineStatus.lastLensDiagnostic.take(220))
 
         listDialog("🧠 OCR engine & models", labels, { i ->
             when {
+                i == lensDiagnosticIndex -> {
+                    copy(OcrEngineStatus.lastLensDiagnostic)
+                    toast("✅ Lens diagnostic copied. Paste it here.")
+                }
                 i == 0 -> chooseOcrEngine()
                 i in 1..legacyPacks.size -> {
                     val p = legacyPacks[i - 1]
