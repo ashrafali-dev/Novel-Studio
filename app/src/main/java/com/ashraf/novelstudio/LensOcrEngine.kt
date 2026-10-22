@@ -164,20 +164,22 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
         val mapMs = SystemClock.elapsedRealtime() - mapStart
+        val totalMs = SystemClock.elapsedRealtime() - t0
+        val timing = "timing=prepare:${prepareMs}ms,cache:${keyCacheMs}ms,payload:${payloadBuildMs}ms," +
+            "http:${networkMs}ms,parse:${parseMs}ms,map:${mapMs}ms,total:${totalMs}ms"
         val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=${currentHttpStatus()}; ${currentHttpMeta()}; " +
             "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
             "blocksBeforeNoise=${allBlocks.size} blocksAfterNoise=${lines.size} " +
-            "script=${script.name} upload=${prepared.w}x${prepared.h}"
+            "script=${script.name} upload=${prepared.w}x${prepared.h}; $timing"
         OcrEngineStatus.setLensDiagnostic(diagnostic)
         if (lines.isEmpty()) Log.w(TAG, "NO_TEXT $diagnostic") else Log.i(TAG, "PARSED $diagnostic")
         Breaker.success()
         remember(key, lines)
-        Log.i(TAG, "ok lines=${lines.size} sent=${prepared.w}x${prepared.h} bytes=${prepared.jpeg.size} " +
-            "ms=${SystemClock.elapsedRealtime() - t0}")
+        Log.i(TAG, "ok lines=${lines.size} sent=${prepared.w}x${prepared.h} bytes=${prepared.jpeg.size} ms=$totalMs")
         Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=false prepareMs=$prepareMs keyCacheMs=$keyCacheMs " +
-            "payloadBuildMs=$payloadBuildMs networkMs=$networkMs parseMs=$parseMs mapMs=$mapMs totalMs=${SystemClock.elapsedRealtime() - t0}")
+            "payloadBuildMs=$payloadBuildMs networkMs=$networkMs parseMs=$parseMs mapMs=$mapMs totalMs=$totalMs")
         return finish(lines, bitmap, script)
     }
 
