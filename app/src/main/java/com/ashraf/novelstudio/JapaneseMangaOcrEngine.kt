@@ -51,6 +51,8 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
 /** Short, user-visible name of the engine that produced the LAST OCR result (shown in the activity chip). */
 internal object OcrEngineStatus {
     @Volatile var label: String = ""
+    /** Safe summary of the most recent Lens request/parse; never contains OCR text or API keys. */
+    @Volatile var lastLensDiagnostic: String = "No Google Lens request captured yet"
     /** Last Paddle failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
     @Volatile var lastError: String = ""
     @Volatile private var lastToast: String = ""
