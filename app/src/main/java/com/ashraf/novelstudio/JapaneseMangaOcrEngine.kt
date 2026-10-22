@@ -97,10 +97,9 @@ internal object OcrEngineStatus {
     }
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
-        used == "hybrid(lens-partial)" -> "Google Lens + ML Kit (partial Lens result)"
         used == "lens" -> "Google Lens"
-        used == "mlkit(lens-empty)" -> "ML Kit (Lens found no text)"
-        used.startsWith("mlkit(lens-error") -> "ML Kit (Lens unavailable)"
+        used == "lens(empty)" -> "Google Lens (no text found)"
+        used == "lens(error)" -> "Google Lens (request failed)"
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
         used == "paddle_korean" -> "Paddle Korean v5"
         used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
@@ -258,36 +257,15 @@ internal class RoutingOcrEngine : OcrEngine {
             }
             if (failure != null) {
                 OcrEngineStatus.lastError = "lens ${script.name}: $failure"
-                Log.w("NovelStudioOCR", "lens unavailable ($failure); falling back to ML Kit")
-                report("mlkit(lens-error)", true)
-                return run(mlKit)
+                Log.w("NovelStudioOCR", "lens unavailable ($failure); selected Google Lens remains independent")
+                report("lens(error)", false)
+                lensThread.set(false)
+                return OcrResult(emptyList())
             }
             val blockCount = lens?.blocks?.size ?: 0
             val letterCount = lens?.blocks?.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } } ?: 0
             if (lens != null && useful(lens)) {
-                // Lens sometimes returns only a single short word for a full comic panel. Don't
-                // mistake that partial read for complete coverage: ask ML Kit too and fuse the
-                // boxes, retaining Lens text while letting ML Kit recover lines Lens omitted.
-                if (letterCount < 12) {
-                    val mlResult = try { run(mlKit) } catch (e: Exception) {
-                        Log.w("NovelStudioOCR", "ML Kit supplement after short Lens result failed: ${e.message}")
-                        OcrResult(emptyList())
-                    }
-                    val merged = lens.blocks.toMutableList()
-                    OcrLineFusion.addAll(merged, mlResult.blocks.filterNot { OcrPost.isNoise(it) })
-                    val mergedResult = OcrResult(merged)
-                    val mergedLetters = merged.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
-                    if (mergedLetters > letterCount) {
-                        val detail = "ROUTER_HYBRID_SHORT_LENS script=${script.name} image=${bitmap.width}x${bitmap.height} " +
-                            "lensBlocks=$blockCount lensLetters=$letterCount mlKitLetters=${mlResult.blocks.sumOf { it.text.count { ch -> ch.isLetterOrDigit() } }} " +
-                            "mergedBlocks=${merged.size} mergedLetters=$mergedLetters; ${OcrEngineStatus.lastLensDiagnostic}"
-                        OcrEngineStatus.lastLensDiagnostic = detail
-                        Log.i("NovelStudioOCR", detail.take(1000))
-                        lensThread.set(false)
-                        report("hybrid(lens-partial)", true)
-                        return mergedResult
-                    }
-                }
+                // Google Lens is an independent engine. Never supplement or merge its result with ML Kit.
                 OcrEngineStatus.lastLensDiagnostic =
                     "ROUTER_USE_LENS script=${script.name} image=${bitmap.width}x${bitmap.height} " +
                     "blocks=$blockCount letters=$letterCount; ${OcrEngineStatus.lastLensDiagnostic}"
@@ -303,8 +281,10 @@ internal class RoutingOcrEngine : OcrEngine {
                 "lensDetail=${engineDetail.take(650)}"
             OcrEngineStatus.lastLensDiagnostic = emptyWhy
             Log.w("NovelStudioOCR", emptyWhy)
-            report("mlkit(lens-empty)", true)
-            return run(mlKit)
+            // Empty Lens OCR is still a Lens result; keep engines independent.
+            report("lens(empty)", false)
+            lensThread.set(false)
+            return OcrResult(emptyList())
         }
 
         return try {
