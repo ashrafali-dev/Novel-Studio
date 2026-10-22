@@ -201,6 +201,52 @@ internal object WebModeWriter {
       }
       return {exact:exact,byBase:byBase};
     }
+    // Canvas-backed manga readers (e.g. Shonen Jump+) have no <img> that the overlay can bind to.
+    // OCR stores their visible canvas as ns-canvas:left,contentTop,widthxheight. Resolve that stable
+    // geometry back to the live canvas, so the same fractional bubble coordinates can be overlaid.
+    function canvasSpec(s){
+      var m=/^ns-canvas:(-?\d+),(-?\d+),(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(norm(s));
+      return m?{x:Number(m[1]),y:Number(m[2]),w:Number(m[3]),h:Number(m[4])}:null;
+    }
+    function canvasTops(cv,r){
+      var out=[r.top,r.top+(window.pageYOffset||de.scrollTop||document.documentElement.scrollTop||0)];
+      var p=cv.parentElement,guard=0;
+      while(p&&p!==document.body&&p!==document.documentElement&&guard++<16){
+        var extra=(p.scrollHeight||0)-(p.clientHeight||0);
+        if(extra>80){
+          var ov='';try{ov=getComputedStyle(p).overflowY||'';}catch(e){}
+          if(ov==='auto'||ov==='scroll'||ov==='overlay'||p===de){
+            var pr=p.getBoundingClientRect();out.push(r.top-pr.top+(p.scrollTop||0));
+          }
+        }
+        p=p.parentElement;
+      }
+      return out;
+    }
+    function canvasScore(cv,spec){
+      if(!cv||String(cv.tagName||'').toLowerCase()!=='canvas')return Infinity;
+      var r;try{r=cv.getBoundingClientRect();}catch(e){return Infinity;}
+      if(r.width<40||r.height<40)return Infinity;
+      var cs;try{cs=getComputedStyle(cv);}catch(e){cs=null;}
+      if(cs&&(cs.display==='none'||cs.visibility==='hidden'||parseFloat(cs.opacity||'1')<0.05))return Infinity;
+      var dx=Math.abs(r.left-spec.x),dw=Math.abs(r.width-spec.w),dh=Math.abs(r.height-spec.h);
+      if(dx>Math.max(24,spec.w*0.12)||dw>Math.max(48,spec.w*0.2)||dh>Math.max(48,spec.h*0.2))return Infinity;
+      var tops=canvasTops(cv,r),dy=Infinity;
+      for(var i=0;i<tops.length;i++)dy=Math.min(dy,Math.abs(tops[i]-spec.y));
+      if(dy>Math.max(42,spec.h*0.1))return Infinity;
+      var ratio=Math.abs((r.width/r.height)-(spec.w/spec.h));
+      if(ratio>0.12)return Infinity;
+      return dx+dy+dw+dh+ratio*100;
+    }
+    function findCanvas(s,spec){
+      spec=spec||canvasSpec(s);if(!spec)return null;
+      var list=document.querySelectorAll('canvas'),best=null,bestScore=Infinity;
+      for(var i=0;i<list.length;i++){
+        var score=canvasScore(list[i],spec);
+        if(score<bestScore){bestScore=score;best=list[i];}
+      }
+      return best;
+    }
     // A cached element owns a source only when its actual candidate URL matches exactly.
     // Stripping the query string here is unsafe: some readers encode panel identity in it.
     function owns(im,s){
@@ -209,6 +255,16 @@ internal object WebModeWriter {
       return false;
     }
     function findImg(s, index){
+      var spec=canvasSpec(s);
+      if(spec){
+        // Canvas identities describe a location, not an image URL; revalidate it every pass because
+        // manga readers can recycle canvas nodes while scrolling or switching pages.
+        var cachedCanvas=cache[s];
+        if(cachedCanvas&&document.contains(cachedCanvas)&&canvasScore(cachedCanvas,spec)<Infinity)return cachedCanvas;
+        var canvas=findCanvas(s,spec);
+        if(canvas){cache[s]=canvas;delete miss[s];return canvas;}
+        delete cache[s];miss[s]=Date.now();return null;
+      }
       var c=cache[s];
       if(c&&document.contains(c)){
         if(owns(c,s))return c;
