@@ -3661,6 +3661,7 @@ return t.length>=40?'TXT:'+t:'';
             onOpen = { u -> go(u) }
             onSearch = { q -> go(q) }
             onMenu = { menu() }
+            onHub = { part -> Hub.open(this@MainActivity, part) }
         }
         val root = FrameLayout(this).apply {
             background = appBackground()
@@ -3950,6 +3951,14 @@ return t.length>=40?'TXT:'+t:'';
     // Browser -> Share -> Novel Studio : open that link in the novel pane
     private fun handleIntent(i: Intent?) {
         val it = i ?: return
+        // LNReader/Taihon hub callback: open the shared novel URL in the novel pane.
+        val hubUrl = Hub.urlFromIntent(it)
+        if (hubUrl != null) {
+            hideHome()
+            setMode(Mode.NOVEL)
+            novelWv.loadUrl(hubUrl)
+            return
+        }
         if (it.action != Intent.ACTION_SEND) return
         val t = it.getStringExtra(Intent.EXTRA_TEXT) ?: return
         val m = Regex("https?://\\S+").find(t) ?: return
