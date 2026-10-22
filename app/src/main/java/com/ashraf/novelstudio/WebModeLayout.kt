@@ -163,11 +163,17 @@ internal object WebModeLayoutStore {
     }
 
     // OCR detects page reuse off the UI thread; the UI consumes transitions and clears old overlays.
-    private val pendingCanvasTransitions = LinkedHashMap<String, LinkedHashSet<String>>()
+    private val pendingCanvasTransitions = object : LinkedHashMap<String, LinkedHashSet<String>>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LinkedHashSet<String>>?): Boolean = size > 8
+    }
     // Monotonic per-canvas generation lets in-flight replies prove they still target the same bitmap.
-    private val canvasGenerationBySource = LinkedHashMap<String, Long>()
-    // Clean screenshots of tainted canvas pixels. This fingerprint works even if Lens/OCR fails.
-    private val canvasPixelSnapshots = LinkedHashMap<String, String>()
+    private val canvasGenerationBySource = object : LinkedHashMap<String, Long>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 128
+    }
+    // Clean screenshots of tainted canvas pixels. Bound the LRU for low-memory Android devices.
+    private val canvasPixelSnapshots = object : LinkedHashMap<String, String>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
+    }
 
     // Reader SPAs (MangaDex) rewrite the trailing page number while the page is scrolled:
     // /chapter/<uuid>/1 -> /chapter/<uuid>/8. The layout saved during the scan and the chapter that later
