@@ -258,6 +258,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     /** One logical request: bounded retries inside one overall deadline. Throws [OcrUnavailableException] only. */
     private fun post(payload: ByteArray): ByteArray {
+        lastHttpStatus = 0
+        lastHttpMeta = "no HTTP response yet"
         val started = SystemClock.elapsedRealtime()
         var last: Exception? = null
         for (attempt in 0 until MAX_ATTEMPTS) {
