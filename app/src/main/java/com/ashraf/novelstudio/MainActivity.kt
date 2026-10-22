@@ -8346,7 +8346,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
             if (tok != runToken) return@evaluateJavascript
-            val livePanelBatch = isDeepSeekLivePanel(ch)
+            // Only a request carrying its own bubble layout is a live overlay batch. A geometry-free
+            // text fallback or a deliberate full-page extract must use the normal chapter pipeline.
+            val livePanelBatch = isRealtimeBubbleBatch(ch)
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
@@ -8429,7 +8431,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val shown = lastChapter
             // A URL/chapter key is not enough for canvas readers: one URL can host many distinct pages.
             // Only the exact Chapter object that was sent may receive a live-panel chatbot response.
-            val sameTarget = if (livePanelBatch) shown === ch else shown != null && keyOf(shown) == keyOf(ch)
+            val sameTarget = if (webModeOn() && ch.contentSel.isBlank()) shown === ch
+                else shown != null && keyOf(shown) == keyOf(ch)
             if (shown != null && sameTarget) {
                 applyTranslation(shown, rawTranslation, true)
                 // Real-time page scans translate visible bubbles in sequence; don't prefetch a whole
@@ -8721,8 +8724,13 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         Log.i("NovelStudioOCR", "Cleared stale manga overlay after canvas page change; sources=" + changed.size)
     }
 
-    private fun isRealtimeBubbleBatch(ch: Chapter): Boolean =
-        isDeepSeekLivePanel(ch) && realtimeBatchKeyByChapter.containsKey(ch)
+    private fun isRealtimeBubbleBatch(ch: Chapter): Boolean {
+        if (!isDeepSeekLivePanel(ch)) return false
+        val key = realtimeBatchKeyByChapter[ch] ?: return false
+        // A text-only fallback has a batch token but no bubble geometry, so it cannot be rendered as
+        // a bubble overlay and must not enter the live bubble-alignment path.
+        return realtimeBatchLayouts.containsKey(key)
+    }
 
     /** Resolve only the bubble hashes that were actually inserted successfully. */
     private fun completeDeepSeekHashBatch(ch: Chapter, matched: Set<String>? = null) {
@@ -8787,7 +8795,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             injectBengaliFont()
             // Real-time batches must align against the exact bubbles that produced this reply,
             // then merge into the cumulative page overlay. Never replace the bubbles already translated.
-            val livePanelBatch = isDeepSeekLivePanel(ch)
+            val livePanelBatch = isRealtimeBubbleBatch(ch)
             // The URL's latest scan may already belong to another viewport. A live reply may only
             // use the layout captured with its own request; if absent, fail closed rather than guess.
             val wmLayout = if (livePanelBatch) realtimeBatchLayout(ch)
