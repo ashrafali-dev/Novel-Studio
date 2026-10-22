@@ -1180,12 +1180,20 @@ internal class WebModeExtractor(
                 val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
                 val bmp = captureView()
                 forceShots++
-                if (info != null && bmp != null) {
-                    try { forceOcr(bmp, info, script, accs) }
-                    catch (e: OcrUnavailableException) {
-                        forceFail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label); return
-                    } finally { bmp.recycle() }
-                } else bmp?.recycle()
+                if (bmp != null) {
+                    // JS discovery can time out on canvas/cross-origin iframe readers even while the
+                    // WebView has perfectly visible pixels. A viewport-only scan can still OCR that bitmap.
+                    val scanInfo = info ?: if (req.visibleOnly) {
+                        Log.w(TAG, "JS_FORCE_INFO returned no data; OCRing the visible WebView bitmap directly")
+                        JSONObject().put("vw", bmp.width.toFloat()).put("imgs", JSONArray())
+                    } else null
+                    if (scanInfo != null) {
+                        try { forceOcr(bmp, scanInfo, script, accs) }
+                        catch (e: OcrUnavailableException) {
+                            forceFail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label); return
+                        } finally { bmp.recycle() }
+                    } else bmp.recycle()
+                }
                 progress("Reading screen ${steps + 1} (${accs.size} images)", 5 + minOf(90, steps * 3))
                 if (req.visibleOnly) break
                 val bottom = evalWait(wrap(LIB + JS_FORCE_SCROLL)) { parseJson(it)?.optBoolean("bottom", true) ?: true }
