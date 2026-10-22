@@ -5292,7 +5292,7 @@ return t.length>=40?'TXT:'+t:'';
             "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
             "RapidOCR ONNX — legacy optional engine",
             "Japanese Manga OCR — if its model is installed",
-            "Google Lens — online, reads text only (images are sent to Google; falls back to ML Kit if unavailable)"
+            "Google Lens — online, independent OCR engine; reads text and layout from the image"
         )
         val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
         AlertDialog.Builder(this)
@@ -5300,7 +5300,12 @@ return t.length>=40?'TXT:'+t:'';
             .setSingleChoiceItems(labels, selected) { dialog, which ->
                 Prefs.put(this, "ocrEngine", keys[which])
                 dialog.dismiss()
-                toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit." +
+                val engineNote = if (keys[which] == "lens") {
+                    " Google Lens runs independently; it does not merge with ML Kit."
+                } else {
+                    " Unavailable local models automatically fall back to ML Kit."
+                }
+                toast("OCR engine: " + labels[which] + "." + engineNote +
                     (if (keys[which] == "lens") " Needs internet; the pictures being read are uploaded to Google." else ""))
             }
             .setNegativeButton("Cancel", null)
@@ -5314,8 +5319,8 @@ return t.length>=40?'TXT:'+t:'';
         val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
         labels.add("⚙️ Selected engine: " + currentOcrEngineLabel() +
-            "\n✅ Last actually used: " + lastActuallyUsedOcrEngine() +
-            "\nIf Lens is unavailable or returns no text, NovelStudio falls back to ML Kit.")
+            "\n✅ Last foreground OCR: " + lastActuallyUsedOcrEngine() +
+            "\nGoogle Lens and ML Kit run independently; read-ahead results do not replace the visible scan status.")
 
         for (p in legacyPacks) {
             val state = when {
