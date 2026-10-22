@@ -122,7 +122,7 @@ class LensProtocolTest {
 
     @Test fun requestNeverAsksForTranslation() {
         val bytes = LensProtocol.buildObjectsRequest(
-            ByteArray(10) { 1 }, 100, 100, "ja", "US", "UTC", 1L, 2L, ByteArray(16))
+            ByteArray(10) { 1 }, 100, 100, "ja", "US", "UTC", 1L, 2L)
         // AppliedFilter.translate would be field 3 (tag 0x1A) inside client_filters (field 17 = tag 0x8A 0x01).
         // The only filter we send is {filter_type = 7}: 0x0A 0x02 0x08 0x07 inside client_filters.
         val s = bytes.joinToString("") { "%02x".format(it) }
