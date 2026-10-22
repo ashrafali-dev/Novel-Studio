@@ -31,7 +31,7 @@ internal object WebModeInpainter {
 
     private val downloading = AtomicBoolean(false)
     private val warming = AtomicBoolean(false)
-    /** Set when one inpaint took longer than 9 s on this phone: AI is skipped from then on (until the app restarts). */
+    /** Runtime guard; the persistent preference also prevents automatic re-use after a slow-device result. */
     @Volatile var tooSlow = false
     @Volatile private var session: OrtSession? = null
     @Volatile private var sessionFailed = false
@@ -44,6 +44,22 @@ internal object WebModeInpainter {
     fun isReady(ctx: Context): Boolean = modelFile(ctx).let { it.isFile && it.length() in MIN_BYTES..MAX_BYTES }
     fun isDownloading(): Boolean = downloading.get()
     fun isLoaded(): Boolean = session != null
+
+    /**
+     * Called only after an inpaint call has returned, so ONNX tensors/results are already released.
+     * Turns AI off and removes the model when this phone exceeds the per-image time budget.
+     */
+    @Synchronized
+    fun disableForSlowDevice(ctx: Context) {
+        tooSlow = true
+        Prefs.putBool(ctx, "wmAiInpaint", false)
+        Prefs.putBool(ctx, "wmAiUnsupported", true)
+        try { session?.close() } catch (_: Throwable) {}
+        session = null
+        sessionFailed = false
+        val file = modelFile(ctx)
+        if (file.exists()) file.delete()
+    }
 
     /** Loads the model in the background (several seconds), so the first scanned page never waits for it. */
     fun warmUpAsync(ctx: Context) {
@@ -59,6 +75,9 @@ internal object WebModeInpainter {
         try { session?.close() } catch (_: Throwable) {}
         session = null
         sessionFailed = false
+        tooSlow = false
+        Prefs.putBool(ctx, "wmAiInpaint", false)
+        Prefs.putBool(ctx, "wmAiUnsupported", false)
         return !modelFile(ctx).exists() || modelFile(ctx).delete()
     }
 
@@ -66,6 +85,8 @@ internal object WebModeInpainter {
     fun download(ctx: Context, onProgress: (Long, Long) -> Unit, onDone: (String?) -> Unit) {
         if (!downloading.compareAndSet(false, true)) { onDone("ডাউনলোড ইতিমধ্যে চলছে"); return }
         val app = ctx.applicationContext
+        tooSlow = false
+        Prefs.putBool(app, "wmAiUnsupported", false)
         Thread {
             var error: String? = null
             var conn: HttpURLConnection? = null
@@ -237,7 +258,7 @@ internal object WebModeInpainter {
                 if (sx !in 0 until side || sy !in 0 until side) continue
                 res[at] = big[sy * side + sx]
             }
-            if (SystemClock.elapsedRealtime() - t0 > 9000L) tooSlow = true
+            if (SystemClock.elapsedRealtime() - t0 >= 7000L) tooSlow = true
             return res
         } catch (_: Throwable) {
             return null
