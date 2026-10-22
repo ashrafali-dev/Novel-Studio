@@ -252,55 +252,11 @@ internal object WebModeLayoutStore {
     ): WebModeLayout {
         val current = WebModeLayout.translated(scan, translated)
         val old = get(ctx, url)
-        val layoutKey = key(url)
-
-        // Shonen Jump+ keeps the episode URL constant while its reader can repaint the same
-        // tainted canvas with a different manga page. Canvas source IDs are geometry-based, so do
-        // not use the cumulative layout as the comparison baseline: it can contain several old pages.
-        // Keep only the latest OCR snapshot for each canvas source and remove that source's stale
-        // translations if the text/position fingerprint clearly changes.
-        val freshCanvasSources = if (isShonenJumpPlus(url)) {
-            current.bubbles.asSequence()
-                .map { WebModeLogic.normalizeUrl(it.src) }
-                .filter { it.startsWith("ns-canvas:") }
-                .distinct()
-                .toList()
-        } else emptyList()
-        val replaceCanvasSources = freshCanvasSources.filter { src ->
-            val fresh = current.bubbles.filter {
-                WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
-            }
-            val snapshotKey = "$layoutKey|$src"
-            val previousScan = canvasSnapshots[snapshotKey]?.bubbles.orEmpty()
-            val previousSaved = old?.bubbles.orEmpty().any {
-                WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
-            }
-            when {
-                fresh.isEmpty() -> false
-                previousScan.isEmpty() -> previousSaved // discard pre-fix/stale persisted bubbles on first scan
-                fresh.size < 3 -> false // too little OCR to safely decide whether the canvas was repainted
-                else -> !sameCanvasContent(previousScan, fresh)
-            }
-        }.toSet()
-
-        val mergeBase = if (old != null && replaceCanvasSources.isNotEmpty()) {
-            WebModeLayout(old.titleOffset, old.bubbles.filterNot {
-                WebModeLogic.normalizeUrl(it.src) in replaceCanvasSources
-            })
-        } else old
-
-        val merged = mergeLayouts(mergeBase, current)
-        mem[layoutKey] = merged
-        // Store a single current-page snapshot per canvas; never let the cumulative list of translated
-        // bubbles become the comparison baseline for the next reader repaint.
-        for (src in freshCanvasSources) {
-            val fresh = current.bubbles.filter {
-                WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
-            }
-            if (fresh.isNotEmpty()) {
-                canvasSnapshots["$layoutKey|$src"] = WebModeLayout(current.titleOffset, fresh)
-            }
-        }
+        // Canvas-generation changes are detected when the OCR scan is registered in put().
+        // This method must merge only the reply's own saved layout; the supplied scan can be a
+        // selected subset of bubbles and is not a safe page-change fingerprint.
+        val merged = mergeLayouts(old, current)
+        mem[key(url)] = merged
         persist(ctx, url)
         return merged
     }
