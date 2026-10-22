@@ -272,9 +272,11 @@ internal class RoutingOcrEngine : OcrEngine {
                 report("lens", false)
                 return lens
             }
+            val engineDetail = OcrEngineStatus.lastLensDiagnostic
+            val detailImageId = Regex("imageId=([0-9a-f]+)").find(engineDetail)?.groupValues?.get(1) ?: "none"
             val emptyWhy = "ROUTER_LENS_EMPTY script=${script.name} image=${bitmap.width}x${bitmap.height} " +
-                "lensNull=${lens == null} blocks=$blockCount letters=$letterCount " +
-                "lensDetail=${OcrEngineStatus.lastLensDiagnostic.take(650)}"
+                "lensNull=${lens == null} blocks=$blockCount letters=$letterCount detailImageId=$detailImageId " +
+                "lensDetail=${engineDetail.take(650)}"
             OcrEngineStatus.lastLensDiagnostic = emptyWhy
             Log.w("NovelStudioOCR", emptyWhy)
             report("mlkit(lens-empty)", true)
