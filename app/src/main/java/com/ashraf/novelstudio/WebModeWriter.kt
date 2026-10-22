@@ -785,7 +785,35 @@ internal object WebModeWriter {
                         WebModeTextRemovalCache.isErased(it.value.src, WebModeTextRemovalCache.bubbleKey(it.value)) }
                     .all { (index, _) -> !translated.getOrNull(index).isNullOrBlank() }
             }
+        // The same speech can reach the layout twice (two slices / two OCR readings of one bubble) with boxes that
+        // overlap and texts that mostly agree. Drawn together their translations print on top of each other.
+        // Keep the fuller reading, hide the other one.
+        val hidden = HashSet<Int>()
+        val grams = layout.bubbles.map { bb ->
+            val s = WebModeLayout.normalizeOcrText(bb.sourceText)
+            HashSet<String>().also { g -> for (k in 0 until s.length - 1) g.add(s.substring(k, k + 2)) }
+        }
+        val bl = layout.bubbles
+        for (i in bl.indices) for (j in i + 1 until bl.size) {
+            if (i in hidden || j in hidden) continue
+            val a1 = bl[i]; val b1 = bl[j]
+            if (WebModeLogic.normalizeUrl(a1.src) != WebModeLogic.normalizeUrl(b1.src)) continue
+            if (translated.getOrNull(i).isNullOrBlank() || translated.getOrNull(j).isNullOrBlank()) continue
+            val ox = minOf(a1.cx + a1.w / 2f, b1.cx + b1.w / 2f) - maxOf(a1.cx - a1.w / 2f, b1.cx - b1.w / 2f)
+            val oy = minOf(a1.cy + a1.h / 2f, b1.cy + b1.h / 2f) - maxOf(a1.cy - a1.h / 2f, b1.cy - b1.h / 2f)
+            if (ox <= 0f || oy <= 0f) continue
+            val minArea = minOf(a1.w * a1.h, b1.w * b1.h)
+            if (minArea <= 0f || ox * oy < 0.5f * minArea) continue
+            val ga = grams[i]; val gb = grams[j]
+            if (ga.size < 3 || gb.size < 3) continue
+            val common = ga.count { it in gb }
+            if (common < 0.6f * minOf(ga.size, gb.size)) continue
+            val dropJ = if (a1.sourceText.length != b1.sourceText.length) a1.sourceText.length > b1.sourceText.length
+                else a1.w * a1.h >= b1.w * b1.h
+            hidden.add(if (dropJ) j else i)
+        }
         for ((i, b) in layout.bubbles.withIndex()) {
+            if (i in hidden) continue
             val t = WmSfx.fix(translated.getOrNull(i)?.trim().orEmpty())
             if (t.isEmpty()) continue
             arr.put(JSONObject()
