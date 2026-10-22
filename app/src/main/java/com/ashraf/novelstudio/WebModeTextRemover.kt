@@ -53,6 +53,18 @@ internal object WebModeTextRemover {
 
         try {
             var totalRemoved = 0
+            // AI inpainting (optional, downloaded on request) is slow on a phone: only a few artwork bubbles per image.
+            var aiBudget = 3
+            var aiWanted = Prefs.bool(context, "wmAiInpaint", false) && WebModeInpainter.isReady(context) &&
+                !WebModeInpainter.tooSlow
+            if (aiWanted && !WebModeInpainter.isLoaded()) {
+                // Loading the model takes several seconds: do it in the background; THIS image uses the fast cleaner
+                // so the page never waits for it.
+                WebModeInpainter.warmUpAsync(context)
+                aiWanted = false
+            }
+            val aiStartMs = android.os.SystemClock.elapsedRealtime()
+            var aiLastMs = 0L
             // Every bubble whose lettering was really erased (flat AND artwork). The writer only drops its
             // opaque cover box for bubbles in this set; any other bubble keeps the safe box fallback.
             val erased = HashSet<String>()
@@ -253,6 +265,16 @@ internal object WebModeTextRemover {
                     }
                 }
 
+                // Lettering on artwork: let the AI model rebuild the picture when it is installed and enabled.
+                var aiFill: IntArray? = null
+                // Hard time cap: no new AI call if it would probably push this image past ~8 s in total.
+                if (soft && aiWanted && aiBudget > 0 &&
+                    (android.os.SystemClock.elapsedRealtime() - aiStartMs) + aiLastMs < 8000L) {
+                    val t0 = android.os.SystemClock.elapsedRealtime()
+                    aiFill = try { WebModeInpainter.fill(context, bitmap, x0, y0, rw, rh, mask) } catch (_: Throwable) { null }
+                    aiLastMs = android.os.SystemClock.elapsedRealtime() - t0
+                    if (aiFill != null) aiBudget--
+                }
                 // Fill only the masked glyph pixels from their surroundings (never repaint a whole box).
                 val out = region.copyOf()
                 for (ry in 0 until rh) {
@@ -262,7 +284,7 @@ internal object WebModeTextRemover {
                         if (soft) {
                             // Lettering on artwork: rebuild the picture from the surroundings (sky, shading, screentone
                             // gradients) by blending the nearest untouched pixels left/right/up/down, nearest weighted most.
-                            out[at] = 0xFF000000.toInt() or
+                            out[at] = if (aiFill != null) (0xFF000000.toInt() or (aiFill[at] and 0xFFFFFF)) else 0xFF000000.toInt() or
                                 gradientFill(region, mask, rw, rh, rx, ry, (fontPx * 1.6f).toInt().coerceIn(8, 60), bg)
                             continue
                         }
