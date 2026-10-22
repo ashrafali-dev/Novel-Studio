@@ -50,6 +50,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private val app: Context = context.applicationContext
     private val random = SecureRandom()
 
+    @Volatile private var lastHttpStatus: Int = 0
+    @Volatile private var lastHttpMeta: String = "no HTTP response yet"
+
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
@@ -82,29 +85,61 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             analyticsId = ByteArray(16).also { random.nextBytes(it) }
         )
 
-        val body = post(payload)
+        Log.i(TAG, "request begin script=${script.name} source=${bitmap.width}x${bitmap.height} " +
+            "upload=${prepared.w}x${prepared.h} jpegBytes=${prepared.jpeg.size} payloadBytes=${payload.size} " +
+            "endpoint=${endpoint().substringAfter("://").substringBefore("/")}")
+        val body = try {
+            post(payload)
+        } catch (e: OcrUnavailableException) {
+            val diagnostic = "request failed; http=$lastHttpStatus; $lastHttpMeta; error=${e.message ?: e.javaClass.simpleName}"
+            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            Log.e(TAG, diagnostic)
+            throw e
+        }
 
         val response = try {
             LensProtocol.parseResponse(body)
         } catch (e: LensProtocol.ProtocolException) {
+            val diagnostic = "parse failed; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+                "reason=${e.message ?: "unknown"}"
+            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            Log.e(TAG, diagnostic)
             // 200 OK but not a Lens reply (captive portal, changed protocol, ...): do not trust, do not retry.
             Breaker.permanent("unreadable reply")
             throw OcrUnavailableException("Google Lens: unreadable reply (${e.message})", e)
         }
+        val paragraphCount = response.paragraphs.size
+        val lineCount = response.paragraphs.sumOf { it.lines.size }
+        val nonEmptyLineCount = response.paragraphs.sumOf { p -> p.lines.count { it.text.isNotBlank() } }
+        val textChars = response.paragraphs.sumOf { p -> p.lines.sumOf { it.text.length } }
+        val lineBoxes = response.paragraphs.sumOf { p -> p.lines.count { it.box != null } }
+        val paragraphBoxes = response.paragraphs.count { it.box != null }
         if (response.serverError != 0) {
+            val diagnostic = "server error; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+                "objects=${response.valid}; serverError=${response.serverError}; paragraphs=$paragraphCount lines=$lineCount"
+            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            Log.w(TAG, diagnostic)
             Breaker.transient("server error ${response.serverError}")
             throw OcrUnavailableException("Google Lens: server error ${response.serverError}")
         }
         if (!response.valid) {
-            // A real answer always contains an objects_response, even for a picture without text.
-            // Without one we cannot tell "no text" from "did not work", so it must not count as success.
+            val diagnostic = "missing objects_response; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+                "objects=false; paragraphs=$paragraphCount lines=$lineCount"
+            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            Log.w(TAG, diagnostic)
             Breaker.transient("reply without objects")
             throw OcrUnavailableException("Google Lens: reply without text layer")
         }
 
-        val lines = LensProtocol.toBlocks(response, bitmap.width, bitmap.height, prepared.w, prepared.h)
-            .filterNot { OcrPost.isNoise(it) }
+        val allBlocks = LensProtocol.toBlocks(response, bitmap.width, bitmap.height, prepared.w, prepared.h)
+        val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
+        val diagnostic = "http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; objects=${response.valid}; " +
+            "paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount textChars=$textChars " +
+            "lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes blocksBeforeNoise=${allBlocks.size} " +
+            "blocksAfterNoise=${lines.size} script=${script.name} upload=${prepared.w}x${prepared.h}"
+        OcrEngineStatus.lastLensDiagnostic = diagnostic
+        if (lines.isEmpty()) Log.w(TAG, "NO_TEXT $diagnostic") else Log.i(TAG, "PARSED $diagnostic")
         Breaker.success()
         remember(key, lines)
         Log.i(TAG, "ok lines=${lines.size} sent=${prepared.w}x${prepared.h} bytes=${prepared.jpeg.size} " +
@@ -298,13 +333,17 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             // No Accept-Encoding header on purpose: then HttpURLConnection negotiates gzip AND decodes it itself.
             c.outputStream.use { it.write(payload); it.flush() }
             val code = c.responseCode
+            lastHttpStatus = code
+            lastHttpMeta = "contentType=${c.contentType ?: "unknown"} encoding=${c.contentEncoding ?: "none"} " +
+                "headerLength=${c.getHeaderField("Content-Length") ?: "unknown"} requestBytes=${payload.size}"
             if (code !in 200..299) {
+                Log.w(TAG, "HTTP_REJECTED status=$code $lastHttpMeta")
                 val retryAfter = (c.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 0L).coerceIn(0L, 10L) * 1000L
                 throw HttpStatus(code, retryAfter)
             }
             // Read to the end BEFORE disconnect(): disconnecting under a pending read is what produces
             // "Socket closed".
-            return c.inputStream.use { ins ->
+            val reply = c.inputStream.use { ins ->
                 val out = ByteArrayOutputStream(16 * 1024)
                 val buf = ByteArray(16 * 1024)
                 var total = 0
@@ -317,6 +356,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 }
                 out.toByteArray()
             }
+            Log.i(TAG, "HTTP_RESPONSE status=$code $lastHttpMeta replyBytes=${reply.size}")
+            return reply
         } finally {
             try { c.disconnect() } catch (_: Throwable) {}
         }
