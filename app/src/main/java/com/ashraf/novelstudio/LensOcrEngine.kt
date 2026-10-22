@@ -50,8 +50,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private val app: Context = context.applicationContext
     private val random = SecureRandom()
 
-    @Volatile private var lastHttpStatus: Int = 0
-    @Volatile private var lastHttpMeta: String = "no HTTP response yet"
+    // Concurrent foreground/read-ahead Lens requests must keep their diagnostics request-local.
+    private val lastHttpStatus = ThreadLocal<Int>()
+    private val lastHttpMeta = ThreadLocal<String>()
+
+    private fun currentHttpStatus(): Int = lastHttpStatus.get() ?: 0
+    private fun currentHttpMeta(): String = lastHttpMeta.get() ?: "no HTTP response yet"
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
@@ -111,7 +115,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             post(payload).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
         } catch (e: OcrUnavailableException) {
             networkMs = SystemClock.elapsedRealtime() - networkStart
-            val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=$lastHttpStatus; $lastHttpMeta; error=${e.message ?: e.javaClass.simpleName}"
+            val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; error=${e.message ?: e.javaClass.simpleName}"
             OcrEngineStatus.lastLensDiagnostic = diagnostic
             Log.e(TAG, diagnostic)
             throw e
@@ -289,8 +293,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     /** One logical request: bounded retries inside one overall deadline. Throws [OcrUnavailableException] only. */
     private fun post(payload: ByteArray): ByteArray {
-        lastHttpStatus = 0
-        lastHttpMeta = "no HTTP response yet"
+        lastHttpStatus.set(0)
+        lastHttpMeta.set("no HTTP response yet")
         val started = SystemClock.elapsedRealtime()
         var last: Exception? = null
         for (attempt in 0 until MAX_ATTEMPTS) {
@@ -371,11 +375,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             // No Accept-Encoding header on purpose: then HttpURLConnection negotiates gzip AND decodes it itself.
             c.outputStream.use { it.write(payload); it.flush() }
             val code = c.responseCode
-            lastHttpStatus = code
-            lastHttpMeta = "contentType=${c.contentType ?: "unknown"} encoding=${c.contentEncoding ?: "none"} " +
-                "headerLength=${c.getHeaderField("Content-Length") ?: "unknown"} requestBytes=${payload.size}"
+            lastHttpStatus.set(code)
+            lastHttpMeta.set("contentType=${c.contentType ?: "unknown"} encoding=${c.contentEncoding ?: "none"} " +
+                "headerLength=${c.getHeaderField("Content-Length") ?: "unknown"} requestBytes=${payload.size}")
             if (code !in 200..299) {
-                Log.w(TAG, "HTTP_REJECTED status=$code $lastHttpMeta")
+                Log.w(TAG, "HTTP_REJECTED status=$code ${currentHttpMeta()}")
                 val retryAfter = (c.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 0L).coerceIn(0L, 10L) * 1000L
                 throw HttpStatus(code, retryAfter)
             }
@@ -395,7 +399,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 out.toByteArray()
             }
             responseFullyRead = true
-            Log.i(TAG, "HTTP_RESPONSE status=$code $lastHttpMeta replyBytes=${reply.size}")
+            Log.i(TAG, "HTTP_RESPONSE status=$code ${currentHttpMeta()} replyBytes=${reply.size}")
             return reply
         } finally {
             // Preserve successful keep-alive sockets; discard partial/error responses before retrying.
