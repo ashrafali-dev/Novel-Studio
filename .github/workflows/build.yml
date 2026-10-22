@@ -85,6 +85,30 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Publish signed APK to Shonen Jump+ fix Release
+        if: github.ref == 'refs/heads/fix/shonenjumpplus-canvas-overlay'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          ASSET="NovelStudio-SIGNED-RELEASE-APK.apk"
+          TAG="fix/shonenjumpplus-canvas-overlay"
+          test -s "$APK"
+          cp "$APK" "$ASSET"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$ASSET" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Novel Studio - Shonen Jump+ Canvas Overlay Fix" \
+              --notes "Signed APK built from fix/shonenjumpplus-canvas-overlay. Download the APK asset below." \
+              --prerelease \
+              --latest=false \
+              --target "$GITHUB_SHA"
+          fi
+
       - name: Publish signed APK to rolling GitHub Release
         if: github.ref == 'refs/heads/main'
         env:
