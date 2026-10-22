@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr, fix/screenshot-ocr-when-no-panel-crops-20261022]
+    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr]
 
 permissions:
   contents: write
