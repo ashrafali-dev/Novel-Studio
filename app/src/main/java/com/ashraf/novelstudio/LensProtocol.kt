@@ -72,7 +72,7 @@ internal object LensProtocol {
     fun buildObjectsRequest(
         jpeg: ByteArray, width: Int, height: Int,
         language: String, region: String, timeZone: String,
-        uuid: Long, timeUsec: Long, analyticsId: ByteArray
+        uuid: Long, timeUsec: Long
     ): ByteArray {
         require(width > 0 && height > 0 && jpeg.isNotEmpty()) { "empty image" }
         val root = Writer()
@@ -82,7 +82,6 @@ internal object LensProtocol {
                     uint(1, uuid)                           //   uuid
                     int(2, 1)                               //   sequence_id
                     int(3, 1)                               //   image_sequence_id
-                    if (analyticsId.isNotEmpty()) bytes(4, analyticsId)
                     uint(7, timeUsec)                       //   time_usec
                 }
                 message(4) {                                // client_context
