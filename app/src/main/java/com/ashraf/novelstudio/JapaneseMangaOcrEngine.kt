@@ -64,13 +64,16 @@ internal object OcrEngineStatus {
     /** Announces only when the real engine changes, not on every real-time OCR frame. */
     @Synchronized
     fun announceRoute(context: Context?, selected: String, actual: String) {
-        if (selected != "lens" || context == null || actual.isBlank() || actual == lastRouteToast) return
-        lastRouteToast = actual
+        // Real-time scanning can OCR successive screenshots concurrently. A result-specific toast
+        // may arrive late and say "no text found" after another screenshot was read successfully.
+        // Announce the selected engine only; per-image results remain available in the logs.
+        if (selected != "lens" || context == null || lastRouteToast == "Google Lens") return
+        lastRouteToast = "Google Lens"
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             try {
                 android.widget.Toast.makeText(
                     context,
-                    "OCR actually used: $actual",
+                    "OCR engine: Google Lens",
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             } catch (_: Throwable) {}
