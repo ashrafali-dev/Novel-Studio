@@ -74,7 +74,14 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         // recognizeCore() may ask for the same picture several times (other scripts, retry views).
         // Lens detects the language itself, so those would be identical uploads: serve them from memory.
-        cached(key)?.let { return finish(it, bitmap, script) }
+        cached(key)?.let {
+            val cachedLetters = it.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
+            OcrEngineStatus.lastLensDiagnostic =
+                "LENS_CACHE_HIT script=${script.name} image=${bitmap.width}x${bitmap.height} " +
+                "cachedLines=${it.size} cachedLetters=$cachedLetters"
+            Log.i(TAG, OcrEngineStatus.lastLensDiagnostic)
+            return finish(it, bitmap, script)
+        }
 
         Breaker.check()
         val payload = LensProtocol.buildObjectsRequest(
