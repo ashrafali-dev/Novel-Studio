@@ -877,7 +877,7 @@ internal class WebModeExtractor(
         // pixels (exactly what the user sees) are OCR'd per image. Works for blob:/encrypted/CORS/hot-link images.
         private fun <T> evalWait(
             js: String,
-            timeoutMs: Long = if (req.visibleOnly) 3_000L else 20_000L,
+            timeoutMs: Long = if (req.visibleOnly) 1_200L else 20_000L,
             parse: (String?) -> T
         ): T {
             val latch = CountDownLatch(1)
@@ -1003,7 +1003,7 @@ internal class WebModeExtractor(
                     latch.countDown()
                 }
             }
-            latch.await(if (req.visibleOnly) 3_000L else 12_000L, TimeUnit.MILLISECONDS)
+            latch.await(if (req.visibleOnly) 1_500L else 12_000L, TimeUnit.MILLISECONDS)
             return out
         }
 
@@ -1117,7 +1117,7 @@ internal class WebModeExtractor(
                 } catch (_: Throwable) {
                 } finally { latch.countDown() }
             }
-            latch.await(20, TimeUnit.SECONDS)
+            latch.await(if (req.visibleOnly) 1_500L else 20_000L, TimeUnit.MILLISECONDS)
             return out
         }
 
