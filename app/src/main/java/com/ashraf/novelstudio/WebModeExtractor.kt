@@ -1223,12 +1223,26 @@ internal class WebModeExtractor(
 
         /** OCR the on-screen part of every loaded image in one screenshot of the WebView. */
         private fun forceOcr(bmp: Bitmap, info: JSONObject, st: ScriptState, accs: MutableMap<String, ForceAcc>) {
+            data class PendingCrop(
+                val bitmap: Bitmap,
+                val src: String,
+                val acc: ForceAcc,
+                val offX: Int,
+                val offY: Int,
+                val fullW: Int,
+                val fullH: Int,
+                val first: Boolean,
+                val last: Boolean
+            )
+
             val vw = info.optDouble("vw", 0.0).toFloat()
             if (vw <= 0f) return
-            val scale = bmp.width / vw                      // device pixels per CSS pixel
+            val scale = bmp.width / vw // device pixels per CSS pixel
             val arr = info.optJSONArray("imgs") ?: return
+            val pending = ArrayList<PendingCrop>()
+
             for (i in 0 until arr.length()) {
-                if (!alive()) return
+                if (!alive()) break
                 val p = arr.optJSONObject(i) ?: continue
                 val src = p.optString("s")
                 if (src.isBlank()) continue
@@ -1237,24 +1251,108 @@ internal class WebModeExtractor(
                 val fw = p.optDouble("fw").toFloat() * scale
                 val fh = p.optDouble("fh").toFloat() * scale
                 if (fw < 40f || fh < 40f) continue
-                val x0 = Math.max(0, Math.round(l)); val y0 = Math.max(0, Math.round(t))
-                val x1 = Math.min(bmp.width, Math.round(l + fw)); val y1 = Math.min(bmp.height, Math.round(t + fh))
+                val x0 = Math.max(0, Math.round(l))
+                val y0 = Math.max(0, Math.round(t))
+                val x1 = Math.min(bmp.width, Math.round(l + fw))
+                val y1 = Math.min(bmp.height, Math.round(t + fh))
                 if (x1 - x0 < 40 || y1 - y0 < 40) continue
-                var crop: Bitmap? = null
-                try {
-                    crop = Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0)
-                    val acc = accs.getOrPut(src) { ForceAcc() }
-                    acc.top = p.optInt("t")
-                    val offX = Math.max(0f, x0 - l).toInt()
-                    val offY = Math.max(0f, y0 - t).toInt()
-                    val first = (y0 - t) <= 3f
-                    val last = (t + fh) <= bmp.height + 3f
-                    readSlice(crop, st, offY, 1, fw.toInt().coerceAtLeast(1), fh.toInt().coerceAtLeast(1), src,
-                        acc.texts, acc.bubbles, first, last, offX, fastMode = true)
-                } catch (e: OcrUnavailableException) { throw e
-                } catch (_: Exception) {
-                } catch (_: OutOfMemoryError) {
-                } finally { if (crop != null && crop !== bmp) crop.recycle() }
+                val crop = try { Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0) }
+                    catch (_: Throwable) { continue }
+                val acc = accs.getOrPut(src) { ForceAcc() }
+                acc.top = p.optInt("t")
+                pending.add(
+                    PendingCrop(
+                        bitmap = crop,
+                        src = src,
+                        acc = acc,
+                        offX = Math.max(0f, x0 - l).toInt(),
+                        offY = Math.max(0f, y0 - t).toInt(),
+                        fullW = fw.toInt().coerceAtLeast(1),
+                        fullH = fh.toInt().coerceAtLeast(1),
+                        first = (y0 - t) <= 3f,
+                        last = (t + fh) <= bmp.height + 3f
+                    )
+                )
+            }
+            if (pending.isEmpty()) return
+
+            // The fallback screenshot often contains multiple visible webtoon panels. Sequential Lens
+            // uploads multiply network latency by the number of panels, so use a bounded concurrent fan-out
+            // for Lens only; local ONNX/ML Kit models keep their existing serialized inference gate.
+            val routing = engine as? RoutingOcrEngine
+            val useParallelLens = req.visibleOnly &&
+                Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens" &&
+                pending.size > 1 && routing != null &&
+                runCatching {
+                    routing.configure(wv.context)
+                    routing.prepareForConcurrentLens(st.current)
+                    routing.usesRemoteTextDetection()
+                }.getOrDefault(false)
+
+            try {
+                if (useParallelLens) {
+                    val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(3, pending.size))
+                    try {
+                        val completion = java.util.concurrent.ExecutorCompletionService<Pair<Int, OcrResult?>>(pool)
+                        val futures = ArrayList<java.util.concurrent.Future<Pair<Int, OcrResult?>>>()
+                        for ((index, task) in pending.withIndex()) {
+                            futures.add(completion.submit(java.util.concurrent.Callable {
+                                val result = try {
+                                    engine.recognizeFast(task.bitmap, st.current)
+                                } catch (e: Throwable) {
+                                    Log.w(TAG, "parallel Lens viewport OCR failed for crop $index: ${e.javaClass.simpleName}")
+                                    null
+                                }
+                                index to result
+                            }))
+                        }
+                        val results = arrayOfNulls<OcrResult>(pending.size)
+                        val deadline = SystemClock.elapsedRealtime() + SCREEN_LENS_DEADLINE_MS
+                        var finished = 0
+                        while (finished < pending.size) {
+                            val remaining = deadline - SystemClock.elapsedRealtime()
+                            if (remaining <= 0L) break
+                            val future = try { completion.poll(remaining, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {
+                                Thread.currentThread().interrupt()
+                                break
+                            } ?: break
+                            try {
+                                val (index, result) = future.get()
+                                if (index in results.indices) results[index] = result
+                            } catch (_: Throwable) {
+                            }
+                            finished++
+                        }
+                        futures.forEach { if (!it.isDone) it.cancel(true) }
+                        for (index in pending.indices) {
+                            if (!alive()) break
+                            val task = pending[index]
+                            val recognized = results[index]
+                            if (recognized == null) {
+                                Log.w(TAG, "viewport Lens crop skipped after shared ${SCREEN_LENS_DEADLINE_MS}ms deadline index=$index")
+                                continue
+                            }
+                            readSlice(
+                                task.bitmap, st, task.offY, 1, task.fullW, task.fullH, task.src,
+                                task.acc.texts, task.acc.bubbles, task.first, task.last, task.offX,
+                                fastMode = true, preRecognized = recognized
+                            )
+                        }
+                    } finally {
+                        pool.shutdownNow()
+                    }
+                } else {
+                    for (task in pending) {
+                        if (!alive()) break
+                        readSlice(
+                            task.bitmap, st, task.offY, 1, task.fullW, task.fullH, task.src,
+                            task.acc.texts, task.acc.bubbles, task.first, task.last, task.offX,
+                            fastMode = true
+                        )
+                    }
+                }
+            } finally {
+                pending.forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
             }
         }
 
@@ -1539,7 +1637,8 @@ internal class WebModeExtractor(
         private fun readSlice(
             bmp: Bitmap, st: ScriptState, y0: Int, sample: Int, fullW: Int, fullH: Int,
             src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
-            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false
+            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false,
+            preRecognized: OcrResult? = null
         ) {
             val tSlice = android.os.SystemClock.elapsedRealtime()
             val outBefore = out.size
@@ -1552,7 +1651,7 @@ internal class WebModeExtractor(
             // another slice will find it; the fuller overlapping reading can upgrade it below.
             val tOcr = android.os.SystemClock.elapsedRealtime()
             val blocks = OcrPost.mergeNeighbours(
-                recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }, bmp)
+                (preRecognized ?: recognize(bmp, st, fastMode)).blocks.filter { it.text.isNotBlank() }, bmp)
             ocrMs = android.os.SystemClock.elapsedRealtime() - tOcr
             lineCount = blocks.size
             if (blocks.isEmpty()) return
@@ -1982,6 +2081,7 @@ internal class WebModeExtractor(
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 8_000L
         private const val VISIBLE_FETCH_WAIT_MS = 7_000L
+        private const val SCREEN_LENS_DEADLINE_MS = 7_000L
         private const val JOB_MAX_MS = 12 * 60_000L
         private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120
