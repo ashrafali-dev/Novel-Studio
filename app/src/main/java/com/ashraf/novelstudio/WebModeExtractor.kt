@@ -232,17 +232,18 @@ internal class WebModeExtractor(
         @Volatile private var fellBackToForce = false
 
         private fun fail(e: WebModeError, msg: String = e.label) {
-            // Viewport-only OCR must recover even when the user's full-chapter Force Extract
-            // preference is OFF. Cross-origin/CDN images can render in WebView while HttpURLConnection,
-            // fetch(), and canvas export all fail; capture the already-visible pixels once instead.
-            // processForce() does not scroll when visibleOnly=true, so this remains safe for real-time mode.
+            // Realtime viewport mode must also recover when DOM discovery reports NO_IMAGES:
+            // canvas-based readers, CSS backgrounds, and image wrappers may be visible even when
+            // the normal panel collector returns an empty list. Capture the viewport once and run
+            // the existing Lens OCR on those detected screen regions instead of retrying chapter text.
+            // processForce() does not scroll when visibleOnly=true, so this remains safe for realtime mode.
+            val visibleNoImages = req.visibleOnly && e == WebModeError.NO_IMAGES
             if (!fellBackToForce && req.ahead <= 0 && req.forceOcrSrc.isNullOrBlank() &&
-                (e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
-                // Full-chapter Web Mode scan too: when no image can be downloaded (hotlink protection,
-                // CORS, TLS blocking) read what the WebView itself draws, scrolling through the page.
+                (visibleNoImages || e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
+                // Full-chapter Web Mode scan too: when image downloads fail, read what WebView draws.
                 fellBackToForce = true
                 diag.error = null
-                Log.i(TAG, "visible OCR falling back to viewport capture after $e: ${diag.summary()}")
+                Log.i(TAG, "OCR falling back to viewport capture after $e: ${diag.summary()}")
                 worker.execute { runCatching { processForce() }.onFailure {
                     fail(WebModeError.DECODE_FAILED, "Viewport capture fallback crashed: ${it.javaClass.simpleName}")
                 } }
@@ -562,8 +563,20 @@ internal class WebModeExtractor(
                 diag.discovered = panels.size
                 diag.duplicates = (rawPanelCount - allPanels.size).coerceAtLeast(0)
                 if (panels.isEmpty()) {
-                    fail(WebModeError.NO_IMAGES, if (targetSrc.isNullOrBlank()) WebModeError.NO_IMAGES.label
-                        else "Selected image could not be found on the page")
+                    if (req.visibleOnly && targetSrc.isNullOrBlank()) {
+                        // Some manga readers paint panels in canvas/iframes or expose unusable image URLs.
+                        // If DOM URL discovery finds no panels, OCR the WebView rendered pixels instead.
+                        Log.i(TAG, "visible discovery empty; falling back to viewport screenshot OCR; " + lastDiscoveryDebug)
+                        worker.execute {
+                            runCatching { processForce() }.onFailure {
+                                Log.w(TAG, "visible screenshot fallback crashed: ${crashInfo(it)}", it)
+                                fail(WebModeError.DECODE_FAILED, "Screen OCR failed: ${crashInfo(it)}")
+                            }
+                        }
+                    } else {
+                        fail(WebModeError.NO_IMAGES, if (targetSrc.isNullOrBlank()) WebModeError.NO_IMAGES.label
+                            else "Selected image could not be found on the page")
+                    }
                     return@evaluateJavascript
                 }
                 val meta = PageMeta(
@@ -591,13 +604,16 @@ internal class WebModeExtractor(
                 (frame?.let { " @${it.fileName}:${it.lineNumber}" } ?: "")
         }
 
-        // ---- phase 2 (worker thread): fetch -> decode -> OCR, one panel at a time (bounded memory)
+        // ---- phase 2 (worker thread): fetch -> decode -> OCR, bounded memory and network concurrency
         private var fetchPool: ExecutorService? = null
+        private var lensOcrPool: ExecutorService? = null
 
         private fun process(panels: List<PanelRef>, meta: PageMeta) {
             try { processInner(panels, meta) } finally {
                 try { fetchPool?.shutdownNow() } catch (_: Throwable) {}
                 fetchPool = null
+                try { lensOcrPool?.shutdownNow() } catch (_: Throwable) {}
+                lensOcrPool = null
             }
         }
 
@@ -613,14 +629,30 @@ internal class WebModeExtractor(
                     return
                 }
             }
-            // Download in parallel (a few images ahead of the OCR) instead of one at a time: OCR of panel N
-            // now overlaps the download of panels N+1..N+FETCH_AHEAD. Real-time viewport jobs stay serial
-            // because they only ever read 1-3 panels.
-            val pool: ExecutorService? = if (!req.visibleOnly && total > 1) {
-                Executors.newFixedThreadPool(FETCH_THREADS) { r -> Thread(r, "ns-webmode-fetch") }
+            val script = newScript(meta.lang, meta.url)
+            // Lens is remote/network-bound: visible panels must not wait for the previous panel's
+            // Lens response. Warm the engine safely first, then fetch and OCR a small viewport
+            // concurrently. All local-model scans remain serial exactly as before.
+            val lensParallel = liveView && req.ahead <= 0 && total > 1 &&
+                Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens"
+            if (lensParallel) {
+                (engine as? RoutingOcrEngine)?.let {
+                    it.configure(wv.context)
+                    it.prepareForConcurrentLens(script.current)
+                }
+            }
+            val pool: ExecutorService? = if (total > 1 && (!req.visibleOnly || lensParallel)) {
+                val threads = if (lensParallel) minOf(3, total) else FETCH_THREADS
+                Executors.newFixedThreadPool(threads) { r -> Thread(r, "ns-webmode-fetch") }
             } else null
             fetchPool = pool
+            val ocrPool: ExecutorService? = if (lensParallel) {
+                Executors.newFixedThreadPool(minOf(3, total)) { r -> Thread(r, "ns-webmode-lens-ocr") }
+            } else null
+            lensOcrPool = ocrPool
             val futures = arrayOfNulls<java.util.concurrent.Future<ByteArray?>>(total)
+            val lensOcrFutures = arrayOfNulls<java.util.concurrent.Future<LensPanelOcrAttempt>>(total)
+            val panelFetchStartedAt = LongArray(total)
             fun submitFetch(i: Int) {
                 if (pool == null || i < 0 || i >= total || futures[i] != null) return
                 futures[i] = pool.submit(java.util.concurrent.Callable<ByteArray?> {
@@ -631,7 +663,6 @@ internal class WebModeExtractor(
             val texts = arrayOfNulls<String>(total)
             val layouts = arrayOfNulls<List<WmBubble>>(total)
             val seen = HashSet<String>()
-            val script = newScript(meta.lang, meta.url)
             var fetchFailed = 0
             var decodeFailed = 0
             var lastCrash: String? = null
@@ -666,13 +697,42 @@ internal class WebModeExtractor(
                     // went through the whole timeout ladder (roughly 25 s each) before the screen was read instead.
                     if (diag.downloaded == 0 && (liveView || (fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed))) {
                         if (liveView) SiteLearner.recordDownload(wv.context, hostOf(meta.url), false, SystemClock.elapsedRealtime() - tFetch)
-                        fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
+                        if (liveView) {
+                            // The WebView can display images that a second HTTP request cannot fetch.
+                            // Read its already-rendered viewport instead of giving up on the visible page.
+                            Log.i(TAG, "visible image fetch failed; falling back to viewport screenshot OCR")
+                            processForce()
+                        } else {
+                            fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
+                        }
                         return
                     }
                     continue
                 }
                 if (!seen.add(md5(bytes))) { diag.duplicates++; continue }
                 diag.downloaded++
+                panelFetchStartedAt[i] = tFetch
+                if (lensParallel) {
+                    // Lens is a remote OCR request; submit each visible panel now and collect in source
+                    // order below. Up to three requests overlap, so their network time is shared rather
+                    // than added serially. The downstream chapter/chatbot batch remains unchanged.
+                    progress("Google Lens OCR ${i + 1}/$total", 10 + i * 89 / total)
+                    val panelScript = ScriptState(script.current)
+                    lensOcrFutures[i] = ocrPool!!.submit(java.util.concurrent.Callable {
+                        try {
+                            LensPanelOcrAttempt(ocrBytes(bytes, panelScript, p.src, fastMode = true), null)
+                        } catch (e: OcrUnavailableException) {
+                            LensPanelOcrAttempt(null, e)
+                        } catch (e: DecodeException) {
+                            LensPanelOcrAttempt(null, e)
+                        } catch (e: OutOfMemoryError) {
+                            LensPanelOcrAttempt(null, e)
+                        } catch (e: RuntimeException) {
+                            LensPanelOcrAttempt(null, e)
+                        }
+                    })
+                    continue
+                }
                 try {
                     progress("OCR model / reading text ${i + 1}/$total", 10 + i * 89 / total)
                     val targeted = !req.forceOcrSrc.isNullOrBlank()
@@ -712,6 +772,50 @@ internal class WebModeExtractor(
                     lastCrash = crashInfo(e)
                     Log.w(TAG, "panel OCR crashed: $lastCrash", e)
                 }
+            }
+
+            if (lensParallel) {
+                val batchStartedAt = SystemClock.elapsedRealtime()
+                var submitted = 0
+                for (i in lensOcrFutures.indices) {
+                    val future = lensOcrFutures[i] ?: continue
+                    submitted++
+                    if (!alive()) {
+                        future.cancel(true)
+                        continue
+                    }
+                    val attempt = try {
+                        future.get((JOB_MAX_MS - elapsed()).coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+                    } catch (e: Exception) {
+                        LensPanelOcrAttempt(null, e)
+                    }
+                    val error = attempt.error
+                    when (error) {
+                        is OcrUnavailableException -> {
+                            fail(WebModeError.OCR_MODEL_UNAVAILABLE, error.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label)
+                            return
+                        }
+                        is DecodeException -> { decodeFailed++; diag.failed++; lastCrash = crashInfo(error) }
+                        is OutOfMemoryError -> { decodeFailed++; diag.failed++; lastCrash = "OutOfMemoryError" }
+                        is Exception -> { decodeFailed++; diag.failed++; lastCrash = crashInfo(error) }
+                        is Error -> { decodeFailed++; diag.failed++; lastCrash = crashInfo(error) }
+                        null -> {
+                            diag.decoded++
+                            val po = attempt.panel ?: continue
+                            val t = po.text
+                            if (t.isBlank()) diag.ocrEmpty++ else { diag.ocrOk++; diag.chars += t.length }
+                            texts[i] = t
+                            layouts[i] = po.bubbles
+                            if (liveView && t.isNotBlank()) {
+                                SiteLearner.recordDownload(wv.context, hostOf(meta.url),
+                                    true, SystemClock.elapsedRealtime() - panelFetchStartedAt[i])
+                            }
+                        }
+                    }
+                }
+                Log.i(TAG, "LENS_VISIBLE_PARALLEL panels=$total submitted=$submitted " +
+                    "batchWaitMs=${SystemClock.elapsedRealtime() - batchStartedAt} decoded=${diag.decoded} " +
+                    "chars=${diag.chars} imageHost=${hostOf(meta.url)}")
             }
             if (!alive()) { onMain { req.onDone(WebModeOutcome.Failure(WebModeError.NAVIGATION_INVALIDATED, WebModeError.NAVIGATION_INVALIDATED.label, diag)) }; return }
             if (script.locked) SiteLearner.saveScript(wv.context, hostOf(meta.url), script.current.name)
@@ -1324,7 +1428,10 @@ internal class WebModeExtractor(
             fastMode: Boolean = false, crop: WebModeOcrRegion? = null,
             cropFallback: Boolean = false
         ): PanelOcr? {
-            com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.init(wv.context)
+            // The hidden manga WebView is unrelated to Google Lens/ML Kit. Do not initialise it for every Chinese/English panel.
+            if (Prefs.get(wv.context, "ocrEngine", "mlkit") == "manga") {
+                com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.init(wv.context)
+            }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth
@@ -1707,13 +1814,18 @@ internal class WebModeExtractor(
          * (see [OcrRescan]). Any failure keeps the normal result untouched.
          */
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            OcrModels.init(wv.context)
-            PaddleOcrModels.init(wv.context)
-            (engine as? RoutingOcrEngine)?.configure(wv.context)
+            val routing = engine as? RoutingOcrEngine
+            routing?.configure(wv.context)
+            val lensSelected = routing?.usesRemoteTextDetection() == true
             val core = recognizeCore(bmp, st, fastMode)
+            // Lens is a single-pass remote OCR engine, including when it returns no text. Never send
+            // the same image through a second audit request; it only adds another upload/cache encode.
+            if (lensSelected) return core
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
             // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
             if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
+            // Lens already read the whole panel; skip the extra network-backed rescan when it returned text.
+            if (routing?.lastRouteUsedLens() == true) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
             if (st.current == OcrScript.JAPANESE &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
@@ -1727,8 +1839,15 @@ internal class WebModeExtractor(
         }
 
         private fun recognizeCore(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            // Real-time (fastMode) used to run the full 4-pass engine for English: the main reason a screen took
-            // seconds. The light engine (plain + one enlarged view) plus the targeted rescan reads the same text.
+            // Google Lens auto-detects the text language and returns the layout/geometry in one response.
+            // Do exactly one remote OCR pass. The generic sparse-result retry and language-fallback logic
+            // below is for local recognisers; here it merely re-encodes/re-uploads the same bitmap.
+            if ((engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true) {
+                val lensResult = engine.recognize(bmp, st.current)
+                if (lensResult.text.count { it.isLetterOrDigit() } >= 2) st.locked = true
+                return lensResult
+            }
+            // Real-time (fastMode) uses the light local path; thorough chapter scans may use more views.
             val first = if (fastMode) engine.recognizeFast(bmp, st.current)
             else if (st.current == OcrScript.LATIN) engine.recognize(bmp, st.current)
             else if (scanFastFirst()) {
@@ -1827,6 +1946,7 @@ internal class WebModeExtractor(
     private class DecodeException : Exception()
     private class ForceAcc { var top = 0; val texts = ArrayList<String>(); val bubbles = ArrayList<WmBubble>() }
     private class PanelOcr(val text: String, val bubbles: List<WmBubble>)
+    private class LensPanelOcrAttempt(val panel: PanelOcr?, val error: Throwable?)
     private class PageMeta(val url: String, val lang: String, val title: String, val novel: String, val next: String?, val prev: String?)
 
     companion object {
