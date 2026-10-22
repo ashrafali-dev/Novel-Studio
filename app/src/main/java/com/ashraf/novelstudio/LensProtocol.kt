@@ -257,24 +257,30 @@ internal object LensProtocol {
 
     private fun readLine(r: Reader): Line {
         val sb = StringBuilder()
+        val wordBoxes = ArrayList<Box>()
         var box: Box? = null
         while (r.hasMore()) {
             val t = r.tag()
             val field = t ushr 3
             val wire = t and 7
             when {
-                field == 1 && wire == 2 -> readWord(r.sub(), sb)
+                field == 1 && wire == 2 -> readWord(r.sub(), sb, wordBoxes)
                 field == 2 && wire == 2 -> box = readGeometry(r.sub())
                 else -> r.skip(wire)
             }
         }
+        // Lens can omit Line.geometry and Paragraph.geometry while still returning precise
+        // per-word Geometry (TextLayout.Word.geometry = field 4). Do not discard valid OCR
+        // just because the server chose the word-level layout.
+        if (box == null) box = unionBoxes(wordBoxes)
         return Line(sb.toString().trim(), box)
     }
 
-    /** Appends plain_text + text_separator of one word. */
-    private fun readWord(r: Reader, sb: StringBuilder) {
+    /** Appends plain_text + text_separator and collects the optional geometry of one word. */
+    private fun readWord(r: Reader, sb: StringBuilder, wordBoxes: MutableList<Box>) {
         var text = ""
         var sep = ""
+        var geometry: Box? = null
         while (r.hasMore()) {
             val t = r.tag()
             val field = t ushr 3
@@ -282,10 +288,12 @@ internal object LensProtocol {
             when {
                 field == 2 && wire == 2 -> text = r.string()
                 field == 3 && wire == 2 -> sep = r.string()
+                field == 4 && wire == 2 -> geometry = readGeometry(r.sub())
                 else -> r.skip(wire)
             }
         }
         sb.append(text).append(sep)
+        geometry?.let { wordBoxes.add(it) }
     }
 
     /** Geometry{ 1: bounding_box = CenterRotatedBox }. */
@@ -352,8 +360,9 @@ internal object LensProtocol {
 
     private class Px(val cx: Float, val cy: Float, val w: Float, val h: Float, val angle: Float)
 
-    private fun unionOf(lines: List<Line>): Box? {
-        val boxes = lines.mapNotNull { it.box }
+    private fun unionOf(lines: List<Line>): Box? = unionBoxes(lines.mapNotNull { it.box })
+
+    private fun unionBoxes(boxes: List<Box>): Box? {
         if (boxes.isEmpty()) return null
         val l = boxes.minOf { it.cx - it.w / 2f }
         val r = boxes.maxOf { it.cx + it.w / 2f }
