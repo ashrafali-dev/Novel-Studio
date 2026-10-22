@@ -198,7 +198,37 @@ internal object WebModeLayoutStore {
     ): WebModeLayout {
         val current = WebModeLayout.translated(scan, translated)
         val old = get(ctx, url)
-        val merged = mergeLayouts(old, current)
+
+        // Shonen Jump+ keeps the episode URL constant while its reader can repaint the same
+        // tainted canvas with a different manga page. The canvas placeholder source is geometry-based,
+        // so simply merging layouts would leave the previous page's translated bubbles attached to the
+        // now-reused canvas. Compare the fresh OCR text AND bubble positions against the previous scan;
+        // when the content is clearly different, discard only that canvas' stale entries before merging.
+        val replaceCanvasSources = if (isShonenJumpPlus(url)) {
+            current.bubbles.asSequence()
+                .map { WebModeLogic.normalizeUrl(it.src) }
+                .filter { it.startsWith("ns-canvas:") }
+                .distinct()
+                .filter { src ->
+                    val fresh = current.bubbles.filter {
+                        WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
+                    }
+                    val previous = old?.bubbles.orEmpty().filter {
+                        WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
+                    }
+                    previous.isNotEmpty() && fresh.size >= 3 &&
+                        !sameCanvasContent(previous, fresh)
+                }
+                .toSet()
+        } else emptySet()
+
+        val mergeBase = if (old != null && replaceCanvasSources.isNotEmpty()) {
+            WebModeLayout(old.titleOffset, old.bubbles.filterNot {
+                WebModeLogic.normalizeUrl(it.src) in replaceCanvasSources
+            })
+        } else old
+
+        val merged = mergeLayouts(mergeBase, current)
         mem[key(url)] = merged
         persist(ctx, url)
         return merged
@@ -309,6 +339,41 @@ internal object WebModeLayoutStore {
         var hit = 0
         for (i in 0 until n) if (grams.contains(s.substring(i, i + 2))) hit++
         return hit * 100 >= n * 70
+    }
+
+    private fun isShonenJumpPlus(url: String): Boolean {
+        val host = url.substringAfter("://", "").substringBefore('/').substringBefore('?')
+            .substringBefore(':').lowercase().removePrefix("www.")
+        return host == "shonenjumpplus.com" || host.endsWith(".shonenjumpplus.com")
+    }
+
+    /**
+     * A recycled Shonen Jump+ canvas can retain identical geometry while showing an entirely new page.
+     * Require several text-and-position matches before treating two OCR layouts as the same artwork.
+     * Small samples are inconclusive and therefore do not delete saved translations.
+     */
+    private fun sameCanvasContent(previous: List<WmBubble>, fresh: List<WmBubble>): Boolean {
+        val prior = previous.filter {
+            WebModeLayout.normalizeOcrText(it.sourceText).isNotBlank()
+        }
+        val incoming = fresh.filter {
+            WebModeLayout.normalizeOcrText(it.sourceText).isNotBlank()
+        }
+        if (prior.size < 3 || incoming.size < 3) return true
+
+        val matchedPrior = HashSet<Int>()
+        var matches = 0
+        for (bubble in incoming) {
+            val match = prior.indices.firstOrNull { index ->
+                index !in matchedPrior && sameBubbleReading(prior[index], bubble)
+            }
+            if (match != null) {
+                matchedPrior.add(match)
+                matches++
+            }
+        }
+        val comparable = minOf(prior.size, incoming.size)
+        return matches >= 3 && matches * 100 >= comparable * 40
     }
 
     private fun mergeLayouts(old: WebModeLayout?, incoming: WebModeLayout): WebModeLayout {
