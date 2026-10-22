@@ -35,6 +35,17 @@ class WebModeLayoutTest {
         assertFalse(WebModeLayoutStore.canvasTransitionDetected(pageA.take(2), listOf(b("other words", 0.5f, 0.5f))))
     }
 
+    @Test fun recycledCanvasWithIdenticalGeometryButDifferentDialogueIsATransition() {
+        // Canvas readers reuse the same element and bubble coordinates after swapping the bitmap.
+        val other = listOf(
+            b("new dialogue alpha", 0.3f, 0.2f),
+            b("new dialogue beta", 0.7f, 0.4f),
+            b("new dialogue gamma", 0.4f, 0.7f)
+        )
+        assertTrue(WebModeLayoutStore.canvasTransitionDetected(pageA, other))
+        assertFalse(WebModeLayout.fingerprint(pageA[0]) == WebModeLayout.fingerprint(other[0]))
+    }
+
     @Test fun fullDifferentPageIsStillATransition() {
         val other = listOf(b("aaa bbb ccc", 0.1f, 0.1f), b("ddd eee fff", 0.5f, 0.5f), b("ggg hhh iii", 0.9f, 0.9f))
         assertTrue(WebModeLayoutStore.canvasTransitionDetected(pageA, other))
