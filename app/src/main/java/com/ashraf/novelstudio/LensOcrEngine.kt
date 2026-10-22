@@ -127,7 +127,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             LensProtocol.parseResponse(body).also { parseMs = SystemClock.elapsedRealtime() - parseStart }
         } catch (e: LensProtocol.ProtocolException) {
             parseMs = SystemClock.elapsedRealtime() - parseStart
-            val diagnostic = "parse failed; parseMs=$parseMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+            val diagnostic = "parse failed; parseMs=$parseMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
                 "reason=${e.message ?: "unknown"}"
             OcrEngineStatus.lastLensDiagnostic = diagnostic
             Log.e(TAG, diagnostic)
@@ -142,7 +142,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val lineBoxes = response.paragraphs.sumOf { p -> p.lines.count { it.box != null } }
         val paragraphBoxes = response.paragraphs.count { it.box != null }
         if (response.serverError != 0) {
-            val diagnostic = "server error; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+            val diagnostic = "server error; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
                 "objects=${response.valid}; serverError=${response.serverError}; paragraphs=$paragraphCount lines=$lineCount"
             OcrEngineStatus.lastLensDiagnostic = diagnostic
             Log.w(TAG, diagnostic)
@@ -150,7 +150,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             throw OcrUnavailableException("Google Lens: server error ${response.serverError}")
         }
         if (!response.valid) {
-            val diagnostic = "missing objects_response; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+            val diagnostic = "missing objects_response; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
                 "objects=false; paragraphs=$paragraphCount lines=$lineCount"
             OcrEngineStatus.lastLensDiagnostic = diagnostic
             Log.w(TAG, diagnostic)
@@ -163,7 +163,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
         val mapMs = SystemClock.elapsedRealtime() - mapStart
-        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=$lastHttpStatus; $lastHttpMeta; " +
+        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=${currentHttpStatus()}; ${currentHttpMeta()}; " +
             "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
