@@ -199,7 +199,7 @@ internal class RoutingOcrEngine : OcrEngine {
     }
 
     private fun useful(result: OcrResult): Boolean =
-        result.blocks.any { it.text.count { ch -> ch.isLetterOrDigit() } >= 2 }
+        result.blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } } >= 2
 
     private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
         val waited = OcrGate.Waited()
