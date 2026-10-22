@@ -135,9 +135,10 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
         val diagnostic = "http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; objects=${response.valid}; " +
-            "paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount textChars=$textChars " +
-            "lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes blocksBeforeNoise=${allBlocks.size} " +
-            "blocksAfterNoise=${lines.size} script=${script.name} upload=${prepared.w}x${prepared.h}"
+            "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
+            "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
+            "blocksBeforeNoise=${allBlocks.size} blocksAfterNoise=${lines.size} " +
+            "script=${script.name} upload=${prepared.w}x${prepared.h}"
         OcrEngineStatus.lastLensDiagnostic = diagnostic
         if (lines.isEmpty()) Log.w(TAG, "NO_TEXT $diagnostic") else Log.i(TAG, "PARSED $diagnostic")
         Breaker.success()
