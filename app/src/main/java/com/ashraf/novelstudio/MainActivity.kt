@@ -5338,9 +5338,16 @@ return t.length>=40?'TXT:'+t:'';
         val lastError = if (paddleErr.isNotBlank()) paddleErr else err
         labels.add("🗑 Delete all optional OCR models\n" +
             (if (lastError.isNotBlank()) "Last model error: " + lastError.take(70) else "ML Kit stays available as the default engine"))
+        val lensDiagnosticIndex = labels.size
+        labels.add("🧪 Google Lens diagnostic — tap to copy\n" +
+            OcrEngineStatus.lastLensDiagnostic.take(220))
 
         listDialog("🧠 OCR engine & models", labels, { i ->
             when {
+                i == lensDiagnosticIndex -> {
+                    copy(OcrEngineStatus.lastLensDiagnostic)
+                    toast("✅ Lens diagnostic copied. Paste it here.")
+                }
                 i == 0 -> chooseOcrEngine()
                 i in 1..legacyPacks.size -> {
                     val p = legacyPacks[i - 1]
