@@ -1258,7 +1258,7 @@ internal class WebModeExtractor(
                 val blocks = result.blocks
                     .filter { it.text.isNotBlank() && !OcrPost.isNoise(it) }
                     .sortedWith(compareBy<OcrBlock>({ it.top }, { it.left }))
-                val letters = blocks.sumOf { it.text.count(Char::isLetterOrDigit) }
+                val letters = blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
                 if (blocks.isEmpty() || letters < 2) {
                     Log.w(TAG, "SCREEN_OCR_FALLBACK_EMPTY size=${bmp.width}x${bmp.height} blocks=${blocks.size} letters=$letters route=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
                     return false
