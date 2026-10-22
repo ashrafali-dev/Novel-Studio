@@ -616,11 +616,18 @@ internal class WebModeExtractor(
                     return
                 }
             }
+            val script = newScript(meta.lang, meta.url)
             // Lens is remote/network-bound: visible panels must not wait for the previous panel's
-            // Lens response. Fetch and OCR a small viewport concurrently, but leave all local-model
-            // scans serial exactly as before.
+            // Lens response. Warm the engine safely first, then fetch and OCR a small viewport
+            // concurrently. All local-model scans remain serial exactly as before.
             val lensParallel = liveView && total > 1 &&
                 Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens"
+            if (lensParallel) {
+                (engine as? RoutingOcrEngine)?.let {
+                    it.configure(wv.context)
+                    it.prepareForConcurrentLens(script.current)
+                }
+            }
             val pool: ExecutorService? = if (total > 1 && (!req.visibleOnly || lensParallel)) {
                 val threads = if (lensParallel) minOf(3, total) else FETCH_THREADS
                 Executors.newFixedThreadPool(threads) { r -> Thread(r, "ns-webmode-fetch") }
@@ -643,7 +650,6 @@ internal class WebModeExtractor(
             val texts = arrayOfNulls<String>(total)
             val layouts = arrayOfNulls<List<WmBubble>>(total)
             val seen = HashSet<String>()
-            val script = newScript(meta.lang, meta.url)
             var fetchFailed = 0
             var decodeFailed = 0
             var lastCrash: String? = null
