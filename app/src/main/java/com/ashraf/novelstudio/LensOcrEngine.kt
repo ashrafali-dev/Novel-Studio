@@ -57,8 +57,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
 
-    /** Uploading the same picture again cannot produce a different answer, so there is no "retry view". */
-    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult = OcrResult(emptyList())
+    /**
+     * The router can request a fallback pass after a partial read. Return the cached Lens result for
+     * the same bitmap (read() hits its image cache) rather than reporting an artificial empty result,
+     * which incorrectly changes the actual-engine status to ML Kit.
+     */
+    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
 
     override fun close() { synchronized(cache) { cache.clear() } }
 
