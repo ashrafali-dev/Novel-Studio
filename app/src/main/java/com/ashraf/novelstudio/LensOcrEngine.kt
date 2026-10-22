@@ -77,8 +77,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         cached(key)?.let {
             val cachedLetters = it.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
             OcrEngineStatus.lastLensDiagnostic =
-                "LENS_CACHE_HIT script=${script.name} image=${bitmap.width}x${bitmap.height} " +
-                "cachedLines=${it.size} cachedLetters=$cachedLetters"
+                "LENS_CACHE_HIT imageId=${java.lang.Long.toHexString(key)} script=${script.name} " +
+                "image=${bitmap.width}x${bitmap.height} cachedLines=${it.size} cachedLetters=$cachedLetters"
             Log.i(TAG, OcrEngineStatus.lastLensDiagnostic)
             return finish(it, bitmap, script)
         }
@@ -91,7 +91,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             timeUsec = System.currentTimeMillis() * 1000L
         )
 
-        Log.i(TAG, "request begin script=${script.name} source=${bitmap.width}x${bitmap.height} " +
+        Log.i(TAG, "request begin imageId=${java.lang.Long.toHexString(key)} script=${script.name} source=${bitmap.width}x${bitmap.height} " +
             "upload=${prepared.w}x${prepared.h} jpegBytes=${prepared.jpeg.size} payloadBytes=${payload.size} " +
             "endpoint=${endpoint().substringAfter("://").substringBefore("/")}")
         val body = try {
@@ -140,7 +140,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val allBlocks = LensProtocol.toBlocks(response, bitmap.width, bitmap.height, prepared.w, prepared.h)
         val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
-        val diagnostic = "http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; objects=${response.valid}; " +
+        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=$lastHttpStatus; $lastHttpMeta; " +
+            "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
             "blocksBeforeNoise=${allBlocks.size} blocksAfterNoise=${lines.size} " +
