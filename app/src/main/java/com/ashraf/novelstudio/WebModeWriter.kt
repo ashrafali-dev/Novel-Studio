@@ -821,6 +821,28 @@ internal object WebModeWriter {
 })(__ITEMS__,__SOURCES__,__FONT__,__PID__)
 """
 
+    /**
+     * A tainted canvas reader can replace its bitmap without changing the URL or DOM geometry.
+     * When OCR confirms that the canvas content changed, clear both the visible overlay and the
+     * hidden HTML used by View Original/View Translation. Keeping only one of those would allow
+     * the toggle to resurrect translations from the previous manga page.
+     */
+    fun clearCanvasOverlayScript(): String = """
+        (function(){
+          try {
+            var w = document.getElementById('__ns_wm_overlay');
+            try { if (window.__nsWmStop) window.__nsWmStop(); } catch(e) {}
+            if (w && w.parentNode) w.parentNode.removeChild(w);
+            window.__nsEl = null;
+            window.__nsOrig = '';
+            window.__nsTr = '';
+            window.__nsShown = 0;
+            window.__nsWmStop = null;
+            return 'cleared';
+          } catch(e) { return 'clear-error:' + e; }
+        })()
+    """.trimIndent()
+
     private fun css(c: Int) = String.format("#%06X", c and 0xFFFFFF)
     private fun r5(x: Float): Double = Math.round(x * 100000.0) / 100000.0
 
