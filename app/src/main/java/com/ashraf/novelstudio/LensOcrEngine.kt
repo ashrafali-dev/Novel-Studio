@@ -58,7 +58,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private fun currentHttpMeta(): String = lastHttpMeta.get() ?: "no HTTP response yet"
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
-    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
+    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script, fastMode = true)
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
 
     /**
@@ -72,7 +72,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     // ---------------------------------------------------------------------------------------------
 
-    private fun read(bitmap: Bitmap, script: OcrScript): OcrResult {
+    private fun read(bitmap: Bitmap, script: OcrScript, fastMode: Boolean = false): OcrResult {
         if (bitmap.isRecycled) throw OcrUnavailableException("Google Lens: bitmap was recycled")
         if (bitmap.width < MIN_SIDE || bitmap.height < MIN_SIDE) return OcrResult(emptyList())
 
@@ -114,7 +114,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         var networkMs = 0L
         val networkStart = SystemClock.elapsedRealtime()
         val body = try {
-            post(payload).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
+            post(payload, fastMode).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
         } catch (e: OcrUnavailableException) {
             networkMs = SystemClock.elapsedRealtime() - networkStart
             val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; error=${e.message ?: e.javaClass.simpleName}"
@@ -168,7 +168,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val totalMs = SystemClock.elapsedRealtime() - t0
         val timing = "timing=prepare:${prepareMs}ms,cache:${keyCacheMs}ms,payload:${payloadBuildMs}ms," +
             "http:${networkMs}ms,parse:${parseMs}ms,map:${mapMs}ms,total:${totalMs}ms"
-        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=${currentHttpStatus()}; ${currentHttpMeta()}; " +
+        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; fastMode=$fastMode; http=${currentHttpStatus()}; ${currentHttpMeta()}; " +
             "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
@@ -296,15 +296,18 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private class HttpStatus(val code: Int, val retryAfterMs: Long) : IOException("HTTP $code")
 
     /** One logical request: bounded retries inside one overall deadline. Throws [OcrUnavailableException] only. */
-    private fun post(payload: ByteArray): ByteArray {
+    private fun post(payload: ByteArray, fastMode: Boolean): ByteArray {
         lastHttpStatus.set(0)
         lastHttpMeta.set("no HTTP response yet")
+        val deadlineMs = if (fastMode) FAST_TOTAL_DEADLINE_MS else TOTAL_DEADLINE_MS
+        val attemptLimit = if (fastMode) FAST_MAX_ATTEMPTS else MAX_ATTEMPTS
+        val minimumAttemptMs = if (fastMode) FAST_MIN_ATTEMPT_MS else MIN_ATTEMPT_MS
         val started = SystemClock.elapsedRealtime()
         var last: Exception? = null
-        for (attempt in 0 until MAX_ATTEMPTS) {
+        for (attempt in 0 until attemptLimit) {
             if (Thread.currentThread().isInterrupted) throw OcrUnavailableException("Google Lens: cancelled")
-            val remaining = TOTAL_DEADLINE_MS - (SystemClock.elapsedRealtime() - started)
-            if (remaining < MIN_ATTEMPT_MS) break
+            val remaining = deadlineMs - (SystemClock.elapsedRealtime() - started)
+            if (remaining < minimumAttemptMs) break
             val info = netInfo()
             if (!info.online) {
                 // Not counted by the breaker: going offline is cheap to detect, and the moment the connection
@@ -341,7 +344,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             }
             val jitter = (random.nextInt(200)).toLong()
             val elapsed = SystemClock.elapsedRealtime() - started
-            if (attempt == MAX_ATTEMPTS - 1 || elapsed + waitMs + jitter + MIN_ATTEMPT_MS > TOTAL_DEADLINE_MS) break
+            if (attempt == attemptLimit - 1 || elapsed + waitMs + jitter + minimumAttemptMs > deadlineMs) break
             try { Thread.sleep(waitMs + jitter) } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw OcrUnavailableException("Google Lens: cancelled", e)
@@ -480,6 +483,10 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         private const val MAX_UPLOAD_BYTES = 3_500_000
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
+        // Realtime screenshot reading is latency-sensitive; a slow endpoint must not stall the reader.
+        private const val FAST_TOTAL_DEADLINE_MS = 6_500L
+        private const val FAST_MIN_ATTEMPT_MS = 1_000L
+        private const val FAST_MAX_ATTEMPTS = 2
         private const val CONNECT_MS = 7_000L
         private const val READ_MS = 15_000L
         private const val TOTAL_DEADLINE_MS = 22_000L
