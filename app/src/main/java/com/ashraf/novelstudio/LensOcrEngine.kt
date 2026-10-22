@@ -87,10 +87,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val keyCacheMs = SystemClock.elapsedRealtime() - keyStart
         if (cachedLines != null) {
             val cachedLetters = cachedLines.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
-            OcrEngineStatus.lastLensDiagnostic =
+            OcrEngineStatus.setLensDiagnostic(
                 "LENS_CACHE_HIT imageId=${java.lang.Long.toHexString(key)} script=${script.name} " +
                 "image=${bitmap.width}x${bitmap.height} cachedLines=${cachedLines.size} cachedLetters=$cachedLetters"
-            Log.i(TAG, OcrEngineStatus.lastLensDiagnostic)
+            )
+            Log.i(TAG, OcrEngineStatus.currentLensDiagnostic())
             val result = finish(cachedLines, bitmap, script)
             Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=true prepareMs=$prepareMs keyCacheMs=$keyCacheMs totalMs=${SystemClock.elapsedRealtime() - t0}")
             return result
@@ -116,7 +117,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         } catch (e: OcrUnavailableException) {
             networkMs = SystemClock.elapsedRealtime() - networkStart
             val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; error=${e.message ?: e.javaClass.simpleName}"
-            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            OcrEngineStatus.setLensDiagnostic(diagnostic)
             Log.e(TAG, diagnostic)
             throw e
         }
@@ -129,7 +130,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             parseMs = SystemClock.elapsedRealtime() - parseStart
             val diagnostic = "parse failed; parseMs=$parseMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
                 "reason=${e.message ?: "unknown"}"
-            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            OcrEngineStatus.setLensDiagnostic(diagnostic)
             Log.e(TAG, diagnostic)
             // 200 OK but not a Lens reply (captive portal, changed protocol, ...): do not trust, do not retry.
             Breaker.permanent("unreadable reply")
@@ -144,7 +145,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         if (response.serverError != 0) {
             val diagnostic = "server error; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
                 "objects=${response.valid}; serverError=${response.serverError}; paragraphs=$paragraphCount lines=$lineCount"
-            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            OcrEngineStatus.setLensDiagnostic(diagnostic)
             Log.w(TAG, diagnostic)
             Breaker.transient("server error ${response.serverError}")
             throw OcrUnavailableException("Google Lens: server error ${response.serverError}")
@@ -152,7 +153,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         if (!response.valid) {
             val diagnostic = "missing objects_response; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
                 "objects=false; paragraphs=$paragraphCount lines=$lineCount"
-            OcrEngineStatus.lastLensDiagnostic = diagnostic
+            OcrEngineStatus.setLensDiagnostic(diagnostic)
             Log.w(TAG, diagnostic)
             Breaker.transient("reply without objects")
             throw OcrUnavailableException("Google Lens: reply without text layer")
@@ -169,7 +170,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
             "blocksBeforeNoise=${allBlocks.size} blocksAfterNoise=${lines.size} " +
             "script=${script.name} upload=${prepared.w}x${prepared.h}"
-        OcrEngineStatus.lastLensDiagnostic = diagnostic
+        OcrEngineStatus.setLensDiagnostic(diagnostic)
         if (lines.isEmpty()) Log.w(TAG, "NO_TEXT $diagnostic") else Log.i(TAG, "PARSED $diagnostic")
         Breaker.success()
         remember(key, lines)
