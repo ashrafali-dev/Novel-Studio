@@ -215,12 +215,10 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         return h
     }
 
-    private fun languageHint(script: OcrScript): String = when (script) {
-        OcrScript.LATIN -> "en"
-        OcrScript.CHINESE -> "zh"
-        OcrScript.JAPANESE -> "ja"
-        OcrScript.KOREAN -> "ko"
-    }
+    // This is the client UI locale, not a forced OCR language. Lens detects language from pixels.
+    // Forcing a stale CHINESE script here caused English Webtoon panels to be submitted with a zh hint.
+    private fun languageHint(script: OcrScript): String =
+        Locale.getDefault().language.takeIf { it.isNotBlank() } ?: "en"
 
     private fun regionHint(): String = Locale.getDefault().country.takeIf { it.length == 2 } ?: "US"
     private fun zoneHint(): String = TimeZone.getDefault().id.takeIf { it.isNotBlank() } ?: "America/New_York"
