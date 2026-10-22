@@ -82,6 +82,23 @@ class LensProtocolTest {
         assertEquals(400f, blocks[0].cy, 0.01f)
     }
 
+    @Test fun wordGeometryRecoversWhenLineAndParagraphGeometryAreMissing() {
+        // Current Lens responses may put Geometry on each TextLayout.Word (field 4)
+        // without setting either Line.geometry or Paragraph.geometry.
+        val words = cat(
+            len(1, cat(str(2, "Hello"), str(3, " "), len(4, box(0.4f, 0.5f, 0.1f, 0.05f)))),
+            len(1, cat(str(2, "world"), str(3, ""), len(4, box(0.5f, 0.5f, 0.1f, 0.05f))))
+        )
+        val paragraphWithoutGeometry = len(2, words) // Paragraph.lines only
+        val parsed = LensProtocol.parseResponse(response(paragraphWithoutGeometry))
+        val blocks = LensProtocol.toBlocks(parsed, 1000, 1000, 1000, 1000)
+
+        assertEquals(listOf("Hello world"), blocks.map { it.text })
+        assertEquals(450f, blocks[0].cx, 0.01f)
+        assertEquals(200f, blocks[0].w, 0.01f)
+        assertEquals(500f, blocks[0].cy, 0.01f)
+    }
+
     @Test fun validReplyWithoutTextIsValidButEmpty() {
         val resp = LensProtocol.parseResponse(len(2, str(7, "cluster")))     // objects_response with only unrelated data
         assertTrue(resp.valid)
