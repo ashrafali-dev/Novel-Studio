@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "NovelStudio Lens OCR — Live Overlay",
+  "version": "0.1.0",
+  "description": "NovelStudio-inspired image OCR, batching, caching, translation and live text overlays for Chromium.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://lens.google.com/*",
+    "https://translate.googleapis.com/*",
+    "https://*.google.com/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "NovelStudio OCR — enable on this site"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
