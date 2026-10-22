@@ -5265,7 +5265,11 @@ return t.length>=40?'TXT:'+t:'';
     private fun menuOcrRescanLabel(): String =
         (if (Prefs.bool(this, "ocrRescan", true)) "✅" else "⬜") + " 🩹 OCR rescan (find missed lines)"
 
-    private fun menuOcrModelsLabel(): String = "🧠 OCR Engine & Models: " + currentOcrEngineLabel()
+    private fun lastActuallyUsedOcrEngine(): String =
+        OcrEngineStatus.label.takeIf { it.isNotBlank() } ?: "No OCR run yet"
+
+    private fun menuOcrModelsLabel(): String =
+        "🧠 OCR Engine: " + currentOcrEngineLabel() + "\nLast actually used: " + lastActuallyUsedOcrEngine()
 
     private fun currentOcrEngineLabel(): String = when (Prefs.get(this, "ocrEngine", "mlkit")) {
         "paddle_small" -> "PaddleOCR Small"
@@ -5305,7 +5309,9 @@ return t.length>=40?'TXT:'+t:'';
         val legacyPacks = OcrModels.PACKS
         val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose · ML Kit is built in: fast on every phone, ★★★☆☆. Language files download together with each model.")
+        labels.add("⚙️ Selected engine: " + currentOcrEngineLabel() +
+            "\n✅ Last actually used: " + lastActuallyUsedOcrEngine() +
+            "\nIf Lens is unavailable or returns no text, NovelStudio falls back to ML Kit.")
 
         for (p in legacyPacks) {
             val state = when {
