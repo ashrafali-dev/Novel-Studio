@@ -1324,7 +1324,10 @@ internal class WebModeExtractor(
             fastMode: Boolean = false, crop: WebModeOcrRegion? = null,
             cropFallback: Boolean = false
         ): PanelOcr? {
-            com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.init(wv.context)
+            // The hidden manga WebView is unrelated to Google Lens/ML Kit. Do not initialise it for every Chinese/English panel.
+            if (Prefs.get(wv.context, "ocrEngine", "mlkit") == "manga") {
+                com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.init(wv.context)
+            }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
             val w = bounds.outWidth
@@ -1707,16 +1710,18 @@ internal class WebModeExtractor(
          * (see [OcrRescan]). Any failure keeps the normal result untouched.
          */
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            OcrModels.init(wv.context)
-            PaddleOcrModels.init(wv.context)
-            (engine as? RoutingOcrEngine)?.configure(wv.context)
+            val routing = engine as? RoutingOcrEngine
+            routing?.configure(wv.context)
+            val lensSelected = routing?.usesRemoteTextDetection() == true
             val core = recognizeCore(bmp, st, fastMode)
+            // Lens is a single-pass remote OCR engine, including when it returns no text. Never send
+            // the same image through a second audit request; it only adds another upload/cache encode.
+            if (lensSelected) return core
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
             // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
             if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
-            // Lens already read the whole panel; only skip the extra network-backed rescan when Lens
-            // actually returned text. If Lens failed, the on-device result can still be augmented.
-            if ((engine as? RoutingOcrEngine)?.lastRouteUsedLens() == true) return core
+            // Lens already read the whole panel; skip the extra network-backed rescan when it returned text.
+            if (routing?.lastRouteUsedLens() == true) return core
             // The Japanese manga engine has its own detector; do not run it once per crop.
             if (st.current == OcrScript.JAPANESE &&
                 com.ashraf.novelstudio.japanesemanga.JapaneseMangaRuntime.isAvailable()) return core
@@ -1730,13 +1735,16 @@ internal class WebModeExtractor(
         }
 
         private fun recognizeCore(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
-            // Real-time (fastMode) used to run the full 4-pass engine for English: the main reason a screen took
-            // seconds. The light engine (plain + one enlarged view) plus the targeted rescan reads the same text.
-            val first = if ((engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true) {
-                // Lens already detects text and geometry in one remote request; do not run a second
-                // identical request through the fast-first path for short CJK replies.
-                engine.recognize(bmp, st.current)
-            } else if (fastMode) engine.recognizeFast(bmp, st.current)
+            // Google Lens auto-detects the text language and returns the layout/geometry in one response.
+            // Do exactly one remote OCR pass. The generic sparse-result retry and language-fallback logic
+            // below is for local recognisers; here it merely re-encodes/re-uploads the same bitmap.
+            if ((engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true) {
+                val lensResult = engine.recognize(bmp, st.current)
+                if (lensResult.text.count { it.isLetterOrDigit() } >= 2) st.locked = true
+                return lensResult
+            }
+            // Real-time (fastMode) uses the light local path; thorough chapter scans may use more views.
+            val first = if (fastMode) engine.recognizeFast(bmp, st.current)
             else if (st.current == OcrScript.LATIN) engine.recognize(bmp, st.current)
             else if (scanFastFirst()) {
                 // Chapter scan: one quick pass first. Only a panel that gave (almost) no text gets the slow
