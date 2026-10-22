@@ -57,6 +57,24 @@ internal object OcrEngineStatus {
 
     @Volatile private var lastCopied: String = ""
 
+    @Volatile private var lastRouteToast: String = ""
+
+    /** Announces only when the real engine changes, not on every real-time OCR frame. */
+    @Synchronized
+    fun announceRoute(context: Context?, selected: String, actual: String) {
+        if (selected != "lens" || context == null || actual.isBlank() || actual == lastRouteToast) return
+        lastRouteToast = actual
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                android.widget.Toast.makeText(
+                    context,
+                    "OCR actually used: $actual",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } catch (_: Throwable) {}
+        }
+    }
+
     /** Copies the error to the clipboard once per distinct message, so it can be pasted into a bug report. */
     fun copyOnce(context: Context?, message: String) {
         if (context == null || message == lastCopied) return
@@ -194,6 +212,8 @@ internal class RoutingOcrEngine : OcrEngine {
             }
         } finally {
             OcrEngineStatus.label = OcrEngineStatus.describe(selectedMode, used, fellBack)
+            // Tell the user which engine produced the actual output; deduplicated across real-time frames.
+            OcrEngineStatus.announceRoute(appContext, selectedMode, OcrEngineStatus.label)
             // Diagnostic line: ids/timings only, never the recognised text.
             Log.i("NovelStudioOCR", "requestedEngine=$selectedMode language=${script.name} " +
                 "activeEngine=$used fallbackUsed=$fellBack " +
