@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -74,8 +77,30 @@ jobs:
 
           echo "PASS: APK uses the permanent Novel Studio release signing certificate."
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: NovelStudio-SIGNED-RELEASE-APK
-          path: app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: error
+      - name: Publish signed APK to rolling GitHub Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          ASSET="NovelStudio-SIGNED-RELEASE-APK.apk"
+          TAG="ci-latest"
+          test -s "$APK"
+          cp "$APK" "$ASSET"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Updating the rolling CI APK release..."
+            gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "Creating the rolling CI APK prerelease..."
+            gh release create "$TAG" "$ASSET" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Latest signed Novel Studio APK" \
+              --notes "Automatically updated from the latest successful APK build on main. Download the signed APK asset below." \
+              --prerelease \
+              --latest=false \
+              --target "$GITHUB_SHA"
+          fi
+
+          echo "APK release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
