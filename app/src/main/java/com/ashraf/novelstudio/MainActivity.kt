@@ -8349,6 +8349,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             // Only a request carrying its own bubble layout is a live overlay batch. A geometry-free
             // text fallback or a deliberate full-page extract must use the normal chapter pipeline.
             val livePanelBatch = isRealtimeBubbleBatch(ch)
+            // Check canvas generation BEFORE inspecting the chatbot's output. An empty/failed response
+            // from an old page must not trigger an automatic retry that can later paint stale text.
+            if (livePanelBatch && !realtimeBatchCanvasStillCurrent(ch)) {
+                Log.i("NovelStudioOCR", "Discarded stale chatbot reply before parsing its output")
+                releaseDeepSeekHashBatch(ch)
+                deferNextChatbotRequest()
+                chatWv.evaluateJavascript(Js.clearSendState(), null)
+                running = null
+                clearWebModeProgress()
+                updateProgressUi()
+                startNext()
+                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
+                return@evaluateJavascript
+            }
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
@@ -8373,20 +8387,6 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 // never save it as a chapter or try to put it on the screen early.
                 deferNextChatbotRequest()
                 finishRealtimeAheadTranslation(aheadTaskKey, aheadTask, rawTranslation)
-                return@evaluateJavascript
-            }
-            if (livePanelBatch && !realtimeBatchCanvasStillCurrent(ch)) {
-                // The reader changed this canvas after the request was sent. Even though its URL and
-                // element geometry are unchanged, this response belongs to a prior bitmap; never paint it.
-                Log.i("NovelStudioOCR", "Discarded late chatbot reply for a recycled manga canvas")
-                releaseDeepSeekHashBatch(ch)
-                deferNextChatbotRequest()
-                chatWv.evaluateJavascript(Js.clearSendState(), null)
-                running = null
-                clearWebModeProgress()
-                updateProgressUi()
-                startNext()
-                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
                 return@evaluateJavascript
             }
             // Scanning: a reply that cannot be matched to the bubbles used to be saved as a good translation
