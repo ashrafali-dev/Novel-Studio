@@ -878,6 +878,7 @@ class MainActivity : Activity() {
             },
             onAheadDone = {
                 if (seq == aheadOcrSeq) {
+                    if (token == navToken) clearCanvasTransitionOverlay(novelWv.url.orEmpty())
                     aheadOcrHandle = null
                     aheadOcrStage = ""
                     aheadOcrPct = -1
@@ -6651,6 +6652,9 @@ return t.length>=40?'TXT:'+t:'';
                             if (realtimeViewport) handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
                         }
                         is WebModeOutcome.Failure -> {
+                            // Even when OCR/network fails, the clean screenshot fingerprint may already
+                            // have proved that this canvas now shows a different manga page.
+                            clearCanvasTransitionOverlay(novelWv.url.orEmpty())
                             updateProgressUi()
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (realtimeViewport &&
