@@ -557,6 +557,8 @@ internal class WebModeExtractor(
                     val p = arr.optJSONObject(i) ?: continue
                     val s = p.optString("s").trim()
                     if (s.isBlank()) continue
+                    // Banner/ad slides (e.g. shonenjumpplus /public/link-slot-series) are not manga pages.
+                    if (s.contains("/link-slot-", ignoreCase = true)) continue
                     val panel = PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h"))
                     val key = WebModeLogic.normalizeUrl(s).ifBlank { s }
                     val old = merged[key]
@@ -634,6 +636,12 @@ internal class WebModeExtractor(
             val hasCanvas = panels.any { it.src.startsWith("data:", true) }
             if (hasCanvas) how = "canvas"
             OcrDiag.log("PROCESS", "panels=$total liveView=$liveView canvasPanels=${panels.count { it.src.startsWith("data:", true) }} script=${WebModeLogic.pickScript(meta.lang, meta.url).name} lang='${meta.lang}'")
+            if (liveView && !hasCanvas && lastDiscoveryDebug.contains("canvasErr=SecurityError") &&
+                Regex("(\\d+) canvas").find(lastDiscoveryDebug)?.groupValues?.get(1)?.toIntOrNull()?.let { it > 0 } == true) {
+                // Pixel-locked canvas reader: downloads can only return unrelated images, so go straight to the screen.
+                fail(WebModeError.IMAGES_NOT_LOADED, "Canvas reader: reading the screen directly")
+                return
+            }
             if (liveView && !hasCanvas) {
                 // This site already refused our image downloads a moment ago: read the screen's own pixels at once
                 // instead of waiting for every panel to time out again.
@@ -1035,7 +1043,15 @@ internal class WebModeExtractor(
                 if (a != null && !isBlank(a)) return a
                 a?.recycle()
                 if (req.isOccluded()) {
-                    // PixelCopy would return the chatbot pane that covers this WebView: never use it.
+                    // draw() is blank for canvas/hardware-composited readers (e.g. shonenjumpplus).
+                    // Take the WebView rectangle with PixelCopy and paint every native overlay
+                    // (chat pane, buttons) over with the surrounding colour so only page pixels remain.
+                    val pc = captureByPixelCopy(allowWindowFallback = false)
+                    if (pc != null && !isBlank(pc)) {
+                        try { maskNativeOverlays(pc) } catch (_: Throwable) {}
+                        return pc
+                    }
+                    pc?.recycle()
                     forceBlank++
                     return null
                 }
