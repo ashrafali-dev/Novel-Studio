@@ -5272,43 +5272,28 @@ return t.length>=40?'TXT:'+t:'';
         "paddle_heavy" -> "PaddleOCR Heavy"
         "rapid_onnx" -> "RapidOCR / legacy ONNX"
         "manga" -> "Japanese Manga OCR"
-        "google_lens" -> "Google Lens · Experimental (Online)"
+        "lens" -> "Google Lens (online)"
         else -> "ML Kit · Default"
     }
 
     private fun chooseOcrEngine() {
-        val keys = arrayOf("mlkit", "google_lens", "paddle_small", "paddle_heavy", "rapid_onnx", "manga")
+        val keys = arrayOf("mlkit", "paddle_small", "paddle_heavy", "rapid_onnx", "manga", "lens")
         val labels = arrayOf(
             "ML Kit — Default (fast, built-in)",
-            "Google Lens OCR — Experimental (online; uploads images to Google)",
             "PaddleOCR PP-OCRv6 Small — fast (English/Chinese/Japanese; Korean uses ML Kit)",
             "PaddleOCR PP-OCRv6 Medium / Heavy — accuracy option (English/Chinese/Japanese; Korean uses ML Kit)",
             "RapidOCR ONNX — legacy optional engine",
-            "Japanese Manga OCR — if its model is installed"
+            "Japanese Manga OCR — if its model is installed",
+            "Google Lens — online, reads text only (images are sent to Google; falls back to ML Kit if unavailable)"
         )
         val selected = keys.indexOf(Prefs.get(this, "ocrEngine", "mlkit")).coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setTitle("OCR Engine")
             .setSingleChoiceItems(labels, selected) { dialog, which ->
-                val applySelection = {
-                    Prefs.put(this, "ocrEngine", keys[which])
-                    dialog.dismiss()
-                    if (keys[which] == "google_lens") {
-                        toast("Google Lens OCR enabled · online/experimental; ML Kit remains the fallback")
-                    } else {
-                        toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit.")
-                    }
-                }
-                if (keys[which] == "google_lens") {
-                    AlertDialog.Builder(this)
-                        .setTitle("Google Lens OCR · Experimental")
-                        .setMessage("This unofficial online engine sends scanned image slices to Google's Lens servers. It needs internet and may stop working if Google changes the endpoint. If it fails, NovelStudio falls back to ML Kit.")
-                        .setPositiveButton("Enable") { _, _ -> applySelection() }
-                        .setNegativeButton("Cancel", null)
-                        .show()
-                } else {
-                    applySelection()
-                }
+                Prefs.put(this, "ocrEngine", keys[which])
+                dialog.dismiss()
+                toast("OCR engine: " + labels[which] + ". Unavailable models automatically fall back to ML Kit." +
+                    (if (keys[which] == "lens") " Needs internet; the pictures being read are uploaded to Google." else ""))
             }
             .setNegativeButton("Cancel", null)
             .show()
