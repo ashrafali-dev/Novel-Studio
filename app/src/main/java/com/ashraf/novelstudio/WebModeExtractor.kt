@@ -1218,19 +1218,35 @@ internal class WebModeExtractor(
                 try { Thread.sleep(if (steps == 0) 450L else 350L) } catch (_: InterruptedException) { return }
                 val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
                 val blankBefore = forceBlank
-                var bmp = captureView()
-                // A single blank PixelCopy happens while the WebView surface is repainting (just after scroll,
-                // page switch or a renderer restart). Retry a few times instead of failing the whole job.
-                var blankTry = 0
-                while (bmp == null && blankTry < 3 && alive() && !req.isOccluded()) {
-                    blankTry++
-                    try { Thread.sleep(220L * blankTry) } catch (_: InterruptedException) { return }
-                    bmp = captureView()
+                val host = hostOf(meta.url).lowercase().removePrefix("www.")
+                val hideOverlayForShot = req.visibleOnly &&
+                    (host == "shonenjumpplus.com" || host.endsWith(".shonenjumpplus.com"))
+                if (hideOverlayForShot) {
+                    evalWait(wrap(JS_TEMP_HIDE_OVERLAY)) { null }
+                    // Wait for the visibility change to reach the WebView surface before PixelCopy.
+                    try { Thread.sleep(70L) } catch (_: InterruptedException) {
+                        evalWait(wrap(JS_TEMP_SHOW_OVERLAY)) { null }
+                        return
+                    }
                 }
-                if (bmp == null && req.visibleOnly && !req.isOccluded() && alive()) {
-                    // Last resort: draw the WebView into a bitmap (may flash on some devices, but better than nothing).
-                    val d = captureByDraw()
-                    if (d != null && !isBlank(d)) bmp = d else d?.recycle()
+                var bmp: Bitmap? = null
+                var blankTry = 0
+                try {
+                    bmp = captureView()
+                    // A single blank PixelCopy happens while the WebView surface is repainting (just after scroll,
+                    // page switch or a renderer restart). Retry a few times instead of failing the whole job.
+                    while (bmp == null && blankTry < 3 && alive() && !req.isOccluded()) {
+                        blankTry++
+                        try { Thread.sleep(220L * blankTry) } catch (_: InterruptedException) { return }
+                        bmp = captureView()
+                    }
+                    if (bmp == null && req.visibleOnly && !req.isOccluded() && alive()) {
+                        // Last resort: draw the WebView into a bitmap (may flash on some devices, but better than nothing).
+                        val d = captureByDraw()
+                        if (d != null && !isBlank(d)) bmp = d else d?.recycle()
+                    }
+                } finally {
+                    if (hideOverlayForShot) evalWait(wrap(JS_TEMP_SHOW_OVERLAY)) { null }
                 }
                 if (bmp != null) forceBlank = blankBefore   // a retry succeeded: this screen was not blank after all
                 forceShots++
@@ -2635,6 +2651,24 @@ return JSON.stringify({bottom:bottom});
 var sc=scroller();
 if(sc){if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;sc.scrollTop=0;}
 else{if(window.__nsWmY===undefined)window.__nsWmY=window.pageYOffset||de.scrollTop||0;window.scrollTo(0,0);}
+return '1';
+"""
+
+        
+        // Hide only the app's own overlay while a canvas screenshot is captured for OCR. Reference
+        // counting makes overlapping visible-screen jobs safe; the existing overlay is restored as soon
+        // as PixelCopy finishes, before OCR/network work begins.
+        private const val JS_TEMP_HIDE_OVERLAY = """
+var e=document.getElementById('__ns_wm_overlay');
+window.__nsTempOverlayHideCount=(window.__nsTempOverlayHideCount||0)+1;
+if(e&&window.__nsTempOverlayHideCount===1){window.__nsTempOverlayPriorVisibility=e.style.visibility;e.style.visibility='hidden';}
+return '1';
+"""
+
+        private const val JS_TEMP_SHOW_OVERLAY = """
+var n=Math.max(0,(window.__nsTempOverlayHideCount||0)-1);window.__nsTempOverlayHideCount=n;
+var e=document.getElementById('__ns_wm_overlay');
+if(e&&n===0){e.style.visibility=window.__nsTempOverlayPriorVisibility||'';delete window.__nsTempOverlayPriorVisibility;}
 return '1';
 """
 
