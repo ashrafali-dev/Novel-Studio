@@ -26,6 +26,26 @@ internal object OcrGate {
 
     private fun isBackground(): Boolean = background.get() == true
 
+    fun isBackgroundThread(): Boolean = isBackground()
+
+    /**
+     * Lens OCR is network-bound and its client is safe for overlapping requests. Once the Lens
+     * engine is already active, let foreground OCR run beside an in-flight read-ahead Lens request
+     * instead of waiting for that remote round trip. Incrementing foregroundActive pauses any NEW
+     * background request while the visible one is pending/running. Local model inference still uses run().
+     */
+    fun <T> runLensForeground(waited: Waited? = null, block: () -> T): T {
+        if (isBackground()) return run(waited, block)
+        val t0 = System.nanoTime() / 1_000_000L
+        foregroundActive.incrementAndGet()
+        waited?.ms = (System.nanoTime() / 1_000_000L) - t0
+        try {
+            return block()
+        } finally {
+            foregroundActive.decrementAndGet()
+        }
+    }
+
     /** Milliseconds the last call spent waiting for the gate (diagnostics only). */
     class Waited(var ms: Long = 0L)
 
