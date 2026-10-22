@@ -790,9 +790,12 @@ internal class WebModeExtractor(
                         future.cancel(true)
                         continue
                     }
+                    // The Lens request itself has a 6.5 s deadline. Bound the caller too:
+                    // a stuck worker/engine setup must not inherit the chapter's 12-minute timeout.
                     val attempt = try {
-                        future.get((JOB_MAX_MS - elapsed()).coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+                        future.get(SCREEN_LENS_DEADLINE_MS, TimeUnit.MILLISECONDS)
                     } catch (e: Exception) {
+                        future.cancel(true)
                         LensPanelOcrAttempt(null, e)
                     }
                     val error = attempt.error
