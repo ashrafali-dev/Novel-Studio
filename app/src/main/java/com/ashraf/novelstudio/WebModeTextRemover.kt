@@ -123,14 +123,42 @@ internal object WebModeTextRemover {
                 val selected = ByteArray(regionCount)
                 // Shapes that are certainly NOT lettering (outline / other bubble): the sweep below never touches them.
                 val protect = ByteArray(regionCount)
+                val hasStroke = bubble.stroke != 0
+                val core = if (hasStroke) ByteArray(regionCount) else null
+                val strokeCand = if (hasStroke) ByteArray(regionCount) else null
                 for (i in 0 until regionCount) {
                     val p = region[i]
                     val fromBg = distance(p, bg)
                     if (fromBg < (if (soft) 52f else 46f)) continue
-                    val fromFg = min(distance(p, fg1), min(distance(p, fg2), distance(p, fg3)))
+                    val thr = if (soft) 78f else max(82f, fromBg * 1.08f)
                     // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
                     // On artwork (soft) only pixels that are clearly the lettering colour qualify, so line art survives.
-                    if (fromFg <= (if (soft) 78f else max(82f, fromBg * 1.08f))) candidate[i] = 1
+                    if (min(distance(p, fg1), distance(p, fg2)) <= thr) {
+                        candidate[i] = 1
+                        if (core != null) core[i] = 1
+                    } else if (strokeCand != null && distance(p, fg3) <= thr) {
+                        strokeCand[i] = 1
+                    }
+                }
+                // The OUTLINE colour (often white/grey) also occurs all over the background (sky, walls, windows).
+                // It only counts where it hugs the lettering's own fill: within a stroke width of a fill pixel.
+                if (core != null && strokeCand != null) {
+                    val rad = (fontPx * 0.12f).toInt().coerceIn(2, 8)
+                    val tmp = ByteArray(regionCount)
+                    for (ry in 0 until rh) for (rx in 0 until rw) {
+                        if (core[ry * rw + rx].toInt() == 0) continue
+                        for (dx in -rad..rad) {
+                            val nx = rx + dx
+                            if (nx in 0 until rw) tmp[ry * rw + nx] = 1
+                        }
+                    }
+                    for (ry in 0 until rh) for (rx in 0 until rw) {
+                        if (tmp[ry * rw + rx].toInt() == 0) continue
+                        for (dy in -rad..rad) {
+                            val ny = ry + dy
+                            if (ny in 0 until rh && strokeCand[ny * rw + rx].toInt() != 0) candidate[ny * rw + rx] = 1
+                        }
+                    }
                 }
 
                 val queue = IntArray(regionCount)
@@ -289,15 +317,15 @@ internal object WebModeTextRemover {
         }
     }
 
-    /** Colour for one erased pixel on artwork: inverse-distance blend of the nearest kept pixel in each of 4 directions. */
+    /** Colour for one erased pixel on artwork: inverse-distance blend of the nearest kept pixel in each of 8 directions (1/d² weights: no streaks, no pulling in far colours). */
     private fun gradientFill(
         region: IntArray, mask: ByteArray, rw: Int, rh: Int,
         rx: Int, ry: Int, maxScan: Int, fallback: Int
     ): Int {
         var sr = 0f; var sg = 0f; var sb = 0f; var sw = 0f
-        for (dir in 0 until 4) {
-            val dx = if (dir == 0) -1 else if (dir == 1) 1 else 0
-            val dy = if (dir == 2) -1 else if (dir == 3) 1 else 0
+        for (dir in 0 until 8) {
+            val dx = intArrayOf(-1, 1, 0, 0, -1, 1, -1, 1)[dir]
+            val dy = intArrayOf(0, 0, -1, 1, -1, -1, 1, 1)[dir]
             var d = 1
             while (d <= maxScan) {
                 val nx = rx + dx * d
@@ -305,7 +333,7 @@ internal object WebModeTextRemover {
                 if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) break
                 if (mask[ny * rw + nx].toInt() == 0) {
                     val p = region[ny * rw + nx]
-                    val wgt = 1f / d
+                    val wgt = 1f / (d * d)
                     sr += red(p) * wgt; sg += green(p) * wgt; sb += blue(p) * wgt; sw += wgt
                     break
                 }

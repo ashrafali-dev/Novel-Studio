@@ -134,9 +134,9 @@ internal object WebModeWriter {
       if(it.o){
         // outlined original lettering (fill + stroke): fill colour plus a round outline of the stroke colour
         var sh=[];
-        for(var k=0;k<16;k++){var an=k*Math.PI/8,rr=(k%2?0.05:0.075);sh.push((Math.cos(an)*rr).toFixed(3)+'em '+(Math.sin(an)*rr).toFixed(3)+'em 0 '+it.o);}
+        for(var k=0;k<16;k++){var an=k*Math.PI/8,rr=(k%2?0.03:0.05);sh.push((Math.cos(an)*rr).toFixed(3)+'em '+(Math.sin(an)*rr).toFixed(3)+'em 0 '+it.o);}
         t.style.textShadow=sh.join(',');
-        t.style.fontWeight='800';
+        t.style.fontWeight='700';
       }else if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
         t.style.background='linear-gradient(to bottom,'+it.fg+','+it.g2+')';
@@ -426,7 +426,7 @@ internal object WebModeWriter {
         if(bb.style.zIndex!==zz)bb.style.zIndex=zz;
         if(bb.style.display!=='flex')bb.style.display='flex';
         var fw=String(Math.round(R.rw));
-        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,gg[5]*R.rw*1.5);}
+        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,Math.max(gg[5]*R.rw*1.5,bb.getAttribute('data-sf')==='1'?R.oh*0.8:0));}
       }}
     var raf=0,lastRun=0,forceNext=false,settleT=0,ro=null;
     function sched(){
