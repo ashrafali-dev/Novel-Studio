@@ -5305,7 +5305,7 @@ return t.length>=40?'TXT:'+t:'';
         val legacyPacks = OcrModels.PACKS
         val paddlePacks = PaddleOcrModels.PACKS
         val labels = ArrayList<String>()
-        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose · ML Kit is built in. Optional model packs download on demand. Google Lens is online and sends scanned images to Google; ML Kit remains the fallback.")
+        labels.add("⚙️ OCR Engine: " + currentOcrEngineLabel() + "\nTap to choose · ML Kit is built in: fast on every phone, ★★★☆☆. Language files download together with each model.")
 
         for (p in legacyPacks) {
             val state = when {
