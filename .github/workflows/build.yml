@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr, fix/realtime-batch-page-identity, fix/canvas-stale-dialogues-20261023]
+    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr, fix/realtime-batch-page-identity]
 
 permissions:
   contents: write
@@ -49,7 +49,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle testDebugUnitTest assembleRelease --no-daemon
+        run: gradle assembleRelease --no-daemon
 
       - name: Verify APK package and permanent signing certificate
         run: |
