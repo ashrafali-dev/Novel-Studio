@@ -275,6 +275,9 @@ internal object WebModeTextRemover {
                     aiLastMs = android.os.SystemClock.elapsedRealtime() - t0
                     if (aiFill != null) aiBudget--
                 }
+                // Artwork without AI: onion-peel (Telea-style) fill, outside in, layer by layer.
+                val tele = if (soft && aiFill == null)
+                    onionFill(region, mask, rw, rh, (fontPx * 0.3f).toInt().coerceIn(4, 10), bg) else null
                 // Fill only the masked glyph pixels from their surroundings (never repaint a whole box).
                 val out = region.copyOf()
                 for (ry in 0 until rh) {
@@ -284,8 +287,10 @@ internal object WebModeTextRemover {
                         if (soft) {
                             // Lettering on artwork: rebuild the picture from the surroundings (sky, shading, screentone
                             // gradients) by blending the nearest untouched pixels left/right/up/down, nearest weighted most.
-                            out[at] = if (aiFill != null) (0xFF000000.toInt() or (aiFill[at] and 0xFFFFFF)) else 0xFF000000.toInt() or
-                                gradientFill(region, mask, rw, rh, rx, ry, (fontPx * 1.6f).toInt().coerceIn(8, 60), bg)
+                            out[at] = if (aiFill != null) (0xFF000000.toInt() or (aiFill[at] and 0xFFFFFF))
+                                else if (tele != null) (0xFF000000.toInt() or (tele[at] and 0xFFFFFF))
+                                else 0xFF000000.toInt() or
+                                    gradientFill(region, mask, rw, rh, rx, ry, (fontPx * 1.6f).toInt().coerceIn(8, 60), bg)
                             continue
                         }
                         var sampleN = 0
@@ -367,6 +372,99 @@ internal object WebModeTextRemover {
         val g = (sg / sw).toInt().coerceIn(0, 255)
         val b = (sb / sw).toInt().coerceIn(0, 255)
         return (r shl 16) or (g shl 8) or b
+    }
+
+    private class IntBuf {
+        var a = IntArray(64)
+        var n = 0
+        fun add(v: Int) { if (n == a.size) a = a.copyOf(n * 2); a[n++] = v }
+    }
+
+    /**
+     * Onion-peel inpainting (the idea behind Telea's method, without a priority queue): the hole is filled from its
+     * border inwards. Each round fills the pixels that touch known picture; a pixel becomes the inverse-square-distance
+     * weighted average of the known pixels within [radius]. A round reads only what was known when it started, so the
+     * result has no scan-direction streaks. Anything that still cannot be reached gets [fallback].
+     */
+    private fun onionFill(region: IntArray, mask: ByteArray, rw: Int, rh: Int, radius: Int, fallback: Int): IntArray {
+        val total = rw * rh
+        val out = region.copyOf()
+        val known = BooleanArray(total) { mask[it].toInt() == 0 }
+        val queued = BooleanArray(total)
+        val colours = IntArray(total)
+        var frontier = IntBuf()
+        for (y in 0 until rh) for (x in 0 until rw) {
+            val i = y * rw + x
+            if (known[i]) continue
+            val touches = (x > 0 && known[i - 1]) || (x < rw - 1 && known[i + 1]) ||
+                (y > 0 && known[i - rw]) || (y < rh - 1 && known[i + rw])
+            if (touches) { frontier.add(i); queued[i] = true }
+        }
+        var r = radius
+        var stalls = 0
+        while (frontier.n > 0) {
+            val r2 = r * r
+            val filled = IntBuf()
+            val pending = IntBuf()
+            for (k in 0 until frontier.n) {
+                val i = frontier.a[k]
+                val y = i / rw
+                val x = i - y * rw
+                var sr = 0f; var sg = 0f; var sb = 0f; var sw = 0f
+                for (dy in -r..r) {
+                    val ny = y + dy
+                    if (ny < 0 || ny >= rh) continue
+                    for (dx in -r..r) {
+                        val nx = x + dx
+                        if (nx < 0 || nx >= rw) continue
+                        val d2 = dx * dx + dy * dy
+                        if (d2 == 0 || d2 > r2) continue
+                        val ni = ny * rw + nx
+                        if (!known[ni]) continue
+                        val p = out[ni]
+                        val w = 1f / d2
+                        sr += ((p shr 16) and 255) * w
+                        sg += ((p shr 8) and 255) * w
+                        sb += (p and 255) * w
+                        sw += w
+                    }
+                }
+                if (sw > 0f) {
+                    colours[i] = (0xFF shl 24) or ((sr / sw).toInt().coerceIn(0, 255) shl 16) or
+                        ((sg / sw).toInt().coerceIn(0, 255) shl 8) or (sb / sw).toInt().coerceIn(0, 255)
+                    filled.add(i)
+                } else {
+                    pending.add(i)
+                }
+            }
+            if (filled.n == 0) {
+                // nothing reachable at this radius: look further a few times, then give up
+                if (++stalls > 3) break
+                r *= 2
+                continue
+            }
+            stalls = 0
+            for (k in 0 until filled.n) {
+                val i = filled.a[k]
+                out[i] = colours[i]
+                known[i] = true
+            }
+            val next = IntBuf()
+            for (k in 0 until pending.n) next.add(pending.a[k])
+            for (k in 0 until filled.n) {
+                val i = filled.a[k]
+                val y = i / rw
+                val x = i - y * rw
+                if (x > 0 && !known[i - 1] && !queued[i - 1]) { queued[i - 1] = true; next.add(i - 1) }
+                if (x < rw - 1 && !known[i + 1] && !queued[i + 1]) { queued[i + 1] = true; next.add(i + 1) }
+                if (y > 0 && !known[i - rw] && !queued[i - rw]) { queued[i - rw] = true; next.add(i - rw) }
+                if (y < rh - 1 && !known[i + rw] && !queued[i + rw]) { queued[i + rw] = true; next.add(i + rw) }
+            }
+            frontier = next
+        }
+        // whatever is still unknown gets the fallback colour
+        for (i in 0 until total) if (!known[i]) out[i] = 0xFF000000.toInt() or (fallback and 0xFFFFFF)
+        return out
     }
 
     private fun isAnimatedOrUnsupported(bytes: ByteArray): Boolean {
