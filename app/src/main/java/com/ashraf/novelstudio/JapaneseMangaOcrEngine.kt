@@ -53,6 +53,12 @@ internal object OcrEngineStatus {
     @Volatile var label: String = ""
     /** Safe summary of the most recent Lens request/parse; never contains OCR text or API keys. */
     @Volatile var lastLensDiagnostic: String = "No Google Lens request captured yet"
+    private val threadLensDiagnostic = ThreadLocal<String>()
+    fun setLensDiagnostic(message: String) {
+        threadLensDiagnostic.set(message)
+        lastLensDiagnostic = message
+    }
+    fun currentLensDiagnostic(): String = threadLensDiagnostic.get() ?: lastLensDiagnostic
     /** Last Paddle failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
     @Volatile var lastError: String = ""
     @Volatile private var lastToast: String = ""
@@ -297,20 +303,21 @@ internal class RoutingOcrEngine : OcrEngine {
             val letterCount = lens?.blocks?.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } } ?: 0
             if (lens != null && useful(lens)) {
                 // Google Lens is an independent engine. Never supplement or merge its result with ML Kit.
-                OcrEngineStatus.lastLensDiagnostic =
+                OcrEngineStatus.setLensDiagnostic(
                     "ROUTER_USE_LENS script=${script.name} image=${bitmap.width}x${bitmap.height} " +
-                    "blocks=$blockCount letters=$letterCount; ${OcrEngineStatus.lastLensDiagnostic}"
-                Log.i("NovelStudioOCR", OcrEngineStatus.lastLensDiagnostic.take(1000))
+                    "blocks=$blockCount letters=$letterCount; ${OcrEngineStatus.currentLensDiagnostic()}"
+                )
+                Log.i("NovelStudioOCR", OcrEngineStatus.currentLensDiagnostic().take(1000))
                 lensThread.set(true)
                 report("lens", false)
                 return lens
             }
-            val engineDetail = OcrEngineStatus.lastLensDiagnostic
+            val engineDetail = OcrEngineStatus.currentLensDiagnostic()
             val detailImageId = Regex("imageId=([0-9a-f]+)").find(engineDetail)?.groupValues?.get(1) ?: "none"
             val emptyWhy = "ROUTER_LENS_EMPTY script=${script.name} image=${bitmap.width}x${bitmap.height} " +
                 "lensNull=${lens == null} blocks=$blockCount letters=$letterCount detailImageId=$detailImageId " +
                 "lensDetail=${engineDetail.take(650)}"
-            OcrEngineStatus.lastLensDiagnostic = emptyWhy
+            OcrEngineStatus.setLensDiagnostic(emptyWhy)
             Log.w("NovelStudioOCR", emptyWhy)
             // Empty Lens OCR is still a Lens result; keep engines independent.
             report("lens(empty)", false)
