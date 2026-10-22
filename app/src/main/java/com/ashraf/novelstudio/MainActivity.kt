@@ -771,9 +771,12 @@ class MainActivity : Activity() {
     // it waits until the viewport OCR has gone quiet (and the chatbot is free).
     // Menu "Realtime batching": 0 Small (fastest first text) .. 3 Max (fewest requests). Default 2 = Big.
     private fun rtBatchLevel(): Int = (Prefs.get(this, "rtBatchLevel", "2").toIntOrNull() ?: 2).coerceIn(0, 3)
-    private val rtVisibleOcrBatchMin: Int get() = intArrayOf(2, 4, 8, 12)[rtBatchLevel()]
-    private val rtVisibleOcrIdleFlushMs: Long get() = longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
-    private val rtVisibleOcrMaxHoldMs: Long get() = longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
+    private fun lensRealtimeFastPath(): Boolean = Prefs.get(this, "ocrEngine", "mlkit") == "lens"
+    // Lens already returns all detected text in one remote OCR response; do not hold that result
+    // behind ML-Kit-oriented multi-bubble/idle batching. Keep just a tiny window to join nearby SFX.
+    private val rtVisibleOcrBatchMin: Int get() = if (lensRealtimeFastPath()) 2 else intArrayOf(2, 4, 8, 12)[rtBatchLevel()]
+    private val rtVisibleOcrIdleFlushMs: Long get() = if (lensRealtimeFastPath()) 350L else longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
+    private val rtVisibleOcrMaxHoldMs: Long get() = if (lensRealtimeFastPath()) 500L else longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
@@ -798,10 +801,11 @@ class MainActivity : Activity() {
     private var rtAheadWorkerSourceLength = 0
     private var rtAheadPumpScheduled = false
     private var rtAheadNextSendAtMs = 0L
-    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
+    private val REALTIME_AHEAD_MIN_BUBBLES: Int get() = if (lensRealtimeFastPath()) 4 else intArrayOf(5, 10, 20, 30)[rtBatchLevel()]
     // Never wait for the whole read-ahead OCR pass: send on a short one-shot timer after
     // the first usable panel arrives. Panels completed during that window are batched together.
-    private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
+    // Lens gets a short collection window so its completed OCR does not inherit ML Kit batch latency.
+    private val REALTIME_AHEAD_COLLECT_FLUSH_MS: Long get() = if (lensRealtimeFastPath()) 450L else longArrayOf(2000L, 3500L, 6000L, 9000L)[rtBatchLevel()]
 
     private fun startAheadOcr() {
         if (rtPausedForReOcr) return
