@@ -359,23 +359,29 @@ internal object LensProtocol {
         val r = boxes.maxOf { it.cx + it.w / 2f }
         val t = boxes.minOf { it.cy - it.h / 2f }
         val b = boxes.maxOf { it.cy + it.h / 2f }
-                rettttM dcoppend(t    cL bpend(t  rit.box)tran,
-  ,xes.ma[0].malized =    }
+        return Box((l + r) / 2f, (t + b) / 2f, r - l, b - t, 0f, boxes[0].normalized)
+    }
 
-    private fun reaels(l.bbox? {
-rigW: Int, origH: Int, sentW: Int, sentH: Int): LisP{
-        val(b and=ull
-  eturn null
-        val l =k r.f(b an.malized =  igW: Ip }at(fixlse r.sgW: Ip }at(fixls/ntW: I.coerceAtLeast(1       val rookyr.f(b an.malized =  igW: Hp }at(fixlse r.sgW: Hp }at(fixls/ntW: H.coerceAtLeast(1       val roop r.fvalb + i*=k ,xe + i*=ky,xe wi*=k ,xe hi*=ky,
-         // SomAses,pn (no
-  trticifie on tffes.mLispositiv t ack(l.wiinto age, e spacoriaor NO Kit en              BloPost.foldAe: F(h.abstoDegree.bb.ationRad: FstoDou on rep }at(fixl           (b a!px + EmpFin(b) ) len!px +yEmpFin(b) ) len!px wEmpFin(b) ) len!px hEmpFin(b) )eturn null
-        val(p.vex w 0 ||f lenpx h 0 ||feturn null
-        valurn nulp   }
+    private fun pixels(b: Box?, origW: Int, origH: Int, sentW: Int, sentH: Int): Px? {
+        if (b == null) return null
+        val kx = if (b.normalized) origW.toFloat() else origW.toFloat() / sentW.coerceAtLeast(1)
+        val ky = if (b.normalized) origH.toFloat() else origH.toFloat() / sentH.coerceAtLeast(1)
+        val px = Px(b.cx * kx, b.cy * ky, b.w * kx, b.h * ky,
+            // Assumption (not verifiable offline): positive = clockwise in image space, as for ML Kit.
+            OcrPost.foldAngle(Math.toDegrees(b.rotationRad.toDouble()).toFloat()))
+        if (!px.cx.isFinite() || !px.cy.isFinite() || !px.w.isFinite() || !px.h.isFinite()) return null
+        if (px.w <= 0f || px.h <= 0f) return null
+        return px
+    }
 
-    private fun reack(text, gtring, valgisP{,rtical: Boolean, vLisBlock for       val boxglyp r.f((p.vtical) {
-  * 1e r.s > )i*=0.9f      valurn nulBlock fo(             t = p.lt, g,             to r.sang- it.g/ 2f }
-)Int(), Chat })).sang-xit.g/w2f }
-)Int(), Ch             = r.fng-x, = r.fng- ,= r.fg/w,= r.fg/ ,gle: Fr.fg/le: Fh             finuP r.fnlyp ertical = g.htical, bo             =onfide pro ||f / Soms reports it.e).
-;  non"unknstr"r NO Bloe>):FusRad            }
-
-  }
+    private fun block(text: String, g: Px, vertical: Boolean): OcrBlock {
+        val glyph = (if (vertical) g.w else g.h) * 0.9f
+        return OcrBlock(
+            text = text,
+            top = (g.cy - g.h / 2f).toInt(), left = (g.cx - g.w / 2f).toInt(),
+            cx = g.cx, cy = g.cy, w = g.w, h = g.h, angle = g.angle,
+            fontPx = glyph, vertical = vertical,
+            confidence = 0f   // Lens reports none; 0 = "unknown" for OcrLineFusion
+        )
+    }
+}
