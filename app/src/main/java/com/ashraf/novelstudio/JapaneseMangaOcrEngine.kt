@@ -172,6 +172,15 @@ internal class RoutingOcrEngine : OcrEngine {
     /** Lens itself returns text boxes, so use its normal recognition call instead of a repeated fast request. */
     fun usesRemoteTextDetection(): Boolean = selectedMode == "lens"
 
+    /**
+     * Initialize the selected Lens client before launching parallel visible-panel requests. The first
+     * call still goes through OcrGate so switching away from a local model never closes it mid-inference.
+     */
+    fun prepareForConcurrentLens(script: OcrScript) {
+        if (selectedMode != "lens" || canRunLensConcurrently()) return
+        OcrGate.run { active(script) }
+    }
+
     /** Only bypass the shared local-inference gate after the Lens client is fully active. */
     @Synchronized
     private fun canRunLensConcurrently(): Boolean =
