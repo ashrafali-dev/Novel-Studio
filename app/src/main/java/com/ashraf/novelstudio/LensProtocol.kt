@@ -186,11 +186,42 @@ internal object LensProtocol {
      * [valid] is true only when the body really was a ServerResponse that carried an objects_response.
      * [serverError] is the server-reported error type (0 = none).
      */
-    class Response(val paragraphs: List<Paragraph>, val valid: Boolean, val serverError: Int)
+    /** Field-number-only trace of the response tree; deliberately contains no OCR text or geometry values. */
+    class Shape(
+        val rootFields: List<Int>,
+        val objectFields: List<Int>,
+        val textFields: List<Int>,
+        val layoutFields: List<Int>,
+        val hasText: Boolean,
+        val hasTextLayout: Boolean
+    ) {
+        override fun toString(): String =
+            "rootFields=$rootFields objectFields=$objectFields hasText=$hasText " +
+                "textFields=$textFields hasTextLayout=$hasTextLayout layoutFields=$layoutFields"
+    }
+
+    class Response(
+        val paragraphs: List<Paragraph>,
+        val valid: Boolean,
+        val serverError: Int,
+        val shape: Shape
+    )
+
+    private class ParseTrace {
+        val rootFields = ArrayList<Int>()
+        val objectFields = ArrayList<Int>()
+        val textFields = ArrayList<Int>()
+        val layoutFields = ArrayList<Int>()
+        var hasText = false
+        var hasTextLayout = false
+        fun shape() = Shape(rootFields.toList(), objectFields.toList(), textFields.toList(),
+            layoutFields.toList(), hasText, hasTextLayout)
+    }
 
     fun parseResponse(body: ByteArray): Response {
         if (body.isEmpty()) throw ProtocolException("empty response body")
         val root = Reader(body, 0, body.size)
+        val trace = ParseTrace()
         var sawObjects = false
         var serverError = 0
         val paragraphs = ArrayList<Paragraph>()
@@ -198,6 +229,7 @@ internal object LensProtocol {
             val t = root.tag()
             val field = t ushr 3
             val wire = t and 7
+            trace.rootFields.add(field)
             when {
                 field == 1 && wire == 2 -> {                       // error
                     val e = root.sub()
@@ -208,32 +240,47 @@ internal object LensProtocol {
                 }
                 field == 2 && wire == 2 -> {                       // objects_response
                     sawObjects = true
-                    readObjectsResponse(root.sub(), paragraphs)
+                    readObjectsResponse(root.sub(), paragraphs, trace)
                 }
                 else -> root.skip(wire)
             }
         }
-        return Response(paragraphs, sawObjects, serverError)
+        return Response(paragraphs, sawObjects, serverError, trace.shape())
     }
 
-    private fun readObjectsResponse(r: Reader, out: MutableList<Paragraph>) {
+    private fun readObjectsResponse(r: Reader, out: MutableList<Paragraph>, trace: ParseTrace) {
         while (r.hasMore()) {
             val t = r.tag()
-            if (t ushr 3 == 3 && t and 7 == 2) readText(r.sub(), out) else r.skip(t and 7)   // 3: text
+            val field = t ushr 3
+            val wire = t and 7
+            trace.objectFields.add(field)
+            if (field == 3 && wire == 2) {
+                trace.hasText = true
+                readText(r.sub(), out, trace)
+            } else r.skip(wire)
         }
     }
 
-    private fun readText(r: Reader, out: MutableList<Paragraph>) {
+    private fun readText(r: Reader, out: MutableList<Paragraph>, trace: ParseTrace) {
         while (r.hasMore()) {
             val t = r.tag()
-            if (t ushr 3 == 1 && t and 7 == 2) readTextLayout(r.sub(), out) else r.skip(t and 7) // 1: text_layout
+            val field = t ushr 3
+            val wire = t and 7
+            trace.textFields.add(field)
+            if (field == 1 && wire == 2) {
+                trace.hasTextLayout = true
+                readTextLayout(r.sub(), out, trace)
+            } else r.skip(wire)
         }
     }
 
-    private fun readTextLayout(r: Reader, out: MutableList<Paragraph>) {
+    private fun readTextLayout(r: Reader, out: MutableList<Paragraph>, trace: ParseTrace) {
         while (r.hasMore()) {
             val t = r.tag()
-            if (t ushr 3 == 1 && t and 7 == 2) out.add(readParagraph(r.sub())) else r.skip(t and 7) // 1: paragraphs
+            val field = t ushr 3
+            val wire = t and 7
+            trace.layoutFields.add(field)
+            if (field == 1 && wire == 2) out.add(readParagraph(r.sub())) else r.skip(wire)
         }
     }
 
