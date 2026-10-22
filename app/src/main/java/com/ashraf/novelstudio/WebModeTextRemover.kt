@@ -80,7 +80,9 @@ internal object WebModeTextRemover {
                 val bg = opaque(bubble.bg)
                 val fg1 = opaque(bubble.fg)
                 val fg2 = opaque(bubble.fg2)
-                if (distance(bg, fg1) < 52 && distance(bg, fg2) < 52) continue
+                // Outline colour of fill+stroke lettering is ink too (otherwise a white edge would stay behind).
+                val fg3 = if (bubble.stroke != 0) opaque(bubble.stroke) else fg2
+                if (distance(bg, fg1) < 52 && distance(bg, fg2) < 52 && distance(bg, fg3) < 52) continue
 
                 val fontPx = (bubble.font * width).takeIf { it.isFinite() && it > 0f }
                     ?.coerceIn(3f, 400f) ?: max(3f, min(innerW, innerH).toFloat() * 0.65f)
@@ -125,7 +127,7 @@ internal object WebModeTextRemover {
                     val p = region[i]
                     val fromBg = distance(p, bg)
                     if (fromBg < (if (soft) 52f else 46f)) continue
-                    val fromFg = min(distance(p, fg1), distance(p, fg2))
+                    val fromFg = min(distance(p, fg1), min(distance(p, fg2), distance(p, fg3)))
                     // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
                     // On artwork (soft) only pixels that are clearly the lettering colour qualify, so line art survives.
                     if (fromFg <= (if (soft) 78f else max(82f, fromBg * 1.08f))) candidate[i] = 1

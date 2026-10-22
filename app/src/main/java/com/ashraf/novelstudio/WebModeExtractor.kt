@@ -1340,7 +1340,7 @@ internal class WebModeExtractor(
             fun finishResult(): PanelOcr {
                 // Cleaning is opt-in and limited to whole-image OCR. A force-OCR crop has a different
                 // coordinate system and must never be used to rewrite the underlying source image.
-                if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", false) &&
+                if (crop == null && Prefs.bool(wv.context, "wmTextRemoval", true) &&
                     (src.startsWith("https://", true) || src.startsWith("http://", true))) {
                     try {
                         WebModeTextRemover.cleanAndCache(wv.context, src, bytes, bubbles)
@@ -1581,7 +1581,7 @@ internal class WebModeExtractor(
                     w = bw * k / fullW, h = bh * k / fullH,
                     angle = if (rotated) tilt else 0f,
                     font = (refinedFont[i] ?: b.fontPx) * k / fullW,
-                    bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft,
+                    bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft, stroke = s.stroke,
                     sourceText = text
                 )
                 // Same text seen by two overlapping slices: keep the bigger box once.

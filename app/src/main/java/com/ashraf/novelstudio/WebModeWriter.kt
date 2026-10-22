@@ -131,7 +131,13 @@ internal object WebModeWriter {
         // Keep browser defaults for complex-script shaping (including Bengali conjuncts).
         +'font-variant-ligatures:normal;text-rendering:optimizeLegibility;';
       b.style.setProperty('font-family',fam,'important'); t.style.setProperty('font-family',fam,'important');
-      if(it.g2&&it.g2!==it.fg){
+      if(it.o){
+        // outlined original lettering (fill + stroke): fill colour plus a round outline of the stroke colour
+        var sh=[];
+        for(var k=0;k<16;k++){var an=k*Math.PI/8,rr=(k%2?0.05:0.075);sh.push((Math.cos(an)*rr).toFixed(3)+'em '+(Math.sin(an)*rr).toFixed(3)+'em 0 '+it.o);}
+        t.style.textShadow=sh.join(',');
+        t.style.fontWeight='800';
+      }else if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
         t.style.background='linear-gradient(to bottom,'+it.fg+','+it.g2+')';
         t.style.webkitBackgroundClip='text'; t.style.backgroundClip='text';
@@ -786,7 +792,7 @@ internal object WebModeWriter {
                 .put("t", t).put("s", WebModeLogic.normalizeUrl(b.src))
                 .put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
                 .put("a", r5(b.angle)).put("f", r5(b.font))
-                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
+                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft).put("o", if (b.stroke != 0) css(b.stroke) else "")
                 // Transparent translation only where THIS bubble's old lettering was really erased; a bubble the
                 // cleaner skipped keeps its cover box, so the old text never shows through the translation.
                 .put("cl", if (WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b)) &&

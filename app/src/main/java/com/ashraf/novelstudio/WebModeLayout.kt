@@ -24,7 +24,9 @@ internal data class WmBubble(
     /** Exact normalized OCR text captured at this position; used to bind output to the right bubble. */
     val sourceText: String = "",
     /** Bengali text already translated for this position. Empty means not translated yet. */
-    val translatedText: String = ""
+    val translatedText: String = "",
+    /** Colour of the lettering's outline (SFX / titles drawn as fill + stroke); 0 = no outline. */
+    val stroke: Int = 0
 )
 
 /**
@@ -39,7 +41,7 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             .put("s", b.src).put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
             .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
             .put("fg2", b.fg2).put("sf", b.soft)
-            .put("srcText", b.sourceText).put("tr", b.translatedText))
+            .put("srcText", b.sourceText).put("tr", b.translatedText).put("so", b.stroke))
         return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
@@ -59,7 +61,7 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.getDouble("a").toFloat(), b.getDouble("f").toFloat(),
                     b.getInt("bg"), b.getInt("fg"),
                     b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false),
-                    b.optString("srcText", ""), b.optString("tr", "")
+                    b.optString("srcText", ""), b.optString("tr", ""), b.optInt("so", 0)
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
@@ -398,7 +400,7 @@ internal object WebModeLayoutStore {
  * the tight text box (so a longer translation has room instead of overflowing).
  */
 internal object WmBubbleStyle {
-    class Style(val l: Int, val t: Int, val r: Int, val b: Int, val bg: Int, val fg: Int, val fg2: Int, val soft: Boolean)
+    class Style(val l: Int, val t: Int, val r: Int, val b: Int, val bg: Int, val fg: Int, val fg2: Int, val soft: Boolean, val stroke: Int = 0)
 
     private const val TOL = 38          // per-channel distance still counted as "the same background"
     private const val STEP = 2
@@ -434,8 +436,16 @@ internal object WmBubbleStyle {
         val fgAll = textColour(bmp, l, t, r, b, bg)
         // Two clearly different halves = a gradient lettering: keep both ends, else one colour.
         val grad = colourDist(fgTop, fgBot) > 70 && contrast(fgTop, bg) >= MIN_CONTRAST && contrast(fgBot, bg) >= MIN_CONTRAST
-        val fg = if (grad) fgTop else fgAll
-        val fg2 = if (grad) fgBot else fgAll
+        var fg = if (grad) fgTop else fgAll
+        var fg2 = if (grad) fgBot else fgAll
+        // Outlined lettering (fill + stroke): the old code took the colour farthest from the background, which
+        // is the OUTLINE (e.g. white), so a dark-red "GRIT" with a white edge came out plain white. Read the
+        // fill from the inside of the strokes and the outline from their edge, and keep both.
+        var stroke = 0
+        val probe = outlineProbe(bmp, l, t, r, b, bg)
+        if (probe != null) {
+            fg = probe[0]; fg2 = probe[0]; stroke = probe[1]
+        }
         // Only speech-bubble-like (light) interiors are grown; on black pages the cover stays on the text itself.
         if (expand && lum(bg) > 70) {
             val buf = IntArray(maxOf(bw, bh) + 4)
@@ -471,7 +481,55 @@ internal object WmBubbleStyle {
             if (gt > 6) t += 3
             if (gb > 6) b -= 3
         }
-        return Style(l, t, r, b, bg, fg, fg2, soft)
+        return Style(l, t, r, b, bg, fg, fg2, soft, stroke)
+    }
+
+    /**
+     * Looks along rows for runs of ink wide enough to have an inside (>= 8 px). When the run's edge colour keeps
+     * differing strongly from its middle colour, the lettering is outlined: returns [fill, outline] (ARGB), else null.
+     */
+    private fun outlineProbe(bmp: Bitmap, l: Int, t: Int, r: Int, b: Int, bg: Int): IntArray? {
+        val w = r - l
+        val h = b - t
+        if (w < 12 || h < 12 || w.toLong() * h > 1_500_000L) return null
+        val row = IntArray(w)
+        val stepY = maxOf(1, h / 80)
+        var runs = 0
+        var outlined = 0
+        var fr = 0L; var fgc = 0L; var fb = 0L
+        var er = 0L; var eg = 0L; var eb = 0L
+        var y = t
+        while (y < b) {
+            bmp.getPixels(row, 0, w, l, y, w, 1)
+            var x = 0
+            while (x < w) {
+                if (colourDist(row[x], bg) < 90) { x++; continue }
+                var e = x
+                while (e < w && colourDist(row[e], bg) >= 90) e++
+                val len = e - x
+                if (len in 8..120) {
+                    val mid = row[x + len / 2]
+                    val left = row[x + 2]
+                    val right = row[e - 3]
+                    runs++
+                    // both ends agree with each other and clearly differ from the middle
+                    if (colourDist(left, right) < 70 && colourDist(left, mid) > 90 && colourDist(right, mid) > 90) {
+                        outlined++
+                        fr += (mid shr 16) and 255; fgc += (mid shr 8) and 255; fb += mid and 255
+                        er += (((left shr 16) and 255) + ((right shr 16) and 255)) / 2
+                        eg += (((left shr 8) and 255) + ((right shr 8) and 255)) / 2
+                        eb += ((left and 255) + (right and 255)) / 2
+                    }
+                }
+                x = e
+            }
+            y += stepY
+        }
+        if (runs < 6 || outlined < 6 || outlined * 100 < runs * 40) return null
+        val n = outlined.toLong()
+        val fill = (0xFF shl 24) or ((fr / n).toInt() shl 16) or ((fgc / n).toInt() shl 8) or (fb / n).toInt()
+        val edge = (0xFF shl 24) or ((er / n).toInt() shl 16) or ((eg / n).toInt() shl 8) or (eb / n).toInt()
+        return intArrayOf(fill, edge)
     }
 
     /**
