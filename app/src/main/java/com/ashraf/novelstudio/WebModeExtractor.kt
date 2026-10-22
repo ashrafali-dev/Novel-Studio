@@ -1185,8 +1185,8 @@ internal class WebModeExtractor(
             // backgrounds; full-chapter Force Extract retains its original throttled scan.
             val forceInfoScript = if (req.visibleOnly) {
                 JS_FORCE_INFO.replaceFirst(
-                    "var sc=scroller(),c=cands(sc,undefined,true),vw=",
-                    "var sc=scroller(),c=cands(sc,true,true),vw="
+                    "var sc=scroller(),c=cands(sc,undefined,true,true),vw=",
+                    "var sc=scroller(),c=cands(sc,true,true,true),vw="
                 )
             } else JS_FORCE_INFO
             // Hide the overlay only for full-chapter screenshot extraction. Realtime visible-only
@@ -1201,11 +1201,26 @@ internal class WebModeExtractor(
                 if (steps > MAX_TICKS) break
                 try { Thread.sleep(if (steps == 0) 450L else 350L) } catch (_: InterruptedException) { return }
                 val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
-                val bmp = captureView()
+                val blankBefore = forceBlank
+                var bmp = captureView()
+                // A single blank PixelCopy happens while the WebView surface is repainting (just after scroll,
+                // page switch or a renderer restart). Retry a few times instead of failing the whole job.
+                var blankTry = 0
+                while (bmp == null && blankTry < 3 && alive() && !req.isOccluded()) {
+                    blankTry++
+                    try { Thread.sleep(220L * blankTry) } catch (_: InterruptedException) { return }
+                    bmp = captureView()
+                }
+                if (bmp == null && req.visibleOnly && !req.isOccluded() && alive()) {
+                    // Last resort: draw the WebView into a bitmap (may flash on some devices, but better than nothing).
+                    val d = captureByDraw()
+                    if (d != null && !isBlank(d)) bmp = d else d?.recycle()
+                }
+                if (bmp != null) forceBlank = blankBefore   // a retry succeeded: this screen was not blank after all
                 forceShots++
                 forceStepNo = steps
                 OcrDiag.log("FORCE_STEP", "step=$steps jsInfo=${info != null} domCandidates=${info?.optJSONArray("imgs")?.length() ?: -1} " +
-                    "bitmap=${bmp?.let { "${it.width}x${it.height}" } ?: "NULL(blank capture)"} blankSoFar=$forceBlank")
+                    "bitmap=${bmp?.let { "${it.width}x${it.height}" } ?: "NULL(blank capture)"} blankSoFar=$forceBlank retries=$blankTry")
                 if (bmp != null) {
                     // JS discovery can time out on canvas/cross-origin iframe readers even while the
                     // WebView has perfectly visible pixels. A viewport-only scan can still OCR that bitmap.
@@ -1343,12 +1358,14 @@ internal class WebModeExtractor(
                 return
             }
             val pending = ArrayList<PendingCrop>()
+            var canvasCrops = 0
 
             for (i in 0 until arr.length()) {
                 if (!alive()) break
                 val p = arr.optJSONObject(i) ?: continue
                 val src = p.optString("s")
                 if (src.isBlank()) continue
+                val isCanvasPage = src.startsWith("ns-canvas:")
                 val l = p.optDouble("vl").toFloat() * scale
                 val t = p.optDouble("vt").toFloat() * scale
                 val fw = p.optDouble("fw").toFloat() * scale
@@ -1363,6 +1380,7 @@ internal class WebModeExtractor(
                     catch (_: Throwable) { continue }
                 val acc = accs.getOrPut(src) { ForceAcc() }
                 acc.top = p.optInt("t")
+                if (isCanvasPage) canvasCrops++
                 pending.add(
                     PendingCrop(
                         bitmap = crop,
@@ -1465,6 +1483,12 @@ internal class WebModeExtractor(
             val noNewText = accs.values.sumOf { it.texts.size } == textBefore
             val noTextAtAll = accs.values.none { acc -> acc.texts.any { it.isNotBlank() } }
             OcrDiag.log("CROP_OCR", "step=$forceStepNo crops=${pending.size} newText=${!noNewText} textAnywhere=${!noTextAtAll} screenMode=$screenModeOn")
+            // A canvas page WAS cropped (the real page the user reads) but has no text (picture-only page):
+            // reading the whole screen now would only return header / banner / app-UI noise as "chapter text".
+            if (canvasCrops > 0 && noNewText) {
+                OcrDiag.log("CROP_OCR", "canvas page cropped x$canvasCrops but has no new text; whole-screen OCR skipped (would only read page chrome)")
+                return
+            }
             if (noNewText && (req.visibleOnly || screenModeOn || noTextAtAll)) {
                 if (!readWholeViewport()) Log.w(TAG, "screen OCR fallback found no readable text after crop OCR")
             }
@@ -2329,12 +2353,47 @@ function scroller(){
   if(chosen)window.__nsWmScroller=chosen;
   return chosen;
 }
-function cands(sc, includeBackgrounds, forceCanvas){
+function cands(sc, includeBackgrounds, forceCanvas, canvasPlaceholders){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
+  // Big on-screen canvases = the page the user is really reading (Shonen Jump+, Comic-Walker...). An <img> that sits
+  // under/inside such a canvas (promo banners, link-slot ads, hidden preloads) is NOT what the user sees.
+  var pageCv=[];
+  try{
+    var pcs=document.querySelectorAll('canvas'),pvh=window.innerHeight||800;
+    for(var pi=0;pi<pcs.length&&pi<16;pi++){
+      var pr0=pcs[pi].getBoundingClientRect();
+      if(pr0.width<300||pr0.height<300||pr0.bottom<=0||pr0.top>=pvh)continue;
+      pageCv.push({l:pr0.left,t:pr0.top,r:pr0.right,b:pr0.bottom,a:pr0.width*pr0.height,el:pcs[pi]});
+    }
+  }catch(ig0){}
+  function hiddenOrCovered(im,r){
+    try{
+      var cs0=getComputedStyle(im);
+      if(cs0&&(cs0.visibility==='hidden'||cs0.display==='none'||parseFloat(cs0.opacity||'1')<0.05))return true;
+    }catch(ig1){}
+    var ia=r.width*r.height;
+    if(ia>0)for(var k=0;k<pageCv.length;k++){
+      var c0=pageCv[k];
+      var ox=Math.min(r.right,c0.r)-Math.max(r.left,c0.l),oy=Math.min(r.bottom,c0.b)-Math.max(r.top,c0.t);
+      if(ox<=0||oy<=0)continue;
+      var ov=ox*oy;
+      if(ov>=0.7*Math.min(ia,c0.a)&&c0.a<=2*ia&&c0.a>=0.5*ia&&!(c0.el.contains&&c0.el.contains(im)))return true;
+    }
+    try{
+      var cx0=Math.round(r.left+r.width/2),cy0=Math.round(r.top+r.height/2);
+      if(cx0>=0&&cy0>=0&&cx0<(window.innerWidth||0)&&cy0<(window.innerHeight||0)){
+        var tp=document.elementFromPoint(cx0,cy0);
+        if(tp&&String(tp.tagName).toLowerCase()==='canvas'&&!(im.contains&&im.contains(tp)))return true;
+      }
+    }catch(ig2){}
+    return false;
+  }
   for(var i=0;i<imgs.length;i++){
     var im=imgs[i],src=imageSrc(im);
     if(!src)continue;
+    if(/\/link-slot-|\/(?:banner|banners|promotion|promo)\//i.test(src))continue;
     var r=im.getBoundingClientRect(),nw=im.naturalWidth||0,nh=im.naturalHeight||0;
+    if(pageCv.length&&hiddenOrCovered(im,r))continue;
     if(!((r.width>=100&&r.height>=60)||(nw>=300&&nh>=120))){
       // A lazy image that has not loaded yet is often collapsed to 0x0: use its wrapper's box instead,
       // otherwise the panel is not found at all until the page is reloaded.
@@ -2412,7 +2471,19 @@ function cands(sc, includeBackgrounds, forceCanvas){
         var tx=tc.getContext('2d');tx.fillStyle='#fff';tx.fillRect(0,0,tw,th);tx.drawImage(cv,0,0,tw,th);
         cu=tc.toDataURL('image/jpeg',0.85);
         window.__nsWmCanvasErr='';
-      }catch(ex){window.__nsWmCanvasErr=String((ex&&ex.name)||ex);cu='';}
+      }catch(ex){
+        window.__nsWmCanvasErr=String((ex&&ex.name)||ex);cu='';
+        // Tainted canvas: pixels cannot be exported, but the screenshot can still be cropped to this canvas' box.
+        // Only the screenshot path (canvasPlaceholders) uses this; discovery by URL must not see fake sources.
+        if(canvasPlaceholders===true&&cvDone<4){
+          var pkey='ph:'+Math.round(cr.left)+','+Math.round(cr.top)+','+Math.round(cr.width)+'x'+Math.round(cr.height);
+          if(!seen[pkey]){
+            seen[pkey]=1;cvDone++;
+            var pin=!!(sc&&sc.contains(cv));var ptop=pin?(cr.top-sr.top+sc.scrollTop):(cr.top+wy);
+            out.push({s:'ns-canvas:'+Math.round(cr.left)+','+Math.round(ptop)+','+Math.round(cr.width)+'x'+Math.round(cr.height),t:Math.round(ptop),l:Math.round(cr.left),w:Math.round(cr.width),h:Math.round(cr.height),d:1,fw:cr.width,fh:cr.height,vl:cr.left,vt:cr.top,vb:cr.bottom,cv:2});
+          }
+        }
+      }
       if(!cu||cu.length<2500)continue;
       var ckey=cu.length+':'+cu.slice(-48)+cu.slice(2000,2048);
       if(seen[ckey])continue;seen[ckey]=1;cvDone++;
@@ -2523,7 +2594,7 @@ return JSON.stringify({m:window.__nsWmMut||0,l:window.__nsWmLoad||0,p:p});
 """
 
         private const val JS_FORCE_INFO = """
-var sc=scroller(),c=cands(sc,undefined,true),vw=window.innerWidth||de.clientWidth||0,vh=window.innerHeight||0,o=[];
+var sc=scroller(),c=cands(sc,undefined,true,true),vw=window.innerWidth||de.clientWidth||0,vh=window.innerHeight||0,o=[];
 for(var i=0;i<c.length;i++){var p=c[i];
   if(p.d&&p.vb>0&&p.vt<vh&&(p.vl+p.fw)>0&&p.vl<vw)o.push(p);}
 return JSON.stringify({vw:vw,vh:vh,imgs:o});

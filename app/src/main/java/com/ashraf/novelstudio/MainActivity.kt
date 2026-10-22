@@ -6839,19 +6839,21 @@ return t.length>=40?'TXT:'+t:'';
             listOf("episode_no", "episode", "ep", "chapter_no", "chapter")
                 .firstOrNull { uri.getQueryParameter(it)?.toLongOrNull() != null }
         }
-        val pathRe = Regex("(?i)(/(?:episode|ep|chapter)[-_/]?)(\\d+)(?=[/?#]|$)")
+        // Episode numbers are small. Long opaque IDs (e.g. shonenjumpplus.com/episode/9253191257382361295,
+        // 19 digits) are NOT sequential and overflow Long -> NumberFormatException crash. Only accept up to 9 digits.
+        val pathRe = Regex("(?i)(/(?:episode|ep|chapter)[-_/]?)(\\d{1,9})(?=[/?#]|$)")
         val path = uri.path.orEmpty()
         val pm = pathRe.find(path)
         if (qKey == null && pm == null) return null
         var out = url
         if (qKey != null) {
-            val old = uri.getQueryParameter(qKey)!!.toLong()
+            val old = uri.getQueryParameter(qKey)?.toLongOrNull() ?: return null
             val n = old + delta
             if (n < 1) return null
             out = Regex("([?&]" + Regex.escape(qKey) + "=)\\d+").replace(out) { it.groupValues[1] + n }
         }
         if (pm != null) {
-            val n = pm.groupValues[2].toLong() + delta
+            val n = (pm.groupValues[2].toLongOrNull() ?: return null) + delta
             if (n < 1) return null
             val newPath = path.replaceRange(pm.range, pm.groupValues[1] + n)
             out = out.replaceFirst(path, newPath)
