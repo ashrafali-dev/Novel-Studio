@@ -20,18 +20,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "NovelStudio OCR — enable on this site"
+    "default_title": "NovelStudio OCR — scan this page"
   },
-  "options_page": "options.html",
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ]
+  "options_page": "options.html"
 }
