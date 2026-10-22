@@ -141,13 +141,17 @@ internal class RoutingOcrEngine : OcrEngine {
     @Synchronized
     fun configure(context: Context) {
         appContext = context.applicationContext
-        OcrModels.init(context)
-        PaddleOcrModels.init(context)
         val requested = Prefs.get(context, "ocrEngine", "mlkit")
-        // Only record the new choice. The old engine is released by active() INSIDE OcrGate, i.e. never while an
-        // inference is running (closing here, outside the gate, could free sessions under a running scan; and
-        // waiting for the gate here while holding this monitor would deadlock with active()).
-        if (requested != selectedMode) selectedMode = requested
+        // Initialise only the model pack the user selected, and only when switching engines.
+        // Lens and ML Kit do not use the downloadable ONNX/Paddle model stores.
+        if (requested != selectedMode) {
+            when (requested) {
+                "rapid_onnx" -> OcrModels.init(context)
+                "paddle_small", "paddle_heavy" -> PaddleOcrModels.init(context)
+            }
+            // The old engine is released by active() INSIDE OcrGate; do not close it here while a scan is running.
+            selectedMode = requested
+        }
     }
 
     private fun active(script: OcrScript): OcrEngine {
