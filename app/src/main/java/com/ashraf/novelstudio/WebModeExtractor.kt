@@ -1880,7 +1880,7 @@ internal class WebModeExtractor(
             // extra language models on every slice; this caused multi-second pauses on English
             // scanlation sites with short dialogue and sound effects.
             if (resultLetters >= 2) {
-                if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN) {
+                if (fastMode && resultLetters < 18) {
                     val alternate = tryRealtimeFallback(
                         bmp, st, minimumLetters = 2, baselineLetters = resultLetters
                     )
@@ -1892,9 +1892,7 @@ internal class WebModeExtractor(
             if (fastMode) {
                 // Try other languages across the scan, but cap the total number of extra recognizer calls.
                 // Each failed language is remembered so a bad first guess cannot block other scripts forever.
-                val alternate = tryRealtimeFallback(
-                    bmp, st, minimumLetters = if (st.current == OcrScript.LATIN) 10 else 2
-                )
+                val alternate = tryRealtimeFallback(bmp, st, minimumLetters = 2)
                 if (alternate != null) return alternate
                 return result
             }
