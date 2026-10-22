@@ -40,10 +40,10 @@ import javax.net.ssl.SSLException
  *    checked first (fail fast when offline); the request is retried with backoff and ALTERNATES between
  *    a connection bound to the active [Network] (its own DNS) and the process default route, because a
  *    stale default network / VPN / Private-DNS edge case can fail one path while the other works.
- *  - `SocketException: Socket closed` / connection reset / EOF: stale keep-alive reuse and a half-closed
- *    pooled connection are the usual causes, so each request asks for `Connection: close`, streams a
- *    fixed-length body, never disconnects while reading, and is retried on a fresh connection. A real
- *    thread interrupt is NOT retried (it is a cancellation, not a network fault).
+ *  - `SocketException: Socket closed` / connection reset / EOF: stream a fixed-length body and
+ *    fully drain successful responses so Android can reuse a healthy keep-alive connection, matching
+ *    the pooled-client strategy in chrome-lens-py. Only partial/error responses are disconnected and retried.
+ *    A real thread interrupt is NOT retried (it is a cancellation, not a network fault).
  */
 internal class LensOcrEngine(context: Context) : OcrEngine {
 
