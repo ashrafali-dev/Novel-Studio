@@ -69,6 +69,7 @@ internal object OcrEngineStatus {
         return ticket
     }
 
+    @Synchronized
     fun setLensDiagnostic(message: String) {
         threadLensDiagnostic.set(message)
         val ticket = threadRouteTicket.get()
