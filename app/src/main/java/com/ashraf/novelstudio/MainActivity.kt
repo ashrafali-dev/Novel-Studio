@@ -127,7 +127,12 @@ class MainActivity : Activity() {
     // Hash each OCR bubble (text + image + relative position), not a viewport's combined text.
     private val deepSeekTranslatedTextHashes = LinkedHashSet<String>()
     private val deepSeekInFlightTextHashes = LinkedHashSet<String>()
+    // Do not key live OCR batches by chapter URL: one canvas-reader URL can host many distinct pages.
     private val deepSeekTextHashByChapter = mutableMapOf<String, Set<String>>()
+    private var realtimeBatchSerial = 0L
+    private val realtimeBatchKeyByChapter = java.util.IdentityHashMap<Chapter, String>()
+    private val realtimeBatchLayouts = LinkedHashMap<String, WebModeLayout>(16, 0.75f, true)
+    private val realtimeBatchCanvasVersions = mutableMapOf<String, Map<String, Long>>()
 
     // Scanning (Web Mode) chapters whose chatbot job failed: they are sent again automatically (twice at most).
     // The OCR text is still in memory, so nothing is scanned again.
@@ -316,13 +321,14 @@ class MainActivity : Activity() {
                                     text = selected.joinToString("\n\n") { it.sourceText.trim() },
                                     contentSel = ""
                                 )
-                                WebModeLayoutStore.setScan(chapter.url, WebModeLayout(0, selected))
+                                val selectedLayout = WebModeLayout(0, selected)
+                                WebModeLayoutStore.setScan(chapter.url, selectedLayout)
                                 val hashes = selected.map { WebModeLayout.fingerprint(it) }.toSet()
                                 synchronized(deepSeekInFlightTextHashes) {
                                     deepSeekInFlightTextHashes.removeAll(hashes)
                                     deepSeekInFlightTextHashes.addAll(hashes)
                                 }
-                                deepSeekTextHashByChapter[keyOf(chapter)] = hashes
+                                registerRealtimeBatch(chapter, hashes, selectedLayout)
                                 deepSeekLastOcrAtMs = System.currentTimeMillis()
                                 deepSeekVisibleSignature = ""
                                 toast("🔎 OCR refreshed · sending ${selected.size} bubble(s) to translate…")
@@ -674,8 +680,9 @@ class MainActivity : Activity() {
         }
         if (!accepted) { toast("⏳ This bubble is already being translated"); return }
         val liveChapter = base.copy(text = bubble.sourceText.trim(), contentSel = "")
-        WebModeLayoutStore.setScan(liveChapter.url, WebModeLayout(layout.titleOffset, listOf(bubble)))
-        deepSeekTextHashByChapter[keyOf(liveChapter)] = setOf(hash)
+        val singleBubbleLayout = WebModeLayout(layout.titleOffset, listOf(bubble))
+        WebModeLayoutStore.setScan(liveChapter.url, singleBubbleLayout)
+        registerRealtimeBatch(liveChapter, setOf(hash), singleBubbleLayout)
         rememberChapterAfterBubbleJob(base, liveChapter)
         handleChapter(liveChapter, useSavedTranslation = false)
     }
@@ -855,6 +862,9 @@ class MainActivity : Activity() {
             fullChapterLinks = true,
             onAheadPanelsReady = { panels ->
                 if (seq == aheadOcrSeq && token == navToken) {
+                    // The read-ahead OCR can be the first job to notice a canvas page swap.
+                    // Clear stale visible text immediately, even while the chatbot is busy.
+                    clearCanvasTransitionOverlay(novelWv.url.orEmpty())
                     for (panel in panels) {
                         val key = WebModeLogic.normalizeUrl(panel.src)
                         if (key.isNotBlank()) collectedPanels.putIfAbsent(key, panel)
@@ -868,6 +878,7 @@ class MainActivity : Activity() {
             },
             onAheadDone = {
                 if (seq == aheadOcrSeq) {
+                    if (token == navToken) clearCanvasTransitionOverlay(novelWv.url.orEmpty())
                     aheadOcrHandle = null
                     aheadOcrStage = ""
                     aheadOcrPct = -1
@@ -996,8 +1007,9 @@ class MainActivity : Activity() {
             text = bubbles.joinToString("\n\n") { it.sourceText.trim() },
             contentSel = ""
         )
-        WebModeLayoutStore.setScan(chapter.url, WebModeLayout(pending.titleOffset, bubbles))
-        deepSeekTextHashByChapter[keyOf(chapter)] = pending.hashes
+        val batchLayout = WebModeLayout(pending.titleOffset, bubbles)
+        WebModeLayoutStore.setScan(chapter.url, batchLayout)
+        registerRealtimeBatch(chapter, pending.hashes, batchLayout)
         Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
         handleChapter(chapter, useSavedTranslation = false)
     }
@@ -5039,6 +5051,9 @@ return t.length>=40?'TXT:'+t:'';
             synchronized(deepSeekInFlightTextHashes) { deepSeekInFlightTextHashes.remove(hash) }
         }
         deepSeekTextHashByChapter.clear()
+        realtimeBatchKeyByChapter.clear()
+        realtimeBatchLayouts.clear()
+        realtimeBatchCanvasVersions.clear()
         if (running != null) {
             runToken++
             running = null
@@ -6526,6 +6541,7 @@ return t.length>=40?'TXT:'+t:'';
                     clearWebModeProgress()
                     when (out) {
                         is WebModeOutcome.Success -> {
+                            clearCanvasTransitionOverlay(out.chapter.url)
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                             deepSeekFailStreak = 0
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
@@ -6622,7 +6638,7 @@ return t.length>=40?'TXT:'+t:'';
                                             else { deepSeekInFlightTextHashes.add(hash); true }
                                         }
                                         if (accepted) {
-                                            deepSeekTextHashByChapter[keyOf(out.chapter)] = setOf(hash)
+                                            registerRealtimeBatch(out.chapter, setOf(hash), null)
                                             handleChapter(out.chapter, useSavedTranslation = false)
                                         }
                                     }
@@ -6636,6 +6652,9 @@ return t.length>=40?'TXT:'+t:'';
                             if (realtimeViewport) handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
                         }
                         is WebModeOutcome.Failure -> {
+                            // Even when OCR/network fails, the clean screenshot fingerprint may already
+                            // have proved that this canvas now shows a different manga page.
+                            clearCanvasTransitionOverlay(novelWv.url.orEmpty())
                             updateProgressUi()
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (realtimeViewport &&
@@ -6664,7 +6683,7 @@ return t.length>=40?'TXT:'+t:'';
                                             else { deepSeekInFlightTextHashes.add(hash); true }
                                         }
                                         if (accepted) {
-                                            deepSeekTextHashByChapter[keyOf(ch)] = setOf(hash)
+                                            registerRealtimeBatch(ch, setOf(hash), null)
                                             handleChapter(ch, useSavedTranslation = false)
                                         }
                                     }
@@ -8331,7 +8350,23 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         if (tok != runToken) return
         chatWv.evaluateJavascript(Js.readText()) { raw ->
             if (tok != runToken) return@evaluateJavascript
-            val livePanelBatch = isDeepSeekLivePanel(ch)
+            // Only a request carrying its own bubble layout is a live overlay batch. A geometry-free
+            // text fallback or a deliberate full-page extract must use the normal chapter pipeline.
+            val livePanelBatch = isRealtimeBubbleBatch(ch)
+            // Check canvas generation BEFORE inspecting the chatbot's output. An empty/failed response
+            // from an old page must not trigger an automatic retry that can later paint stale text.
+            if (livePanelBatch && !realtimeBatchCanvasStillCurrent(ch)) {
+                Log.i("NovelStudioOCR", "Discarded stale chatbot reply before parsing its output")
+                releaseDeepSeekHashBatch(ch)
+                deferNextChatbotRequest()
+                chatWv.evaluateJavascript(Js.clearSendState(), null)
+                running = null
+                clearWebModeProgress()
+                updateProgressUi()
+                startNext()
+                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
+                return@evaluateJavascript
+            }
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
@@ -8398,7 +8433,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             progress = 100
             updateProgressUi()
             val shown = lastChapter
-            if (shown != null && keyOf(shown) == keyOf(ch)) {
+            // A URL/chapter key is not enough for canvas readers: one URL can host many distinct pages.
+            // Only the exact Chapter object that was sent may receive a live-panel chatbot response.
+            val sameTarget = if (webModeOn() && ch.contentSel.isBlank()) shown === ch
+                else shown != null && keyOf(shown) == keyOf(ch)
+            if (shown != null && sameTarget) {
                 applyTranslation(shown, rawTranslation, true)
                 // Real-time page scans translate visible bubbles in sequence; don't prefetch a whole
                 // chapter into the same DeepSeek chat session.
@@ -8644,12 +8683,85 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     /** True only for an interactive OCR bubble batch, not a whole-chapter Web Mode scan. */
-    private fun isRealtimeBubbleBatch(ch: Chapter): Boolean =
-        isDeepSeekLivePanel(ch) && deepSeekTextHashByChapter.containsKey(keyOf(ch))
+    private fun registerRealtimeBatch(ch: Chapter, hashes: Set<String>, layout: WebModeLayout?) {
+        // Every request gets its own token so concurrent/queued viewports cannot overwrite one another.
+        val oldKey = realtimeBatchKeyByChapter.remove(ch)
+        if (oldKey != null) {
+            deepSeekTextHashByChapter.remove(oldKey)
+            realtimeBatchLayouts.remove(oldKey)
+            realtimeBatchCanvasVersions.remove(oldKey)
+        }
+        val key = "realtime-batch-" + (++realtimeBatchSerial)
+        realtimeBatchKeyByChapter[ch] = key
+        deepSeekTextHashByChapter[key] = hashes.toSet()
+        realtimeBatchCanvasVersions[key] = WebModeLayoutStore.canvasVersions(ch.url, layout)
+        if (layout != null) realtimeBatchLayouts[key] = layout
+        while (realtimeBatchLayouts.size > 64) {
+            val iterator = realtimeBatchLayouts.entries.iterator()
+            if (!iterator.hasNext()) break
+            val staleKey = iterator.next().key
+            iterator.remove()
+            val staleChapter = realtimeBatchKeyByChapter.entries.firstOrNull { it.value == staleKey }?.key
+            if (staleChapter != null) realtimeBatchKeyByChapter.remove(staleChapter)
+            deepSeekTextHashByChapter.remove(staleKey)
+            realtimeBatchCanvasVersions.remove(staleKey)
+            realtimeBatchLayouts.remove(staleKey)
+        }
+    }
+
+    private fun realtimeBatchLayout(ch: Chapter): WebModeLayout? =
+        realtimeBatchKeyByChapter[ch]?.let { realtimeBatchLayouts[it] }
+
+    private fun realtimeBatchCanvasStillCurrent(ch: Chapter): Boolean {
+        val key = realtimeBatchKeyByChapter[ch] ?: return false
+        return WebModeLayoutStore.canvasVersionsStillCurrent(realtimeBatchCanvasVersions[key].orEmpty())
+    }
+
+    private fun clearCanvasTransitionOverlay(url: String) {
+        val changed = WebModeLayoutStore.takeCanvasTransitions(url)
+        if (changed.isEmpty()) return
+
+        // A not-yet-flushed OCR batch may already contain bubbles from the old contents of this
+        // recycled canvas. Remove only those entries before the queue is allowed to send a request.
+        val pending = rtVisibleOcrBatch
+        if (pending != null && cleanUrl(pending.pageUrl) == cleanUrl(url)) {
+            val staleHashes = pending.bubbles.asSequence()
+                .filter { WebModeLogic.normalizeUrl(it.src) in changed }
+                .map { WebModeLayout.fingerprint(it) }
+                .toSet()
+            if (staleHashes.isNotEmpty()) {
+                pending.bubbles.removeAll { WebModeLogic.normalizeUrl(it.src) in changed }
+                pending.hashes.removeAll(staleHashes)
+                pending.seen.removeAll(staleHashes)
+                synchronized(deepSeekInFlightTextHashes) {
+                    deepSeekInFlightTextHashes.removeAll(staleHashes)
+                }
+            }
+            if (pending.bubbles.isEmpty()) clearRealtimeVisibleOcrBatch()
+        }
+
+        novelWv.evaluateJavascript(WebModeWriter.clearCanvasOverlayScript(), null)
+        hasTr = false
+        shownTranslated = false
+        shownTrRaw = ""
+        updatePill()
+        Log.i("NovelStudioOCR", "Cleared stale manga overlay after canvas page change; sources=" + changed.size)
+    }
+
+    private fun isRealtimeBubbleBatch(ch: Chapter): Boolean {
+        if (!isDeepSeekLivePanel(ch)) return false
+        val key = realtimeBatchKeyByChapter[ch] ?: return false
+        // A text-only fallback has a batch token but no bubble geometry, so it cannot be rendered as
+        // a bubble overlay and must not enter the live bubble-alignment path.
+        return realtimeBatchLayouts.containsKey(key)
+    }
 
     /** Resolve only the bubble hashes that were actually inserted successfully. */
     private fun completeDeepSeekHashBatch(ch: Chapter, matched: Set<String>? = null) {
-        val reserved = deepSeekTextHashByChapter.remove(keyOf(ch)) ?: emptySet()
+        val key = realtimeBatchKeyByChapter.remove(ch) ?: return
+        val reserved = deepSeekTextHashByChapter.remove(key) ?: emptySet()
+        realtimeBatchLayouts.remove(key)
+        realtimeBatchCanvasVersions.remove(key)
         synchronized(deepSeekInFlightTextHashes) {
             deepSeekInFlightTextHashes.removeAll(reserved)
             val completed = if (matched == null) reserved else matched.intersect(reserved)
@@ -8661,7 +8773,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     private fun releaseDeepSeekHashBatch(ch: Chapter) {
-        val reserved = deepSeekTextHashByChapter.remove(keyOf(ch)) ?: emptySet()
+        val key = realtimeBatchKeyByChapter.remove(ch) ?: return
+        val reserved = deepSeekTextHashByChapter.remove(key) ?: emptySet()
+        realtimeBatchLayouts.remove(key)
+        realtimeBatchCanvasVersions.remove(key)
         synchronized(deepSeekInFlightTextHashes) {
             deepSeekInFlightTextHashes.removeAll(reserved)
         }
@@ -8704,8 +8819,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             injectBengaliFont()
             // Real-time batches must align against the exact bubbles that produced this reply,
             // then merge into the cumulative page overlay. Never replace the bubbles already translated.
-            val livePanelBatch = isDeepSeekLivePanel(ch)
-            val wmLayout = WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
+            val livePanelBatch = isRealtimeBubbleBatch(ch)
+            // The URL's latest scan may already belong to another viewport. A live reply may only
+            // use the layout captured with its own request; if absent, fail closed rather than guess.
+            val wmLayout = if (livePanelBatch) realtimeBatchLayout(ch)
+                else WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
             val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
             val wmScript: String
             if (livePanelBatch) {

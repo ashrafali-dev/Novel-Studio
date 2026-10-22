@@ -882,7 +882,7 @@ internal class WebModeExtractor(
                 // letting the ordinary merge logic keep stale text/boxes from an earlier pass.
                 WebModeLayoutStore.replaceRegion(wv.context, meta.url, req.forceOcrSrc, req.forceOcrRegion, scanLayout)
             } else {
-                WebModeLayoutStore.put(meta.url, scanLayout)
+                WebModeLayoutStore.put(wv.context, meta.url, scanLayout)
             }
             val ch = Chapter(
                 title = title,
@@ -1072,6 +1072,54 @@ internal class WebModeExtractor(
         }
 
         /**
+         * Fingerprint the original pixels of a tainted Shonen Jump+ canvas from the clean PixelCopy bitmap.
+         * This runs before OCR, so a page swap is detectable even if Lens is offline or OCR returns no text.
+         * Sample points are element-relative (not viewport-relative); clipped points are marked '?' and
+         * ignored by the comparison, so normal scrolling does not by itself count as a new manga page.
+         */
+        private fun observeCanvasPixelFingerprints(bmp: Bitmap, info: JSONObject, url: String) {
+            val host = hostOf(url).lowercase().removePrefix("www.")
+            if (host != "shonenjumpplus.com" && !host.endsWith(".shonenjumpplus.com")) return
+            val viewportWidth = info.optDouble("vw", 0.0).toFloat()
+            if (viewportWidth <= 0f) return
+            val scale = bmp.width / viewportWidth
+            val imgs = info.optJSONArray("imgs") ?: return
+            val grid = floatArrayOf(0.12f, 0.23f, 0.34f, 0.45f, 0.55f, 0.66f, 0.77f, 0.88f)
+
+            for (i in 0 until imgs.length()) {
+                val p = imgs.optJSONObject(i) ?: continue
+                val src = p.optString("s")
+                if (!src.startsWith("ns-canvas:")) continue
+                val left = p.optDouble("vl", Double.NaN).toFloat() * scale
+                val top = p.optDouble("vt", Double.NaN).toFloat() * scale
+                val width = p.optDouble("fw", 0.0).toFloat() * scale
+                val height = p.optDouble("fh", 0.0).toFloat() * scale
+                if (!left.isFinite() || !top.isFinite() || width < 120f || height < 120f) continue
+
+                val signature = StringBuilder(grid.size * grid.size)
+                for (fy in grid) for (fx in grid) {
+                    val px = (left + fx * width).toInt()
+                    val py = (top + fy * height).toInt()
+                    if (px < 0 || px >= bmp.width || py < 0 || py >= bmp.height) {
+                        signature.append('?')
+                    } else {
+                        val c = bmp.getPixel(px, py)
+                        val r = android.graphics.Color.red(c)
+                        val g = android.graphics.Color.green(c)
+                        val b = android.graphics.Color.blue(c)
+                        val tone = ((r * 299 + g * 587 + b * 114) / 1000 / 32).coerceIn(0, 7)
+                        signature.append(('0'.code + tone).toChar())
+                    }
+                }
+                try {
+                    WebModeLayoutStore.observeCanvasFrame(wv.context, url, src, signature.toString())
+                } catch (e: Exception) {
+                    Log.w(TAG, "Canvas frame fingerprint failed: ${e.javaClass.simpleName}")
+                }
+            }
+        }
+
+        /**
          * Native views that are drawn ABOVE the WebView (floating panels, buttons, chips, toasts) end up in a
          * window screenshot. Collect their bounds (WebView-local pixels) and flood them with the colour just
          * outside, so no recogniser can read app UI text or mistake a button edge for lettering.
@@ -1218,21 +1266,43 @@ internal class WebModeExtractor(
                 try { Thread.sleep(if (steps == 0) 450L else 350L) } catch (_: InterruptedException) { return }
                 val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
                 val blankBefore = forceBlank
-                var bmp = captureView()
-                // A single blank PixelCopy happens while the WebView surface is repainting (just after scroll,
-                // page switch or a renderer restart). Retry a few times instead of failing the whole job.
+                val host = hostOf(meta.url).lowercase().removePrefix("www.")
+                val hideOverlayForShot = req.visibleOnly &&
+                    (host == "shonenjumpplus.com" || host.endsWith(".shonenjumpplus.com"))
+                if (hideOverlayForShot) {
+                    evalWait(wrap(JS_TEMP_HIDE_OVERLAY)) { null }
+                    // Wait for the visibility change to reach the WebView surface before PixelCopy.
+                    try { Thread.sleep(70L) } catch (_: InterruptedException) {
+                        evalWait(wrap(JS_TEMP_SHOW_OVERLAY)) { null }
+                        return
+                    }
+                }
+                var bmp: Bitmap? = null
                 var blankTry = 0
-                while (bmp == null && blankTry < 3 && alive() && !req.isOccluded()) {
-                    blankTry++
-                    try { Thread.sleep(220L * blankTry) } catch (_: InterruptedException) { return }
+                try {
                     bmp = captureView()
+                    // A single blank PixelCopy happens while the WebView surface is repainting (just after scroll,
+                    // page switch or a renderer restart). Retry a few times instead of failing the whole job.
+                    while (bmp == null && blankTry < 3 && alive() && !req.isOccluded()) {
+                        blankTry++
+                        try { Thread.sleep(220L * blankTry) } catch (_: InterruptedException) { return }
+                        bmp = captureView()
+                    }
+                    if (bmp == null && req.visibleOnly && !req.isOccluded() && alive()) {
+                        // Last resort: draw the WebView into a bitmap (may flash on some devices, but better than nothing).
+                        val d = captureByDraw()
+                        if (d != null && !isBlank(d)) bmp = d else d?.recycle()
+                    }
+                } finally {
+                    if (hideOverlayForShot) evalWait(wrap(JS_TEMP_SHOW_OVERLAY)) { null }
                 }
-                if (bmp == null && req.visibleOnly && !req.isOccluded() && alive()) {
-                    // Last resort: draw the WebView into a bitmap (may flash on some devices, but better than nothing).
-                    val d = captureByDraw()
-                    if (d != null && !isBlank(d)) bmp = d else d?.recycle()
+                if (bmp != null) {
+                    forceBlank = blankBefore   // a retry succeeded: this screen was not blank after all
+                    if (hideOverlayForShot && info != null) {
+                        try { observeCanvasPixelFingerprints(bmp, info, meta.url) }
+                        catch (e: Exception) { Log.w(TAG, "Canvas fingerprint failed: ${e.javaClass.simpleName}") }
+                    }
                 }
-                if (bmp != null) forceBlank = blankBefore   // a retry succeeded: this screen was not blank after all
                 forceShots++
                 forceStepNo = steps
                 OcrDiag.log("FORCE_STEP", "step=$steps jsInfo=${info != null} domCandidates=${info?.optJSONArray("imgs")?.length() ?: -1} " +
@@ -1281,7 +1351,7 @@ internal class WebModeExtractor(
             val allBubbles = ArrayList<WmBubble>()
             for (p in panels) allBubbles.addAll(p.bubbles)
             val titleOffset = if (req.visibleOnly || title.isBlank()) 0 else 1
-            WebModeLayoutStore.put(meta.url, WebModeLayout(titleOffset, allBubbles))
+            WebModeLayoutStore.put(wv.context, meta.url, WebModeLayout(titleOffset, allBubbles))
             val ch = Chapter(
                 title = title, text = text, next = meta.next, prev = meta.prev, url = meta.url,
                 novel = meta.novel.ifBlank { hostOf(meta.url).removePrefix("www.") },
@@ -2635,6 +2705,24 @@ return JSON.stringify({bottom:bottom});
 var sc=scroller();
 if(sc){if(window.__nsWmS===undefined)window.__nsWmS=sc.scrollTop;sc.scrollTop=0;}
 else{if(window.__nsWmY===undefined)window.__nsWmY=window.pageYOffset||de.scrollTop||0;window.scrollTo(0,0);}
+return '1';
+"""
+
+        
+        // Hide only the app's own overlay while a canvas screenshot is captured for OCR. Reference
+        // counting makes overlapping visible-screen jobs safe; the existing overlay is restored as soon
+        // as PixelCopy finishes, before OCR/network work begins.
+        private const val JS_TEMP_HIDE_OVERLAY = """
+var e=document.getElementById('__ns_wm_overlay');
+window.__nsTempOverlayHideCount=(window.__nsTempOverlayHideCount||0)+1;
+if(e&&window.__nsTempOverlayHideCount===1){window.__nsTempOverlayPriorVisibility=e.style.visibility;e.style.visibility='hidden';}
+return '1';
+"""
+
+        private const val JS_TEMP_SHOW_OVERLAY = """
+var n=Math.max(0,(window.__nsTempOverlayHideCount||0)-1);window.__nsTempOverlayHideCount=n;
+var e=document.getElementById('__ns_wm_overlay');
+if(e&&n===0){e.style.visibility=window.__nsTempOverlayPriorVisibility||'';delete window.__nsTempOverlayPriorVisibility;}
 return '1';
 """
 
