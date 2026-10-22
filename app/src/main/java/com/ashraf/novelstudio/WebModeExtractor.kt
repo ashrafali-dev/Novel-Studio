@@ -620,7 +620,7 @@ internal class WebModeExtractor(
             // Lens is remote/network-bound: visible panels must not wait for the previous panel's
             // Lens response. Warm the engine safely first, then fetch and OCR a small viewport
             // concurrently. All local-model scans remain serial exactly as before.
-            val lensParallel = liveView && total > 1 &&
+            val lensParallel = liveView && req.ahead <= 0 && total > 1 &&
                 Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens"
             if (lensParallel) {
                 (engine as? RoutingOcrEngine)?.let {
