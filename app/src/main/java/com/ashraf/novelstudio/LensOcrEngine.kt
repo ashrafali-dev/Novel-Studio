@@ -196,10 +196,16 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         var work: Bitmap = src
         var owned: Bitmap? = null
         try {
-            if (src.hasAlpha()) {
-                // JPEG has no alpha; transparent pixels would turn black. A browser shows white behind them.
+            // Match chrome-lens-py's proven Lens image preparation: only flatten images that
+            // contain REAL transparency (ARGB_8888 / PixelCopy bitmaps often have alpha enabled but
+            // every pixel is opaque). This avoids an unnecessary full-frame Canvas copy on every scan.
+            val alpha = inspectTransparency(src)
+            if (alpha.hasTransparency) {
+                // Lens's server composites transparent uploads onto black. Pick the contrasting
+                // background from actual opaque-pixel luminance so light text is not lost on white.
+                val background = if (alpha.meanLuma < 128) Color.WHITE else Color.BLACK
                 val flat = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
-                Canvas(flat).apply { drawColor(Color.WHITE); drawBitmap(src, 0f, 0f, null) }
+                Canvas(flat).apply { drawColor(background); drawBitmap(src, 0f, 0f, null) }
                 owned = flat
                 work = flat
             }
@@ -226,6 +232,45 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             val o = owned
             if (o != null && o !== src && !o.isRecycled) o.recycle()
         }
+    }
+
+    private class AlphaInfo(val hasTransparency: Boolean, val meanLuma: Int)
+
+    /**
+     * Port of chrome-lens-py's has_meaningful_alpha/_contrasting_background logic.
+     * A full pixel scan is only needed when Bitmap reports alpha support. Rows are
+     * chunked to avoid allocating a full-screen IntArray alongside the image bitmap.
+     */
+    private fun inspectTransparency(bitmap: Bitmap): AlphaInfo {
+        if (!bitmap.hasAlpha()) return AlphaInfo(false, 255)
+        val width = bitmap.width
+        val chunkRows = minOf(16, bitmap.height)
+        val pixels = IntArray(width * chunkRows)
+        var transparent = false
+        var luminanceSum = 0L
+        var opaqueCount = 0L
+        var top = 0
+        while (top < bitmap.height) {
+            val rows = minOf(chunkRows, bitmap.height - top)
+            bitmap.getPixels(pixels, 0, width, 0, top, width, rows)
+            val count = width * rows
+            for (i in 0 until count) {
+                val pixel = pixels[i]
+                val alpha = pixel ushr 24
+                if (alpha < 255) transparent = true
+                if (alpha > 128) {
+                    val red = (pixel shr 16) and 0xFF
+                    val green = (pixel shr 8) and 0xFF
+                    val blue = pixel and 0xFF
+                    // Integer form of Rec. 601 luminance; exact scaling is not relevant to the 128 cutoff.
+                    luminanceSum += (299L * red + 587L * green + 114L * blue) / 1000L
+                    opaqueCount++
+                }
+            }
+            top += rows
+        }
+        val mean = if (opaqueCount == 0L) 0 else (luminanceSum / opaqueCount).toInt()
+        return AlphaInfo(transparent, mean)
     }
 
     private fun encode(b: Bitmap, quality: Int): ByteArray {
