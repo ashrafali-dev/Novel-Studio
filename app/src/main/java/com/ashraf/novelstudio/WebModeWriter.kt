@@ -205,7 +205,7 @@ internal object WebModeWriter {
     // OCR stores their visible canvas as ns-canvas:left,contentTop,widthxheight. Resolve that stable
     // geometry back to the live canvas, so the same fractional bubble coordinates can be overlaid.
     function canvasSpec(s){
-      var m=/^ns-canvas:(-?\\d+),(-?\\d+),(\\d+(?:\\.\\d+)?)x(\\d+(?:\\.\\d+)?)$/.exec(norm(s));
+      var m=/^ns-canvas:(-?\d+),(-?\d+),(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(norm(s));
       return m?{x:Number(m[1]),y:Number(m[2]),w:Number(m[3]),h:Number(m[4])}:null;
     }
     function canvasTops(cv,r){
