@@ -74,43 +74,56 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         val t0 = SystemClock.elapsedRealtime()
         val prepared = prepare(bitmap)
+        val prepareMs = SystemClock.elapsedRealtime() - t0
+        val keyStart = SystemClock.elapsedRealtime()
         val key = fnv64(prepared.jpeg) xor (prepared.w.toLong() shl 32) xor prepared.h.toLong()
 
-        // recognizeCore() may ask for the same picture several times (other scripts, retry views).
-        // Lens detects the language itself, so those would be identical uploads: serve them from memory.
-        cached(key)?.let {
-            val cachedLetters = it.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
+        // Lens detects the image language itself. This cache is mainly for external callers that repeat one bitmap.
+        val cachedLines = cached(key)
+        val keyCacheMs = SystemClock.elapsedRealtime() - keyStart
+        if (cachedLines != null) {
+            val cachedLetters = cachedLines.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
             OcrEngineStatus.lastLensDiagnostic =
                 "LENS_CACHE_HIT imageId=${java.lang.Long.toHexString(key)} script=${script.name} " +
-                "image=${bitmap.width}x${bitmap.height} cachedLines=${it.size} cachedLetters=$cachedLetters"
+                "image=${bitmap.width}x${bitmap.height} cachedLines=${cachedLines.size} cachedLetters=$cachedLetters"
             Log.i(TAG, OcrEngineStatus.lastLensDiagnostic)
-            return finish(it, bitmap, script)
+            val result = finish(cachedLines, bitmap, script)
+            Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=true prepareMs=$prepareMs keyCacheMs=$keyCacheMs totalMs=${SystemClock.elapsedRealtime() - t0}")
+            return result
         }
 
         Breaker.check()
+        val payloadStart = SystemClock.elapsedRealtime()
         val payload = LensProtocol.buildObjectsRequest(
             jpeg = prepared.jpeg, width = prepared.w, height = prepared.h,
             language = languageHint(), region = regionHint(), timeZone = zoneHint(),
             uuid = random.nextLong() and Long.MAX_VALUE,
             timeUsec = System.currentTimeMillis() * 1000L,
         )
+        val payloadBuildMs = SystemClock.elapsedRealtime() - payloadStart
 
         Log.i(TAG, "request begin imageId=${java.lang.Long.toHexString(key)} script=${script.name} source=${bitmap.width}x${bitmap.height} " +
             "upload=${prepared.w}x${prepared.h} jpegBytes=${prepared.jpeg.size} payloadBytes=${payload.size} " +
             "endpoint=${endpoint().substringAfter("://").substringBefore("/")}")
+        var networkMs = 0L
+        val networkStart = SystemClock.elapsedRealtime()
         val body = try {
-            post(payload)
+            post(payload).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
         } catch (e: OcrUnavailableException) {
-            val diagnostic = "request failed; http=$lastHttpStatus; $lastHttpMeta; error=${e.message ?: e.javaClass.simpleName}"
+            networkMs = SystemClock.elapsedRealtime() - networkStart
+            val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=$lastHttpStatus; $lastHttpMeta; error=${e.message ?: e.javaClass.simpleName}"
             OcrEngineStatus.lastLensDiagnostic = diagnostic
             Log.e(TAG, diagnostic)
             throw e
         }
 
+        var parseMs = 0L
+        val parseStart = SystemClock.elapsedRealtime()
         val response = try {
-            LensProtocol.parseResponse(body)
+            LensProtocol.parseResponse(body).also { parseMs = SystemClock.elapsedRealtime() - parseStart }
         } catch (e: LensProtocol.ProtocolException) {
-            val diagnostic = "parse failed; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
+            parseMs = SystemClock.elapsedRealtime() - parseStart
+            val diagnostic = "parse failed; parseMs=$parseMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=$lastHttpStatus; $lastHttpMeta; replyBytes=${body.size}; " +
                 "reason=${e.message ?: "unknown"}"
             OcrEngineStatus.lastLensDiagnostic = diagnostic
             Log.e(TAG, diagnostic)
@@ -141,9 +154,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             throw OcrUnavailableException("Google Lens: reply without text layer")
         }
 
+        val mapStart = SystemClock.elapsedRealtime()
         val allBlocks = LensProtocol.toBlocks(response, bitmap.width, bitmap.height, prepared.w, prepared.h)
         val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
+        val mapMs = SystemClock.elapsedRealtime() - mapStart
         val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=$lastHttpStatus; $lastHttpMeta; " +
             "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
@@ -156,6 +171,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         remember(key, lines)
         Log.i(TAG, "ok lines=${lines.size} sent=${prepared.w}x${prepared.h} bytes=${prepared.jpeg.size} " +
             "ms=${SystemClock.elapsedRealtime() - t0}")
+        Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=false prepareMs=$prepareMs keyCacheMs=$keyCacheMs " +
+            "payloadBuildMs=$payloadBuildMs networkMs=$networkMs parseMs=$parseMs mapMs=$mapMs totalMs=${SystemClock.elapsedRealtime() - t0}")
         return finish(lines, bitmap, script)
     }
 
@@ -332,6 +349,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         if (!url.protocol.equals("https", ignoreCase = true)) throw IOException("refusing non-HTTPS endpoint")
         val raw = if (bound && network != null) network.openConnection(url) else url.openConnection()
         val c = raw as HttpURLConnection
+        var responseFullyRead = false
         try {
             c.requestMethod = "POST"
             c.doOutput = true
@@ -345,7 +363,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             c.setRequestProperty("X-Goog-Api-Key", apiKey())
             c.setRequestProperty("User-Agent", USER_AGENT)
             c.setRequestProperty("Accept", "*/*")
-            c.setRequestProperty("Connection", "close")    // never reuse a pooled socket the peer may have closed
+            c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            c.setRequestProperty("Sec-Fetch-Mode", "no-cors")
+            c.setRequestProperty("Sec-Fetch-Dest", "empty")
+            // Repeated Webtoon scans should reuse a healthy TCP/TLS connection, like the owocr Lens client.
+            c.setRequestProperty("Connection", "keep-alive")
             // No Accept-Encoding header on purpose: then HttpURLConnection negotiates gzip AND decodes it itself.
             c.outputStream.use { it.write(payload); it.flush() }
             val code = c.responseCode
@@ -372,10 +394,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 }
                 out.toByteArray()
             }
+            responseFullyRead = true
             Log.i(TAG, "HTTP_RESPONSE status=$code $lastHttpMeta replyBytes=${reply.size}")
             return reply
         } finally {
-            try { c.disconnect() } catch (_: Throwable) {}
+            // Preserve successful keep-alive sockets; discard partial/error responses before retrying.
+            if (!responseFullyRead) try { c.disconnect() } catch (_: Throwable) {}
         }
     }
 
