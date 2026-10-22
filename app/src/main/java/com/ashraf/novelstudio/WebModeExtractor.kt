@@ -230,6 +230,8 @@ internal class WebModeExtractor(
         }
 
         @Volatile private var fellBackToForce = false
+        /** How this job really read the page: dom (image URLs), canvas (exported canvas pixels) or screen (screenshot). */
+        @Volatile private var how = "dom"
 
         private fun fail(e: WebModeError, msg: String = e.label) {
             // Realtime viewport mode must also recover when DOM discovery reports NO_IMAGES:
@@ -238,8 +240,11 @@ internal class WebModeExtractor(
             // the existing Lens OCR on those detected screen regions instead of retrying chapter text.
             // processForce() does not scroll when visibleOnly=true, so this remains safe for realtime mode.
             val visibleNoImages = req.visibleOnly && e == WebModeError.NO_IMAGES
+            // Images downloaded fine but held no readable text (ads / canvas pages): read the screen instead.
+            val visibleEmpty = req.visibleOnly && e == WebModeError.OCR_EMPTY
+            OcrDiag.log("FAIL", "${e.name}: $msg | willFallBack=${!fellBackToForce && (visibleNoImages || visibleEmpty || e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)} | ${diag.summary()}")
             if (!fellBackToForce && req.ahead <= 0 && req.forceOcrSrc.isNullOrBlank() &&
-                (visibleNoImages || e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
+                (visibleNoImages || visibleEmpty || e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
                 // Full-chapter Web Mode scan too: when image downloads fail, read what WebView draws.
                 fellBackToForce = true
                 diag.error = null
@@ -251,11 +256,14 @@ internal class WebModeExtractor(
             }
             diag.error = e
             Log.w(TAG, diag.summary())
+            OcrDiag.jobDone(diag.host, diag.summary(), false, how, elapsed(), "${e.name}: $msg")
             onMain { req.onDone(WebModeOutcome.Failure(e, msg, diag)) }
         }
 
         fun begin() {
             ensureBridge(wv)
+            OcrDiag.log("JOB_BEGIN", "id=$id host=${diag.host} url=${startUrl.take(160)} visibleOnly=${req.visibleOnly} force=${req.force} " +
+                "ahead=${req.ahead} forceSrc=${!req.forceOcrSrc.isNullOrBlank()} engine=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
             progress("Discovering chapter panels", 1)
             if (req.force && !req.visibleOnly) {
                 worker.execute { runCatching { processForce() }.onFailure {
@@ -539,6 +547,7 @@ internal class WebModeExtractor(
                 val o = parseJson(raw)
                 if (o == null) { fail(WebModeError.NO_IMAGES); return@evaluateJavascript }
                 lastDiscoveryDebug = o.optString("dbg")
+                OcrDiag.log("DISCOVERY", "visibleOnly=${req.visibleOnly} $lastDiscoveryDebug")
                 val arr = o.optJSONArray("imgs") ?: JSONArray()
                 // Merge scroll history with the final DOM snapshot for complete scans on recycled readers.
                 val merged = LinkedHashMap<String, PanelRef>()
@@ -562,6 +571,8 @@ internal class WebModeExtractor(
                 }
                 diag.discovered = panels.size
                 diag.duplicates = (rawPanelCount - allPanels.size).coerceAtLeast(0)
+                OcrDiag.log("PANELS", "raw=$rawPanelCount afterDedupe=${allPanels.size} used=${panels.size} :: " +
+                    panels.take(10).joinToString(" | ") { (if (it.src.startsWith("data:")) "CANVAS" else hostOf(it.src).ifBlank { it.src.take(10) }) + " ${it.w}x${it.h}@${it.top}" })
                 if (panels.isEmpty()) {
                     if (req.visibleOnly && targetSrc.isNullOrBlank()) {
                         // Some manga readers paint panels in canvas/iframes or expose unusable image URLs.
@@ -620,7 +631,10 @@ internal class WebModeExtractor(
         private fun processInner(panels: List<PanelRef>, meta: PageMeta) {
             val total = panels.size
             val liveView = req.visibleOnly && req.forceOcrSrc.isNullOrBlank()
-            if (liveView) {
+            val hasCanvas = panels.any { it.src.startsWith("data:", true) }
+            if (hasCanvas) how = "canvas"
+            OcrDiag.log("PROCESS", "panels=$total liveView=$liveView canvasPanels=${panels.count { it.src.startsWith("data:", true) }} script=${WebModeLogic.pickScript(meta.lang, meta.url).name} lang='${meta.lang}'")
+            if (liveView && !hasCanvas) {
                 // This site already refused our image downloads a moment ago: read the screen's own pixels at once
                 // instead of waiting for every panel to time out again.
                 if (SiteLearner.preferScreen(wv.context, hostOf(meta.url))) {
@@ -695,6 +709,7 @@ internal class WebModeExtractor(
                     catch (_: Throwable) { futures[i]?.cancel(true); null }
                 } else fetchWithRetry(p, meta.url)
                 futures[i] = null
+                OcrDiag.log("FETCH", "panel ${i + 1}/$total ${if (bytes == null) "FAILED" else "${bytes.size}B"} in ${SystemClock.elapsedRealtime() - tFetch}ms ${if (p.src.startsWith("data:", true)) "(canvas export)" else p.src.take(70)}")
                 if (bytes == null) {
                     fetchFailed++; diag.failed++
                     // The first panels all refuse to download (hotlink / CORS / TLS block): do not burn
@@ -873,6 +888,7 @@ internal class WebModeExtractor(
             )
             Log.i(TAG, diag.summary())
             val failedPanels = diag.failed
+            OcrDiag.jobDone(diag.host, diag.summary(), true, how, elapsed(), "")
             onMain { req.onDone(WebModeOutcome.Success(ch, diag, failedPanels)) }
         }
 
@@ -1125,6 +1141,10 @@ internal class WebModeExtractor(
         }
 
         @Volatile private var forceBlank = 0
+        @Volatile private var forceStepNo = 0
+        /** Once whole-screen OCR worked in a Force scan, later screens skip the useless DOM-crop attempt. */
+        @Volatile private var screenModeOn = false
+        private val screenSeen = HashSet<String>()
         @Volatile private var forceShots = 0
 
         private fun forceFail(e: WebModeError, msg: String = e.label) {
@@ -1137,6 +1157,9 @@ internal class WebModeExtractor(
 
         private fun processForce() {
             val forceStart = SystemClock.elapsedRealtime()
+            fellBackToForce = true   // never run the screenshot path twice for one job
+            how = "screen"
+            OcrDiag.log("FORCE_BEGIN", "visibleOnly=${req.visibleOnly} engine=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
             // A viewport-only recovery needs chapter metadata, not a full-page inventory. Defer
             // candidate collection until JS_FORCE_INFO so CSS-background panels are not lost to
             // cands()' 1200 ms background-probe throttle between these two calls.
@@ -1162,8 +1185,8 @@ internal class WebModeExtractor(
             // backgrounds; full-chapter Force Extract retains its original throttled scan.
             val forceInfoScript = if (req.visibleOnly) {
                 JS_FORCE_INFO.replaceFirst(
-                    "var sc=scroller(),c=cands(sc),vw=",
-                    "var sc=scroller(),c=cands(sc,true),vw="
+                    "var sc=scroller(),c=cands(sc,undefined,true),vw=",
+                    "var sc=scroller(),c=cands(sc,true,true),vw="
                 )
             } else JS_FORCE_INFO
             // Hide the overlay only for full-chapter screenshot extraction. Realtime visible-only
@@ -1180,6 +1203,9 @@ internal class WebModeExtractor(
                 val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
                 val bmp = captureView()
                 forceShots++
+                forceStepNo = steps
+                OcrDiag.log("FORCE_STEP", "step=$steps jsInfo=${info != null} domCandidates=${info?.optJSONArray("imgs")?.length() ?: -1} " +
+                    "bitmap=${bmp?.let { "${it.width}x${it.height}" } ?: "NULL(blank capture)"} blankSoFar=$forceBlank")
                 if (bmp != null) {
                     // JS discovery can time out on canvas/cross-origin iframe readers even while the
                     // WebView has perfectly visible pixels. A viewport-only scan can still OCR that bitmap.
@@ -1231,6 +1257,7 @@ internal class WebModeExtractor(
                 number = WebModeLogic.episodeNumber(title, meta.url), contentSel = ""
             )
             Log.i(TAG, "force " + diag.summary())
+            OcrDiag.jobDone(diag.host, diag.summary(), true, "screen", elapsed(), "")
             if (req.visibleOnly) SiteLearner.recordScreen(wv.context, hostOf(meta.url), SystemClock.elapsedRealtime() - forceStart)
             onMain { req.onDone(WebModeOutcome.Success(ch, diag, 0)) }
         }
@@ -1249,35 +1276,57 @@ internal class WebModeExtractor(
                 val last: Boolean
             )
 
+            val textBefore = accs.values.sumOf { it.texts.size }
             // Some manga readers render the visible page into canvas/iframe layers, while DOM
             // discovery reports only ads/thumbs or unusable image wrappers. When no trustworthy
             // crop exists, send the captured WebView pixels directly to the selected OCR engine
             // (Google Lens remains the same engine when selected) instead of returning NO_IMAGES.
             fun readWholeViewport(): Boolean {
-                if (!req.visibleOnly || !alive()) return false
+                if (!alive()) return false
+                val t0 = SystemClock.elapsedRealtime()
                 val result = try {
-                    recognize(bmp, st, fastMode = true)
+                    recognize(bmp, st, fastMode = req.visibleOnly)
                 } catch (e: OcrUnavailableException) {
+                    OcrDiag.log("SCREEN_OCR", "engine unavailable: ${e.message}")
                     throw e
                 } catch (e: Throwable) {
                     Log.w(TAG, "whole-viewport OCR failed: ${e.javaClass.simpleName}", e)
+                    OcrDiag.log("SCREEN_OCR", "crashed ${e.javaClass.simpleName}: ${e.message?.take(100)}")
                     return false
                 }
                 val blocks = result.blocks
                     .filter { it.text.isNotBlank() && !OcrPost.isNoise(it) }
                     .sortedWith(compareBy<OcrBlock>({ it.top }, { it.left }))
                 val letters = blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
+                OcrDiag.log("SCREEN_OCR", "step=$forceStepNo ${bmp.width}x${bmp.height} ms=${SystemClock.elapsedRealtime() - t0} " +
+                    "rawBlocks=${result.blocks.size} afterNoiseFilter=${blocks.size} letters=$letters " +
+                    "droppedAsNoise=[${result.blocks.filter { OcrPost.isNoise(it) }.take(3).joinToString(" / ") { OcrDiag.snip(it.text, 14) }}] " +
+                    "first=[${OcrDiag.snip(blocks.firstOrNull()?.text)}]")
                 if (blocks.isEmpty() || letters < 2) {
                     Log.w(TAG, "SCREEN_OCR_FALLBACK_EMPTY size=${bmp.width}x${bmp.height} blocks=${blocks.size} letters=$letters route=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
                     return false
                 }
-                // No image-to-DOM mapping is available for canvas-only pages. Keep this as text-only
-                // chapter output: MainActivity already has a geometry-free text submission path.
-                accs.clear()
-                val acc = ForceAcc()
-                acc.top = 0
-                acc.texts.addAll(blocks.map { it.text.trim() }.filter { it.isNotBlank() })
-                accs[SCREEN_OCR_SOURCE] = acc
+                val texts = blocks.map { it.text.trim() }.filter { it.isNotBlank() }
+                if (req.visibleOnly) {
+                    // No image-to-DOM mapping exists for canvas-only pages: keep this as a text-only chapter;
+                    // MainActivity already has a geometry-free text submission path.
+                    accs.clear()
+                    val acc = ForceAcc()
+                    acc.top = 0
+                    acc.texts.addAll(texts)
+                    accs[SCREEN_OCR_SOURCE] = acc
+                } else {
+                    // Full-chapter Force: keep every screen, but skip lines already read on the part that
+                    // overlaps the previous screen.
+                    screenModeOn = true
+                    val fresh = texts.filter { t -> screenSeen.add(t.filter { ch -> ch.isLetterOrDigit() }) }
+                    if (fresh.isNotEmpty()) {
+                        val acc = ForceAcc()
+                        acc.top = forceStepNo * 10_000
+                        acc.texts.addAll(fresh)
+                        accs[SCREEN_OCR_SOURCE + "#" + forceStepNo] = acc
+                    }
+                }
                 Log.i(TAG, "SCREEN_OCR_FALLBACK_OK size=${bmp.width}x${bmp.height} blocks=${blocks.size} letters=$letters route=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
                 return true
             }
@@ -1413,7 +1462,10 @@ internal class WebModeExtractor(
             }
             // A candidate list can contain visible ads or wrappers rather than the displayed comic.
             // If none of those crops yielded text, give the full viewport one fast OCR pass.
-            if (req.visibleOnly && accs.values.none { acc -> acc.texts.any { it.isNotBlank() } }) {
+            val noNewText = accs.values.sumOf { it.texts.size } == textBefore
+            val noTextAtAll = accs.values.none { acc -> acc.texts.any { it.isNotBlank() } }
+            OcrDiag.log("CROP_OCR", "step=$forceStepNo crops=${pending.size} newText=${!noNewText} textAnywhere=${!noTextAtAll} screenMode=$screenModeOn")
+            if (noNewText && (req.visibleOnly || screenModeOn || noTextAtAll)) {
                 if (!readWholeViewport()) Log.w(TAG, "screen OCR fallback found no readable text after crop OCR")
             }
         }
@@ -1983,6 +2035,20 @@ internal class WebModeExtractor(
          * (see [OcrRescan]). Any failure keeps the normal result untouched.
          */
         private fun recognize(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
+            val t0 = SystemClock.elapsedRealtime()
+            return try {
+                recognizeInner(bmp, st, fastMode).also { r ->
+                    val letters = r.blocks.sumOf { b -> b.text.count { ch -> ch.isLetterOrDigit() } }
+                    OcrDiag.log("OCR", "script=${st.current.name} fast=$fastMode img=${bmp.width}x${bmp.height} ms=${SystemClock.elapsedRealtime() - t0} " +
+                        "engine=${OcrEngineStatus.label.ifBlank { Prefs.get(wv.context, "ocrEngine", "mlkit") }} blocks=${r.blocks.size} letters=$letters first=[${OcrDiag.snip(r.blocks.firstOrNull()?.text)}]")
+                }
+            } catch (e: Throwable) {
+                OcrDiag.log("OCR_ERR", "script=${st.current.name} ms=${SystemClock.elapsedRealtime() - t0} ${e.javaClass.simpleName}: ${e.message?.take(140)}")
+                throw e
+            }
+        }
+
+        private fun recognizeInner(bmp: Bitmap, st: ScriptState, fastMode: Boolean = false): OcrResult {
             val routing = engine as? RoutingOcrEngine
             routing?.configure(wv.context)
             val lensSelected = routing?.usesRemoteTextDetection() == true
@@ -2263,7 +2329,7 @@ function scroller(){
   if(chosen)window.__nsWmScroller=chosen;
   return chosen;
 }
-function cands(sc, includeBackgrounds){
+function cands(sc, includeBackgrounds, forceCanvas){
   var out=[],seen={},imgs=document.images,wy=window.pageYOffset||de.scrollTop||0,sr=sc?sc.getBoundingClientRect():null;
   for(var i=0;i<imgs.length;i++){
     var im=imgs[i],src=imageSrc(im);
@@ -2325,6 +2391,34 @@ function cands(sc, includeBackgrounds){
     if(doBackgrounds)window.__nsWmLastBgProbeAt=bgNow;
   }else if(doBackgrounds){
     window.__nsWmLastBgProbeAt=Date.now();
+  }
+  // Canvas-drawn readers (Shonen Jump+, Comic-Walker style viewers): the page never exposes an <img> for the
+  // real pages, so export the canvas pixels themselves. A tainted (cross-origin) canvas throws on export: that is
+  // recorded in window.__nsWmCanvasErr and the screenshot fallback covers it.
+  if(doBackgrounds===true||forceCanvas===true){
+    var cvs=document.querySelectorAll('canvas'),vhh=window.innerHeight||800,cvDone=0;
+    for(var ci=0;ci<cvs.length&&ci<16&&cvDone<4;ci++){
+      var cv=cvs[ci],cr=cv.getBoundingClientRect();
+      if(cr.width<150||cr.height<150||cv.width<150||cv.height<150)continue;
+      if(cr.bottom<=0||cr.top>=vhh)continue;
+      var cs=null;try{cs=getComputedStyle(cv);}catch(ig){}
+      if(cs&&(cs.visibility==='hidden'||cs.display==='none'||parseFloat(cs.opacity||'1')<0.05))continue;
+      var cmeta=(cv.className&&cv.className.baseVal!==undefined?cv.className.baseVal:cv.className||'')+' '+(cv.id||'');
+      if(BAD.test(cmeta))continue;
+      var cu='';
+      try{
+        var ck=Math.min(1,1600/Math.max(cv.width,cv.height)),tw=Math.max(1,Math.round(cv.width*ck)),th=Math.max(1,Math.round(cv.height*ck));
+        var tc=document.createElement('canvas');tc.width=tw;tc.height=th;
+        var tx=tc.getContext('2d');tx.fillStyle='#fff';tx.fillRect(0,0,tw,th);tx.drawImage(cv,0,0,tw,th);
+        cu=tc.toDataURL('image/jpeg',0.85);
+        window.__nsWmCanvasErr='';
+      }catch(ex){window.__nsWmCanvasErr=String((ex&&ex.name)||ex);cu='';}
+      if(!cu||cu.length<2500)continue;
+      var ckey=cu.length+':'+cu.slice(-48)+cu.slice(2000,2048);
+      if(seen[ckey])continue;seen[ckey]=1;cvDone++;
+      var cin=!!(sc&&sc.contains(cv));var ctop=cin?(cr.top-sr.top+sc.scrollTop):(cr.top+wy);
+      out.push({s:cu,t:Math.round(ctop),l:Math.round(cr.left),w:Math.round(cr.width),h:Math.round(cr.height),d:1,fw:cr.width,fh:cr.height,vl:cr.left,vt:cr.top,vb:cr.bottom,cv:1});
+    }
   }
   if(doBackgrounds===true){
     // Keep the CSS/canvas fallback bounded; the caller rate-limits this DOM/style sweep.
@@ -2429,7 +2523,7 @@ return JSON.stringify({m:window.__nsWmMut||0,l:window.__nsWmLoad||0,p:p});
 """
 
         private const val JS_FORCE_INFO = """
-var sc=scroller(),c=cands(sc),vw=window.innerWidth||de.clientWidth||0,vh=window.innerHeight||0,o=[];
+var sc=scroller(),c=cands(sc,undefined,true),vw=window.innerWidth||de.clientWidth||0,vh=window.innerHeight||0,o=[];
 for(var i=0;i<c.length;i++){var p=c[i];
   if(p.d&&p.vb>0&&p.vt<vh&&(p.vl+p.fw)>0&&p.vl<vw)o.push(p);}
 return JSON.stringify({vw:vw,vh:vh,imgs:o});
@@ -2480,7 +2574,7 @@ return '1';
 """
 
         private const val JS_COLLECT_VISIBLE = """
-var sc=scroller(),c=cands(sc);
+var sc=scroller(),c=cands(sc,undefined,true);
 var top=sc?(sc.scrollTop||0):(window.pageYOffset||de.scrollTop||0);
 var height=sc?(sc.clientHeight||window.innerHeight||800):(window.innerHeight||800);
 var bottom=top+height;
@@ -2499,7 +2593,10 @@ function link(kind){
 var og=document.querySelector('meta[property="og:title"]');
 var title=q('.subj_episode')||q('h1')||(og&&og.content)||document.title||'';
 var novel=q('.detail_header .subj')||q('a.subj')||q('.series-title')||q('.comic-title')||'';
-var dbg=document.images.length+' img, '+document.querySelectorAll('iframe').length+' iframe, '+document.querySelectorAll('canvas').length+' canvas, '+c.length+' found';
+var xf=0,ifs=document.querySelectorAll('iframe');for(var xi=0;xi<ifs.length;xi++){try{if(!ifs[xi].contentDocument)xf++;}catch(e0){xf++;}}
+var ncv=0,cvl=[];var cvs0=document.querySelectorAll('canvas');for(var cj=0;cj<cvs0.length&&cj<8;cj++){var rr=cvs0[cj].getBoundingClientRect();cvl.push(cvs0[cj].width+'x'+cvs0[cj].height+'@'+Math.round(rr.top)+'/'+Math.round(rr.width)+'x'+Math.round(rr.height));}
+var cands2=c.map(function(x){return (x.cv?'CANVAS ':'')+x.w+'x'+x.h+' '+String(x.s).slice(0,60);}).slice(0,12);
+var dbg=document.images.length+' img, '+ifs.length+' iframe('+xf+' cross-origin), '+cvs0.length+' canvas, '+c.length+' found | canvasErr='+(window.__nsWmCanvasErr||'-')+' | canvases=['+cvl.join(', ')+'] | cands=['+cands2.join(' ;; ')+'] | vp='+(window.innerWidth||0)+'x'+(window.innerHeight||0)+' | ready='+document.readyState;
 return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,title:title,novel:novel,next:link('next'),prev:link('prev'),imgs:c.slice(0,600),dbg:dbg});
 """
 

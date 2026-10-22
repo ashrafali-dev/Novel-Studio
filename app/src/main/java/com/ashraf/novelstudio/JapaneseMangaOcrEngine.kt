@@ -71,6 +71,7 @@ internal object OcrEngineStatus {
 
     @Synchronized
     fun setLensDiagnostic(message: String) {
+        OcrDiag.log("LENS", message)
         threadLensDiagnostic.set(message)
         val ticket = threadRouteTicket.get()
         if (threadRouteForeground.get() == true && ticket != null && ticket == latestForegroundRouteTicket) {
@@ -291,11 +292,14 @@ internal class RoutingOcrEngine : OcrEngine {
             // Tell the user which engine is selected; per-scan diagnostics remain in the foreground status.
             OcrEngineStatus.announceRoute(appContext, selectedMode, actualLabel)
             // Diagnostic line: ids/timings only, never the recognised text.
-            Log.i("NovelStudioOCR", "requestedEngine=$selectedMode language=${script.name} " +
+            val routeLine = "requestedEngine=$selectedMode language=${script.name} " +
                 "activeEngine=$used fallbackUsed=$fellBack " +
                 "job=${Thread.currentThread().name} concurrentLens=${!OcrGate.isBackgroundThread() && canRunLensConcurrently()} " +
                 "gateWaitMs=${waited.ms} totalMs=${android.os.SystemClock.elapsedRealtime() - t0} " +
-                "image=${bitmap.width}x${bitmap.height}")
+                "image=${bitmap.width}x${bitmap.height}" +
+                (if (OcrEngineStatus.lastError.isNotBlank()) " lastRouterError=${OcrEngineStatus.lastError.take(120)}" else "")
+            Log.i("NovelStudioOCR", routeLine)
+            OcrDiag.log("ROUTE", routeLine)
         }
     }
 

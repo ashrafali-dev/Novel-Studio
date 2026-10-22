@@ -9302,7 +9302,9 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "📝 Edit Prompt For Scanning Translation",
             "⬆️ App Updates (Community)",
             "💬 Join the Community (Telegram · Reddit)",
-            "🧠 What the App Learned About This Site"
+            "🧠 What the App Learned About This Site",
+            "🔬 OCR Log — copy everything",
+            "🧹 Clear OCR Log (then reproduce the problem)"
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -9311,14 +9313,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE, 57 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE, 57 to Ic.SEARCH, 58 to Ic.SEARCH, 59 to Ic.RELOAD
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
             "COMMUNITY" to listOf(56),
             "LIBRARY" to listOf(0, 4, 1, 3),
             "TRANSLATE" to listOf(5, 33, 54, 7),
-            "OCR" to listOf(53, 50, 57),
+            "OCR" to listOf(53, 50, 57, 58, 59),
             "READER" to listOf(9, 20, 23),
             "APP" to listOf(55)
         )
@@ -9516,6 +9518,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     Prefs.put(this, "rtBatchLevel", ((rtBatchLevel() + 1) % 4).toString())
                     refresh(i, menuBatchLabel())
                     toast(menuBatchLabel())
+                }
+                58 -> {
+                    dlg.dismiss()
+                    val full = OcrDiag.report(this, novelWv.url.orEmpty()) +
+                        "\n--- CRASH / FREEZE LOG (tail) ---\n" + CrashLog.read().takeLast(6_000).ifBlank { "(none)" }
+                    copy(full)
+                    toast("🔬 OCR log copied (" + (full.length / 1000) + " KB) — paste it to Claude")
+                }
+                59 -> {
+                    OcrDiag.clear()
+                    toast("🧹 OCR log cleared — now open the page, scan, then copy the log")
                 }
                 45 -> {
                     dlg.dismiss()

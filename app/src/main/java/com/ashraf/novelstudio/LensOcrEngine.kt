@@ -181,7 +181,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         Log.i(TAG, "ok lines=${lines.size} sent=${prepared.w}x${prepared.h} bytes=${prepared.jpeg.size} ms=$totalMs")
         Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=false prepareMs=$prepareMs keyCacheMs=$keyCacheMs " +
             "payloadBuildMs=$payloadBuildMs networkMs=$networkMs parseMs=$parseMs mapMs=$mapMs totalMs=$totalMs")
-        return finish(lines, bitmap, script)
+        val mergeStart = SystemClock.elapsedRealtime()
+        val finished = finish(lines, bitmap, script)
+        OcrDiag.log("LENS_MERGE", "mergeNeighbours ms=${SystemClock.elapsedRealtime() - mergeStart} blocksIn=${lines.size} blocksOut=${finished.blocks.size} " +
+            "| whole read() total=${SystemClock.elapsedRealtime() - t0}ms of which network=${networkMs}ms")
+        return finished
     }
 
     /** Same post-processing the ML Kit engine applies, so the pipeline receives identical granularity. */
@@ -489,6 +493,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         @Synchronized fun success() { transientFails = 0; openUntil = 0L; reason = "" }
 
+        @Synchronized fun status(): String {
+            val left = openUntil - SystemClock.elapsedRealtime()
+            return if (left > 0) "OPEN (Lens paused for ${left / 1000}s more) reason=$reason"
+            else "closed (Lens allowed) transientFails=$transientFails lastReason=${reason.ifBlank { "-" }}"
+        }
+
         @Synchronized fun transient(why: String) {
             reason = why
             if (++transientFails >= TRANSIENT_TRIP) {
@@ -508,6 +518,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     companion object {
         private const val TAG = "NovelStudioLens"
+
+        /** For the OCR log: is the circuit breaker currently skipping Lens? */
+        fun breakerStatus(): String = Breaker.status()
 
         /** Chromium's Lens overlay upload. Unofficial for third-party apps: may change or be blocked anytime. */
         const val DEFAULT_ENDPOINT = "https://lensfrontend-pa.googleapis.com/v1/crupload"
