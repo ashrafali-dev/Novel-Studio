@@ -262,6 +262,16 @@ internal object WebModeLayoutStore {
 
         canvasGenerationBySource[sourceKey] = (canvasGenerationBySource[sourceKey] ?: 0L) + 1L
         pendingCanvasTransitions.getOrPut(k) { LinkedHashSet() }.add(normalizedSource)
+
+        // This bitmap, not OCR, is what proved the page changed. Drop the old OCR baseline and both
+        // the cumulative and latest-scan entries for this canvas, so a later text-only fallback cannot
+        // accidentally fetch the prior page's geometry after OCR failure.
+        canvasSnapshots.remove(sourceKey)
+        scans[k]?.let { scanned ->
+            scans[k] = WebModeLayout(scanned.titleOffset, scanned.bubbles.filterNot {
+                WebModeLogic.normalizeUrl(it.src) == normalizedSource
+            })
+        }
         val previousLayout = mem[k] ?: get(ctx, url)
         if (previousLayout != null) {
             mem[k] = WebModeLayout(previousLayout.titleOffset, previousLayout.bubbles.filterNot {
