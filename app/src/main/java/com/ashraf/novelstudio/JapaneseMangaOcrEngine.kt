@@ -51,14 +51,42 @@ internal class JapaneseMangaOcrEngine : OcrEngine {
 /** Short, user-visible name of the engine that produced the LAST OCR result (shown in the activity chip). */
 internal object OcrEngineStatus {
     @Volatile var label: String = ""
-    /** Safe summary of the most recent Lens request/parse; never contains OCR text or API keys. */
+    /** Safe diagnostic from the latest FOREGROUND Lens scan; read-ahead results must not overwrite it. */
     @Volatile var lastLensDiagnostic: String = "No Google Lens request captured yet"
     private val threadLensDiagnostic = ThreadLocal<String>()
+    private val threadRouteTicket = ThreadLocal<Long>()
+    private val threadRouteForeground = ThreadLocal<Boolean>()
+    private var nextRouteTicket = 0L
+    @Volatile private var latestForegroundRouteTicket = 0L
+
+    /** Tag every concurrent OCR call so background read-ahead cannot overwrite foreground status. */
+    @Synchronized
+    fun beginRoute(foreground: Boolean): Long {
+        val ticket = ++nextRouteTicket
+        threadRouteTicket.set(ticket)
+        threadRouteForeground.set(foreground)
+        if (foreground) latestForegroundRouteTicket = ticket
+        return ticket
+    }
+
     fun setLensDiagnostic(message: String) {
         threadLensDiagnostic.set(message)
-        lastLensDiagnostic = message
+        val ticket = threadRouteTicket.get()
+        if (threadRouteForeground.get() == true && ticket != null && ticket == latestForegroundRouteTicket) {
+            lastLensDiagnostic = message
+        }
     }
+
     fun currentLensDiagnostic(): String = threadLensDiagnostic.get() ?: lastLensDiagnostic
+
+    @Synchronized
+    fun finishRoute(ticket: Long, foreground: Boolean, actual: String) {
+        // Use the most recently started visible scan, not whichever network request happened to finish last.
+        if (foreground && ticket == latestForegroundRouteTicket) label = actual
+        threadLensDiagnostic.remove()
+        threadRouteTicket.remove()
+        threadRouteForeground.remove()
+    }
     /** Last Paddle failure that made the router fall back to ML Kit (shown in the OCR models dialog). */
     @Volatile var lastError: String = ""
     @Volatile private var lastToast: String = ""
@@ -222,6 +250,8 @@ internal class RoutingOcrEngine : OcrEngine {
     private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
         val waited = OcrGate.Waited()
         val t0 = android.os.SystemClock.elapsedRealtime()
+        val foregroundRoute = !OcrGate.isBackgroundThread()
+        val statusTicket = OcrEngineStatus.beginRoute(foregroundRoute)
         lensThread.set(false)
         var used = "?"
         var fellBack = false
@@ -238,9 +268,10 @@ internal class RoutingOcrEngine : OcrEngine {
                 else -> OcrGate.run(waited, routeBlock)
             }
         } finally {
-            OcrEngineStatus.label = OcrEngineStatus.describe(selectedMode, used, fellBack)
-            // Tell the user which engine produced the actual output; deduplicated across real-time frames.
-            OcrEngineStatus.announceRoute(appContext, selectedMode, OcrEngineStatus.label)
+            val actualLabel = OcrEngineStatus.describe(selectedMode, used, fellBack)
+            OcrEngineStatus.finishRoute(statusTicket, foregroundRoute, actualLabel)
+            // Tell the user which engine is selected; per-scan diagnostics remain in the foreground status.
+            OcrEngineStatus.announceRoute(appContext, selectedMode, actualLabel)
             // Diagnostic line: ids/timings only, never the recognised text.
             Log.i("NovelStudioOCR", "requestedEngine=$selectedMode language=${script.name} " +
                 "activeEngine=$used fallbackUsed=$fellBack " +
