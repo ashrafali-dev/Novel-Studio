@@ -89,7 +89,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             language = languageHint(script), region = regionHint(), timeZone = zoneHint(),
             uuid = random.nextLong() and Long.MAX_VALUE,
             timeUsec = System.currentTimeMillis() * 1000L,
-            analyticsId = ByteArray(16)
+            analyticsId = java.nio.ByteBuffer.allocate(16)
+                .putLong(random.nextLong()).putLong(random.nextLong()).array()
         )
 
         Log.i(TAG, "request begin imageId=${java.lang.Long.toHexString(key)} script=${script.name} source=${bitmap.width}x${bitmap.height} " +
