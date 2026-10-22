@@ -459,7 +459,7 @@ internal class WebModeExtractor(
                 // Only the starting guess: the usual checks still run if the page turns out to be in another script.
                 return ScriptState(learned ?: WebModeLogic.pickScript(lang, url))
             }
-            return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
+            return ScriptState(pinned).also { it.locked = true; it.fastFallbackBudget = 0; it.fallbackBudget = 0 }
         }
 
         private fun scanHost(): String = try {
@@ -686,7 +686,10 @@ internal class WebModeExtractor(
                 submitFetch(i)
                 submitFetch(i + FETCH_AHEAD)
                 val bytes = if (pool != null) {
-                    try { futures[i]?.get(JOB_MAX_MS, TimeUnit.MILLISECONDS) } catch (_: Throwable) { null }
+                    val fetchWaitMs = if (req.visibleOnly) VISIBLE_FETCH_WAIT_MS
+                        else (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
+                    try { futures[i]?.get(fetchWaitMs, TimeUnit.MILLISECONDS) }
+                    catch (_: Throwable) { futures[i]?.cancel(true); null }
                 } else fetchWithRetry(p, meta.url)
                 futures[i] = null
                 if (bytes == null) {
@@ -869,14 +872,20 @@ internal class WebModeExtractor(
 
         // ---- FORCE mode: no image is downloaded. The page is scrolled from the top and the WebView's own
         // pixels (exactly what the user sees) are OCR'd per image. Works for blob:/encrypted/CORS/hot-link images.
-        private fun <T> evalWait(js: String, parse: (String?) -> T): T {
+        private fun <T> evalWait(
+            js: String,
+            timeoutMs: Long = if (req.visibleOnly) 3_000L else 20_000L,
+            parse: (String?) -> T
+        ): T {
             val latch = CountDownLatch(1)
             var res: String? = null
             handler.post {
                 try { wv.evaluateJavascript(js) { r -> res = r; latch.countDown() } }
                 catch (_: Exception) { latch.countDown() }
             }
-            latch.await(20, TimeUnit.SECONDS)
+            if (!latch.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "page JS response timeout visibleOnly=${req.visibleOnly} waitMs=$timeoutMs")
+            }
             return parse(res)
         }
 
@@ -991,7 +1000,7 @@ internal class WebModeExtractor(
                     latch.countDown()
                 }
             }
-            latch.await(12, TimeUnit.SECONDS)
+            latch.await(if (req.visibleOnly) 3_000L else 12_000L, TimeUnit.MILLISECONDS)
             return out
         }
 
@@ -1011,10 +1020,9 @@ internal class WebModeExtractor(
             }
             val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
             if (b != null && !isBlank(b)) {
-                // A window screenshot also contains the app's own floating panels, buttons and chips
-                // ("Reading the page", "View original", the bottom toolbar...). Paint them out so the
-                // OCR only ever sees the comic itself.
-                try { maskNativeOverlays(b) } catch (_: Throwable) {}
+                // A full-window screenshot can contain native overlays, but realtime PixelCopy only
+                // captures the WebView rectangle; walking the whole native view tree here just adds latency.
+                if (!req.visibleOnly) try { maskNativeOverlays(b) } catch (_: Throwable) {}
                 return b
             }
             b?.recycle()
@@ -1843,7 +1851,7 @@ internal class WebModeExtractor(
             // Do exactly one remote OCR pass. The generic sparse-result retry and language-fallback logic
             // below is for local recognisers; here it merely re-encodes/re-uploads the same bitmap.
             if ((engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true) {
-                val lensResult = engine.recognize(bmp, st.current)
+                val lensResult = if (fastMode) engine.recognizeFast(bmp, st.current) else engine.recognize(bmp, st.current)
                 if (lensResult.text.count { it.isLetterOrDigit() } >= 2) st.locked = true
                 return lensResult
             }
@@ -1858,7 +1866,9 @@ internal class WebModeExtractor(
             } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
-            val result = if (needsOcrRetry(bmp, first)) {
+            // Fast/realtime must not start a second heavy local pass just because the first found little text.
+            // RoutingOcrEngine already falls back to ML Kit when a selected local model fails or returns no useful text.
+            val result = if (!fastMode && needsOcrRetry(bmp, first)) {
                 val retry = try { engine.recognizeFallback(bmp, st.current) } catch (_: Exception) {
                     OcrResult(emptyList())
                 }
@@ -1870,39 +1880,22 @@ internal class WebModeExtractor(
             // extra language models on every slice; this caused multi-second pauses on English
             // scanlation sites with short dialogue and sound effects.
             if (resultLetters >= 2) {
-                if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN &&
-                    !st.fastFallbackTried) {
-                    st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
-                    if (script != null) {
-                        val alternate = try { engine.recognizeFast(bmp, script) }
-                            catch (_: Exception) { OcrResult(emptyList()) }
-                        if (alternate.text.count { it.isLetterOrDigit() } > resultLetters + 4) {
-                            st.current = script
-                            st.locked = true
-                            return alternate
-                        }
-                    }
+                if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN) {
+                    val alternate = tryRealtimeFallback(
+                        bmp, st, minimumLetters = 2, baselineLetters = resultLetters
+                    )
+                    if (alternate != null) return alternate
                 }
                 st.locked = true
                 return result
             }
             if (fastMode) {
-                // At most one alternate recognizer for an entirely unreadable realtime scan.
-                if (!st.fastFallbackTried) {
-                    st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
-                    if (script != null) {
-                        val alternate = try { engine.recognizeFast(bmp, script) }
-                            catch (_: Exception) { OcrResult(emptyList()) }
-                        // from Latin a switch needs real text, not the noise a CJK model finds in artwork
-                        if (alternate.text.count { it.isLetterOrDigit() } >= (if (st.current == OcrScript.LATIN) 10 else 2)) {
-                            st.current = script
-                            st.locked = true
-                            return alternate
-                        }
-                    }
-                }
+                // Try other languages across the scan, but cap the total number of extra recognizer calls.
+                // Each failed language is remembered so a bad first guess cannot block other scripts forever.
+                val alternate = tryRealtimeFallback(
+                    bmp, st, minimumLetters = if (st.current == OcrScript.LATIN) 10 else 2
+                )
+                if (alternate != null) return alternate
                 return result
             }
             if (!st.locked && st.fallbackBudget > 0) {
@@ -1918,6 +1911,33 @@ internal class WebModeExtractor(
                 }
             }
             return result
+        }
+
+        private fun tryRealtimeFallback(
+            bmp: Bitmap,
+            st: ScriptState,
+            minimumLetters: Int,
+            baselineLetters: Int = 0
+        ): OcrResult? {
+            if (st.fastFallbackBudget <= 0) return null
+            val script = WebModeLogic.realtimeFallbackScripts(st.current)
+                .firstOrNull { it !in st.fastFallbackScriptsTried } ?: return null
+            st.fastFallbackScriptsTried.add(script)
+            st.fastFallbackBudget--
+
+            val alternate = try { engine.recognizeFast(bmp, script) }
+                catch (_: Exception) { OcrResult(emptyList()) }
+                catch (_: OutOfMemoryError) { OcrResult(emptyList()) }
+            val letters = alternate.text.count { it.isLetterOrDigit() }
+            val required = if (baselineLetters > 0) maxOf(minimumLetters, baselineLetters + 5) else minimumLetters
+            if (letters < required) {
+                Log.i(TAG, "realtime fallback script=${script.name} letters=$letters accepted=false budget=${st.fastFallbackBudget}")
+                return null
+            }
+            st.current = script
+            st.locked = true
+            Log.i(TAG, "realtime fallback script=${script.name} letters=$letters accepted=true")
+            return alternate
         }
 
         private fun needsOcrRetry(bmp: Bitmap, result: OcrResult): Boolean {
@@ -1940,7 +1960,8 @@ internal class WebModeExtractor(
     private class ScriptState(var current: OcrScript) {
         var locked = false
         var fallbackBudget = 3
-        var fastFallbackTried = false
+        val fastFallbackScriptsTried = HashSet<OcrScript>()
+        var fastFallbackBudget = 3
     }
     private class BubbleLine(var cy: Float, var text: String)
     private class DecodeException : Exception()
@@ -1962,6 +1983,7 @@ internal class WebModeExtractor(
         private const val EARLY_ABORT_FAILS = 4
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 8_000L
+        private const val VISIBLE_FETCH_WAIT_MS = 7_000L
         private const val JOB_MAX_MS = 12 * 60_000L
         private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120
