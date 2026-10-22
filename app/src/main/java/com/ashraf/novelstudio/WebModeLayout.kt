@@ -166,6 +166,11 @@ internal object WebModeLayoutStore {
     private val pendingCanvasTransitions = object : LinkedHashMap<String, LinkedHashSet<String>>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LinkedHashSet<String>>?): Boolean = size > 8
     }
+    // Hold old bubble identities until the UI consumes a transition. A recycled canvas can reuse the
+    // same text and geometry, so stale hashes must be released when the old page is cleared.
+    private val pendingCanvasStaleFingerprints = object : LinkedHashMap<String, LinkedHashSet<String>>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LinkedHashSet<String>>?): Boolean = size > 8
+    }
     // Monotonic per-canvas generation lets in-flight replies prove they still target the same bitmap.
     private val canvasGenerationBySource = object : LinkedHashMap<String, Long>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 128
@@ -173,6 +178,11 @@ internal object WebModeLayoutStore {
     // Clean screenshots of tainted canvas pixels. Bound the LRU for low-memory Android devices.
     private val canvasPixelSnapshots = object : LinkedHashMap<String, String>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 128
+    }
+    // A pixel-confirmed transition stays pending until OCR installs the first snapshot of the new page.
+    // The UI may consume the clear-overlay event first; this state must survive that consumption.
+    private val canvasAwaitingSnapshot = object : LinkedHashMap<String, Boolean>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 128
     }
 
     // Reader SPAs (MangaDex) rewrite the trailing page number while the page is scrolled:
@@ -207,14 +217,24 @@ internal object WebModeLayoutStore {
                     ?: previousLayout?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
                     ?: emptyList()
                 val transition = canvasTransitionDetected(prior, fresh)
-                // A sparse read (< 3 bubbles) that does not contradict the stored page is only a partial
-                // view of it: keep the fuller snapshot instead of overwriting it.
-                if (fresh.size < 3 && !transition) continue
+                // Normally 1-2 bubbles are too sparse to replace a reliable baseline. If clean pixels
+                // already proved that the page changed, however, even a sparse OCR read belongs to the new page.
+                val awaitingFreshSnapshot = canvasAwaitingSnapshot.containsKey(snapshotKey)
+                if (fresh.size < 3 && !transition && !awaitingFreshSnapshot) continue
                 if (transition) {
                     transitions.add(src)
                     canvasGenerationBySource[snapshotKey] = (canvasGenerationBySource[snapshotKey] ?: 0L) + 1L
+                    val staleFingerprints = (prior + scans[k]?.bubbles.orEmpty() + previousLayout?.bubbles.orEmpty())
+                        .asSequence()
+                        .filter { WebModeLogic.normalizeUrl(it.src) == src }
+                        .map { WebModeLayout.fingerprint(it) }
+                        .toSet()
+                    if (staleFingerprints.isNotEmpty()) {
+                        pendingCanvasStaleFingerprints.getOrPut(k) { LinkedHashSet() }.addAll(staleFingerprints)
+                    }
                 }
                 canvasSnapshots[snapshotKey] = WebModeLayout(layout.titleOffset, fresh)
+                canvasAwaitingSnapshot.remove(snapshotKey)
             }
         }
 
@@ -240,6 +260,10 @@ internal object WebModeLayoutStore {
     fun takeCanvasTransitions(url: String): Set<String> =
         pendingCanvasTransitions.remove(key(url))?.toSet().orEmpty()
 
+    @Synchronized
+    fun takeCanvasTransitionFingerprints(url: String): Set<String> =
+        pendingCanvasStaleFingerprints.remove(key(url))?.toSet().orEmpty()
+
     /**
      * Observe a clean, screenshot-derived fingerprint for a tainted manga canvas.
      * This is independent of OCR success, so a changed page can invalidate old translations even when
@@ -247,14 +271,14 @@ internal object WebModeLayoutStore {
      * pixels outside the visible viewport; comparison uses only locations visible in both frames.
      */
     @Synchronized
-    fun observeCanvasFrame(ctx: Context, url: String, src: String, signature: String): Boolean {
-        if (!isShonenJumpPlus(url)) return false
+    fun observeCanvasFrame(ctx: Context, url: String, src: String, signature: String): Set<String>? {
+        if (!isShonenJumpPlus(url)) return null
         val normalizedSource = WebModeLogic.normalizeUrl(src)
-        if (!normalizedSource.startsWith("ns-canvas:") || signature.isBlank()) return false
+        if (!normalizedSource.startsWith("ns-canvas:") || signature.isBlank()) return null
         val k = key(url)
         val sourceKey = "$k|$normalizedSource"
-        val previous = canvasPixelSnapshots.put(sourceKey, signature) ?: return false
-        if (previous.length != signature.length) return false
+        val previous = canvasPixelSnapshots.put(sourceKey, signature) ?: return null
+        if (previous.length != signature.length) return null
 
         var comparable = 0
         var changed = 0
@@ -266,29 +290,39 @@ internal object WebModeLayoutStore {
             if (a != b) changed++
         }
         // Require a broad change across the canvas, not a few antialiasing pixels or a UI artifact.
-        if (comparable < 16 || changed.toFloat() / comparable.toFloat() < 0.45f) return false
+        if (comparable < 16 || changed.toFloat() / comparable.toFloat() < 0.45f) return null
+
+        // Capture old identities before clearing the saved layout, so the new page can be scanned even
+        // when one of its bubbles reuses the exact same text and coordinates.
+        val previousLayout = mem[k] ?: get(ctx, url)
+        val staleFingerprints = (
+            scans[k]?.bubbles.orEmpty() + previousLayout?.bubbles.orEmpty()
+        ).asSequence()
+            .filter { WebModeLogic.normalizeUrl(it.src) == normalizedSource }
+            .map { WebModeLayout.fingerprint(it) }
+            .toSet()
 
         canvasGenerationBySource[sourceKey] = (canvasGenerationBySource[sourceKey] ?: 0L) + 1L
         pendingCanvasTransitions.getOrPut(k) { LinkedHashSet() }.add(normalizedSource)
+        if (staleFingerprints.isNotEmpty()) {
+            pendingCanvasStaleFingerprints.getOrPut(k) { LinkedHashSet() }.addAll(staleFingerprints)
+        }
+        canvasAwaitingSnapshot[sourceKey] = true
 
-        // This bitmap, not OCR, is what proved the page changed. Drop the old OCR baseline and both
-        // the cumulative and latest-scan entries for this canvas, so a later text-only fallback cannot
-        // accidentally fetch the prior page's geometry after OCR failure.
+        // Pixels, rather than OCR, proved the page changed. Drop the old OCR baseline and stored bubbles now.
         canvasSnapshots.remove(sourceKey)
         scans[k]?.let { scanned ->
             scans[k] = WebModeLayout(scanned.titleOffset, scanned.bubbles.filterNot {
                 WebModeLogic.normalizeUrl(it.src) == normalizedSource
             })
         }
-        val previousLayout = mem[k] ?: get(ctx, url)
         if (previousLayout != null) {
             mem[k] = WebModeLayout(previousLayout.titleOffset, previousLayout.bubbles.filterNot {
                 WebModeLogic.normalizeUrl(it.src) == normalizedSource
             })
-            // Persist removal immediately; do not resurrect the prior page if OCR/chat fails or the app restarts.
             persist(ctx, url)
         }
-        return true
+        return staleFingerprints
     }
 
     /** Capture the current reader-page generation for each canvas source in this request's layout. */
