@@ -1180,12 +1180,20 @@ internal class WebModeExtractor(
                 val info = evalWait(wrap(LIB + forceInfoScript)) { parseJson(it) }
                 val bmp = captureView()
                 forceShots++
-                if (info != null && bmp != null) {
-                    try { forceOcr(bmp, info, script, accs) }
-                    catch (e: OcrUnavailableException) {
-                        forceFail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label); return
-                    } finally { bmp.recycle() }
-                } else bmp?.recycle()
+                if (bmp != null) {
+                    // JS discovery can time out on canvas/cross-origin iframe readers even while the
+                    // WebView has perfectly visible pixels. A viewport-only scan can still OCR that bitmap.
+                    val scanInfo = info ?: if (req.visibleOnly) {
+                        Log.w(TAG, "JS_FORCE_INFO returned no data; OCRing the visible WebView bitmap directly")
+                        JSONObject().put("vw", bmp.width.toFloat()).put("imgs", JSONArray())
+                    } else null
+                    if (scanInfo != null) {
+                        try { forceOcr(bmp, scanInfo, script, accs) }
+                        catch (e: OcrUnavailableException) {
+                            forceFail(WebModeError.OCR_MODEL_UNAVAILABLE, e.message ?: WebModeError.OCR_MODEL_UNAVAILABLE.label); return
+                        } finally { bmp.recycle() }
+                    } else bmp.recycle()
+                }
                 progress("Reading screen ${steps + 1} (${accs.size} images)", 5 + minOf(90, steps * 3))
                 if (req.visibleOnly) break
                 val bottom = evalWait(wrap(LIB + JS_FORCE_SCROLL)) { parseJson(it)?.optBoolean("bottom", true) ?: true }
@@ -1241,10 +1249,50 @@ internal class WebModeExtractor(
                 val last: Boolean
             )
 
+            // Some manga readers render the visible page into canvas/iframe layers, while DOM
+            // discovery reports only ads/thumbs or unusable image wrappers. When no trustworthy
+            // crop exists, send the captured WebView pixels directly to the selected OCR engine
+            // (Google Lens remains the same engine when selected) instead of returning NO_IMAGES.
+            fun readWholeViewport(): Boolean {
+                if (!req.visibleOnly || !alive()) return false
+                val result = try {
+                    recognize(bmp, st, fastMode = true)
+                } catch (e: OcrUnavailableException) {
+                    throw e
+                } catch (e: Throwable) {
+                    Log.w(TAG, "whole-viewport OCR failed: ${e.javaClass.simpleName}", e)
+                    return false
+                }
+                val blocks = result.blocks
+                    .filter { it.text.isNotBlank() && !OcrPost.isNoise(it) }
+                    .sortedWith(compareBy<OcrBlock>({ it.top }, { it.left }))
+                val letters = blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
+                if (blocks.isEmpty() || letters < 2) {
+                    Log.w(TAG, "SCREEN_OCR_FALLBACK_EMPTY size=${bmp.width}x${bmp.height} blocks=${blocks.size} letters=$letters route=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
+                    return false
+                }
+                // No image-to-DOM mapping is available for canvas-only pages. Keep this as text-only
+                // chapter output: MainActivity already has a geometry-free text submission path.
+                accs.clear()
+                val acc = ForceAcc()
+                acc.top = 0
+                acc.texts.addAll(blocks.map { it.text.trim() }.filter { it.isNotBlank() })
+                accs[SCREEN_OCR_SOURCE] = acc
+                Log.i(TAG, "SCREEN_OCR_FALLBACK_OK size=${bmp.width}x${bmp.height} blocks=${blocks.size} letters=$letters route=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")
+                return true
+            }
+
             val vw = info.optDouble("vw", 0.0).toFloat()
-            if (vw <= 0f) return
+            if (vw <= 0f) {
+                if (!readWholeViewport()) Log.w(TAG, "screen OCR skipped: viewport width missing")
+                return
+            }
             val scale = bmp.width / vw // device pixels per CSS pixel
-            val arr = info.optJSONArray("imgs") ?: return
+            val arr = info.optJSONArray("imgs")
+            if (arr == null || arr.length() == 0) {
+                if (!readWholeViewport()) Log.w(TAG, "screen OCR skipped: no DOM crop candidates")
+                return
+            }
             val pending = ArrayList<PendingCrop>()
 
             for (i in 0 until arr.length()) {
@@ -1280,7 +1328,10 @@ internal class WebModeExtractor(
                     )
                 )
             }
-            if (pending.isEmpty()) return
+            if (pending.isEmpty()) {
+                if (!readWholeViewport()) Log.w(TAG, "screen OCR fallback found no readable text; candidates=${arr.length()}")
+                return
+            }
 
             // The fallback screenshot often contains multiple visible webtoon panels. Sequential Lens
             // uploads multiply network latency by the number of panels, so use a bounded concurrent fan-out
@@ -1359,6 +1410,11 @@ internal class WebModeExtractor(
                 }
             } finally {
                 pending.forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
+            }
+            // A candidate list can contain visible ads or wrappers rather than the displayed comic.
+            // If none of those crops yielded text, give the full viewport one fast OCR pass.
+            if (req.visibleOnly && accs.values.none { acc -> acc.texts.any { it.isNotBlank() } }) {
+                if (!readWholeViewport()) Log.w(TAG, "screen OCR fallback found no readable text after crop OCR")
             }
         }
 
@@ -2094,6 +2150,7 @@ internal class WebModeExtractor(
         private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120
         private const val MIN_H = 60
+        private const val SCREEN_OCR_SOURCE = "__ns_screen_ocr__"
 
         private fun hostOf(u: String): String =
             u.substringAfter("://", "").substringBefore('/').substringBefore('?').substringBefore(':')
