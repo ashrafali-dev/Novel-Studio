@@ -40,10 +40,10 @@ import javax.net.ssl.SSLException
  *    checked first (fail fast when offline); the request is retried with backoff and ALTERNATES between
  *    a connection bound to the active [Network] (its own DNS) and the process default route, because a
  *    stale default network / VPN / Private-DNS edge case can fail one path while the other works.
- *  - `SocketException: Socket closed` / connection reset / EOF: stale keep-alive reuse and a half-closed
- *    pooled connection are the usual causes, so each request asks for `Connection: close`, streams a
- *    fixed-length body, never disconnects while reading, and is retried on a fresh connection. A real
- *    thread interrupt is NOT retried (it is a cancellation, not a network fault).
+ *  - `SocketException: Socket closed` / connection reset / EOF: stream a fixed-length body and
+ *    fully drain successful responses so Android can reuse a healthy keep-alive connection, matching
+ *    the pooled-client strategy in chrome-lens-py. Only partial/error responses are disconnected and retried.
+ *    A real thread interrupt is NOT retried (it is a cancellation, not a network fault).
  */
 internal class LensOcrEngine(context: Context) : OcrEngine {
 
@@ -58,7 +58,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private fun currentHttpMeta(): String = lastHttpMeta.get() ?: "no HTTP response yet"
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
-    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
+    override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script, fastMode = true)
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
 
     /**
@@ -72,7 +72,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     // ---------------------------------------------------------------------------------------------
 
-    private fun read(bitmap: Bitmap, script: OcrScript): OcrResult {
+    private fun read(bitmap: Bitmap, script: OcrScript, fastMode: Boolean = false): OcrResult {
         if (bitmap.isRecycled) throw OcrUnavailableException("Google Lens: bitmap was recycled")
         if (bitmap.width < MIN_SIDE || bitmap.height < MIN_SIDE) return OcrResult(emptyList())
 
@@ -114,7 +114,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         var networkMs = 0L
         val networkStart = SystemClock.elapsedRealtime()
         val body = try {
-            post(payload).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
+            post(payload, fastMode).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
         } catch (e: OcrUnavailableException) {
             networkMs = SystemClock.elapsedRealtime() - networkStart
             val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; error=${e.message ?: e.javaClass.simpleName}"
@@ -168,7 +168,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val totalMs = SystemClock.elapsedRealtime() - t0
         val timing = "timing=prepare:${prepareMs}ms,cache:${keyCacheMs}ms,payload:${payloadBuildMs}ms," +
             "http:${networkMs}ms,parse:${parseMs}ms,map:${mapMs}ms,total:${totalMs}ms"
-        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; http=${currentHttpStatus()}; ${currentHttpMeta()}; " +
+        val diagnostic = "imageId=${java.lang.Long.toHexString(key)}; fastMode=$fastMode; http=${currentHttpStatus()}; ${currentHttpMeta()}; " +
             "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
@@ -196,10 +196,16 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         var work: Bitmap = src
         var owned: Bitmap? = null
         try {
-            if (src.hasAlpha()) {
-                // JPEG has no alpha; transparent pixels would turn black. A browser shows white behind them.
+            // Match chrome-lens-py's proven Lens image preparation: only flatten images that
+            // contain REAL transparency (ARGB_8888 / PixelCopy bitmaps often have alpha enabled but
+            // every pixel is opaque). This avoids an unnecessary full-frame Canvas copy on every scan.
+            val alpha = inspectTransparency(src)
+            if (alpha.hasTransparency) {
+                // Lens's server composites transparent uploads onto black. Pick the contrasting
+                // background from actual opaque-pixel luminance so light text is not lost on white.
+                val background = if (alpha.meanLuma < 128) Color.WHITE else Color.BLACK
                 val flat = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
-                Canvas(flat).apply { drawColor(Color.WHITE); drawBitmap(src, 0f, 0f, null) }
+                Canvas(flat).apply { drawColor(background); drawBitmap(src, 0f, 0f, null) }
                 owned = flat
                 work = flat
             }
@@ -226,6 +232,45 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             val o = owned
             if (o != null && o !== src && !o.isRecycled) o.recycle()
         }
+    }
+
+    private class AlphaInfo(val hasTransparency: Boolean, val meanLuma: Int)
+
+    /**
+     * Port of chrome-lens-py's has_meaningful_alpha/_contrasting_background logic.
+     * A full pixel scan is only needed when Bitmap reports alpha support. Rows are
+     * chunked to avoid allocating a full-screen IntArray alongside the image bitmap.
+     */
+    private fun inspectTransparency(bitmap: Bitmap): AlphaInfo {
+        if (!bitmap.hasAlpha()) return AlphaInfo(false, 255)
+        val width = bitmap.width
+        val chunkRows = minOf(16, bitmap.height)
+        val pixels = IntArray(width * chunkRows)
+        var transparent = false
+        var luminanceSum = 0L
+        var opaqueCount = 0L
+        var top = 0
+        while (top < bitmap.height) {
+            val rows = minOf(chunkRows, bitmap.height - top)
+            bitmap.getPixels(pixels, 0, width, 0, top, width, rows)
+            val count = width * rows
+            for (i in 0 until count) {
+                val pixel = pixels[i]
+                val alpha = pixel ushr 24
+                if (alpha < 255) transparent = true
+                if (alpha > 128) {
+                    val red = (pixel shr 16) and 0xFF
+                    val green = (pixel shr 8) and 0xFF
+                    val blue = pixel and 0xFF
+                    // Integer form of Rec. 601 luminance; exact scaling is not relevant to the 128 cutoff.
+                    luminanceSum += (299L * red + 587L * green + 114L * blue) / 1000L
+                    opaqueCount++
+                }
+            }
+            top += rows
+        }
+        val mean = if (opaqueCount == 0L) 0 else (luminanceSum / opaqueCount).toInt()
+        return AlphaInfo(transparent, mean)
     }
 
     private fun encode(b: Bitmap, quality: Int): ByteArray {
@@ -296,15 +341,18 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private class HttpStatus(val code: Int, val retryAfterMs: Long) : IOException("HTTP $code")
 
     /** One logical request: bounded retries inside one overall deadline. Throws [OcrUnavailableException] only. */
-    private fun post(payload: ByteArray): ByteArray {
+    private fun post(payload: ByteArray, fastMode: Boolean): ByteArray {
         lastHttpStatus.set(0)
         lastHttpMeta.set("no HTTP response yet")
+        val deadlineMs = if (fastMode) FAST_TOTAL_DEADLINE_MS else TOTAL_DEADLINE_MS
+        val attemptLimit = if (fastMode) FAST_MAX_ATTEMPTS else MAX_ATTEMPTS
+        val minimumAttemptMs = if (fastMode) FAST_MIN_ATTEMPT_MS else MIN_ATTEMPT_MS
         val started = SystemClock.elapsedRealtime()
         var last: Exception? = null
-        for (attempt in 0 until MAX_ATTEMPTS) {
+        for (attempt in 0 until attemptLimit) {
             if (Thread.currentThread().isInterrupted) throw OcrUnavailableException("Google Lens: cancelled")
-            val remaining = TOTAL_DEADLINE_MS - (SystemClock.elapsedRealtime() - started)
-            if (remaining < MIN_ATTEMPT_MS) break
+            val remaining = deadlineMs - (SystemClock.elapsedRealtime() - started)
+            if (remaining < minimumAttemptMs) break
             val info = netInfo()
             if (!info.online) {
                 // Not counted by the breaker: going offline is cheap to detect, and the moment the connection
@@ -341,7 +389,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             }
             val jitter = (random.nextInt(200)).toLong()
             val elapsed = SystemClock.elapsedRealtime() - started
-            if (attempt == MAX_ATTEMPTS - 1 || elapsed + waitMs + jitter + MIN_ATTEMPT_MS > TOTAL_DEADLINE_MS) break
+            if (attempt == attemptLimit - 1 || elapsed + waitMs + jitter + minimumAttemptMs > deadlineMs) break
             try { Thread.sleep(waitMs + jitter) } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
                 throw OcrUnavailableException("Google Lens: cancelled", e)
@@ -480,6 +528,10 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         private const val MAX_UPLOAD_BYTES = 3_500_000
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
+        // Realtime screenshot reading is latency-sensitive; a slow endpoint must not stall the reader.
+        private const val FAST_TOTAL_DEADLINE_MS = 6_500L
+        private const val FAST_MIN_ATTEMPT_MS = 1_000L
+        private const val FAST_MAX_ATTEMPTS = 2
         private const val CONNECT_MS = 7_000L
         private const val READ_MS = 15_000L
         private const val TOTAL_DEADLINE_MS = 22_000L

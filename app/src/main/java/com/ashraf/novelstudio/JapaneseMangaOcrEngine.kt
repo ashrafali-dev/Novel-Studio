@@ -213,11 +213,17 @@ internal class RoutingOcrEngine : OcrEngine {
             }
         }
         if (mode == "mlkit") return mlKit
-        // The custom legacy ONNX recognizer is not reliable for upright vertical CJK lettering and
-        // runs each detected box separately. Keep Korean/Japanese real-time scans on ML Kit instead.
-        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) return mlKit
+        // The legacy ONNX recognizer runs box-by-box and is unsuitable for vertical CJK screen reading.
+        // Explain the route instead of silently making a downloaded engine look active.
+        if (mode == "rapid_onnx" && (script == OcrScript.KOREAN || script == OcrScript.JAPANESE)) {
+            OcrEngineStatus.lastError = "RapidOCR legacy is not used for ${script.name}; screen OCR is routed to ML Kit"
+            return mlKit
+        }
         if (mode == "manga") {
-            return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
+            return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else {
+                OcrEngineStatus.lastError = "Japanese Manga OCR is unavailable for ${script.name}; using ML Kit"
+                mlKit
+            }
         }
         if (mode == "paddle_small" || mode == "paddle_heavy") {
             val tier = if (mode == "paddle_small") "small" else "heavy"
@@ -225,6 +231,8 @@ internal class RoutingOcrEngine : OcrEngine {
             if (modelPack == null || !PaddleOcrModels.isInstalled(modelPack)) {
                 // Do not attempt a doomed native model load on every scan. If a downloaded model
                 // was deleted, release its session on the next OCR request to free the RAM.
+                OcrEngineStatus.lastError = "${mode} selected but its OCR model pack is missing or invalid; using ML Kit"
+                Log.w("NovelStudioOCR", OcrEngineStatus.lastError)
                 synchronized(this) {
                     if (activeMode == mode) {
                         try { activeCustom?.close() } catch (_: Exception) {}
@@ -377,7 +385,12 @@ internal class RoutingOcrEngine : OcrEngine {
                 }
                 primary
             }
-            else { report("mlkit(empty-primary)", true); run(mlKit) }
+            else {
+                OcrEngineStatus.lastError = "$selectedMode returned no usable text for ${script.name}; using ML Kit fallback"
+                Log.w("NovelStudioOCR", OcrEngineStatus.lastError)
+                report("mlkit(empty-primary)", true)
+                run(mlKit)
+            }
         } catch (e: Exception) {
             // "detection: OrtException – <first 70 chars of ONNX Runtime's message>" (no recognised text involved).
             val root = e.cause ?: e

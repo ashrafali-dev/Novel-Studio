@@ -459,7 +459,7 @@ internal class WebModeExtractor(
                 // Only the starting guess: the usual checks still run if the page turns out to be in another script.
                 return ScriptState(learned ?: WebModeLogic.pickScript(lang, url))
             }
-            return ScriptState(pinned).also { it.locked = true; it.fastFallbackTried = true; it.fallbackBudget = 0 }
+            return ScriptState(pinned).also { it.locked = true; it.fastFallbackBudget = 0; it.fallbackBudget = 0 }
         }
 
         private fun scanHost(): String = try {
@@ -633,7 +633,7 @@ internal class WebModeExtractor(
             // Lens is remote/network-bound: visible panels must not wait for the previous panel's
             // Lens response. Warm the engine safely first, then fetch and OCR a small viewport
             // concurrently. All local-model scans remain serial exactly as before.
-            val lensParallel = liveView && req.ahead <= 0 && total > 1 &&
+            val lensParallel = liveView && req.ahead <= 0 && total >= 1 &&
                 Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens"
             if (lensParallel) {
                 (engine as? RoutingOcrEngine)?.let {
@@ -641,7 +641,7 @@ internal class WebModeExtractor(
                     it.prepareForConcurrentLens(script.current)
                 }
             }
-            val pool: ExecutorService? = if (total > 1 && (!req.visibleOnly || lensParallel)) {
+            val pool: ExecutorService? = if (lensParallel || (total > 1 && !req.visibleOnly)) {
                 val threads = if (lensParallel) minOf(3, total) else FETCH_THREADS
                 Executors.newFixedThreadPool(threads) { r -> Thread(r, "ns-webmode-fetch") }
             } else null
@@ -686,7 +686,13 @@ internal class WebModeExtractor(
                 submitFetch(i)
                 submitFetch(i + FETCH_AHEAD)
                 val bytes = if (pool != null) {
-                    try { futures[i]?.get(JOB_MAX_MS, TimeUnit.MILLISECONDS) } catch (_: Throwable) { null }
+                    val fetchWaitMs = when {
+                        lensParallel -> LENS_IMAGE_FETCH_WAIT_MS
+                        req.visibleOnly -> VISIBLE_FETCH_WAIT_MS
+                        else -> (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
+                    }
+                    try { futures[i]?.get(fetchWaitMs, TimeUnit.MILLISECONDS) }
+                    catch (_: Throwable) { futures[i]?.cancel(true); null }
                 } else fetchWithRetry(p, meta.url)
                 futures[i] = null
                 if (bytes == null) {
@@ -869,14 +875,20 @@ internal class WebModeExtractor(
 
         // ---- FORCE mode: no image is downloaded. The page is scrolled from the top and the WebView's own
         // pixels (exactly what the user sees) are OCR'd per image. Works for blob:/encrypted/CORS/hot-link images.
-        private fun <T> evalWait(js: String, parse: (String?) -> T): T {
+        private fun <T> evalWait(
+            js: String,
+            timeoutMs: Long = if (req.visibleOnly) 1_200L else 20_000L,
+            parse: (String?) -> T
+        ): T {
             val latch = CountDownLatch(1)
             var res: String? = null
             handler.post {
                 try { wv.evaluateJavascript(js) { r -> res = r; latch.countDown() } }
                 catch (_: Exception) { latch.countDown() }
             }
-            latch.await(20, TimeUnit.SECONDS)
+            if (!latch.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "page JS response timeout visibleOnly=${req.visibleOnly} waitMs=$timeoutMs")
+            }
             return parse(res)
         }
 
@@ -991,7 +1003,7 @@ internal class WebModeExtractor(
                     latch.countDown()
                 }
             }
-            latch.await(12, TimeUnit.SECONDS)
+            latch.await(if (req.visibleOnly) 1_500L else 12_000L, TimeUnit.MILLISECONDS)
             return out
         }
 
@@ -1011,10 +1023,9 @@ internal class WebModeExtractor(
             }
             val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
             if (b != null && !isBlank(b)) {
-                // A window screenshot also contains the app's own floating panels, buttons and chips
-                // ("Reading the page", "View original", the bottom toolbar...). Paint them out so the
-                // OCR only ever sees the comic itself.
-                try { maskNativeOverlays(b) } catch (_: Throwable) {}
+                // A full-window screenshot can contain native overlays, but realtime PixelCopy only
+                // captures the WebView rectangle; walking the whole native view tree here just adds latency.
+                if (!req.visibleOnly) try { maskNativeOverlays(b) } catch (_: Throwable) {}
                 return b
             }
             b?.recycle()
@@ -1106,7 +1117,7 @@ internal class WebModeExtractor(
                 } catch (_: Throwable) {
                 } finally { latch.countDown() }
             }
-            latch.await(20, TimeUnit.SECONDS)
+            latch.await(if (req.visibleOnly) 1_500L else 20_000L, TimeUnit.MILLISECONDS)
             return out
         }
 
@@ -1215,12 +1226,26 @@ internal class WebModeExtractor(
 
         /** OCR the on-screen part of every loaded image in one screenshot of the WebView. */
         private fun forceOcr(bmp: Bitmap, info: JSONObject, st: ScriptState, accs: MutableMap<String, ForceAcc>) {
+            data class PendingCrop(
+                val bitmap: Bitmap,
+                val src: String,
+                val acc: ForceAcc,
+                val offX: Int,
+                val offY: Int,
+                val fullW: Int,
+                val fullH: Int,
+                val first: Boolean,
+                val last: Boolean
+            )
+
             val vw = info.optDouble("vw", 0.0).toFloat()
             if (vw <= 0f) return
-            val scale = bmp.width / vw                      // device pixels per CSS pixel
+            val scale = bmp.width / vw // device pixels per CSS pixel
             val arr = info.optJSONArray("imgs") ?: return
+            val pending = ArrayList<PendingCrop>()
+
             for (i in 0 until arr.length()) {
-                if (!alive()) return
+                if (!alive()) break
                 val p = arr.optJSONObject(i) ?: continue
                 val src = p.optString("s")
                 if (src.isBlank()) continue
@@ -1229,24 +1254,108 @@ internal class WebModeExtractor(
                 val fw = p.optDouble("fw").toFloat() * scale
                 val fh = p.optDouble("fh").toFloat() * scale
                 if (fw < 40f || fh < 40f) continue
-                val x0 = Math.max(0, Math.round(l)); val y0 = Math.max(0, Math.round(t))
-                val x1 = Math.min(bmp.width, Math.round(l + fw)); val y1 = Math.min(bmp.height, Math.round(t + fh))
+                val x0 = Math.max(0, Math.round(l))
+                val y0 = Math.max(0, Math.round(t))
+                val x1 = Math.min(bmp.width, Math.round(l + fw))
+                val y1 = Math.min(bmp.height, Math.round(t + fh))
                 if (x1 - x0 < 40 || y1 - y0 < 40) continue
-                var crop: Bitmap? = null
-                try {
-                    crop = Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0)
-                    val acc = accs.getOrPut(src) { ForceAcc() }
-                    acc.top = p.optInt("t")
-                    val offX = Math.max(0f, x0 - l).toInt()
-                    val offY = Math.max(0f, y0 - t).toInt()
-                    val first = (y0 - t) <= 3f
-                    val last = (t + fh) <= bmp.height + 3f
-                    readSlice(crop, st, offY, 1, fw.toInt().coerceAtLeast(1), fh.toInt().coerceAtLeast(1), src,
-                        acc.texts, acc.bubbles, first, last, offX, fastMode = true)
-                } catch (e: OcrUnavailableException) { throw e
-                } catch (_: Exception) {
-                } catch (_: OutOfMemoryError) {
-                } finally { if (crop != null && crop !== bmp) crop.recycle() }
+                val crop = try { Bitmap.createBitmap(bmp, x0, y0, x1 - x0, y1 - y0) }
+                    catch (_: Throwable) { continue }
+                val acc = accs.getOrPut(src) { ForceAcc() }
+                acc.top = p.optInt("t")
+                pending.add(
+                    PendingCrop(
+                        bitmap = crop,
+                        src = src,
+                        acc = acc,
+                        offX = Math.max(0f, x0 - l).toInt(),
+                        offY = Math.max(0f, y0 - t).toInt(),
+                        fullW = fw.toInt().coerceAtLeast(1),
+                        fullH = fh.toInt().coerceAtLeast(1),
+                        first = (y0 - t) <= 3f,
+                        last = (t + fh) <= bmp.height + 3f
+                    )
+                )
+            }
+            if (pending.isEmpty()) return
+
+            // The fallback screenshot often contains multiple visible webtoon panels. Sequential Lens
+            // uploads multiply network latency by the number of panels, so use a bounded concurrent fan-out
+            // for Lens only; local ONNX/ML Kit models keep their existing serialized inference gate.
+            val routing = engine as? RoutingOcrEngine
+            val useParallelLens = req.visibleOnly &&
+                Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens" &&
+                pending.size > 1 && routing != null &&
+                runCatching {
+                    routing.configure(wv.context)
+                    routing.prepareForConcurrentLens(st.current)
+                    routing.usesRemoteTextDetection()
+                }.getOrDefault(false)
+
+            try {
+                if (useParallelLens) {
+                    val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(3, pending.size))
+                    try {
+                        val completion = java.util.concurrent.ExecutorCompletionService<Pair<Int, OcrResult?>>(pool)
+                        val futures = ArrayList<java.util.concurrent.Future<Pair<Int, OcrResult?>>>()
+                        for ((index, task) in pending.withIndex()) {
+                            futures.add(completion.submit(java.util.concurrent.Callable {
+                                val result = try {
+                                    engine.recognizeFast(task.bitmap, st.current)
+                                } catch (e: Throwable) {
+                                    Log.w(TAG, "parallel Lens viewport OCR failed for crop $index: ${e.javaClass.simpleName}")
+                                    null
+                                }
+                                index to result
+                            }))
+                        }
+                        val results = arrayOfNulls<OcrResult>(pending.size)
+                        val deadline = SystemClock.elapsedRealtime() + SCREEN_LENS_DEADLINE_MS
+                        var finished = 0
+                        while (finished < pending.size) {
+                            val remaining = deadline - SystemClock.elapsedRealtime()
+                            if (remaining <= 0L) break
+                            val future = try { completion.poll(remaining, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {
+                                Thread.currentThread().interrupt()
+                                break
+                            } ?: break
+                            try {
+                                val (index, result) = future.get()
+                                if (index in results.indices) results[index] = result
+                            } catch (_: Throwable) {
+                            }
+                            finished++
+                        }
+                        futures.forEach { if (!it.isDone) it.cancel(true) }
+                        for (index in pending.indices) {
+                            if (!alive()) break
+                            val task = pending[index]
+                            val recognized = results[index]
+                            if (recognized == null) {
+                                Log.w(TAG, "viewport Lens crop skipped after shared ${SCREEN_LENS_DEADLINE_MS}ms deadline index=$index")
+                                continue
+                            }
+                            readSlice(
+                                task.bitmap, st, task.offY, 1, task.fullW, task.fullH, task.src,
+                                task.acc.texts, task.acc.bubbles, task.first, task.last, task.offX,
+                                fastMode = true, preRecognized = recognized
+                            )
+                        }
+                    } finally {
+                        pool.shutdownNow()
+                    }
+                } else {
+                    for (task in pending) {
+                        if (!alive()) break
+                        readSlice(
+                            task.bitmap, st, task.offY, 1, task.fullW, task.fullH, task.src,
+                            task.acc.texts, task.acc.bubbles, task.first, task.last, task.offX,
+                            fastMode = true
+                        )
+                    }
+                }
+            } finally {
+                pending.forEach { if (!it.bitmap.isRecycled) it.bitmap.recycle() }
             }
         }
 
@@ -1531,7 +1640,8 @@ internal class WebModeExtractor(
         private fun readSlice(
             bmp: Bitmap, st: ScriptState, y0: Int, sample: Int, fullW: Int, fullH: Int,
             src: String, texts: MutableList<String>, out: MutableList<WmBubble>,
-            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false
+            firstSlice: Boolean, lastSlice: Boolean, x0: Int = 0, fastMode: Boolean = false,
+            preRecognized: OcrResult? = null
         ) {
             val tSlice = android.os.SystemClock.elapsedRealtime()
             val outBefore = out.size
@@ -1544,7 +1654,7 @@ internal class WebModeExtractor(
             // another slice will find it; the fuller overlapping reading can upgrade it below.
             val tOcr = android.os.SystemClock.elapsedRealtime()
             val blocks = OcrPost.mergeNeighbours(
-                recognize(bmp, st, fastMode).blocks.filter { it.text.isNotBlank() }, bmp)
+                (preRecognized ?: recognize(bmp, st, fastMode)).blocks.filter { it.text.isNotBlank() }, bmp)
             ocrMs = android.os.SystemClock.elapsedRealtime() - tOcr
             lineCount = blocks.size
             if (blocks.isEmpty()) return
@@ -1843,7 +1953,7 @@ internal class WebModeExtractor(
             // Do exactly one remote OCR pass. The generic sparse-result retry and language-fallback logic
             // below is for local recognisers; here it merely re-encodes/re-uploads the same bitmap.
             if ((engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true) {
-                val lensResult = engine.recognize(bmp, st.current)
+                val lensResult = if (fastMode) engine.recognizeFast(bmp, st.current) else engine.recognize(bmp, st.current)
                 if (lensResult.text.count { it.isLetterOrDigit() } >= 2) st.locked = true
                 return lensResult
             }
@@ -1858,7 +1968,9 @@ internal class WebModeExtractor(
             } else engine.recognize(bmp, st.current)
             // A good OCR result stays on the fast path. Retry only if the first pass found no text,
             // or returned just one/two tiny fragments where a full panel is likely still unread.
-            val result = if (needsOcrRetry(bmp, first)) {
+            // Fast/realtime must not start a second heavy local pass just because the first found little text.
+            // RoutingOcrEngine already falls back to ML Kit when a selected local model fails or returns no useful text.
+            val result = if (!fastMode && needsOcrRetry(bmp, first)) {
                 val retry = try { engine.recognizeFallback(bmp, st.current) } catch (_: Exception) {
                     OcrResult(emptyList())
                 }
@@ -1870,39 +1982,20 @@ internal class WebModeExtractor(
             // extra language models on every slice; this caused multi-second pauses on English
             // scanlation sites with short dialogue and sound effects.
             if (resultLetters >= 2) {
-                if (fastMode && resultLetters < 18 && st.current != OcrScript.LATIN &&
-                    !st.fastFallbackTried) {
-                    st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
-                    if (script != null) {
-                        val alternate = try { engine.recognizeFast(bmp, script) }
-                            catch (_: Exception) { OcrResult(emptyList()) }
-                        if (alternate.text.count { it.isLetterOrDigit() } > resultLetters + 4) {
-                            st.current = script
-                            st.locked = true
-                            return alternate
-                        }
-                    }
+                if (fastMode && resultLetters < 18) {
+                    val alternate = tryRealtimeFallback(
+                        bmp, st, minimumLetters = 2, baselineLetters = resultLetters
+                    )
+                    if (alternate != null) return alternate
                 }
                 st.locked = true
                 return result
             }
             if (fastMode) {
-                // At most one alternate recognizer for an entirely unreadable realtime scan.
-                if (!st.fastFallbackTried) {
-                    st.fastFallbackTried = true
-                    val script = WebModeLogic.fallbackScripts(st.current).firstOrNull()
-                    if (script != null) {
-                        val alternate = try { engine.recognizeFast(bmp, script) }
-                            catch (_: Exception) { OcrResult(emptyList()) }
-                        // from Latin a switch needs real text, not the noise a CJK model finds in artwork
-                        if (alternate.text.count { it.isLetterOrDigit() } >= (if (st.current == OcrScript.LATIN) 10 else 2)) {
-                            st.current = script
-                            st.locked = true
-                            return alternate
-                        }
-                    }
-                }
+                // Try other languages across the scan, but cap the total number of extra recognizer calls.
+                // Each failed language is remembered so a bad first guess cannot block other scripts forever.
+                val alternate = tryRealtimeFallback(bmp, st, minimumLetters = 2)
+                if (alternate != null) return alternate
                 return result
             }
             if (!st.locked && st.fallbackBudget > 0) {
@@ -1918,6 +2011,33 @@ internal class WebModeExtractor(
                 }
             }
             return result
+        }
+
+        private fun tryRealtimeFallback(
+            bmp: Bitmap,
+            st: ScriptState,
+            minimumLetters: Int,
+            baselineLetters: Int = 0
+        ): OcrResult? {
+            if (st.fastFallbackBudget <= 0) return null
+            val script = WebModeLogic.realtimeFallbackScripts(st.current)
+                .firstOrNull { it !in st.fastFallbackScriptsTried } ?: return null
+            st.fastFallbackScriptsTried.add(script)
+            st.fastFallbackBudget--
+
+            val alternate = try { engine.recognizeFast(bmp, script) }
+                catch (_: Exception) { OcrResult(emptyList()) }
+                catch (_: OutOfMemoryError) { OcrResult(emptyList()) }
+            val letters = alternate.text.count { it.isLetterOrDigit() }
+            val required = if (baselineLetters > 0) maxOf(minimumLetters, baselineLetters + 5) else minimumLetters
+            if (letters < required) {
+                Log.i(TAG, "realtime fallback script=${script.name} letters=$letters accepted=false budget=${st.fastFallbackBudget}")
+                return null
+            }
+            st.current = script
+            st.locked = true
+            Log.i(TAG, "realtime fallback script=${script.name} letters=$letters accepted=true")
+            return alternate
         }
 
         private fun needsOcrRetry(bmp: Bitmap, result: OcrResult): Boolean {
@@ -1940,7 +2060,8 @@ internal class WebModeExtractor(
     private class ScriptState(var current: OcrScript) {
         var locked = false
         var fallbackBudget = 3
-        var fastFallbackTried = false
+        val fastFallbackScriptsTried = HashSet<OcrScript>()
+        var fastFallbackBudget = 3
     }
     private class BubbleLine(var cy: Float, var text: String)
     private class DecodeException : Exception()
@@ -1962,6 +2083,10 @@ internal class WebModeExtractor(
         private const val EARLY_ABORT_FAILS = 4
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 8_000L
+        // If a live Lens panel's URL is not immediately readable, stop waiting and OCR the pixels already onscreen.
+        private const val LENS_IMAGE_FETCH_WAIT_MS = 900L
+        private const val VISIBLE_FETCH_WAIT_MS = 7_000L
+        private const val SCREEN_LENS_DEADLINE_MS = 7_000L
         private const val JOB_MAX_MS = 12 * 60_000L
         private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120

@@ -5359,12 +5359,21 @@ return t.length>=40?'TXT:'+t:'';
         val lensDiagnosticIndex = labels.size
         labels.add("🧪 Google Lens diagnostic — tap to copy\n" +
             OcrEngineStatus.lastLensDiagnostic.take(220))
+        val runtimeErrorIndex = labels.size
+        labels.add("⚠️ Last OCR runtime issue — tap to copy\n" +
+            OcrEngineStatus.lastError.take(220).ifBlank { "No OCR runtime issue captured yet" })
 
         listDialog("🧠 OCR engine & models", labels, { i ->
             when {
                 i == lensDiagnosticIndex -> {
                     copy(OcrEngineStatus.lastLensDiagnostic)
                     toast("✅ Lens diagnostic copied. Paste it here.")
+                }
+                i == runtimeErrorIndex -> {
+                    if (OcrEngineStatus.lastError.isNotBlank()) {
+                        copy(OcrEngineStatus.lastError)
+                        toast("✅ OCR runtime issue copied. Paste it into the bug report.")
+                    } else toast("No OCR runtime issue captured yet")
                 }
                 i == 0 -> chooseOcrEngine()
                 i in 1..legacyPacks.size -> {

@@ -29,9 +29,24 @@ internal object WebModeLogic {
         }
     }
 
-    /** Other scripts to try, in order, when the first guess reads nothing. */
+    /** Other scripts to try, in order, when the first guess reads nothing during a thorough scan. */
     fun fallbackScripts(first: OcrScript): List<OcrScript> =
         listOf(OcrScript.CHINESE, OcrScript.JAPANESE, OcrScript.KOREAN, OcrScript.LATIN).filter { it != first }
+
+    /**
+     * Realtime gets a small, shared retry budget. Prefer Japanese/Korean ahead of Chinese when a
+     * generic/English page guess is wrong; failed alternates are remembered so the next panel can
+     * test the next language instead of retrying Chinese forever.
+     */
+    fun realtimeFallbackScripts(first: OcrScript): List<OcrScript> {
+        val order = when (first) {
+            OcrScript.LATIN -> listOf(OcrScript.JAPANESE, OcrScript.KOREAN, OcrScript.CHINESE)
+            OcrScript.JAPANESE -> listOf(OcrScript.CHINESE, OcrScript.KOREAN, OcrScript.LATIN)
+            OcrScript.KOREAN -> listOf(OcrScript.JAPANESE, OcrScript.CHINESE, OcrScript.LATIN)
+            OcrScript.CHINESE -> listOf(OcrScript.JAPANESE, OcrScript.KOREAN, OcrScript.LATIN)
+        }
+        return order.filter { it != first }
+    }
 
     /** Rows shared by two neighbouring slices, so text sitting on a cut is whole in at least one of them. */
     const val SLICE_OVERLAP = 240
