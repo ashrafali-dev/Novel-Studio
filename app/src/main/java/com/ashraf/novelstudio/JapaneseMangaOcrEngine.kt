@@ -233,8 +233,20 @@ internal class RoutingOcrEngine : OcrEngine {
             active(script)
         } catch (e: Exception) {
             Log.w("NovelStudioOCR", "Could not select ${selectedMode}: ${e.message}")
+            if (selectedMode == "lens") {
+                OcrEngineStatus.lastError = "lens ${script.name}: ${e.message ?: e.javaClass.simpleName}"
+                report("lens(error)", false)
+                lensThread.set(false)
+                return OcrResult(emptyList())
+            }
             mlKit
-        } catch (_: OutOfMemoryError) {
+        } catch (e: OutOfMemoryError) {
+            if (selectedMode == "lens") {
+                OcrEngineStatus.lastError = "lens ${script.name}: out of memory"
+                report("lens(error)", false)
+                lensThread.set(false)
+                return OcrResult(emptyList())
+            }
             mlKit
         }
         if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit) }
@@ -248,7 +260,7 @@ internal class RoutingOcrEngine : OcrEngine {
                 lens = run(chosen)
             } catch (e: OcrUnavailableException) {
                 failure = (e.message ?: "unavailable").take(160)
-                OcrEngineStatus.toastOnce(appContext, "Google Lens unavailable → ML Kit\\n$failure")
+                OcrEngineStatus.toastOnce(appContext, "Google Lens request failed\\n$failure")
             } catch (e: Exception) {
                 failure = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(160)
                 Log.w("NovelStudioOCR", "lens failed unexpectedly", e)
