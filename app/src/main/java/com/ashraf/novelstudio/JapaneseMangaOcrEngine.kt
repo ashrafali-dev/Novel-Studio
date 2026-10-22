@@ -137,6 +137,11 @@ internal class RoutingOcrEngine : OcrEngine {
     /** Lens itself returns text boxes, so use its normal recognition call instead of a repeated fast request. */
     fun usesRemoteTextDetection(): Boolean = selectedMode == "lens"
 
+    /** Only bypass the shared local-inference gate after the Lens client is fully active. */
+    @Synchronized
+    private fun canRunLensConcurrently(): Boolean =
+        selectedMode == "lens" && activeMode == "lens" && activeCustom is LensOcrEngine
+
     /** Called by WebMode before the first OCR pass so the chosen engine follows the Settings value. */
     @Synchronized
     fun configure(context: Context) {
@@ -215,9 +220,16 @@ internal class RoutingOcrEngine : OcrEngine {
         var used = "?"
         var fellBack = false
         try {
-            return OcrGate.run(waited) {
-                val r = routeInner(bitmap, script, run) { engine, fb -> used = engine; fellBack = fb }
-                r
+            val routeBlock: () -> OcrResult = {
+                routeInner(bitmap, script, run) { engine, fb -> used = engine; fellBack = fb }
+            }
+            // Do not queue visible Lens OCR behind a remote read-ahead request. Local model engines
+            // and the first Lens activation still use the serialized gate for safe lifecycle changes.
+            val concurrentLens = !OcrGate.isBackgroundThread() && canRunLensConcurrently()
+            return when {
+                OcrGate.isBackgroundThread() -> OcrGate.run(waited, routeBlock)
+                concurrentLens -> OcrGate.runLensForeground(waited, routeBlock)
+                else -> OcrGate.run(waited, routeBlock)
             }
         } finally {
             OcrEngineStatus.label = OcrEngineStatus.describe(selectedMode, used, fellBack)
@@ -226,8 +238,8 @@ internal class RoutingOcrEngine : OcrEngine {
             // Diagnostic line: ids/timings only, never the recognised text.
             Log.i("NovelStudioOCR", "requestedEngine=$selectedMode language=${script.name} " +
                 "activeEngine=$used fallbackUsed=$fellBack " +
-                "job=${Thread.currentThread().name} gateWaitMs=${waited.ms} " +
-                "totalMs=${android.os.SystemClock.elapsedRealtime() - t0} " +
+                "job=${Thread.currentThread().name} concurrentLens=${!OcrGate.isBackgroundThread() && canRunLensConcurrently()} " +
+                "gateWaitMs=${waited.ms} totalMs=${android.os.SystemClock.elapsedRealtime() - t0} " +
                 "image=${bitmap.width}x${bitmap.height}")
         }
     }
