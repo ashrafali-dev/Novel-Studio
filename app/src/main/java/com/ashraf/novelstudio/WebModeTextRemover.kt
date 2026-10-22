@@ -119,6 +119,8 @@ internal object WebModeTextRemover {
                 val candidate = ByteArray(regionCount)
                 val seen = ByteArray(regionCount)
                 val selected = ByteArray(regionCount)
+                // Shapes that are certainly NOT lettering (outline / other bubble): the sweep below never touches them.
+                val protect = ByteArray(regionCount)
                 for (i in 0 until regionCount) {
                     val p = region[i]
                     val fromBg = distance(p, bg)
@@ -163,11 +165,17 @@ internal object WebModeTextRemover {
                     val ch = maxY - minY + 1
                     // A shape that mostly lies OUTSIDE the OCR box belongs to something else (neighbouring
                     // bubble text, outline, art): never touch it.
-                    if (insidePixels * 2 < componentPixels) continue
+                    if (insidePixels * 2 < componentPixels) {
+                        for (i in 0 until tail) protect[queue[i]] = 1
+                        continue
+                    }
                     // A big shape that reaches two sides of the region is the bubble outline, not lettering.
                     val touches = (if (minX == 0) 1 else 0) + (if (maxX == rw - 1) 1 else 0) +
                         (if (minY == 0) 1 else 0) + (if (maxY == rh - 1) 1 else 0)
-                    if (touches >= 2 && (cw > fontPx * 2.2f || ch > fontPx * 2.2f)) continue
+                    if (touches >= 2 && (cw > fontPx * 2.2f || ch > fontPx * 2.2f)) {
+                        for (i in 0 until tail) protect[queue[i]] = 1
+                        continue
+                    }
                     // Large lines, bubble contours and art strokes are ambiguous: keep them.
                     if (componentPixels < max(3, (fontPx * 0.06f).toInt()) ||
                         cw > maxComponentW || ch > maxComponentH ||
@@ -180,9 +188,23 @@ internal object WebModeTextRemover {
                 // Dense bold CJK glyphs legitimately hold more ink than Latin text.
                 if (selectedCount < 4 || selectedCount > innerArea * (if (soft) 0.35 else 0.6)) continue
 
+                // Flat bubble: sweep EVERYTHING inside the OCR box (slightly widened) that differs from the paper
+                // colour, unless it belongs to a protected shape. This removes the faint ghosts that the strict
+                // glyph test leaves behind: anti-aliasing, JPEG ringing, halos, thin strokes, shapes rejected by size.
+                if (!soft) {
+                    val m = (fontPx * 0.12f).toInt().coerceIn(1, 4)
+                    val sx0 = max(0, ix0 - m); val sy0 = max(0, iy0 - m)
+                    val sx1 = min(rw, ix1 + m); val sy1 = min(rh, iy1 + m)
+                    for (ry in sy0 until sy1) for (rx in sx0 until sx1) {
+                        val i = ry * rw + rx
+                        if (selected[i].toInt() == 0 && protect[i].toInt() == 0 &&
+                            distance(region[i], bg) >= 9f) selected[i] = 1
+                    }
+                }
+
                 // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
                 // the core pixels and used to stay as a ghost of the old text behind the translation.
-                val grow = (fontPx * 0.07f).toInt().coerceIn(1, 3)
+                val grow = (fontPx * 0.07f).toInt().coerceIn(1, 3) + (if (soft) 0 else 1)
                 val mask = selected.copyOf()
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
@@ -194,7 +216,8 @@ internal object WebModeTextRemover {
                                 val nx = rx + dx
                                 if (nx < 0 || nx >= rw) continue
                                 val ni = ny * rw + nx
-                                if (mask[ni].toInt() == 0 && distance(region[ni], bg) >= 10f) mask[ni] = 1
+                                if (mask[ni].toInt() == 0 && protect[ni].toInt() == 0 &&
+                                    distance(region[ni], bg) >= 8f) mask[ni] = 1
                             }
                         }
                     }
@@ -216,7 +239,7 @@ internal object WebModeTextRemover {
                         var sampleN = 0
                         var sumR = 0; var sumG = 0; var sumB = 0
                         var radius = 1
-                        while (radius <= 5 && sampleN < 6) {
+                        while (radius <= 9 && sampleN < 6) {
                             for (dy in -radius..radius) {
                                 for (dx in -radius..radius) {
                                     if (max(abs(dx), abs(dy)) != radius) continue
