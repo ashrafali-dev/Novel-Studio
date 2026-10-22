@@ -80,6 +80,8 @@ internal object BubbleGrouping {
             for ((gi, g) in groups.withIndex()) {
                 val last = blocks[g.last()]
                 if (!sameBubbleFast(last, b)) continue
+                // A line that sits between [last] and [b] but belongs elsewhere must not be skipped over.
+                if (blockBetween(blocks, order, last, b)) continue
                 val fonts = g.map { font(blocks[it]) }.sorted()
                 val med = fonts[fonts.size / 2]
                 val ratio = font(b) / med
@@ -97,6 +99,22 @@ internal object BubbleGrouping {
             if (best >= 0) groups[best].add(idx) else groups.add(arrayListOf(idx))
         }
         return groups
+    }
+
+    /** True when some other block of [pool] sits vertically between [a] and [b] and overlaps either horizontally. */
+    private fun blockBetween(blocks: List<OcrBlock>, pool: List<Int>, a: OcrBlock, b: OcrBlock): Boolean {
+        val top = if (a.cy <= b.cy) a else b
+        val bot = if (top === a) b else a
+        val y0 = top.cy + top.h * 0.25f
+        val y1 = bot.cy - bot.h * 0.25f
+        if (y1 <= y0) return false
+        for (i in pool) {
+            val c = blocks[i]
+            if (c === a || c === b) continue
+            if (c.cy <= y0 || c.cy >= y1) continue
+            if (hOverlap(c, a) > 0f || hOverlap(c, b) > 0f) return true
+        }
+        return false
     }
 
     /** The group of [i] among [pool] (always contains [i]). */

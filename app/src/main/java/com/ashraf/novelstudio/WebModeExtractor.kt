@@ -1395,13 +1395,16 @@ internal class WebModeExtractor(
                     OcrDiag.log("SCREEN_OCR", "crashed ${e.javaClass.simpleName}: ${e.message?.take(100)}")
                     return false
                 }
+                // Lens returns whole paragraphs from a precise recogniser: use its lenient filter, not the ML Kit one.
+                val lensOn = (engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true
+                val noisy: (OcrBlock) -> Boolean = { b -> if (lensOn) OcrPost.isNoiseLens(b) else OcrPost.isNoise(b) }
                 val blocks = result.blocks
-                    .filter { it.text.isNotBlank() && !OcrPost.isNoise(it) }
+                    .filter { it.text.isNotBlank() && !noisy(it) }
                     .sortedWith(compareBy<OcrBlock>({ it.top }, { it.left }))
                 val letters = blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
                 OcrDiag.log("SCREEN_OCR", "step=$forceStepNo ${bmp.width}x${bmp.height} ms=${SystemClock.elapsedRealtime() - t0} " +
                     "rawBlocks=${result.blocks.size} afterNoiseFilter=${blocks.size} letters=$letters " +
-                    "droppedAsNoise=[${result.blocks.filter { OcrPost.isNoise(it) }.take(3).joinToString(" / ") { OcrDiag.snip(it.text, 14) }}] " +
+                    "droppedAsNoise=[${result.blocks.filter { noisy(it) }.take(3).joinToString(" / ") { OcrDiag.snip(it.text, 14) }}] " +
                     "first=[${OcrDiag.snip(blocks.firstOrNull()?.text)}]")
                 if (blocks.isEmpty() || letters < 2) {
                     Log.w(TAG, "SCREEN_OCR_FALLBACK_EMPTY size=${bmp.width}x${bmp.height} blocks=${blocks.size} letters=$letters route=${Prefs.get(wv.context, "ocrEngine", "mlkit")}")

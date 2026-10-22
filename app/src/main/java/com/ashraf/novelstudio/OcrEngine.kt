@@ -143,6 +143,28 @@ internal object OcrPost {
         return false
     }
 
+    /** True for a scan-site watermark line ("asurascans.com"). Used per LINE so one watermark never drops a whole bubble. */
+    fun isSiteMark(text: String): Boolean = SITE.containsMatchIn(text.trim())
+
+    /**
+     * Noise filter for Google Lens blocks. Lens is a high-precision recogniser that already returns whole
+     * paragraphs, so the ML Kit hallucination rules are too aggressive here: they judged each block alone and
+     * could throw away a legitimate line. Only blocks with no letters at all, mostly-symbol blocks and
+     * hair-thin streaks are dropped. Digits count as content (a line like "100,000" inside a bubble is kept
+     * because the bubble as a whole has letters); watermark lines are removed earlier, line by line.
+     */
+    fun isNoiseLens(b: OcrBlock): Boolean {
+        val t = b.text.trim()
+        if (t.isEmpty()) return true
+        if (t.none { it.isLetter() }) return true
+        val core = t.count { !it.isWhitespace() && it !in NEUTRAL_PUNCT }
+        val alnum = t.count { it.isLetterOrDigit() }
+        if (core >= 3 && alnum * 100 < core * 45) return true
+        if (b.h < 4f || b.w < 2f) return true
+        if (!b.vertical && b.h > b.w * 6f && t.length <= 4) return true
+        return false
+    }
+
     fun scaled(b: OcrBlock, k: Float): OcrBlock = OcrBlock(
         b.text, (b.top * k).toInt(), (b.left * k).toInt(),
         b.cx * k, b.cy * k, b.w * k, b.h * k, b.angle, b.fontPx * k, b.vertical, b.confidence, b.observations,
@@ -158,16 +180,27 @@ internal object OcrPost {
     fun mergeNeighbours(blocks: List<OcrBlock>, image: Bitmap? = null): List<OcrBlock> {
         if (blocks.size < 2) return blocks
         val work = ArrayList(blocks.sortedWith(compareBy({ it.cy }, { it.cx })))
+        // outlineBetween() samples pixels (slow). The loop restarts after every merge, so remember which
+        // pairs were already vetoed instead of sampling the same strip again and again.
+        val vetoed = java.util.IdentityHashMap<OcrBlock, java.util.IdentityHashMap<OcrBlock, Boolean>>()
         var changed = true
         while (changed) {
             changed = false
             loop@ for (i in 0 until work.size) {
                 for (j in i + 1 until work.size) {
                     val a = work[i]; val b = work[j]
+                    if (vetoed[a]?.containsKey(b) == true) continue
                     if (!joinable(a, b)) continue
+                    // NEVER join two lines across a third block that sits between them. That is exactly how the
+                    // middle line of a 3-line bubble vanished: top+bottom were fused, the middle one stayed
+                    // behind (or was painted over by the fused box) and was never translated.
+                    if (hasBlockBetween(work, a, b)) continue
                     // Two stacked speech bubbles are close enough to look like one paragraph by geometry alone.
                     // If the picture shows a bubble outline / artwork between the two texts they are separate.
-                    if (image != null && !a.vertical && outlineBetween(image, a, b)) continue
+                    if (image != null && !a.vertical && outlineBetween(image, a, b)) {
+                        vetoed.getOrPut(a) { java.util.IdentityHashMap() }[b] = true
+                        continue
+                    }
                     work[i] = join(a, b)
                     work.removeAt(j)
                     changed = true
@@ -263,6 +296,24 @@ internal object OcrPost {
         val shorter = Math.min(a.h, b.h)
         return shorter > 0f && oy >= shorter * 0.4f
     }
+
+    /** True when another block sits vertically between [a] and [b] and overlaps either one horizontally. */
+    fun hasBlockBetween(all: List<OcrBlock>, a: OcrBlock, b: OcrBlock): Boolean {
+        val top = if (a.cy <= b.cy) a else b
+        val bot = if (top === a) b else a
+        val y0 = top.cy + top.h * 0.25f
+        val y1 = bot.cy - bot.h * 0.25f
+        if (y1 <= y0) return false
+        for (c in all) {
+            if (c === a || c === b) continue
+            if (c.cy <= y0 || c.cy >= y1) continue
+            if (hOverlapPx(c, a) > 0f || hOverlapPx(c, b) > 0f) return true
+        }
+        return false
+    }
+
+    private fun hOverlapPx(a: OcrBlock, b: OcrBlock): Float =
+        Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2)
 
     private fun joinable(a: OcrBlock, b: OcrBlock): Boolean {
         if (a.vertical != b.vertical) return false

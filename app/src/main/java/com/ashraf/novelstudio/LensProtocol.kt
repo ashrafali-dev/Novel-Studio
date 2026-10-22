@@ -380,9 +380,14 @@ internal object LensProtocol {
      * Converts a parsed response into the blocks the rest of NovelStudio already consumes, in pixels of
      * the ORIGINAL bitmap ([origW] x [origH]); [sentW] x [sentH] is what was actually uploaded.
      *
-     * Granularity matches the ML Kit engine so downstream grouping behaves the same: horizontal text is
-     * one block per LINE (the pipeline re-joins lines into bubbles itself), vertical text is one block
-     * per paragraph with its columns in the order Lens reported them.
+     * Lens already does the hard part - it decides which lines belong to ONE paragraph (= speech bubble /
+     * caption). Earlier versions threw that knowledge away, emitted every line alone and let the app guess
+     * the bubbles again from pixel geometry. That guess could fuse the top and bottom line of a bubble while
+     * the middle line was left behind, which is the "middle line is skipped" bug. Now:
+     *  - the lines of one Lens paragraph become ONE block (text joined in Lens' own reading order, box = union);
+     *  - a paragraph is only split when its lines are obviously not one block (huge gap, very different
+     *    glyph size, no horizontal relation) or when a line is tilted (sound effects stay separate);
+     *  - vertical text is one block per paragraph, its columns in the order Lens reported them.
      */
     fun toBlocks(resp: Response, origW: Int, origH: Int, sentW: Int, sentH: Int): List<OcrBlock> {
         val out = ArrayList<OcrBlock>()
@@ -392,16 +397,81 @@ internal object LensProtocol {
                 if (text.isEmpty()) continue
                 val g = pixels(p.box ?: unionOf(p.lines), origW, origH, sentW, sentH) ?: continue
                 out.add(block(text, g, vertical = true))
-            } else {
-                for (l in p.lines) {
-                    if (l.text.isEmpty()) continue
-                    val g = pixels(l.box ?: p.box, origW, origH, sentW, sentH) ?: continue
-                    // Some servers describe an upright column as a very tall, unrotated box.
-                    out.add(block(l.text, g, vertical = g.h > g.w * 1.6f && Math.abs(g.angle) < 6f))
-                }
+                continue
             }
+            val lines = horizontalLines(p, origW, origH, sentW, sentH)
+            if (lines.isEmpty()) continue
+            val chunk = ArrayList<LineGeo>()
+            for (l in lines) {
+                if (chunk.isNotEmpty() && !continues(chunk.last(), l)) {
+                    out.add(chunkBlock(chunk)); chunk.clear()
+                }
+                chunk.add(l)
+            }
+            if (chunk.isNotEmpty()) out.add(chunkBlock(chunk))
         }
         return out.sortedWith(compareBy({ it.top }, { it.left }))
+    }
+
+    private class LineGeo(val text: String, val g: Px)
+
+    /** Non-empty, non-watermark lines of a horizontal paragraph with a pixel box each (Lens order kept). */
+    private fun horizontalLines(p: Paragraph, origW: Int, origH: Int, sentW: Int, sentH: Int): List<LineGeo> {
+        val real = p.lines.filter { it.text.isNotEmpty() }
+        if (real.isEmpty()) return emptyList()
+        val pbox = pixels(p.box, origW, origH, sentW, sentH)
+        // No geometry on any line, only on the paragraph: one block (or tilted: never split a rotated box).
+        if (pbox != null && real.all { it.box == null } && (real.size == 1 || Math.abs(pbox.angle) >= 6f)) {
+            val kept = real.map { it.text }.filterNot { OcrPost.isSiteMark(it) }
+            return if (kept.isEmpty()) emptyList() else listOf(LineGeo(BubbleGrouping.joinLines(kept), pbox))
+        }
+        val n = real.size
+        val out = ArrayList<LineGeo>(n)
+        for ((i, l) in real.withIndex()) {
+            if (OcrPost.isSiteMark(l.text)) continue     // watermark line: dropped alone, the bubble survives
+            var g = pixels(l.box, origW, origH, sentW, sentH)
+            if (g == null && pbox != null) {
+                // Share the paragraph box in equal horizontal bands instead of stacking identical boxes.
+                g = Px(pbox.cx, pbox.cy - pbox.h / 2f + pbox.h * (i + 0.5f) / n, pbox.w, pbox.h / n, pbox.angle)
+            }
+            if (g == null) continue
+            out.add(LineGeo(l.text, g))
+        }
+        return out
+    }
+
+    /** Sanity check on Lens' paragraph: do these two consecutive lines really belong to one block? */
+    private fun continues(a: LineGeo, b: LineGeo): Boolean {
+        val ga = a.g; val gb = b.g
+        if (Math.abs(ga.angle) >= 6f || Math.abs(gb.angle) >= 6f) return false
+        val ratio = ga.h / gb.h
+        if (ratio < 0.45f || ratio > 2.2f) return false
+        val f = Math.max(ga.h, gb.h)
+        val vGap = Math.max(0f, Math.max(ga.cy - ga.h / 2f, gb.cy - gb.h / 2f) - Math.min(ga.cy + ga.h / 2f, gb.cy + gb.h / 2f))
+        if (vGap > f * 2.6f) return false
+        val hGap = Math.max(0f, Math.max(ga.cx - ga.w / 2f, gb.cx - gb.w / 2f) - Math.min(ga.cx + ga.w / 2f, gb.cx + gb.w / 2f))
+        return hGap <= f * 3f
+    }
+
+    private fun chunkBlock(c: List<LineGeo>): OcrBlock {
+        if (c.size == 1) {
+            val g = c[0].g
+            // A single narrow glyph ("I", "!", "?") is a tall thin box but not an upright column.
+            val tinyAscii = c[0].text.length <= 2 && c[0].text.all { it.code < 128 }
+            return block(c[0].text, g, vertical = g.h > g.w * 1.6f && Math.abs(g.angle) < 6f && !tinyAscii)
+        }
+        val l = c.minOf { it.g.cx - it.g.w / 2f }
+        val r = c.maxOf { it.g.cx + it.g.w / 2f }
+        val t = c.minOf { it.g.cy - it.g.h / 2f }
+        val b = c.maxOf { it.g.cy + it.g.h / 2f }
+        val hs = c.map { it.g.h }.sorted()
+        val med = hs[hs.size / 2]
+        return OcrBlock(
+            text = BubbleGrouping.joinLines(c.map { it.text }),
+            top = t.toInt(), left = l.toInt(),
+            cx = (l + r) / 2f, cy = (t + b) / 2f, w = r - l, h = b - t, angle = 0f,
+            fontPx = med * 0.9f, vertical = false, confidence = 0f
+        )
     }
 
     private class Px(val cx: Float, val cy: Float, val w: Float, val h: Float, val angle: Float)

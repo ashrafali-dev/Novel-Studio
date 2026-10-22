@@ -192,6 +192,8 @@ internal class RoutingOcrEngine : OcrEngine {
     fun configure(context: Context) {
         appContext = context.applicationContext
         val requested = Prefs.get(context, "ocrEngine", "mlkit")
+        // Keep the Lens connection warm (cheap no-op unless it has been idle for a while).
+        if (requested == "lens") LensOcrEngine.warmUp(context)
         // Initialise only the model pack the user selected, and only when switching engines.
         // Lens and ML Kit do not use the downloadable ONNX/Paddle model stores.
         if (requested != selectedMode) {
@@ -254,7 +256,7 @@ internal class RoutingOcrEngine : OcrEngine {
                     "paddle_small" -> PaddleProfileOcrEngine(context, "small")
                     "paddle_heavy" -> PaddleProfileOcrEngine(context, "heavy")
                     "rapid_onnx" -> FallbackOcrEngine(OnnxOcrEngine(), MlKitOcrEngine())
-                    "lens" -> LensOcrEngine(context)
+                    "lens" -> LensOcrEngine(context).also { LensOcrEngine.warmUp(context) }
                     else -> mlKit
                 }
                 activeMode = mode

@@ -19,6 +19,12 @@ import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 
 /**
@@ -162,7 +168,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         val mapStart = SystemClock.elapsedRealtime()
         val allBlocks = LensProtocol.toBlocks(response, bitmap.width, bitmap.height, prepared.w, prepared.h)
-        val lines = allBlocks.filterNot { OcrPost.isNoise(it) }
+        val lines = allBlocks.filterNot { OcrPost.isNoiseLens(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
         val mapMs = SystemClock.elapsedRealtime() - mapStart
         val totalMs = SystemClock.elapsedRealtime() - t0
@@ -188,9 +194,13 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         return finished
     }
 
-    /** Same post-processing the ML Kit engine applies, so the pipeline receives identical granularity. */
-    private fun finish(lines: List<OcrBlock>, bitmap: Bitmap, script: OcrScript): OcrResult =
-        OcrResult(if (script == OcrScript.LATIN) lines else OcrPost.mergeNeighbours(lines, bitmap))
+    /**
+     * Lens blocks are already whole paragraphs (see LensProtocol.toBlocks). The old second geometric merge
+     * here ran again inside WebModeExtractor.readSlice and could only do harm (double pixel sampling, and it
+     * could join across a paragraph boundary Lens had drawn on purpose), so the lines pass through untouched.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun finish(lines: List<OcrBlock>, bitmap: Bitmap, script: OcrScript): OcrResult = OcrResult(lines)
 
     // ---- image preparation ---------------------------------------------------------------------
 
@@ -247,31 +257,30 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
      */
     private fun inspectTransparency(bitmap: Bitmap): AlphaInfo {
         if (!bitmap.hasAlpha()) return AlphaInfo(false, 255)
-        val width = bitmap.width
-        val chunkRows = minOf(16, bitmap.height)
-        val pixels = IntArray(width * chunkRows)
+        // A sparse 64x64 grid finds any transparency that matters (a whole transparent area is hit by dozens of
+        // samples) in ~4k getPixel calls instead of copying every pixel of a multi-megapixel screenshot.
+        val w = bitmap.width; val h = bitmap.height
+        val stepX = maxOf(1, w / 64); val stepY = maxOf(1, h / 64)
         var transparent = false
         var luminanceSum = 0L
         var opaqueCount = 0L
-        var top = 0
-        while (top < bitmap.height) {
-            val rows = minOf(chunkRows, bitmap.height - top)
-            bitmap.getPixels(pixels, 0, width, 0, top, width, rows)
-            val count = width * rows
-            for (i in 0 until count) {
-                val pixel = pixels[i]
+        var y = 0
+        while (y < h) {
+            var x = 0
+            while (x < w) {
+                val pixel = bitmap.getPixel(x, y)
                 val alpha = pixel ushr 24
                 if (alpha < 255) transparent = true
                 if (alpha > 128) {
                     val red = (pixel shr 16) and 0xFF
                     val green = (pixel shr 8) and 0xFF
                     val blue = pixel and 0xFF
-                    // Integer form of Rec. 601 luminance; exact scaling is not relevant to the 128 cutoff.
                     luminanceSum += (299L * red + 587L * green + 114L * blue) / 1000L
                     opaqueCount++
                 }
+                x += stepX
             }
-            top += rows
+            y += stepY
         }
         val mean = if (opaqueCount == 0L) 0 else (luminanceSum / opaqueCount).toInt()
         return AlphaInfo(transparent, mean)
@@ -344,6 +353,16 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     private class HttpStatus(val code: Int, val retryAfterMs: Long) : IOException("HTTP $code")
 
+    /** State of ONE HTTP attempt; written by the worker thread, read by the caller. */
+    private class Attempt {
+        @Volatile var conn: HttpURLConnection? = null
+        @Volatile var body: ByteArray? = null
+        @Volatile var status = 0
+        @Volatile var meta = "no HTTP response yet"
+    }
+
+    private fun publish(a: Attempt) { lastHttpStatus.set(a.status); lastHttpMeta.set(a.meta) }
+
     /** One logical request: bounded retries inside one overall deadline. Throws [OcrUnavailableException] only. */
     private fun post(payload: ByteArray, fastMode: Boolean): ByteArray {
         lastHttpStatus.set(0)
@@ -351,6 +370,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val deadlineMs = if (fastMode) FAST_TOTAL_DEADLINE_MS else TOTAL_DEADLINE_MS
         val attemptLimit = if (fastMode) FAST_MAX_ATTEMPTS else MAX_ATTEMPTS
         val minimumAttemptMs = if (fastMode) FAST_MIN_ATTEMPT_MS else MIN_ATTEMPT_MS
+        val hedgeAfterMs = if (fastMode) FAST_HEDGE_MS else HEDGE_MS
+        val connectMs = if (fastMode) FAST_CONNECT_MS else CONNECT_MS
         val started = SystemClock.elapsedRealtime()
         var last: Exception? = null
         for (attempt in 0 until attemptLimit) {
@@ -365,10 +386,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             }
             var waitMs = BACKOFF_MS shl attempt
             try {
-                // Even attempts use a connection bound to the active network (its own DNS); odd ones the
-                // process default route. If one path is broken the other usually is not.
-                val body = postOnce(payload, info.network, bound = attempt % 2 == 0, budgetMs = remaining)
-                return body
+                return race(payload, info, remaining, connectMs, hedgeAfterMs, minimumAttemptMs, firstBound = attempt % 2 == 0)
             } catch (e: HttpStatus) {
                 last = e
                 if (e.code !in RETRYABLE_STATUS) {
@@ -391,7 +409,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             } catch (e: IOException) {
                 last = e    // UnknownHostException, ConnectException, SocketException ("Socket closed"), EOF, ...
             }
-            val jitter = (random.nextInt(200)).toLong()
+            val jitter = (random.nextInt(120)).toLong()
             val elapsed = SystemClock.elapsedRealtime() - started
             if (attempt == attemptLimit - 1 || elapsed + waitMs + jitter + minimumAttemptMs > deadlineMs) break
             try { Thread.sleep(waitMs + jitter) } catch (e: InterruptedException) {
@@ -404,11 +422,84 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         throw OcrUnavailableException("Google Lens: network failure ($why)", last)
     }
 
-    private fun postOnce(payload: ByteArray, network: Network?, bound: Boolean, budgetMs: Long): ByteArray {
+    /**
+     * Hedged request. The first attempt starts at once. If it has not answered after [hedgeAfterMs] - or has
+     * already failed - the SAME request is started on the other network path (active-network DNS vs process
+     * default route), and whichever answers first wins; the loser is cut. Before, a stalled connection burned
+     * the whole 6.5 s realtime budget with no second try, which is what made scans randomly "very late".
+     */
+    private fun race(
+        payload: ByteArray, info: NetInfo, budgetMs: Long, connectMs: Long,
+        hedgeAfterMs: Long, minimumAttemptMs: Long, firstBound: Boolean
+    ): ByteArray {
+        val started = SystemClock.elapsedRealtime()
+        val cs = ExecutorCompletionService<Attempt>(HTTP_POOL)
+        val attempts = ArrayList<Attempt>(2)
+        val futures = ArrayList<Future<Attempt>>(2)
+        val firstUsesBound = firstBound && info.network != null
+        fun launch(bound: Boolean) {
+            val a = Attempt()
+            val left = (budgetMs - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(minimumAttemptMs)
+            attempts.add(a)
+            futures.add(cs.submit(Callable { a.body = postOnce(payload, info.network, bound, left, connectMs, a); a }))
+        }
+        launch(firstUsesBound)
+        var running = 1
+        var hedged = false
+        var firstError: Throwable? = null
+        var winner: Attempt? = null
+        try {
+            while (running > 0) {
+                val sinceStart = SystemClock.elapsedRealtime() - started
+                val waitMs = if (!hedged) (hedgeAfterMs - sinceStart).coerceAtLeast(1L)
+                             else (budgetMs - sinceStart + 300L).coerceAtLeast(1L)
+                val done = cs.poll(waitMs, TimeUnit.MILLISECONDS)
+                if (done == null) {
+                    if (!hedged && budgetMs - sinceStart >= minimumAttemptMs) {
+                        hedged = true; running++
+                        launch(!firstUsesBound && info.network != null)
+                        continue
+                    }
+                    break   // budget exhausted
+                }
+                running--
+                try {
+                    val a = done.get()
+                    winner = a
+                    publish(a)
+                    return a.body ?: throw IOException("empty Lens reply")
+                } catch (e: ExecutionException) {
+                    val cause = e.cause ?: e
+                    if (firstError == null) firstError = cause
+                    if (cause is HttpStatus && cause.code !in RETRYABLE_STATUS) throw cause
+                    // Primary failed fast: do not wait for a backoff, try the other path right now.
+                    if (!hedged && budgetMs - (SystemClock.elapsedRealtime() - started) >= minimumAttemptMs) {
+                        hedged = true; running++
+                        launch(!firstUsesBound && info.network != null)
+                    }
+                }
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("cancelled")
+        } finally {
+            if (winner == null) attempts.lastOrNull()?.let { publish(it) }
+            // Cut everything that did not deliver; keep the winner's socket for keep-alive reuse.
+            for (a in attempts) if (a !== winner && a.body == null) try { a.conn?.disconnect() } catch (_: Throwable) {}
+            for (f in futures) f.cancel(true)
+        }
+        val err = firstError
+        if (err is IOException) throw err
+        if (err != null) throw IOException(err.javaClass.simpleName + ": " + (err.message ?: ""), err)
+        throw SocketTimeoutException("no reply within ${budgetMs}ms")
+    }
+
+    private fun postOnce(payload: ByteArray, network: Network?, bound: Boolean, budgetMs: Long, connectMs: Long, a: Attempt): ByteArray {
         val url = URL(endpoint())
         if (!url.protocol.equals("https", ignoreCase = true)) throw IOException("refusing non-HTTPS endpoint")
         val raw = if (bound && network != null) network.openConnection(url) else url.openConnection()
         val c = raw as HttpURLConnection
+        a.conn = c
         var responseFullyRead = false
         try {
             c.requestMethod = "POST"
@@ -416,7 +507,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             c.doInput = true
             c.useCaches = false
             c.instanceFollowRedirects = false          // a redirect of a protobuf POST means "not the real endpoint"
-            c.connectTimeout = minOf(CONNECT_MS, budgetMs).toInt()
+            c.connectTimeout = minOf(connectMs, budgetMs).toInt()
             c.readTimeout = minOf(READ_MS, budgetMs).toInt()
             c.setFixedLengthStreamingMode(payload.size)
             c.setRequestProperty("Content-Type", "application/x-protobuf")
@@ -431,11 +522,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             // No Accept-Encoding header on purpose: then HttpURLConnection negotiates gzip AND decodes it itself.
             c.outputStream.use { it.write(payload); it.flush() }
             val code = c.responseCode
-            lastHttpStatus.set(code)
-            lastHttpMeta.set("contentType=${c.contentType ?: "unknown"} encoding=${c.contentEncoding ?: "none"} " +
-                "headerLength=${c.getHeaderField("Content-Length") ?: "unknown"} requestBytes=${payload.size}")
+            a.status = code
+            a.meta = "contentType=${c.contentType ?: "unknown"} encoding=${c.contentEncoding ?: "none"} " +
+                "headerLength=${c.getHeaderField("Content-Length") ?: "unknown"} requestBytes=${payload.size} " +
+                "path=${if (bound && network != null) "bound" else "default"}"
             if (code !in 200..299) {
-                Log.w(TAG, "HTTP_REJECTED status=$code ${currentHttpMeta()}")
+                Log.w(TAG, "HTTP_REJECTED status=$code ${a.meta}")
                 val retryAfter = (c.getHeaderField("Retry-After")?.trim()?.toLongOrNull() ?: 0L).coerceIn(0L, 10L) * 1000L
                 throw HttpStatus(code, retryAfter)
             }
@@ -455,11 +547,51 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 out.toByteArray()
             }
             responseFullyRead = true
-            Log.i(TAG, "HTTP_RESPONSE status=$code ${currentHttpMeta()} replyBytes=${reply.size}")
+            Log.i(TAG, "HTTP_RESPONSE status=$code ${a.meta} replyBytes=${reply.size}")
+            lastWarmAt = SystemClock.elapsedRealtime()   // a real request just proved the connection is warm
             return reply
         } finally {
             // Preserve successful keep-alive sockets; discard partial/error responses before retrying.
             if (!responseFullyRead) try { c.disconnect() } catch (_: Throwable) {}
+        }
+    }
+
+    // ---- warm-up --------------------------------------------------------------------------------
+
+    /**
+     * Opens (and parks in the keep-alive pool) the DNS + TCP + TLS connection to the Lens host on both
+     * network paths, so the first real scan skips ~3 round trips of handshake. Fire-and-forget: errors,
+     * a 404/405 reply and "offline" are all fine - the only goal is a warm socket.
+     */
+    private fun warmNow() {
+        val info = netInfo()
+        if (!info.online) return
+        val paths = if (info.network != null) listOf(true, false) else listOf(false)
+        for (bound in paths) {
+            try {
+                val url = URL(endpoint())
+                if (!url.protocol.equals("https", ignoreCase = true)) return
+                val raw = if (bound) info.network!!.openConnection(url) else url.openConnection()
+                val c = raw as HttpURLConnection
+                try {
+                    c.requestMethod = "GET"
+                    c.useCaches = false
+                    c.instanceFollowRedirects = false
+                    c.connectTimeout = 4_000
+                    c.readTimeout = 4_000
+                    c.setRequestProperty("User-Agent", USER_AGENT)
+                    c.setRequestProperty("Connection", "keep-alive")
+                    val code = c.responseCode
+                    // Drain fully so the socket returns to the pool instead of being closed.
+                    (if (code in 200..299) c.inputStream else c.errorStream)?.use { ins ->
+                        val buf = ByteArray(4096)
+                        while (ins.read(buf) >= 0) { /* discard */ }
+                    }
+                    Log.i(TAG, "WARM ok path=${if (bound) "bound" else "default"} status=$code")
+                } catch (t: Throwable) {
+                    Log.i(TAG, "WARM skipped path=${if (bound) "bound" else "default"}: ${t.javaClass.simpleName}")
+                }
+            } catch (_: Throwable) {}
         }
     }
 
@@ -519,6 +651,28 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     companion object {
         private const val TAG = "NovelStudioLens"
 
+        private val HTTP_POOL = Executors.newCachedThreadPool { r ->
+            Thread(r, "ns-lens-http").apply { isDaemon = true }
+        }
+
+        @Volatile private var lastWarmAt = 0L
+
+        /**
+         * Pre-connects to Lens in the background (DNS + TLS). Cheap to call often: it does nothing when a
+         * request or a previous warm-up touched the connection within [WARM_INTERVAL_MS].
+         */
+        fun warmUp(context: Context) {
+            val now = SystemClock.elapsedRealtime()
+            synchronized(this) {
+                if (lastWarmAt != 0L && now - lastWarmAt < WARM_INTERVAL_MS) return
+                lastWarmAt = now
+            }
+            val app = context.applicationContext
+            HTTP_POOL.execute {
+                try { LensOcrEngine(app).warmNow() } catch (_: Throwable) {}
+            }
+        }
+
         /** For the OCR log: is the circuit breaker currently skipping Lens? */
         fun breakerStatus(): String = Breaker.status()
 
@@ -546,6 +700,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         private const val FAST_MIN_ATTEMPT_MS = 1_000L
         private const val FAST_MAX_ATTEMPTS = 2
         private const val CONNECT_MS = 7_000L
+        private const val FAST_CONNECT_MS = 3_000L
+        // Start the same request on the other network path if no answer after this long (see race()).
+        private const val FAST_HEDGE_MS = 1_800L
+        private const val HEDGE_MS = 3_000L
+        // Warm sockets stay in the pool ~5 min; refresh a little before that.
+        private const val WARM_INTERVAL_MS = 150_000L
         private const val READ_MS = 15_000L
         private const val TOTAL_DEADLINE_MS = 22_000L
         private const val MIN_ATTEMPT_MS = 2_500L
@@ -553,8 +713,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         private const val BACKOFF_MS = 400L
         private val RETRYABLE_STATUS = setOf(429, 500, 502, 503, 504)
 
-        private const val TRANSIENT_TRIP = 2
-        private const val TRANSIENT_PAUSE_MS = 45_000L
+        // Two timeouts in a row used to switch Lens off for 45 s, which looked like whole panels being skipped.
+        private const val TRANSIENT_TRIP = 3
+        private const val TRANSIENT_PAUSE_MS = 15_000L
         private const val PERMANENT_PAUSE_MS = 10 * 60_000L
 
         private const val CACHE_SIZE = 8
