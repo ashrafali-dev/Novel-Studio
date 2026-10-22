@@ -235,7 +235,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     private fun cached(key: Long): List<OcrBlock>? = synchronized(cache) {
         val c = cache[key] ?: return@synchronized null
-        if (SystemClock.elapsedRealtime() - c.at > CACHE_TTL_MS) { cache.remove(key); null } else c.lines
+        // A blank Lens response should not suppress another attempt for the full positive-cache TTL.
+        // Keep a brief negative-cache window to avoid hammering Lens for every identical live frame,
+        // then let a later scan retry the same image in case Lens's response was transiently incomplete.
+        val ttl = if (c.lines.isEmpty()) EMPTY_CACHE_TTL_MS else CACHE_TTL_MS
+        if (SystemClock.elapsedRealtime() - c.at > ttl) { cache.remove(key); null } else c.lines
     }
 
     private fun remember(key: Long, lines: List<OcrBlock>) {
@@ -461,5 +465,6 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         private const val CACHE_SIZE = 8
         private const val CACHE_TTL_MS = 3 * 60_000L
+        private const val EMPTY_CACHE_TTL_MS = 6_000L
     }
 }
