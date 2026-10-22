@@ -6535,6 +6535,18 @@ return t.length>=40?'TXT:'+t:'';
                     clearWebModeProgress()
                     when (out) {
                         is WebModeOutcome.Success -> {
+                            // OCR compared this canvas with the last successful scan. If the reader reused
+                            // its canvas for a different manga page, remove the old overlay BEFORE any new
+                            // chatbot request is sent. This also clears hidden toggle HTML, not just visible DOM.
+                            val changedCanvasSources = WebModeLayoutStore.takeCanvasTransitions(out.chapter.url)
+                            if (changedCanvasSources.isNotEmpty()) {
+                                novelWv.evaluateJavascript(WebModeWriter.clearCanvasOverlayScript(), null)
+                                hasTr = false
+                                shownTranslated = false
+                                shownTrRaw = ""
+                                updatePill()
+                                Log.i("NovelStudioOCR", "Cleared stale manga overlay after canvas page change; sources=" + changedCanvasSources.size)
+                            }
                             deepSeekAutoStartedUrl = novelWv.url.orEmpty()
                             deepSeekFailStreak = 0
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
