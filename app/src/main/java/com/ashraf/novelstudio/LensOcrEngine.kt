@@ -90,11 +90,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         Breaker.check()
         val payload = LensProtocol.buildObjectsRequest(
             jpeg = prepared.jpeg, width = prepared.w, height = prepared.h,
-            language = languageHint(script), region = regionHint(), timeZone = zoneHint(),
+            language = languageHint(), region = regionHint(), timeZone = zoneHint(),
             uuid = random.nextLong() and Long.MAX_VALUE,
             timeUsec = System.currentTimeMillis() * 1000L,
-            analyticsId = java.nio.ByteBuffer.allocate(16)
-                .putLong(random.nextLong()).putLong(random.nextLong()).array()
         )
 
         Log.i(TAG, "request begin imageId=${java.lang.Long.toHexString(key)} script=${script.name} source=${bitmap.width}x${bitmap.height} " +
@@ -181,8 +179,10 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 work = flat
             }
             val area = work.width.toLong() * work.height.toLong()
-            if (area > MAX_AREA) {
-                val k = Math.sqrt(MAX_AREA.toDouble() / area.toDouble())
+            if (area > MAX_AREA && (work.width > MAX_DIMENSION || work.height > MAX_DIMENSION)) {
+                // Match Chromium Lens image preparation: retain native dimensions for ordinary
+                // phone screenshots; only resize when the image exceeds the area AND 1600px bounds.
+                val k = minOf(MAX_DIMENSION.toDouble() / work.width, MAX_DIMENSION.toDouble() / work.height)
                 val sw = (work.width * k).toInt().coerceAtLeast(1)
                 val sh = (work.height * k).toInt().coerceAtLeast(1)
                 val scaled = Bitmap.createScaledBitmap(work, sw, sh, true)
@@ -215,10 +215,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         return h
     }
 
-    // This is the client UI locale, not a forced OCR language. Lens detects language from pixels.
-    // Forcing a stale CHINESE script here caused English Webtoon panels to be submitted with a zh hint.
-    private fun languageHint(script: OcrScript): String =
-        Locale.getDefault().language.takeIf { it.isNotBlank() } ?: "en"
+    // The reference Lens client sends an empty OCR language hint so Lens detects text language itself.
+    private fun languageHint(): String = ""
 
     private fun regionHint(): String = Locale.getDefault().country.takeIf { it.length == 2 } ?: "US"
     private fun zoneHint(): String = TimeZone.getDefault().id.takeIf { it.isNotBlank() } ?: "America/New_York"
@@ -444,8 +442,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
         private const val MIN_SIDE = 16
-        private const val MAX_AREA = 3_000_000L
-        private const val JPEG_QUALITY = 85
+        private const val MAX_AREA = 1_500_000L
+        private const val MAX_DIMENSION = 1600
+        private const val JPEG_QUALITY = 40
         private const val MAX_UPLOAD_BYTES = 3_500_000
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
@@ -463,6 +462,6 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         private const val CACHE_SIZE = 8
         private const val CACHE_TTL_MS = 3 * 60_000L
-        private const val EMPTY_CACHE_TTL_MS = 6_000L
+        private const val EMPTY_CACHE_TTL_MS = 1_000L
     }
 }
