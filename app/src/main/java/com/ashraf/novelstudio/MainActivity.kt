@@ -9259,7 +9259,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "📝 Edit Prompt For Scanning Translation",
             "⬆️ App Updates (Community)",
             "💬 Join the Community (Telegram · Reddit)",
-            "🧠 What the App Learned About This Site"
+            "🧠 What the App Learned About This Site", menuAiImageCleanerLabel()
         )
         // Rows that are not offered here. Their underlying features and code remain unchanged.
         val hidden = setOf(2, 6, 8, 10, 11, 13, 17, 18, 25)
@@ -9268,7 +9268,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
             27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE, 57 to Ic.SEARCH
+            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE, 57 to Ic.SEARCH, 58 to Ic.SPARK
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
@@ -9281,7 +9281,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         )
         val advanced = listOf(
             "TRANSLATION" to listOf(47, 12, 19, 14, 26, 30, 39, 40, 44, 46),
-            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 41, 43, 48, 49, 51),
+            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 41, 43, 48, 49, 51, 58),
             "BROWSER" to listOf(15, 16, 21, 24, 29, 35),
             "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45, 52)
         )
@@ -9427,6 +9427,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                           else "🔄 Auto new chat OFF — stay in the current chat")
                 }
                 53 -> { dlg.dismiss(); ocrModelsDialog() }
+                58 -> { dlg.dismiss(); aiImageCleanerDialog() }
                 51 -> {
                     val on = !Prefs.bool(this, "ocrRescan", true)
                     Prefs.putBool(this, "ocrRescan", on)
@@ -10077,6 +10078,128 @@ ${rows.take(220).joinToString("\n")}
 
     private fun menuTextRemovalLabel(): String =
         (if (Prefs.bool(this, "wmTextRemoval", false)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
+
+    private fun menuAiImageCleanerLabel(): String = when {
+        Prefs.bool(this, "wmAiUnsupported", false) -> "⚠️ AI Image Cleaner: too slow on this phone"
+        WebModeInpainter.isDownloading() -> "⬇️ AI Image Cleaner: downloading"
+        WebModeInpainter.isReady(this) && Prefs.bool(this, "wmAiInpaint", false) -> "✅ AI Image Cleaner (LaMa): ON"
+        WebModeInpainter.isReady(this) -> "🧠 AI Image Cleaner (LaMa): downloaded"
+        else -> "⬇️ AI Image Cleaner (LaMa): download ~37 MB"
+    }
+
+    private fun aiImageCleanerDialog() {
+        val ready = WebModeInpainter.isReady(this)
+        val enabled = Prefs.bool(this, "wmAiInpaint", false)
+        val unsupported = Prefs.bool(this, "wmAiUnsupported", false)
+        val downloading = WebModeInpainter.isDownloading()
+        val status = when {
+            downloading -> "Status: download in progress."
+            unsupported -> "Status: this phone exceeded the 7-second AI-cleaning limit. The model was automatically disabled and removed."
+            ready && enabled -> "Status: model downloaded and AI cleaning is ON."
+            ready -> "Status: model downloaded; AI cleaning is OFF."
+            else -> "Status: model not downloaded."
+        }
+        val message = "LaMa AI Image Cleaner\n\n" +
+            "Downloads an optional model (~37 MB) into the app's private storage. It is separate from OCR; OCR still works without it.\n\n" +
+            status + "\n\n" +
+            "The app measures AI inpainting time per image. If AI work takes 7 seconds or more, it disables AI and removes the model automatically. The normal text-removal fallback stays available."
+
+        val positive = when {
+            downloading -> "Downloading…"
+            unsupported -> "Retry download"
+            ready && enabled -> "Disable AI"
+            ready -> "Enable AI"
+            else -> "Download (~37 MB)"
+        }
+        val builder = AlertDialog.Builder(this)
+            .setTitle("🧠 AI Image Cleaner")
+            .setMessage(message)
+            .setPositiveButton(positive) { _, _ ->
+                when {
+                    WebModeInpainter.isDownloading() -> toast("⬇️ LaMa model is already downloading")
+                    Prefs.bool(this, "wmAiUnsupported", false) -> {
+                        // A manual retry is allowed, but the automatic slow-device guard remains in place.
+                        if (WebModeInpainter.isReady(this)) WebModeInpainter.delete(this)
+                        Prefs.putBool(this, "wmAiUnsupported", false)
+                        startAiImageCleanerDownload()
+                    }
+                    WebModeInpainter.isReady(this) && Prefs.bool(this, "wmAiInpaint", false) -> {
+                        Prefs.putBool(this, "wmAiInpaint", false)
+                        toast("🧠 AI Image Cleaner OFF — normal Text Remover remains available")
+                    }
+                    WebModeInpainter.isReady(this) -> {
+                        Prefs.putBool(this, "wmTextRemoval", true)
+                        Prefs.putBool(this, "wmAiUnsupported", false)
+                        Prefs.putBool(this, "wmAiInpaint", true)
+                        WebModeInpainter.warmUpAsync(this)
+                        toast("✅ AI Image Cleaner ON — model loading in the background")
+                    }
+                    else -> startAiImageCleanerDownload()
+                }
+            }
+            .setNegativeButton("Close", null)
+
+        if (ready) {
+            builder.setNeutralButton("Delete model") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setMessage("Delete the downloaded LaMa model and turn off AI cleaning?")
+                    .setPositiveButton("Delete") { _, _ ->
+                        val deleted = WebModeInpainter.delete(this)
+                        Prefs.putBool(this, "wmAiInpaint", false)
+                        toast(if (deleted) "🗑 LaMa model deleted" else "⚠️ Could not delete the LaMa model file")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+        builder.show()
+    }
+
+    private fun startAiImageCleanerDownload() {
+        if (WebModeInpainter.isDownloading()) {
+            toast("⬇️ LaMa model is already downloading")
+            return
+        }
+
+        val progress = android.app.ProgressDialog(this).apply {
+            setTitle("Downloading LaMa AI model")
+            setMessage("Preparing download (~37 MB)…")
+            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
+            max = 100
+            progress = 0
+            setCancelable(false)
+            setCanceledOnTouchOutside(false)
+        }
+        progress.show()
+
+        WebModeInpainter.download(
+            this,
+            { downloaded, total ->
+                runOnUiThread {
+                    if (progress.isShowing) {
+                        progress.progress = if (total > 0L) ((downloaded * 100L) / total).toInt().coerceIn(0, 100) else 0
+                        val done = String.format(java.util.Locale.US, "%.1f", downloaded / 1048576.0)
+                        val size = if (total > 0L) String.format(java.util.Locale.US, "%.1f", total / 1048576.0) else "?"
+                        progress.setMessage("$done MB / $size MB")
+                    }
+                }
+            },
+            { error ->
+                runOnUiThread {
+                    if (progress.isShowing) progress.dismiss()
+                    if (error == null) {
+                        Prefs.putBool(this, "wmAiUnsupported", false)
+                        Prefs.putBool(this, "wmTextRemoval", true)
+                        Prefs.putBool(this, "wmAiInpaint", true)
+                        toast("✅ LaMa downloaded and AI Image Cleaner enabled")
+                    } else {
+                        Prefs.putBool(this, "wmAiInpaint", false)
+                        toast("❌ LaMa download failed: $error")
+                    }
+                }
+            }
+        )
+    }
 
     /** Glass bottom sheet with one tappable row per label (long-press optional). */
     /** A sheet with a search box on top; used for the long language lists. */
