@@ -112,7 +112,7 @@ internal object WebModeWriter {
       b.setAttribute('data-bg',it.bg);
       b.setAttribute('data-sf',it.sf?'1':'0');
       b.setAttribute('data-g',[it.cx,it.cy,it.w,it.h,it.a,it.f].join(','));
-      b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:hidden;'
+      b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:visible;'
         +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
         // If the underlying source image was cleaned, do not put an opaque box over it:
         // untouched nearby lettering/line art stays visible instead of disappearing under the translation.
@@ -317,7 +317,21 @@ internal object WebModeWriter {
         var ox=Math.min(A.x1,B.x1)-Math.max(A.x0,B.x0),oy=Math.min(A.y1,B.y1)-Math.max(A.y0,B.y0);
         if(ox<=2||oy<=2)continue;
         var aA=(A.x1-A.x0)*(A.y1-A.y0),aB=(B.x1-B.x0)*(B.y1-B.y0);
-        if(ox*oy>0.6*Math.min(aA,aB)){ // one sits inside the other: the smaller one is drawn on top
+        if(ox*oy>0.6*Math.min(aA,aB)){
+          if(Math.min(aA,aB)>=0.3*Math.max(aA,aB)){
+            // Two comparable boxes on the same spot are two readings of one bubble (e.g. its two lines). Drawn on
+            // top of each other they garble each other (the cleaned picture has no cover box), so stack them
+            // top to bottom inside their union, sharing the height by text length.
+            var tA=(A.b.textContent||''),tB=(B.b.textContent||'');
+            var T=(A.y0+A.y1<=B.y0+B.y1)?A:B,Bo=(T===A)?B:A;
+            if(tA===tB){Bo.x0=Bo.x1=Bo.y0=Bo.y1=-99999;continue;}   // exact duplicate: draw once
+            var U0=Math.min(A.y0,B.y0),U1=Math.max(A.y1,B.y1),X0=Math.min(A.x0,B.x0),X1=Math.max(A.x1,B.x1);
+            var lt=Math.max(1,(T.b.textContent||'').length),lb=Math.max(1,(Bo.b.textContent||'').length);
+            var cut=U0+(U1-U0)*lt/(lt+lb);
+            T.x0=Bo.x0=X0;T.x1=Bo.x1=X1;T.y0=U0;T.y1=cut-1;Bo.y0=cut+1;Bo.y1=U1;
+            continue;
+          }
+          // a small note inside a much bigger box: the smaller one is drawn on top
           if(aA<=aB){A.z=2;B.z=1;}else{B.z=2;A.z=1;}
           continue;
         }
@@ -754,14 +768,15 @@ internal object WebModeWriter {
      */
     fun bubbleScript(layout: WebModeLayout, translated: List<String?>, font: String, pageId: String): String {
         val arr = JSONArray()
-        // The cleaner currently masks all confidently detected flat text regions in a source image.
-        // Only show that replacement if every flat text region from the same image has a translation;
-        // otherwise the original <img> remains visible so untranslated text cannot silently disappear.
+        // The cleaner records exactly which bubbles it erased (flat and artwork alike). The cleaned image is
+        // shown only if every ERASED bubble of that image has a translation; otherwise the original <img>
+        // stays visible so untranslated text cannot silently disappear. Bubbles the cleaner skipped do not
+        // block it: they simply keep the opaque-box fallback.
         val canShowCleanImage = layout.bubbles.withIndex()
             .groupBy { WebModeLogic.normalizeUrl(it.value.src) }
             .mapValues { (_, group) ->
                 group.filter { it.value.sourceText.isNotBlank() &&
-                        (!it.value.soft || WebModeTextRemovalCache.isErased(it.value.src, WebModeTextRemovalCache.bubbleKey(it.value))) }
+                        WebModeTextRemovalCache.isErased(it.value.src, WebModeTextRemovalCache.bubbleKey(it.value)) }
                     .all { (index, _) -> !translated.getOrNull(index).isNullOrBlank() }
             }
         for ((i, b) in layout.bubbles.withIndex()) {
@@ -772,8 +787,9 @@ internal object WebModeWriter {
                 .put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
                 .put("a", r5(b.angle)).put("f", r5(b.font))
                 .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft)
-                // Transparent translations are safe only for the flat regions the cleaner can handle.
-                .put("cl", if ((!b.soft || WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b))) &&
+                // Transparent translation only where THIS bubble's old lettering was really erased; a bubble the
+                // cleaner skipped keeps its cover box, so the old text never shows through the translation.
+                .put("cl", if (WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b)) &&
                     canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
                     WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
         }

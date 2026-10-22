@@ -23,8 +23,8 @@ import kotlin.math.min
  */
 internal object WebModeTextRemover {
     private const val MAX_WIDTH = 4096
-    private const val MAX_HEIGHT = 4096
-    private const val MAX_PIXELS = 6_000_000L
+    private const val MAX_HEIGHT = 20000
+    private const val MAX_PIXELS = 14_000_000L
     private const val MAX_BYTES = 18 * 1024 * 1024
 
     fun cleanAndCache(
@@ -52,12 +52,10 @@ internal object WebModeTextRemover {
                 ?: run { decoded.recycle(); return false }
 
         try {
-            val count = width * height
-            val original = IntArray(count)
-            bitmap.getPixels(original, 0, width, 0, 0, width, height)
-            val output = original.copyOf()
             var totalRemoved = 0
-            val erasedSoft = HashSet<String>()
+            // Every bubble whose lettering was really erased (flat AND artwork). The writer only drops its
+            // opaque cover box for bubbles in this set; any other bubble keeps the safe box fallback.
+            val erased = HashSet<String>()
             val boundedBubbles = bubbles.asSequence()
                 .filter { it.sourceText.isNotBlank() && it.w > 0f && it.h > 0f }
                 .take(500)
@@ -69,14 +67,14 @@ internal object WebModeTextRemover {
                 val bw = bubble.w * width
                 val bh = bubble.h * height
                 if (!cx.isFinite() || !cy.isFinite() || !bw.isFinite() || !bh.isFinite()) continue
-                val x0 = (cx - bw / 2f).toInt().coerceIn(0, width - 1)
-                val y0 = (cy - bh / 2f).toInt().coerceIn(0, height - 1)
-                val x1 = ceil(cx + bw / 2f).toInt().coerceIn(x0 + 1, width)
-                val y1 = ceil(cy + bh / 2f).toInt().coerceIn(y0 + 1, height)
-                val rw = x1 - x0
-                val rh = y1 - y0
-                val regionSize = rw.toLong() * rh.toLong()
-                if (rw < 4 || rh < 4 || regionSize > 1_250_000L) continue
+                // ox/oy = the exact OCR box (where the old lettering is).
+                val ox0 = (cx - bw / 2f).toInt().coerceIn(0, width - 1)
+                val oy0 = (cy - bh / 2f).toInt().coerceIn(0, height - 1)
+                val ox1 = ceil(cx + bw / 2f).toInt().coerceIn(ox0 + 1, width)
+                val oy1 = ceil(cy + bh / 2f).toInt().coerceIn(oy0 + 1, height)
+                val innerW = ox1 - ox0
+                val innerH = oy1 - oy0
+                if (innerW < 4 || innerH < 4 || innerW.toLong() * innerH.toLong() > 1_250_000L) continue
 
                 val soft = bubble.soft
                 val bg = opaque(bubble.bg)
@@ -85,32 +83,55 @@ internal object WebModeTextRemover {
                 if (distance(bg, fg1) < 52 && distance(bg, fg2) < 52) continue
 
                 val fontPx = (bubble.font * width).takeIf { it.isFinite() && it > 0f }
-                    ?.coerceIn(3f, 140f) ?: max(3f, min(rw, rh).toFloat() * 0.65f)
-                // Dense/bold CJK glyphs (and vertical columns) often touch, so a "component" can be several
-                // glyphs long. Allow that, and protect bubble outlines by the border-contact rule below.
-                val maxComponentW = max(8, (fontPx * 6.5f).toInt())
-                val maxComponentH = max(8, (fontPx * 6.5f).toInt())
-                val maxComponentPixels = max(18, (fontPx * fontPx * 9f + fontPx * 10f).toInt())
+                    ?.coerceIn(3f, 400f) ?: max(3f, min(innerW, innerH).toFloat() * 0.65f)
 
+                // Analyse a region a little LARGER than the OCR box. OCR boxes are tight, so a vertical
+                // Japanese column (or any dense line) used to touch the region edge and was thrown away as
+                // if it were the bubble outline. With padding, real lettering sits inside, while outlines
+                // still cross the edge and are rejected by the border rule below.
+                val pad = (fontPx * 0.5f).toInt().coerceIn(2, 24)
+                val x0 = max(0, ox0 - pad)
+                val y0 = max(0, oy0 - pad)
+                val x1 = min(width, ox1 + pad)
+                val y1 = min(height, oy1 + pad)
+                val rw = x1 - x0
+                val rh = y1 - y0
+                val regionSize = rw.toLong() * rh.toLong()
+                if (regionSize > 2_000_000L) continue
                 val regionCount = regionSize.toInt()
+                // OCR box in region coordinates.
+                val ix0 = ox0 - x0; val iy0 = oy0 - y0
+                val ix1 = ox1 - x0; val iy1 = oy1 - y0
+                val innerArea = innerW.toLong() * innerH.toLong()
+
+                // Only this small region is copied out of the bitmap (not the whole page), so tall
+                // webtoon strips fit in memory.
+                val region = IntArray(regionCount)
+                bitmap.getPixels(region, 0, rw, x0, y0, rw, rh)
+
+                // Size limits for ONE connected shape. On artwork they stay strict (line art survives).
+                // On flat bubbles a whole touching column/line of glyphs is allowed, up to the OCR box size.
+                val maxComponentW = if (soft) max(8, min(innerW + 4, (fontPx * 16f).toInt())) else innerW + 4
+                val maxComponentH = if (soft) max(8, min(innerH + 4, (fontPx * 16f).toInt())) else innerH + 4
+                val maxComponentPixels = if (soft) max(18, (innerArea * 0.4).toInt())
+                    else (innerArea * 0.7).toInt().coerceAtLeast(18)
+
                 val candidate = ByteArray(regionCount)
                 val seen = ByteArray(regionCount)
                 val selected = ByteArray(regionCount)
-                for (ry in 0 until rh) {
-                    val src = (y0 + ry) * width + x0
-                    val row = ry * rw
-                    for (rx in 0 until rw) {
-                        val p = original[src + rx]
-                        val fromBg = distance(p, bg)
-                        if (fromBg < (if (soft) 52f else 46f)) continue
-                        val fromFg = min(distance(p, fg1), distance(p, fg2))
-                        // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
-                        // On artwork (soft) only pixels that are clearly the lettering colour qualify, so line art survives.
-                        if (fromFg <= (if (soft) 68f else max(82f, fromBg * 1.08f))) candidate[row + rx] = 1
-                    }
+                // Shapes that are certainly NOT lettering (outline / other bubble): the sweep below never touches them.
+                val protect = ByteArray(regionCount)
+                for (i in 0 until regionCount) {
+                    val p = region[i]
+                    val fromBg = distance(p, bg)
+                    if (fromBg < (if (soft) 52f else 46f)) continue
+                    val fromFg = min(distance(p, fg1), distance(p, fg2))
+                    // Include anti-aliased letter edges, but require a real contrast from the bubble fill.
+                    // On artwork (soft) only pixels that are clearly the lettering colour qualify, so line art survives.
+                    if (fromFg <= (if (soft) 78f else max(82f, fromBg * 1.08f))) candidate[i] = 1
                 }
 
-                val queue = IntArray(regionCount.coerceAtMost(1_250_000))
+                val queue = IntArray(regionCount)
                 var selectedCount = 0
                 for (start in 0 until regionCount) {
                     if (candidate[start].toInt() == 0 || seen[start].toInt() != 0) continue
@@ -120,6 +141,7 @@ internal object WebModeTextRemover {
                     seen[start] = 1
                     var minX = rw; var minY = rh; var maxX = -1; var maxY = -1
                     var componentPixels = 0
+                    var insidePixels = 0
                     while (head < tail) {
                         val at = queue[head++]
                         val ry = at / rw
@@ -127,12 +149,13 @@ internal object WebModeTextRemover {
                         minX = min(minX, rx); maxX = max(maxX, rx)
                         minY = min(minY, ry); maxY = max(maxY, ry)
                         componentPixels++
+                        if (rx in ix0 until ix1 && ry in iy0 until iy1) insidePixels++
                         for (dy in -1..1) for (dx in -1..1) {
                             if (dx == 0 && dy == 0) continue
                             val nx = rx + dx; val ny = ry + dy
                             if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) continue
                             val ni = ny * rw + nx
-                            if (candidate[ni].toInt() != 0 && seen[ni].toInt() == 0 && tail < queue.size) {
+                            if (candidate[ni].toInt() != 0 && seen[ni].toInt() == 0) {
                                 seen[ni] = 1
                                 queue[tail++] = ni
                             }
@@ -140,30 +163,48 @@ internal object WebModeTextRemover {
                     }
                     val cw = maxX - minX + 1
                     val ch = maxY - minY + 1
+                    // A shape that mostly lies OUTSIDE the OCR box belongs to something else (neighbouring
+                    // bubble text, outline, art): never touch it.
+                    if (insidePixels * 2 < componentPixels) {
+                        for (i in 0 until tail) protect[queue[i]] = 1
+                        continue
+                    }
                     // A big shape that reaches two sides of the region is the bubble outline, not lettering.
                     val touches = (if (minX == 0) 1 else 0) + (if (maxX == rw - 1) 1 else 0) +
                         (if (minY == 0) 1 else 0) + (if (maxY == rh - 1) 1 else 0)
-                    if (touches >= 2 && (cw > fontPx * 2.2f || ch > fontPx * 2.2f)) continue
+                    if (touches >= 2 && (cw > fontPx * 2.2f || ch > fontPx * 2.2f)) {
+                        for (i in 0 until tail) protect[queue[i]] = 1
+                        continue
+                    }
                     // Large lines, bubble contours and art strokes are ambiguous: keep them.
                     if (componentPixels < max(3, (fontPx * 0.06f).toInt()) ||
                         cw > maxComponentW || ch > maxComponentH ||
                         componentPixels > maxComponentPixels) continue
-                    for (i in 0 until tail) {
-                        val at = queue[i]
-                        selected[at] = 1
-                    }
+                    for (i in 0 until tail) selected[queue[i]] = 1
                     selectedCount += componentPixels
                 }
 
-                // If the inferred mask covers too much of a region, it is probably art rather than text.
-                // Tight OCR boxes around dense CJK glyphs can legitimately contain more ink than Latin boxes.
-                // The connected-component/size checks above remain the stronger art-protection filters.
-                if (selectedCount < 4 || selectedCount > regionCount * (if (soft) 0.35f else 0.5f)) continue
+                // If the inferred mask covers too much of the OCR box, it is probably art rather than text.
+                // Dense bold CJK glyphs legitimately hold more ink than Latin text.
+                if (selectedCount < 4 || selectedCount > innerArea * (if (soft) 0.5 else 0.6)) continue
+
+                // Flat bubble: sweep EVERYTHING inside the OCR box (slightly widened) that differs from the paper
+                // colour, unless it belongs to a protected shape. This removes the faint ghosts that the strict
+                // glyph test leaves behind: anti-aliasing, JPEG ringing, halos, thin strokes, shapes rejected by size.
+                if (!soft) {
+                    val m = (fontPx * 0.12f).toInt().coerceIn(1, 4)
+                    val sx0 = max(0, ix0 - m); val sy0 = max(0, iy0 - m)
+                    val sx1 = min(rw, ix1 + m); val sy1 = min(rh, iy1 + m)
+                    for (ry in sy0 until sy1) for (rx in sx0 until sx1) {
+                        val i = ry * rw + rx
+                        if (selected[i].toInt() == 0 && protect[i].toInt() == 0 &&
+                            distance(region[i], bg) >= 9f) selected[i] = 1
+                    }
+                }
 
                 // Grow the mask a little: letter edges (anti-aliasing, JPEG ringing, faint halo) are lighter than
-                // the core pixels, fall outside the strict candidate test, and used to stay as a ghost of the old
-                // text behind the translation. Only pixels that differ from the paper colour are taken.
-                val grow = (fontPx * 0.07f).toInt().coerceIn(1, 3)
+                // the core pixels and used to stay as a ghost of the old text behind the translation.
+                val grow = if (soft) (fontPx * 0.14f).toInt().coerceIn(2, 6) else (fontPx * 0.07f).toInt().coerceIn(1, 3) + 1
                 val mask = selected.copyOf()
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
@@ -175,15 +216,15 @@ internal object WebModeTextRemover {
                                 val nx = rx + dx
                                 if (nx < 0 || nx >= rw) continue
                                 val ni = ny * rw + nx
-                                if (mask[ni].toInt() == 0 &&
-                                    distance(original[(y0 + ny) * width + x0 + nx], bg) >= 10f) mask[ni] = 1
+                                if (mask[ni].toInt() == 0 && protect[ni].toInt() == 0 &&
+                                    distance(region[ni], bg) >= 8f) mask[ni] = 1
                             }
                         }
                     }
                 }
 
-                // Fill only selected glyph pixels from the nearest unmasked pixels. On flat speech-bubble
-                // backgrounds this retains the exact local paper/colour instead of repainting a big box.
+                // Fill only the masked glyph pixels from their surroundings (never repaint a whole box).
+                val out = region.copyOf()
                 for (ry in 0 until rh) {
                     for (rx in 0 until rw) {
                         val at = ry * rw + rx
@@ -191,15 +232,14 @@ internal object WebModeTextRemover {
                         if (soft) {
                             // Lettering on artwork: rebuild the picture from the surroundings (sky, shading, screentone
                             // gradients) by blending the nearest untouched pixels left/right/up/down, nearest weighted most.
-                            output[(y0 + ry) * width + x0 + rx] = 0xFF000000.toInt() or
-                                gradientFill(original, mask, width, x0, y0, rw, rh, rx, ry,
-                                    max(8, (fontPx * 1.6f).toInt()), bg)
+                            out[at] = 0xFF000000.toInt() or
+                                gradientFill(region, mask, rw, rh, rx, ry, (fontPx * 1.6f).toInt().coerceIn(8, 60), bg)
                             continue
                         }
                         var sampleN = 0
                         var sumR = 0; var sumG = 0; var sumB = 0
                         var radius = 1
-                        while (radius <= 5 && sampleN < 6) {
+                        while (radius <= 9 && sampleN < 6) {
                             for (dy in -radius..radius) {
                                 for (dx in -radius..radius) {
                                     if (max(abs(dx), abs(dy)) != radius) continue
@@ -207,27 +247,25 @@ internal object WebModeTextRemover {
                                     if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) continue
                                     val ni = ny * rw + nx
                                     if (mask[ni].toInt() != 0) continue
-                                    val p = original[(y0 + ny) * width + x0 + nx]
+                                    val p = region[ni]
                                     if (distance(p, bg) > 72f) continue
                                     sumR += red(p); sumG += green(p); sumB += blue(p); sampleN++
                                 }
                             }
                             radius++
                         }
-                        // Average only nearby unmasked pixels with similar background colour; avoids
-                        // repainting the whole line or allocating arrays for every single glyph pixel.
                         val fill = if (sampleN >= 3) {
                             (sumR / sampleN shl 16) or (sumG / sampleN shl 8) or (sumB / sampleN)
                         } else bg and 0x00FFFFFF
-                        output[(y0 + ry) * width + x0 + rx] = 0xFF000000.toInt() or fill
+                        out[at] = 0xFF000000.toInt() or fill
                     }
                 }
+                bitmap.setPixels(out, 0, rw, x0, y0, rw, rh)
                 totalRemoved += selectedCount
-                if (soft) erasedSoft.add(WebModeTextRemovalCache.bubbleKey(bubble))
+                erased.add(WebModeTextRemovalCache.bubbleKey(bubble))
             }
             if (totalRemoved < 8) return false
 
-            bitmap.setPixels(output, 0, width, 0, 0, width, height)
             val bytesOut = ByteArrayOutputStream()
             // API 30+ supports lossless WebP. Older Android versions use lossless PNG instead
             // of re-encoding the whole comic page with lossy WebP.
@@ -238,7 +276,7 @@ internal object WebModeTextRemover {
             if (cleaned.isEmpty() || cleaned.size > MAX_BYTES) return false
             val stored = WebModeTextRemovalCache.store(context, sourceUrl, cleaned,
                 if (modern) "image/webp" else "image/png")
-            if (stored) WebModeTextRemovalCache.setErased(sourceUrl, erasedSoft)
+            if (stored) WebModeTextRemovalCache.setErased(sourceUrl, erased)
             return stored
         } catch (_: OutOfMemoryError) {
             return false
@@ -251,7 +289,7 @@ internal object WebModeTextRemover {
 
     /** Colour for one erased pixel on artwork: inverse-distance blend of the nearest kept pixel in each of 4 directions. */
     private fun gradientFill(
-        original: IntArray, mask: ByteArray, width: Int, x0: Int, y0: Int, rw: Int, rh: Int,
+        region: IntArray, mask: ByteArray, rw: Int, rh: Int,
         rx: Int, ry: Int, maxScan: Int, fallback: Int
     ): Int {
         var sr = 0f; var sg = 0f; var sb = 0f; var sw = 0f
@@ -264,7 +302,7 @@ internal object WebModeTextRemover {
                 val ny = ry + dy * d
                 if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) break
                 if (mask[ny * rw + nx].toInt() == 0) {
-                    val p = original[(y0 + ny) * width + x0 + nx]
+                    val p = region[ny * rw + nx]
                     val wgt = 1f / d
                     sr += red(p) * wgt; sg += green(p) * wgt; sb += blue(p) * wgt; sw += wgt
                     break
