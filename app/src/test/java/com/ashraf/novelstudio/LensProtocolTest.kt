@@ -45,12 +45,10 @@ class LensProtocolTest {
     private fun response(vararg paragraphs: ByteArray): ByteArray =
         len(2, len(3, len(1, cat(*paragraphs.map { len(1, it) }.toTypedArray()))))               // objects.text.layout.paragraphs
 
-    @Test fun horizontalLinesBecomePixelBlocksOfTheOriginalBitmap() {
-        val p = cat(
-            line(cat(word("Hello", " "), word("world", "")), box(0.5f, 0.25f, 0.4f, 0.05f)),
-            line(cat(word("second", " "), word("line", "")), box(0.5f, 0.31f, 0.3f, 0.05f))
-        )
-        val resp = LensProtocol.parseResponse(response(p))
+    @Test fun separateParagraphsBecomePixelBlocksOfTheOriginalBitmap() {
+        val p1 = line(cat(word("Hello", " "), word("world", "")), box(0.5f, 0.25f, 0.4f, 0.05f))
+        val p2 = line(cat(word("second", " "), word("line", "")), box(0.5f, 0.45f, 0.3f, 0.05f))
+        val resp = LensProtocol.parseResponse(response(p1, p2))
         assertTrue(resp.valid)
         // original 1000x2000, uploaded at 800x1600: normalized boxes map by the ORIGINAL size
         val blocks = LensProtocol.toBlocks(resp, 1000, 2000, 800, 1600)
@@ -61,6 +59,55 @@ class LensProtocolTest {
         assertEquals(100f, blocks[0].h, 0.01f)
         assertFalse(blocks[0].vertical)
         assertTrue(blocks[0].top < blocks[1].top)          // reading order
+    }
+
+    @Test fun linesOfOneLensParagraphBecomeOneBlock() {
+        val p = cat(
+            line(word("WHY IS THIS ROPE", ""), box(0.5f, 0.20f, 0.40f, 0.04f)),
+            line(word("SO HARD TO", ""), box(0.5f, 0.245f, 0.30f, 0.04f)),
+            line(word("UNTIE?", ""), box(0.5f, 0.29f, 0.20f, 0.04f)))
+        val blocks = LensProtocol.toBlocks(LensProtocol.parseResponse(response(p)), 1000, 1000, 1000, 1000)
+        assertEquals(listOf("WHY IS THIS ROPE SO HARD TO UNTIE?"), blocks.map { it.text })
+        assertEquals(0.20f * 1000 - 20f, blocks[0].cy - blocks[0].h / 2f, 0.5f)   // union box spans all 3 lines
+        assertEquals(0.29f * 1000 + 20f, blocks[0].cy + blocks[0].h / 2f, 0.5f)
+    }
+
+    @Test fun narrowMiddleLineIsNeverLeftBehind() {
+        // Regression: a 1-glyph middle line ("I") is a tall thin box. It used to be flagged "vertical", could not be
+        // joined, and the top+bottom lines were fused around it so the middle line was skipped.
+        val p = cat(
+            line(word("TOP LINE", ""), box(0.5f, 0.20f, 0.30f, 0.04f)),
+            line(word("I", ""), box(0.5f, 0.245f, 0.008f, 0.04f)),
+            line(word("BOTTOM LINE", ""), box(0.5f, 0.29f, 0.35f, 0.04f)))
+        val blocks = LensProtocol.toBlocks(LensProtocol.parseResponse(response(p)), 1000, 1000, 1000, 1000)
+        assertEquals(1, blocks.size)
+        assertEquals("TOP LINE I BOTTOM LINE", blocks[0].text)
+        assertFalse(blocks[0].vertical)
+    }
+
+    @Test fun farApartLinesOfOneParagraphAreSplit() {
+        val p = cat(
+            line(word("first", ""), box(0.5f, 0.10f, 0.30f, 0.04f)),
+            line(word("second", ""), box(0.5f, 0.50f, 0.30f, 0.04f)))
+        val blocks = LensProtocol.toBlocks(LensProtocol.parseResponse(response(p)), 1000, 1000, 1000, 1000)
+        assertEquals(listOf("first", "second"), blocks.map { it.text })
+    }
+
+    @Test fun watermarkLineIsDroppedButTheBubbleSurvives() {
+        val p = cat(
+            line(word("real dialogue", ""), box(0.5f, 0.20f, 0.30f, 0.04f)),
+            line(word("asurascans.com", ""), box(0.5f, 0.245f, 0.30f, 0.04f)))
+        val blocks = LensProtocol.toBlocks(LensProtocol.parseResponse(response(p)), 1000, 1000, 1000, 1000)
+        assertEquals(listOf("real dialogue"), blocks.map { it.text })
+    }
+
+    @Test fun paragraphGeometryOnlyIsSharedInBandsNotStacked() {
+        // two lines without any geometry, paragraph box present: lines must get separate bands
+        val lines = cat(len(2, len(1, cat(str(2, "one"), str(3, "")))), len(2, len(1, cat(str(2, "two"), str(3, "")))))
+        val para = cat(lines, len(3, box(0.5f, 0.5f, 0.4f, 0.1f)))
+        val blocks = LensProtocol.toBlocks(LensProtocol.parseResponse(response(para)), 1000, 1000, 1000, 1000)
+        assertEquals(listOf("one two"), blocks.map { it.text })      // consecutive bands touch -> one block
+        assertEquals(100f, blocks[0].h, 0.5f)
     }
 
     @Test fun verticalParagraphKeepsColumnsTogetherAndIsFlaggedVertical() {
