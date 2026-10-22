@@ -633,7 +633,7 @@ internal class WebModeExtractor(
             // Lens is remote/network-bound: visible panels must not wait for the previous panel's
             // Lens response. Warm the engine safely first, then fetch and OCR a small viewport
             // concurrently. All local-model scans remain serial exactly as before.
-            val lensParallel = liveView && req.ahead <= 0 && total > 1 &&
+            val lensParallel = liveView && req.ahead <= 0 && total >= 1 &&
                 Prefs.get(wv.context, "ocrEngine", "mlkit") == "lens"
             if (lensParallel) {
                 (engine as? RoutingOcrEngine)?.let {
@@ -641,7 +641,7 @@ internal class WebModeExtractor(
                     it.prepareForConcurrentLens(script.current)
                 }
             }
-            val pool: ExecutorService? = if (total > 1 && (!req.visibleOnly || lensParallel)) {
+            val pool: ExecutorService? = if (lensParallel || (total > 1 && !req.visibleOnly)) {
                 val threads = if (lensParallel) minOf(3, total) else FETCH_THREADS
                 Executors.newFixedThreadPool(threads) { r -> Thread(r, "ns-webmode-fetch") }
             } else null
@@ -686,8 +686,11 @@ internal class WebModeExtractor(
                 submitFetch(i)
                 submitFetch(i + FETCH_AHEAD)
                 val bytes = if (pool != null) {
-                    val fetchWaitMs = if (req.visibleOnly) VISIBLE_FETCH_WAIT_MS
-                        else (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
+                    val fetchWaitMs = when {
+                        lensParallel -> LENS_IMAGE_FETCH_WAIT_MS
+                        req.visibleOnly -> VISIBLE_FETCH_WAIT_MS
+                        else -> (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
+                    }
                     try { futures[i]?.get(fetchWaitMs, TimeUnit.MILLISECONDS) }
                     catch (_: Throwable) { futures[i]?.cancel(true); null }
                 } else fetchWithRetry(p, meta.url)
@@ -2080,6 +2083,8 @@ internal class WebModeExtractor(
         private const val EARLY_ABORT_FAILS = 4
         private const val DISCOVERY_MAX_MS = 120_000L
         private const val EMPTY_GRACE_MS = 8_000L
+        // If a live Lens panel's URL is not immediately readable, stop waiting and OCR the pixels already onscreen.
+        private const val LENS_IMAGE_FETCH_WAIT_MS = 900L
         private const val VISIBLE_FETCH_WAIT_MS = 7_000L
         private const val SCREEN_LENS_DEADLINE_MS = 7_000L
         private const val JOB_MAX_MS = 12 * 60_000L
