@@ -882,7 +882,7 @@ internal class WebModeExtractor(
                 // letting the ordinary merge logic keep stale text/boxes from an earlier pass.
                 WebModeLayoutStore.replaceRegion(wv.context, meta.url, req.forceOcrSrc, req.forceOcrRegion, scanLayout)
             } else {
-                WebModeLayoutStore.put(meta.url, scanLayout)
+                WebModeLayoutStore.put(wv.context, meta.url, scanLayout)
             }
             val ch = Chapter(
                 title = title,
@@ -1281,7 +1281,7 @@ internal class WebModeExtractor(
             val allBubbles = ArrayList<WmBubble>()
             for (p in panels) allBubbles.addAll(p.bubbles)
             val titleOffset = if (req.visibleOnly || title.isBlank()) 0 else 1
-            WebModeLayoutStore.put(meta.url, WebModeLayout(titleOffset, allBubbles))
+            WebModeLayoutStore.put(wv.context, meta.url, WebModeLayout(titleOffset, allBubbles))
             val ch = Chapter(
                 title = title, text = text, next = meta.next, prev = meta.prev, url = meta.url,
                 novel = meta.novel.ifBlank { hostOf(meta.url).removePrefix("www.") },
