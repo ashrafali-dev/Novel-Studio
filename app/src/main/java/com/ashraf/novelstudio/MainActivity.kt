@@ -8720,6 +8720,26 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     private fun clearCanvasTransitionOverlay(url: String) {
         val changed = WebModeLayoutStore.takeCanvasTransitions(url)
         if (changed.isEmpty()) return
+
+        // A not-yet-flushed OCR batch may already contain bubbles from the old contents of this
+        // recycled canvas. Remove only those entries before the queue is allowed to send a request.
+        val pending = rtVisibleOcrBatch
+        if (pending != null && cleanUrl(pending.pageUrl) == cleanUrl(url)) {
+            val staleHashes = pending.bubbles.asSequence()
+                .filter { WebModeLogic.normalizeUrl(it.src) in changed }
+                .map { WebModeLayout.fingerprint(it) }
+                .toSet()
+            if (staleHashes.isNotEmpty()) {
+                pending.bubbles.removeAll { WebModeLogic.normalizeUrl(it.src) in changed }
+                pending.hashes.removeAll(staleHashes)
+                pending.seen.removeAll(staleHashes)
+                synchronized(deepSeekInFlightTextHashes) {
+                    deepSeekInFlightTextHashes.removeAll(staleHashes)
+                }
+            }
+            if (pending.bubbles.isEmpty()) clearRealtimeVisibleOcrBatch()
+        }
+
         novelWv.evaluateJavascript(WebModeWriter.clearCanvasOverlayScript(), null)
         hasTr = false
         shownTranslated = false
