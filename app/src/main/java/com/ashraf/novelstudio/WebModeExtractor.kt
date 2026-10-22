@@ -95,6 +95,8 @@ internal class WebModeRequest(
     /** Called on the main thread with successfully OCRed upcoming panels, for translation prefetch. */
     val onAheadPanelsReady: ((List<WebModeAheadPanel>) -> Unit)? = null,
     val onAheadDone: (() -> Unit)? = null,
+    /** Fired on the main thread as soon as clean pixels prove that a recycled canvas shows a new page. */
+    val onCanvasPageChanged: ((url: String, staleFingerprintsBySource: Map<String, Set<String>>) -> Unit)? = null,
     /** When set, ignore OCR caches and re-read only this source image. */
     val forceOcrSrc: String? = null,
     /** Normalized rectangle to OCR within forceOcrSrc. */
@@ -1085,6 +1087,7 @@ internal class WebModeExtractor(
             val scale = bmp.width / viewportWidth
             val imgs = info.optJSONArray("imgs") ?: return
             val grid = floatArrayOf(0.12f, 0.23f, 0.34f, 0.45f, 0.55f, 0.66f, 0.77f, 0.88f)
+            val changedSources = LinkedHashMap<String, Set<String>>()
 
             for (i in 0 until imgs.length()) {
                 val p = imgs.optJSONObject(i) ?: continue
@@ -1112,9 +1115,21 @@ internal class WebModeExtractor(
                     }
                 }
                 try {
-                    WebModeLayoutStore.observeCanvasFrame(wv.context, url, src, signature.toString())
+                    val staleFingerprints = WebModeLayoutStore.observeCanvasFrame(
+                        wv.context, url, src, signature.toString()
+                    )
+                    if (staleFingerprints != null) {
+                        changedSources[WebModeLogic.normalizeUrl(src)] = staleFingerprints
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Canvas frame fingerprint failed: ${e.javaClass.simpleName}")
+                }
+            }
+            // A pixel-confirmed page swap clears the visible overlay now, not after all OCR work finishes.
+            if (changedSources.isNotEmpty()) {
+                val immutableChanges = changedSources.toMap()
+                onMain {
+                    if (alive()) req.onCanvasPageChanged?.invoke(url, immutableChanges)
                 }
             }
         }
