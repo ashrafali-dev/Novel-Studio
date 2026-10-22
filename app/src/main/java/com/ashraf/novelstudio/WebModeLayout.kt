@@ -202,7 +202,21 @@ internal object WebModeLayoutStore {
                 }
                 // Partial crops with fewer than three readable bubbles are not reliable evidence
                 // of a new page. Full manga canvases normally provide several independent regions.
-                if (fresh.size < 3) continue
+                if (fresh.size < 3) {
+                    // Bug 2: a sparse read that matches NOTHING of a solid prior baseline is still
+                    // evidence of a recycled canvas showing a different page. Re-reads of the same
+                    // page always match themselves, so this cannot evict an ordinary rescan.
+                    val snapshotKey = "$k|$src"
+                    val priorBaseline = canvasSnapshots[snapshotKey]?.bubbles
+                        ?: scans[k]?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
+                        ?: previousLayout?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
+                        ?: emptyList()
+                    if (priorBaseline.size >= 3 && canvasTransitionDetected(priorBaseline, fresh)) {
+                        transitions.add(src)
+                        canvasGenerationBySource[snapshotKey] = (canvasGenerationBySource[snapshotKey] ?: 0L) + 1L
+                    }
+                    continue
+                }
                 val snapshotKey = "$k|$src"
                 val prior = canvasSnapshots[snapshotKey]?.bubbles
                     ?: scans[k]?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
@@ -504,6 +518,21 @@ internal object WebModeLayoutStore {
         }
         val comparable = minOf(prior.size, incoming.size)
         return matches >= 3 && matches * 100 >= comparable * 40
+    }
+
+    /**
+     * Negative evidence for a recycled canvas (Bug 2): when an earlier page left a solid OCR
+     * baseline (>= 3 bubbles) and a new sparse read (1-2 bubbles) matches NONE of it, the canvas
+     * almost certainly shows a different page. sameCanvasContent() alone cannot see this because
+     * both sample-count guards default to "same content" on small samples, which kept page A's
+     * translations painted over page B. Re-reads of the same page always match themselves, so
+     * this cannot false-positive on ordinary rescans.
+     */
+    fun canvasTransitionDetected(prior: List<WmBubble>, fresh: List<WmBubble>): Boolean {
+        val priorTexted = prior.filter { WebModeLayout.normalizeOcrText(it.sourceText).isNotBlank() }
+        val freshTexted = fresh.filter { WebModeLayout.normalizeOcrText(it.sourceText).isNotBlank() }
+        if (priorTexted.size < 3 || freshTexted.isEmpty() || freshTexted.size >= 3) return false
+        return freshTexted.none { fb -> priorTexted.any { pb -> sameBubbleReading(pb, fb) } }
     }
 
     private fun mergeLayouts(old: WebModeLayout?, incoming: WebModeLayout): WebModeLayout {

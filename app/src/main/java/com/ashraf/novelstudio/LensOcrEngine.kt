@@ -229,7 +229,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 }
             }
             var jpeg = encode(work, JPEG_QUALITY)
-            if (jpeg.size > MAX_UPLOAD_BYTES) jpeg = encode(work, 60)
+            // Re-encode with a LOWER quality (never higher): the first pass at 40 already aims
+            // under the size cap; a retry only makes sense when the first attempt was above it.
+            if (jpeg.size > MAX_UPLOAD_BYTES) jpeg = encode(work, QUALITY_RETRY)
             if (jpeg.size > MAX_UPLOAD_BYTES) throw OcrUnavailableException("Google Lens: picture too large to upload")
             return Prepared(jpeg, work.width, work.height)
         } finally {
@@ -538,6 +540,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         private const val MAX_AREA = 1_500_000L
         private const val MAX_DIMENSION = 1600
         private const val JPEG_QUALITY = 40
+        private const val QUALITY_RETRY = 25
         private const val MAX_UPLOAD_BYTES = 3_500_000
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 

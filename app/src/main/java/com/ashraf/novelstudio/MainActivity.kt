@@ -785,6 +785,9 @@ class MainActivity : Activity() {
     private val rtVisibleOcrIdleFlushMs: Long get() = if (lensRealtimeFastPath()) 350L else longArrayOf(800L, 1500L, 2500L, 3500L)[rtBatchLevel()]
     private val rtVisibleOcrMaxHoldMs: Long get() = if (lensRealtimeFastPath()) 500L else longArrayOf(1000L, 1800L, 3000L, 4500L)[rtBatchLevel()]
     private var rtVisibleOcrFirstAtMs = 0L
+    // Upper bound for how long a flushed-visible batch may wait on a busy chatbot/placement
+    // before it is released back to "translatable" (see flushRealtimeVisibleOcrBatch).
+    private val RT_MAX_SEND_WAIT_MS = 15_000L
 
     private val rtAheadTranslationQueue = ArrayList<RtAheadTranslationTask>()
     private val rtAheadTranslationQueuedIds = mutableSetOf<String>()
@@ -969,9 +972,18 @@ class MainActivity : Activity() {
         // (bounded, so real-time never waits long). This is what keeps three bubbles in ONE request.
         val heldFor = android.os.SystemClock.elapsedRealtime() - rtVisibleOcrFirstAtMs
         val ocrStillReading = webModeHandle != null && heldFor < rtVisibleOcrMaxHoldMs
-        // Scan geometry and lastChapter are shared across page writes. Wait for the visible
-        // chatbot job queue and any async overlay insertion to finish before replacing either.
-        if (ocrStillReading || running != null || queue.isNotEmpty() || activePlacementIds.isNotEmpty()) {
+        // Lens answers in seconds; the chatbot/placement wait must not hold these bubbles hostage
+        // for minutes. RT_MAX_SEND_WAIT_MS bounds the busy wait: after it expires the batch is
+        // released, its fingerprints return to "translatable", and the next periodic scan simply
+        // re-selects the visible bubbles. Nothing stays stuck; nothing is translated twice.
+        val busyWaiting = running != null || queue.isNotEmpty() || activePlacementIds.isNotEmpty()
+        if (!ocrStillReading && busyWaiting && heldFor >= RT_MAX_SEND_WAIT_MS) {
+            Log.i("NovelStudioOCR", "REALTIME_BATCH_EXPIRED holdMs=$heldFor bubbles=${pending.bubbles.size} " +
+                "(chatbot busy; bubbles released for the next scan)")
+            clearRealtimeVisibleOcrBatch()
+            return
+        }
+        if (ocrStillReading || busyWaiting) {
             rtVisibleOcrFlush?.let { handler.removeCallbacks(it) }
             val seq = ++rtVisibleOcrBatchSeq
             val retry = Runnable {
@@ -1010,7 +1022,11 @@ class MainActivity : Activity() {
         val batchLayout = WebModeLayout(pending.titleOffset, bubbles)
         WebModeLayoutStore.setScan(chapter.url, batchLayout)
         registerRealtimeBatch(chapter, pending.hashes, batchLayout)
-        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}")
+        // End-to-end stage timing for one realtime screen: collect = from the first bubble of
+        // this batch to the send. Lens's own TIMING lines cover the request; this covers the
+        // batching latency around it.
+        Log.i("NovelStudioOCR", "Realtime viewport batch: bubbles=${bubbles.size}, host=${Uri.parse(pending.pageUrl).host.orEmpty()}, " +
+            "timing=collectHold:${heldFor}ms,bubbles:${bubbles.size}")
         handleChapter(chapter, useSavedTranslation = false)
     }
 
@@ -1809,13 +1825,17 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
         handler.postDelayed({ pumpRealtimeAheadTranslation() }, 100L)
     }
 
-    private fun clearRealtimeAheadStateForNavigation() {
+    private fun clearRealtimeAheadStateForNavigation(keepTranslationCache: Boolean = false) {
         clearRealtimeVisibleOcrBatch()
         cancelRealtimeAheadWorker(requeue = false)
         rtAheadTranslationQueue.clear()
         rtAheadTranslationQueuedIds.clear()
         rtAheadTranslationTasksByJobKey.clear()
-        rtAheadTranslationCache.clear()
+        // Bug 5: the cache is keyed by bubble TEXT, not by geometry or page position, so it
+        // stays valid across same-chapter page swaps (SPA readers rewriting /page/N). Dropping
+        // it made every page flip re-translate lines that were already translated. Only a
+        // chapter/mode change clears it.
+        if (!keepTranslationCache) rtAheadTranslationCache.clear()
         rtAheadTranslationSuppressedIds.clear()
         rtAheadHold.clear()
     }
@@ -1900,7 +1920,13 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
                 aheadOcrSeq++
                 aheadOcrStage = ""
                 aheadOcrPct = -1
-                clearRealtimeAheadStateForNavigation()
+                // Bug 5: keep the text-keyed ahead cache when only the trailing page number of the
+                // same reader URL changed (MangaDex /chapter/<uuid>/1 -> /8) or when the site has a
+                // real chapter-group identity (Novel543 split parts). A different chapter must
+                // still clear it.
+                val previousPollUrl = deepSeekPollUrl
+                val sameChapterSwap = isSameChapterPageSwap(previousPollUrl, url)
+                clearRealtimeAheadStateForNavigation(keepTranslationCache = sameChapterSwap)
                 deepSeekPollUrl = url
                 deepSeekVisibleSignature = ""
                 deepSeekPendingSig = ""
@@ -6206,6 +6232,20 @@ return t.length>=40?'TXT:'+t:'';
         }
     }
 
+    /**
+     * True when oldUrl and newUrl are two PAGES of the same reader chapter. Bug 5: the realtime
+     * navigation reset keeps the text-keyed ahead-translation cache across in-chapter page flips
+     * but still drops it on a real chapter change.
+     */
+    private fun isSameChapterPageSwap(oldUrl: String, newUrl: String): Boolean {
+        // Real chapter-group identity (Novel543 split parts) wins when both sides have it.
+        val ga = chapterGroupKey(oldUrl)
+        val gb = chapterGroupKey(newUrl)
+        if (ga.isNotBlank() && gb.isNotBlank()) return ga == gb
+        if (ga.isNotBlank() != gb.isNotBlank()) return false
+        return WebModeLogic.sameChapterPageSwap(cleanUrl(oldUrl), cleanUrl(newUrl))
+    }
+
     private fun chapterGroupKey(url: String): String {
         return try {
             val u = Uri.parse(url)
@@ -6421,6 +6461,9 @@ return t.length>=40?'TXT:'+t:'';
         if (!keepRunning) {
             runToken++
             running = null
+            // The invalidated job's reply is discarded by its token guard before completion runs;
+            // without this its bubble hashes stayed in-flight forever and were never re-translated.
+            releaseAllRealtimeBatches()
         }
         queue.removeAll { !prefetchGeneratedKeys.contains(keyOf(it)) }
         autoCopy = false
@@ -7976,6 +8019,8 @@ return t.length>=40?'TXT:'+t:'';
             runToken++
             queue.clear()
             running = null
+            // The restarted job's reply is discarded by its token guard; free its bubble hashes.
+            releaseAllRealtimeBatches()
             chatWv.evaluateJavascript(Js.stop(), null)
         }
         enqueue(ch)
@@ -8700,10 +8745,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val iterator = realtimeBatchLayouts.entries.iterator()
             if (!iterator.hasNext()) break
             val staleKey = iterator.next().key
-            iterator.remove()
             val staleChapter = realtimeBatchKeyByChapter.entries.firstOrNull { it.value == staleKey }?.key
-            if (staleChapter != null) realtimeBatchKeyByChapter.remove(staleChapter)
-            deepSeekTextHashByChapter.remove(staleKey)
+            iterator.remove()
+            if (staleChapter != null) {
+                // Bug 4: release (not just drop) the evicted batch. If its reply arrived late,
+                // isRealtimeBubbleBatch() would now return false and Store.save() would store the
+                // viewport-only reply as if it were a whole chapter. Releasing the hashes makes
+                // the reply's identity binding fail closed instead.
+                releaseDeepSeekHashBatch(staleChapter)
+            }
             realtimeBatchCanvasVersions.remove(staleKey)
             realtimeBatchLayouts.remove(staleKey)
         }
@@ -8782,6 +8832,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         }
     }
 
+    /**
+     * Release EVERY registered live batch (Bug 1). A chatbot reply whose token was invalidated
+     * (navigation, re-tap, mode switch) returns early in finishJob()/failJob() before the normal
+     * complete/release path can run, so its fingerprints stayed in deepSeekInFlightTextHashes
+     * forever and those bubbles were silently skipped on every later scan. Call this whenever
+     * queued/running chapters are dropped without their callbacks firing.
+     */
+    private fun releaseAllRealtimeBatches() {
+        // Copy first: releaseDeepSeekHashBatch mutates the same map.
+        for (ch in ArrayList(realtimeBatchKeyByChapter.keys)) releaseDeepSeekHashBatch(ch)
+        deepSeekTextHashByChapter.clear()
+        clearRealtimeVisibleOcrBatch()
+    }
+
     private fun applyTranslation(ch: Chapter, text: String, retry: Boolean) {
         // Dedicated Japanese manga result: reuse the existing bubble writer, without switching
         // the standard Web Mode toggle or changing the normal Webtoon extraction pipeline.
@@ -8825,6 +8889,12 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val wmLayout = if (livePanelBatch) realtimeBatchLayout(ch)
                 else WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
             val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
+            if (livePanelBatch && wmPlaced == null) {
+                // Diagnostic: how often translated text reached the app but could not be bound
+                // to its bubbles (marker loss / reformatting). This DISCARDS the reply.
+                OcrDiag.log("ALIGN_FAIL", "live batch reply could not be aligned; bubbles=" +
+                    (wmLayout?.bubbles?.size ?: 0) + " replyChars=" + text.length)
+            }
             val wmScript: String
             if (livePanelBatch) {
                 if (wmLayout == null || wmPlaced == null) {

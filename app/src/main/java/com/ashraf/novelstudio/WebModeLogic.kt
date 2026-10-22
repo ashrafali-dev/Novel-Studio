@@ -95,4 +95,41 @@ internal object WebModeLogic {
     /** True when too many panels failed for the chapter to be called complete. */
     fun tooManyFailures(total: Int, failed: Int): Boolean =
         total > 0 && failed > 0 && failed.toDouble() / total > MAX_FAIL_FRACTION
+
+    /**
+     * True when oldUrl and newUrl are two PAGES of the same reader chapter: a trailing numeric
+     * page (or /<lang>/<page>) segment differs but the chapter identity is the same. Pure string
+     * logic so it is JVM-testable; callers pass already-cleaned (query-filtered) URLs.
+     */
+    fun sameChapterPageSwap(oldCleanUrl: String, newCleanUrl: String): Boolean {
+        if (!oldCleanUrl.startsWith("http", true) || !newCleanUrl.startsWith("http", true)) return false
+        if (oldCleanUrl == newCleanUrl) return false
+        return try {
+            val oldPath = oldCleanUrl.substringAfter("://", "").substringAfter('/')
+            val newPath = newCleanUrl.substringAfter("://", "").substringAfter('/')
+            val oldHost = oldCleanUrl.substringAfter("://", "").substringBefore('/').lowercase()
+            val newHost = newCleanUrl.substringAfter("://", "").substringBefore('/').lowercase()
+            if (oldHost != newHost) return false
+            if (oldPath == newPath) return false
+            // Query strings must be identical (a query change marks a real navigation).
+            val oldQuery = oldCleanUrl.substringAfter('?', "")
+            val newQuery = newCleanUrl.substringAfter('?', "")
+            if (oldQuery != newQuery) return false
+            val oldNoQuery = oldCleanUrl.substringBefore('?').trimEnd('/')
+            val newNoQuery = newCleanUrl.substringBefore('?').trimEnd('/')
+            // Strip ONE trailing /<lang>/<digits> or /<digits> segment from each side.
+            fun stem(path: String): String {
+                var p = path
+                p = p.replace(Regex("/[a-z]{2}(?:-[A-Za-z]{2})?/\\d+$"), "")
+                p = p.replace(Regex("/\\d+$"), "")
+                return p
+            }
+            val sa = stem(oldNoQuery)
+            val sb = stem(newNoQuery)
+            // Guard against stripping away real chapter identity: the stem must keep most of the path.
+            sa == sb && sa.length >= oldNoQuery.length - 32 && sb.length >= newNoQuery.length - 32
+        } catch (_: Exception) {
+            false
+        }
+    }
 }

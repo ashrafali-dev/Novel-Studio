@@ -304,6 +304,12 @@ internal class WebModeExtractor(
                         val p = arr.optJSONObject(i) ?: continue
                         val s = p.optString("s")
                         if (s.isBlank()) continue
+                        // Bug 3: an "ns-canvas:…" ref names a screen LOCATION, not an image. The
+                        // ahead worker downloads by URL, so it can never fetch one; each failed
+                        // try counted toward aheadBlank and permanently disabled read-ahead for
+                        // that position on every later page. The visible scan reads canvas
+                        // pixels anyway, so skip them here.
+                        if (s.startsWith("ns-canvas:")) continue
                         val nk = WebModeLogic.normalizeUrl(s)
                         if (aheadDone.contains(nk) || aheadBlank.contains(nk)) continue
                         refs.add(PanelRef(s, p.optInt("t"), p.optInt("l"), p.optInt("w"), p.optInt("h")))
