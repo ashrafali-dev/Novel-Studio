@@ -2,7 +2,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr]
+    branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr, feat/lama-ai-image-cleaner-20261022]
 
 permissions:
   contents: write
