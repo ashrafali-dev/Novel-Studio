@@ -77,18 +77,18 @@ internal object OcrEngineStatus {
     }
 
     fun describe(selected: String, used: String, fellBack: Boolean): String = when {
+        used == "lens" -> "Google Lens"
+        used == "mlkit(lens-empty)" -> "ML Kit (Lens found no text)"
+        used.startsWith("mlkit(lens-error") -> "ML Kit (Lens unavailable)"
         used.startsWith("mlkit(korean-by-design") -> "ML Kit (no Korean Paddle pack)"
         used == "paddle_korean" -> "Paddle Korean v5"
-        used == "mlkit(empty-primary)" && selected == "google_lens" -> "ML Kit (Lens found no text)"
         used == "mlkit(empty-primary)" -> "ML Kit (Paddle found no text)"
         used == "mlkit(oom)" -> "ML Kit (Paddle: low RAM)"
         used == "mlkit(link-error)" -> "ML Kit (Paddle native lib missing)"
-        used.startsWith("mlkit(error:") && selected == "google_lens" -> "ML Kit (Lens fallback: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit(error:") -> "ML Kit (Paddle error: " + used.removePrefix("mlkit(error:").removeSuffix(")") + ")"
         used.startsWith("mlkit") && fellBack && selected.startsWith("paddle") -> "ML Kit (Paddle fallback)"
         used.startsWith("mlkit") && fellBack -> "ML Kit (fallback)"
         used.startsWith("mlkit") -> "ML Kit"
-        used == "google_lens" -> "Google Lens (online)"
         used == "paddle_small" -> "Paddle Small"
         used == "paddle_heavy" -> "Paddle Medium"
         used == "manga" -> "Manga OCR"
@@ -101,13 +101,18 @@ internal class RoutingOcrEngine : OcrEngine {
     @Volatile private var appContext: Context? = null
     private val mlKit: OcrEngine = MlKitOcrEngine()
     private val manga: OcrEngine = JapaneseMangaOcrEngine()
-    private val googleLens: OcrEngine = GoogleLensOcrEngine()
     @Volatile private var selectedMode: String = "mlkit"
     private var activeMode: String = ""
     private var activeCustom: OcrEngine? = null
 
-    /** Google Lens returns text boxes itself, so skip the generic per-line network re-scan for this mode. */
-    fun usesRemoteTextDetection(): Boolean = selectedMode == "google_lens"
+    // Per OCR thread: was the most recent routed read answered by Lens? Visible scans and read-ahead use different threads.
+    private val lensThread = ThreadLocal<Boolean>()
+
+    /** True when the last OCR call on this thread was answered by Lens; avoids another upload for a rescan. */
+    fun lastRouteUsedLens(): Boolean = lensThread.get() == true
+
+    /** Lens itself returns text boxes, so use its normal recognition call instead of a repeated fast request. */
+    fun usesRemoteTextDetection(): Boolean = selectedMode == "lens"
 
     /** Called by WebMode before the first OCR pass so the chosen engine follows the Settings value. */
     @Synchronized
@@ -138,7 +143,6 @@ internal class RoutingOcrEngine : OcrEngine {
         if (mode == "manga") {
             return if (script == OcrScript.JAPANESE && JapaneseMangaRuntime.isAvailable()) manga else mlKit
         }
-        if (mode == "google_lens") return googleLens
         if (mode == "paddle_small" || mode == "paddle_heavy") {
             val tier = if (mode == "paddle_small") "small" else "heavy"
             val modelPack = PaddleOcrModels.pack(tier)
@@ -165,6 +169,7 @@ internal class RoutingOcrEngine : OcrEngine {
                     "paddle_small" -> PaddleProfileOcrEngine(context, "small")
                     "paddle_heavy" -> PaddleProfileOcrEngine(context, "heavy")
                     "rapid_onnx" -> FallbackOcrEngine(OnnxOcrEngine(), MlKitOcrEngine())
+                    "lens" -> LensOcrEngine(context)
                     else -> mlKit
                 }
                 activeMode = mode
@@ -179,6 +184,7 @@ internal class RoutingOcrEngine : OcrEngine {
     private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
         val waited = OcrGate.Waited()
         val t0 = android.os.SystemClock.elapsedRealtime()
+        lensThread.set(false)
         var used = "?"
         var fellBack = false
         try {
@@ -211,6 +217,37 @@ internal class RoutingOcrEngine : OcrEngine {
         }
         if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit) }
 
+        if (chosen is LensOcrEngine) {
+            // Lens is an online engine using an unofficial endpoint. Its failures are expected and must
+            // never be reported as Paddle failures or allowed to break the scanning workflow.
+            var lens: OcrResult? = null
+            var failure: String? = null
+            try {
+                lens = run(chosen)
+            } catch (e: OcrUnavailableException) {
+                failure = (e.message ?: "unavailable").take(160)
+                OcrEngineStatus.toastOnce(appContext, "Google Lens unavailable → ML Kit\\n$failure")
+            } catch (e: Exception) {
+                failure = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(160)
+                Log.w("NovelStudioOCR", "lens failed unexpectedly", e)
+            } catch (e: OutOfMemoryError) {
+                failure = "out of memory"
+            }
+            if (failure != null) {
+                OcrEngineStatus.lastError = "lens ${script.name}: $failure"
+                Log.w("NovelStudioOCR", "lens unavailable ($failure); falling back to ML Kit")
+                report("mlkit(lens-error)", true)
+                return run(mlKit)
+            }
+            if (lens != null && useful(lens)) {
+                lensThread.set(true)
+                report("lens", false)
+                return lens
+            }
+            report("mlkit(lens-empty)", true)
+            return run(mlKit)
+        }
+
         return try {
             val primary = run(chosen)
             if (useful(primary)) {
@@ -234,7 +271,7 @@ internal class RoutingOcrEngine : OcrEngine {
                 (root.message ?: "").replace(Regex("\\s+"), " ").trim().take(220)
             OcrEngineStatus.lastError = "$selectedMode ${script.name}: $full"
             val engineLabel = when (selectedMode) {
-                "google_lens" -> "Google Lens OCR"
+                "lens" -> "Google Lens OCR"
                 "manga" -> "Japanese Manga OCR"
                 "rapid_onnx" -> "RapidOCR"
                 "paddle_small" -> "PaddleOCR Small"
@@ -283,6 +320,5 @@ internal class RoutingOcrEngine : OcrEngine {
         activeMode = ""
         mlKit.close()
         manga.close()
-        googleLens.close()
     }
 }
