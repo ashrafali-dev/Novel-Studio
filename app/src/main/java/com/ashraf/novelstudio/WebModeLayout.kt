@@ -170,12 +170,59 @@ internal object WebModeLayoutStore {
     private fun key(url: String) = WebModeLogic.normalizeUrl(url).replace(READER_PAGE_SUFFIX, "\$1")
 
     @Synchronized
-    fun put(url: String, layout: WebModeLayout) {
+    fun put(ctx: Context, url: String, layout: WebModeLayout) {
         val k = key(url)
+        // Load persisted translations before comparing so a restart cannot resurrect bubbles from
+        // an old page after the reader recycles its canvas at the same URL/coordinates.
+        val previousLayout = mem[k] ?: if (isShonenJumpPlus(url)) get(ctx, url) else null
+        val transitions = LinkedHashSet<String>()
+
+        if (isShonenJumpPlus(url)) {
+            val sources = layout.bubbles.asSequence()
+                .map { WebModeLogic.normalizeUrl(it.src) }
+                .filter { it.startsWith("ns-canvas:") }
+                .distinct()
+                .toList()
+            for (src in sources) {
+                val fresh = layout.bubbles.filter {
+                    WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
+                }
+                // Partial crops with fewer than three readable bubbles are not reliable evidence
+                // of a new page. Full manga canvases normally provide several independent regions.
+                if (fresh.size < 3) continue
+                val snapshotKey = "$k|$src"
+                val prior = canvasSnapshots[snapshotKey]?.bubbles
+                    ?: scans[k]?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
+                    ?: previousLayout?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
+                    ?: emptyList()
+                if (prior.size >= 3 && !sameCanvasContent(prior, fresh)) {
+                    transitions.add(src)
+                }
+                canvasSnapshots[snapshotKey] = WebModeLayout(layout.titleOffset, fresh)
+            }
+        }
+
+        if (transitions.isNotEmpty()) {
+            val old = previousLayout ?: mem[k]
+            if (old != null) {
+                // The physical canvas element is reused, but these bubbles belong to another bitmap/page.
+                // Remove only the recycled canvas' old bubbles; other still-visible canvases remain intact.
+                mem[k] = WebModeLayout(old.titleOffset, old.bubbles.filterNot {
+                    WebModeLogic.normalizeUrl(it.src) in transitions
+                })
+                pendingCanvasTransitions.getOrPut(k) { LinkedHashSet() }.addAll(transitions)
+                // Persist immediately so the stale page cannot return after an app restart or failed reply.
+                persist(ctx, url)
+            }
+        }
+
         scans[k] = layout
-        // If this page already has a cumulative layout in memory, merge newly visible bubbles into it.
         mem[k]?.let { mem[k] = mergeLayouts(it, layout) }
     }
+
+    @Synchronized
+    fun takeCanvasTransitions(url: String): Set<String> =
+        pendingCanvasTransitions.remove(key(url))?.toSet().orEmpty()
 
     @Synchronized
     fun setScan(url: String, layout: WebModeLayout) { scans[key(url)] = layout }
