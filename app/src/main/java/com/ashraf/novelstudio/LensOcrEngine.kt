@@ -87,13 +87,14 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val keyCacheMs = SystemClock.elapsedRealtime() - keyStart
         if (cachedLines != null) {
             val cachedLetters = cachedLines.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
-            OcrEngineStatus.setLensDiagnostic(
-                "LENS_CACHE_HIT imageId=${java.lang.Long.toHexString(key)} script=${script.name} " +
-                "image=${bitmap.width}x${bitmap.height} cachedLines=${cachedLines.size} cachedLetters=$cachedLetters"
-            )
-            Log.i(TAG, OcrEngineStatus.currentLensDiagnostic())
             val result = finish(cachedLines, bitmap, script)
-            Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=true prepareMs=$prepareMs keyCacheMs=$keyCacheMs totalMs=${SystemClock.elapsedRealtime() - t0}")
+            val totalMs = SystemClock.elapsedRealtime() - t0
+            val diagnostic = "LENS_CACHE_HIT imageId=${java.lang.Long.toHexString(key)} script=${script.name} " +
+                "image=${bitmap.width}x${bitmap.height} cachedLines=${cachedLines.size} cachedLetters=$cachedLetters " +
+                "timing=prepare:${prepareMs}ms,keyCache:${keyCacheMs}ms,post:${(totalMs - prepareMs - keyCacheMs).coerceAtLeast(0L)}ms,total:${totalMs}ms"
+            OcrEngineStatus.setLensDiagnostic(diagnostic)
+            Log.i(TAG, diagnostic)
+            Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=true prepareMs=$prepareMs keyCacheMs=$keyCacheMs totalMs=$totalMs")
             return result
         }
 
