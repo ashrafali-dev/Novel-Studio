@@ -162,6 +162,11 @@ internal object WebModeLayoutStore {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, WebModeLayout>?): Boolean = size > 64
     }
 
+    // OCR detects page reuse off the UI thread; the UI consumes transitions and clears old overlays.
+    private val pendingCanvasTransitions = LinkedHashMap<String, LinkedHashSet<String>>()
+    // Monotonic per-canvas generation lets in-flight replies prove they still target the same bitmap.
+    private val canvasGenerationBySource = LinkedHashMap<String, Long>()
+
     // Reader SPAs (MangaDex) rewrite the trailing page number while the page is scrolled:
     // /chapter/<uuid>/1 -> /chapter/<uuid>/8. The layout saved during the scan and the chapter that later
     // receives the translation must still map to the same entry, so that page number is dropped from the key.
@@ -197,6 +202,7 @@ internal object WebModeLayoutStore {
                     ?: emptyList()
                 if (prior.size >= 3 && !sameCanvasContent(prior, fresh)) {
                     transitions.add(src)
+                    canvasGenerationBySource[snapshotKey] = (canvasGenerationBySource[snapshotKey] ?: 0L) + 1L
                 }
                 canvasSnapshots[snapshotKey] = WebModeLayout(layout.titleOffset, fresh)
             }
@@ -223,6 +229,24 @@ internal object WebModeLayoutStore {
     @Synchronized
     fun takeCanvasTransitions(url: String): Set<String> =
         pendingCanvasTransitions.remove(key(url))?.toSet().orEmpty()
+
+    /** Capture the current reader-page generation for each canvas source in this request's layout. */
+    @Synchronized
+    fun canvasVersions(url: String, layout: WebModeLayout?): Map<String, Long> {
+        if (layout == null || !isShonenJumpPlus(url)) return emptyMap()
+        val k = key(url)
+        return layout.bubbles.asSequence()
+            .map { WebModeLogic.normalizeUrl(it.src) }
+            .filter { it.startsWith("ns-canvas:") }
+            .distinct()
+            .associate { src -> ("$k|$src") to (canvasGenerationBySource["$k|$src"] ?: 0L) }
+    }
+
+    @Synchronized
+    fun canvasVersionsStillCurrent(versions: Map<String, Long>): Boolean =
+        versions.all { (sourceKey, generation) ->
+            (canvasGenerationBySource[sourceKey] ?: 0L) == generation
+        }
 
     @Synchronized
     fun setScan(url: String, layout: WebModeLayout) { scans[key(url)] = layout }
