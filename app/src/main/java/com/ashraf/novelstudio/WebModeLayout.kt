@@ -235,11 +235,31 @@ internal object WebModeLayoutStore {
     fun canvasVersions(url: String, layout: WebModeLayout?): Map<String, Long> {
         if (layout == null || !isShonenJumpPlus(url)) return emptyMap()
         val k = key(url)
-        return layout.bubbles.asSequence()
+        val sources = layout.bubbles.asSequence()
             .map { WebModeLogic.normalizeUrl(it.src) }
             .filter { it.startsWith("ns-canvas:") }
             .distinct()
-            .associate { src -> ("$k|$src") to (canvasGenerationBySource["$k|$src"] ?: 0L) }
+            .toList()
+        return sources.associate { src ->
+            val sourceKey = "$k|$src"
+            val snapshot = canvasSnapshots[sourceKey]?.bubbles.orEmpty()
+            val requestBubbles = layout.bubbles.filter {
+                WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
+            }
+            // A batch may be queued while another scan detects the next manga page. If we blindly
+            // capture the *new* generation here, an old batch would appear current. Every bubble in
+            // a canvas-backed request must still match the most recent OCR snapshot before the batch
+            // may inherit that generation. MIN_VALUE is a permanent-invalid sentinel for this batch.
+            val belongsToCurrentPage = snapshot.isNotEmpty() && requestBubbles.isNotEmpty() &&
+                requestBubbles.all { request ->
+                    snapshot.any { scanned -> sameBubbleReading(scanned, request) }
+                }
+            sourceKey to if (belongsToCurrentPage) {
+                canvasGenerationBySource[sourceKey] ?: 0L
+            } else {
+                Long.MIN_VALUE
+            }
+        }
     }
 
     @Synchronized
