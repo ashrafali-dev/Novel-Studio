@@ -563,8 +563,20 @@ internal class WebModeExtractor(
                 diag.discovered = panels.size
                 diag.duplicates = (rawPanelCount - allPanels.size).coerceAtLeast(0)
                 if (panels.isEmpty()) {
-                    fail(WebModeError.NO_IMAGES, if (targetSrc.isNullOrBlank()) WebModeError.NO_IMAGES.label
-                        else "Selected image could not be found on the page")
+                    if (req.visibleOnly && targetSrc.isNullOrBlank()) {
+                        // Some manga readers paint panels in canvas/iframes or expose unusable image URLs.
+                        // If DOM URL discovery finds no panels, OCR the WebView rendered pixels instead.
+                        Log.i(TAG, "visible discovery empty; falling back to viewport screenshot OCR; " + lastDiscoveryDebug)
+                        worker.execute {
+                            runCatching { processForce() }.onFailure {
+                                Log.w(TAG, "visible screenshot fallback crashed: ${crashInfo(it)}", it)
+                                fail(WebModeError.DECODE_FAILED, "Screen OCR failed: ${crashInfo(it)}")
+                            }
+                        }
+                    } else {
+                        fail(WebModeError.NO_IMAGES, if (targetSrc.isNullOrBlank()) WebModeError.NO_IMAGES.label
+                            else "Selected image could not be found on the page")
+                    }
                     return@evaluateJavascript
                 }
                 val meta = PageMeta(
@@ -685,7 +697,14 @@ internal class WebModeExtractor(
                     // went through the whole timeout ladder (roughly 25 s each) before the screen was read instead.
                     if (diag.downloaded == 0 && (liveView || (fetchFailed >= EARLY_ABORT_FAILS && total > fetchFailed))) {
                         if (liveView) SiteLearner.recordDownload(wv.context, hostOf(meta.url), false, SystemClock.elapsedRealtime() - tFetch)
-                        fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
+                        if (liveView) {
+                            // The WebView can display images that a second HTTP request cannot fetch.
+                            // Read its already-rendered viewport instead of giving up on the visible page.
+                            Log.i(TAG, "visible image fetch failed; falling back to viewport screenshot OCR")
+                            processForce()
+                        } else {
+                            fail(WebModeError.IMAGES_NOT_LOADED, "Found ${diag.discovered} images but none could be downloaded")
+                        }
                         return
                     }
                     continue
