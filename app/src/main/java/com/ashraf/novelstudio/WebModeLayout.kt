@@ -200,15 +200,17 @@ internal object WebModeLayoutStore {
                 val fresh = layout.bubbles.filter {
                     WebModeLogic.normalizeUrl(it.src) == src && it.sourceText.isNotBlank()
                 }
-                // Partial crops with fewer than three readable bubbles are not reliable evidence
-                // of a new page. Full manga canvases normally provide several independent regions.
-                if (fresh.size < 3) continue
+                if (fresh.isEmpty()) continue
                 val snapshotKey = "$k|$src"
                 val prior = canvasSnapshots[snapshotKey]?.bubbles
                     ?: scans[k]?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
                     ?: previousLayout?.bubbles?.filter { WebModeLogic.normalizeUrl(it.src) == src }
                     ?: emptyList()
-                if (prior.size >= 3 && !sameCanvasContent(prior, fresh)) {
+                val transition = canvasTransitionDetected(prior, fresh)
+                // A sparse read (< 3 bubbles) that does not contradict the stored page is only a partial
+                // view of it: keep the fuller snapshot instead of overwriting it.
+                if (fresh.size < 3 && !transition) continue
+                if (transition) {
                     transitions.add(src)
                     canvasGenerationBySource[snapshotKey] = (canvasGenerationBySource[snapshotKey] ?: 0L) + 1L
                 }
@@ -475,6 +477,28 @@ internal object WebModeLayoutStore {
         val host = url.substringAfter("://", "").substringBefore('/').substringBefore('?')
             .substringBefore(':').lowercase().removePrefix("www.")
         return host == "shonenjumpplus.com" || host.endsWith(".shonenjumpplus.com")
+    }
+
+    /**
+     * Pure decision: did the (recycled) canvas switch to another page?
+     *  - 3+ readable bubbles on both sides: positive evidence, the existing match-ratio rule decides;
+     *  - a sparse fresh read (1-2 bubbles): inconclusive by count alone, so it counts as a transition only on
+     *    NEGATIVE evidence: the stored page had 3+ bubbles and NOT ONE fresh bubble is explained by any of them
+     *    (same canvas, overlapping box AND similar text). A re-read of the same page always explains itself, so
+     *    this cannot fire on a normal partial/noisy re-scan.
+     */
+    internal fun canvasTransitionDetected(prior: List<WmBubble>, fresh: List<WmBubble>): Boolean {
+        val p = prior.filter { WebModeLayout.normalizeOcrText(it.sourceText).isNotBlank() }
+        val f = fresh.filter { WebModeLayout.normalizeOcrText(it.sourceText).isNotBlank() }
+        if (p.size < 3 || f.isEmpty()) return false
+        if (f.size >= 3) return !sameCanvasContent(p, f)
+        return f.none { b -> p.any { a -> explainsBubble(a, b) } }
+    }
+
+    private fun explainsBubble(a: WmBubble, b: WmBubble): Boolean {
+        if (WebModeLogic.normalizeUrl(a.src) != WebModeLogic.normalizeUrl(b.src)) return false
+        if (boxOverlapOfSmaller(a, b) < 0.3f) return false
+        return OcrLineFusion.agreement(a.sourceText, b.sourceText) >= 0.5f
     }
 
     /**
