@@ -232,17 +232,18 @@ internal class WebModeExtractor(
         @Volatile private var fellBackToForce = false
 
         private fun fail(e: WebModeError, msg: String = e.label) {
-            // Viewport-only OCR must recover even when the user's full-chapter Force Extract
-            // preference is OFF. Cross-origin/CDN images can render in WebView while HttpURLConnection,
-            // fetch(), and canvas export all fail; capture the already-visible pixels once instead.
-            // processForce() does not scroll when visibleOnly=true, so this remains safe for real-time mode.
+            // Realtime viewport mode must also recover when DOM discovery reports NO_IMAGES:
+            // canvas-based readers, CSS backgrounds, and image wrappers may be visible even when
+            // the normal panel collector returns an empty list. Capture the viewport once and run
+            // the existing Lens OCR on those detected screen regions instead of retrying chapter text.
+            // processForce() does not scroll when visibleOnly=true, so this remains safe for realtime mode.
+            val visibleNoImages = req.visibleOnly && e == WebModeError.NO_IMAGES
             if (!fellBackToForce && req.ahead <= 0 && req.forceOcrSrc.isNullOrBlank() &&
-                (e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
-                // Full-chapter Web Mode scan too: when no image can be downloaded (hotlink protection,
-                // CORS, TLS blocking) read what the WebView itself draws, scrolling through the page.
+                (visibleNoImages || e == WebModeError.IMAGES_NOT_LOADED || e == WebModeError.DECODE_FAILED)) {
+                // Full-chapter Web Mode scan too: when image downloads fail, read what WebView draws.
                 fellBackToForce = true
                 diag.error = null
-                Log.i(TAG, "visible OCR falling back to viewport capture after $e: ${diag.summary()}")
+                Log.i(TAG, "OCR falling back to viewport capture after $e: ${diag.summary()}")
                 worker.execute { runCatching { processForce() }.onFailure {
                     fail(WebModeError.DECODE_FAILED, "Viewport capture fallback crashed: ${it.javaClass.simpleName}")
                 } }
