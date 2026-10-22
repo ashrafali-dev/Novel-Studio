@@ -1,7 +1,6 @@
 package com.ashraf.novelstudio
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,11 +28,13 @@ class VerticalColumnMergeTest {
     }
 
     @Test fun columnsWithoutSharedHeightStaySeparate() {
-        assertFalse(OcrPost.joinableColumns(col("あ", 300f, 100f, 26f, 60f), col("い", 270f, 400f, 26f, 60f)))
+        val merged = OcrPost.mergeNeighbours(listOf(col("あ", 300f, 100f, 26f, 60f), col("い", 270f, 400f, 26f, 60f)))
+        assertEquals(2, merged.size)
     }
 
     @Test fun veryDifferentGlyphSizeIsNotOneBubble() {
-        assertFalse(OcrPost.joinableColumns(col("あ", 300f, 100f, 80f, 200f), col("い", 240f, 100f, 14f, 60f)))
+        val merged = OcrPost.mergeNeighbours(listOf(col("あ", 300f, 100f, 80f, 200f), col("い", 240f, 100f, 14f, 60f)))
+        assertEquals(2, merged.size)
     }
 
     @Test fun verticalAndHorizontalNeverJoin() {
