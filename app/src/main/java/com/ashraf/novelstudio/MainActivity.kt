@@ -342,6 +342,11 @@ class MainActivity : Activity() {
                 }
                 onFinished?.invoke()
             },
+            onCanvasPageChanged = { changedUrl, changes ->
+                if (token == navToken && cleanUrl(novelWv.url.orEmpty()) == cleanUrl(changedUrl)) {
+                    clearCanvasTransitionOverlay(changedUrl, changes)
+                }
+            },
             forceOcrSrc = source,
             forceOcrRegion = region
         ))
@@ -757,7 +762,9 @@ class MainActivity : Activity() {
         val pageUrl: String,
         val layout: WebModeLayout,
         val top: Int = 0,
-        val attempts: Int = 0
+        val attempts: Int = 0,
+        /** Canvas generations captured when queued; stale replies may not populate the new page's cache. */
+        val canvasVersions: Map<String, Long> = emptyMap()
     )
 
     /** Visible panels are accumulated so slow/unavailable read-ahead does not force one-bubble requests. */
@@ -858,6 +865,14 @@ class MainActivity : Activity() {
                 }
             },
             onDone = { },
+            onCanvasPageChanged = { changedUrl, changes ->
+                if (seq == aheadOcrSeq && token == navToken) {
+                    clearCanvasTransitionOverlay(changedUrl, changes)
+                    // A collected panel can retain the old bitmap even though the canvas URL is unchanged.
+                    collectedPanels.keys.removeAll(changes.keys)
+                    if (collectedPanels.isEmpty()) cancelCollectedFlush()
+                }
+            },
             ahead = n,
             fullChapterLinks = true,
             onAheadPanelsReady = { panels ->
@@ -1264,7 +1279,13 @@ class MainActivity : Activity() {
                 rtAheadTranslationTasksByJobKey.values.any { it.id == id }) continue
             rtAheadTranslationQueuedIds.add(id)
             rtAheadTranslationQueue.add(
-                RtAheadTranslationTask(id, page, layout, chunk.minOf { batchTop[it] })
+                RtAheadTranslationTask(
+                    id = id,
+                    pageUrl = page,
+                    layout = layout,
+                    top = chunk.minOf { batchTop[it] },
+                    canvasVersions = WebModeLayoutStore.canvasVersions(page, layout)
+                )
             )
         }
         if (rtAheadHold.isEmpty()) {
@@ -1480,6 +1501,11 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
             rtAheadTranslationQueuedIds.remove(queued.id)
             if (queued.pageUrl != currentUrl) {
                 rtAheadTranslationSuppressedIds.add(queued.id)
+                continue
+            }
+            if (!WebModeLayoutStore.canvasVersionsStillCurrent(queued.canvasVersions)) {
+                rtAheadTranslationSuppressedIds.add(queued.id)
+                Log.i("NovelStudioOCR", "Dropped stale read-ahead task after canvas page change")
                 continue
             }
             val remaining = queued.layout.bubbles.filter { bubble ->
@@ -1718,7 +1744,9 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
         rtAheadWorkerBusy = false
         rtAheadWorkerTask = null
         rtAheadWorkerJobKey = ""
-        if (task.attempts < 1 && cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+        if (task.attempts < 1 &&
+            WebModeLayoutStore.canvasVersionsStillCurrent(task.canvasVersions) &&
+            cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
             queueRtAheadTask(task.copy(
                 id = rtAheadTaskId(task.pageUrl, task.layout) + "-r",
                 attempts = task.attempts + 1
@@ -1769,7 +1797,11 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
     }
 
     private fun finishRealtimeAheadTranslation(jobKey: String, task: RtAheadTranslationTask, raw: String) {
-        val aligned = WebModeLayout.align(cleanReply(raw), task.layout)
+        val canvasStillCurrent = WebModeLayoutStore.canvasVersionsStillCurrent(task.canvasVersions)
+        val aligned = if (canvasStillCurrent) WebModeLayout.align(cleanReply(raw), task.layout) else null
+        if (!canvasStillCurrent) {
+            Log.i("NovelStudioOCR", "Discarded stale read-ahead reply after canvas page change")
+        }
         if (aligned != null) {
             for (i in task.layout.bubbles.indices) {
                 val value = aligned.getOrNull(i)?.trim().orEmpty()
@@ -1788,7 +1820,7 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
                     fp !in deepSeekTranslatedTextHashes && fp !in deepSeekInFlightTextHashes
                 }
         }
-        if (missing.isNotEmpty() && task.attempts < 1 &&
+        if (canvasStillCurrent && missing.isNotEmpty() && task.attempts < 1 &&
             cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
             val retryLayout = WebModeLayout(0, missing)
             queueRtAheadTask(task.copy(
@@ -6714,6 +6746,11 @@ return t.length>=40?'TXT:'+t:'';
                         }
                     }
                 }
+            },
+            onCanvasPageChanged = { changedUrl, changes ->
+                if (token == navToken && jobSeq == webModeJobSerial) {
+                    clearCanvasTransitionOverlay(changedUrl, changes)
+                }
             }
         ))
     }
@@ -8717,24 +8754,64 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         return WebModeLayoutStore.canvasVersionsStillCurrent(realtimeBatchCanvasVersions[key].orEmpty())
     }
 
-    private fun clearCanvasTransitionOverlay(url: String) {
-        val changed = WebModeLayoutStore.takeCanvasTransitions(url)
+    private fun clearCanvasTransitionOverlay(
+        url: String,
+        observedChanges: Map<String, Set<String>> = emptyMap()
+    ) {
+        // Pixel-confirmed transitions call this immediately; the store queue covers OCR-only detections.
+        val pendingSources = WebModeLayoutStore.takeCanvasTransitions(url)
+        val changed = (pendingSources + observedChanges.keys).toSet()
+        val savedStaleHashes = WebModeLayoutStore.takeCanvasTransitionFingerprints(url)
+        val staleHashes = savedStaleHashes + observedChanges.values.flatten().toSet()
         if (changed.isEmpty()) return
 
-        // A not-yet-flushed OCR batch may already contain bubbles from the old contents of this
-        // recycled canvas. Remove only those entries before the queue is allowed to send a request.
+        // The next bitmap may reuse the exact text and geometry, so release old-page hashes too.
+        if (staleHashes.isNotEmpty()) synchronized(deepSeekInFlightTextHashes) {
+            deepSeekInFlightTextHashes.removeAll(staleHashes)
+            deepSeekTranslatedTextHashes.removeAll(staleHashes)
+        }
+
+        val page = cleanUrl(url)
+        // Drop queued work tied to the recycled canvas. Running replies are checked against their
+        // captured generation before they may populate the translation cache.
+        val queuedIterator = rtAheadTranslationQueue.iterator()
+        while (queuedIterator.hasNext()) {
+            val task = queuedIterator.next()
+            val touchesChangedCanvas = task.layout.bubbles.any {
+                WebModeLogic.normalizeUrl(it.src) in changed
+            }
+            if (cleanUrl(task.pageUrl) == page && touchesChangedCanvas) {
+                queuedIterator.remove()
+                rtAheadTranslationQueuedIds.remove(task.id)
+                rtAheadTranslationSuppressedIds.add(task.id)
+            }
+        }
+        val activeAhead = rtAheadWorkerTask
+        if (activeAhead != null && cleanUrl(activeAhead.pageUrl) == page &&
+            activeAhead.layout.bubbles.any { WebModeLogic.normalizeUrl(it.src) in changed }) {
+            cancelRealtimeAheadWorker(requeue = false)
+        }
+        rtAheadHold.removeAll { (bubble, _) -> WebModeLogic.normalizeUrl(bubble.src) in changed }
+        if (rtAheadHold.isEmpty()) {
+            rtAheadHoldSince = 0L
+            rtAheadHoldFlushRunnable?.let { handler.removeCallbacks(it) }
+            rtAheadHoldFlushRunnable = null
+        }
+
+        // A not-yet-flushed visible batch may also contain bubbles from the previous bitmap.
         val pending = rtVisibleOcrBatch
-        if (pending != null && cleanUrl(pending.pageUrl) == cleanUrl(url)) {
-            val staleHashes = pending.bubbles.asSequence()
+        if (pending != null && cleanUrl(pending.pageUrl) == page) {
+            val pendingStaleHashes = pending.bubbles.asSequence()
                 .filter { WebModeLogic.normalizeUrl(it.src) in changed }
                 .map { WebModeLayout.fingerprint(it) }
                 .toSet()
-            if (staleHashes.isNotEmpty()) {
+            if (pendingStaleHashes.isNotEmpty()) {
                 pending.bubbles.removeAll { WebModeLogic.normalizeUrl(it.src) in changed }
-                pending.hashes.removeAll(staleHashes)
-                pending.seen.removeAll(staleHashes)
+                pending.hashes.removeAll(pendingStaleHashes)
+                pending.seen.removeAll(pendingStaleHashes)
                 synchronized(deepSeekInFlightTextHashes) {
-                    deepSeekInFlightTextHashes.removeAll(staleHashes)
+                    deepSeekInFlightTextHashes.removeAll(pendingStaleHashes)
+                    deepSeekTranslatedTextHashes.removeAll(pendingStaleHashes)
                 }
             }
             if (pending.bubbles.isEmpty()) clearRealtimeVisibleOcrBatch()
@@ -8745,7 +8822,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
         shownTranslated = false
         shownTrRaw = ""
         updatePill()
-        Log.i("NovelStudioOCR", "Cleared stale manga overlay after canvas page change; sources=" + changed.size)
+        Log.i("NovelStudioOCR", "Cleared stale manga overlay immediately; sources=" + changed.size)
     }
 
     private fun isRealtimeBubbleBatch(ch: Chapter): Boolean {
