@@ -79,6 +79,7 @@ jobs:
 
       - name: Upload signed release APK as workflow artifact
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: NovelStudio-SIGNED-RELEASE-APK
           path: app/build/outputs/apk/release/app-release.apk
