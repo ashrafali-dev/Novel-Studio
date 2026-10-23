@@ -710,8 +710,14 @@ internal object WmBubbleStyle {
         var keepGradientHorizontal = gradientHorizontal
         val probe = outlineProbe(bmp, l, t, r, b, bg)
         if (probe != null) {
-            fg = probe[0]; fg2 = probe[0]; stroke = probe[1]
-            keepGradientHorizontal = false
+            // Keep the sampled gradient fill if one was found, and independently keep the stroke.
+            // Otherwise use the detected solid fill from inside the outline.
+            if (!grad) {
+                fg = probe[0]
+                fg2 = probe[0]
+                keepGradientHorizontal = false
+            }
+            stroke = probe[1]
         }
         // Only speech-bubble-like (light) interiors are grown; on black pages the cover stays on the text itself.
         if (expand && lum(bg) > 70) {
