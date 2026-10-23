@@ -226,8 +226,8 @@ internal object PaddleOcrModels {
                 if (downloaded < 1_000_000L) throw IOException("ONNX model is unexpectedly small: " + spec.target.name)
             } else {
                 val yaml = part.readText(Charsets.UTF_8)
-                if (!yaml.contains("PostProcess:") || !yaml.contains("character_dict:") || yaml.contains('\uFFFD')) {
-                    throw IOException("Recognition dictionary config is invalid: " + spec.target.name)
+                if (!PaddleConfigValidator.isValid(yaml) || yaml.contains('\uFFFD')) {
+                    throw IOException("Recognition dictionary config is invalid (no usable PostProcess/character_dict layout): " + spec.target.name)
                 }
             }
             if (!part.renameTo(spec.target)) {
@@ -242,11 +242,19 @@ internal object PaddleOcrModels {
     }
 
     private fun validModelFile(file: File): Boolean = file.isFile && file.length() >= 1_000_000L
+
+    /**
+     * The runtime (com.paddle.ocr.model.ModelConfig) reads PostProcess: -> character_dict: by indentation.
+     * A file that merely contains the two strings (e.g. a detector yml with only "name: DBPostProcess",
+     * or an error page) used to pass and left OCR permanently empty; now the layout is followed for real.
+     * The whole file is read: dicts are ~150 KB and [PaddleConfigValidator] only keeps the lines.
+     */
     private fun validConfigFile(file: File): Boolean {
         if (!file.isFile || file.length() < 10_000L || file.length() > 25_000_000L) return false
         return try {
-            val head = file.inputStream().bufferedReader(Charsets.UTF_8).use { it.readText().take(250_000) }
-            head.contains("PostProcess:") && head.contains("character_dict:")
+            val text = file.readText(Charsets.UTF_8)
+            if (text.contains('\uFFFD')) return false
+            PaddleConfigValidator.isValid(text)
         } catch (_: Exception) {
             false
         }

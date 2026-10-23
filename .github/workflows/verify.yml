@@ -32,6 +32,22 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      # app/build.gradle refuses to evaluate without the release signing variables. Unit tests never
+      # sign anything, so a throwaway keystore generated here is enough; the real key is only used by
+      # the "Signed release build" job below.
+      - name: Provide throwaway signing config for project evaluation
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/unit-test-only.jks"
+          keytool -genkeypair -keystore "$KEYSTORE" -storepass unit-test -keypass unit-test \
+            -alias unit-test -keyalg RSA -keysize 2048 -validity 1 -dname "CN=unit-test"
+          {
+            echo "KEYSTORE_FILE=$KEYSTORE"
+            echo "KEYSTORE_PASSWORD=unit-test"
+            echo "KEY_ALIAS=unit-test"
+            echo "KEY_PASSWORD=unit-test"
+          } >> "$GITHUB_ENV"
+
       - name: Run JVM unit tests
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
@@ -93,3 +109,18 @@ jobs:
           test -s "$APK"
           APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+  paddle-models:
+    name: PaddleOCR model validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ONNX Runtime (metadata only)
+        run: pip install --quiet onnxruntime
+
+      # Downloads the pinned model files once on the runner (never on the phone) and checks that the
+      # app's hardcoded SHA-256 values, the CTC class count and the 48 px input height are consistent.
+      - name: Validate pinned PaddleOCR packs
+        run: bash tools/check_paddle_models.sh "$RUNNER_TEMP/paddle-check"
