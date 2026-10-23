@@ -106,16 +106,19 @@ internal class PanelStore(
                             result = Panel(load(), null)
                             break
                         } catch (t: Throwable) {
-                            if (t !is InterruptedException && !Thread.currentThread().isInterrupted) {
+                            // InterruptedException already cleared the flag, so check the exception
+                            // itself as well as the flag.
+                            val cancelled = t is InterruptedException || Thread.currentThread().isInterrupted
+                            if (!cancelled) {
                                 result = Panel(null, t.message ?: t.javaClass.simpleName)
                                 break
                             }
-                            // Clears the flag AND tells us whether this attempt was interrupted.
-                            if (!Thread.interrupted() || retried) {
+                            if (retried) {
                                 abandon(key, existing)
                                 throw t
                             }
                             retried = true
+                            Thread.interrupted()   // clear anything still set so the retry can block
                         }
                     }
                     finish(key, result)

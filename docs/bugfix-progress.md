@@ -100,3 +100,21 @@ Do not trust earlier crashed sessions. Every entry has a commit hash once commit
 `__asst`, `__trk`). No emulator is available in this environment; instrumenting on the phone is also excluded
 (no builds on the phone). Plan: extract the completion decision into pure-logic code with deterministic tests
 (decision rules), plus timing instrumentation in the log, and report the latency measurement as blocked.
+
+## 2026-10-24 recovery session
+
+CI had been failing since `b304a63`; the Bug C change was written but never compiled.
+
+- `cceab6b` LensOcrEngine: `HttpStatus`/`Answer` expose `status`, not `code`; WebModeInpainter:
+  missing `android.util.Log` import; added `fileState()` used by the failure dialog.
+- `b50fe47` the remaining `cause.code` at LensOcrEngine:572.
+- `4ecf814` `OcrPost.joinableColumns` made internal so `VerticalColumnMergeTest` compiles.
+- `ab12941` test failures once compilation worked: PanelStore cache-hit path, byte budget
+  (evicted `completed` markers kept the bytes alive), preparedSize doc/behaviour, `pollReplyText`
+  field index (readLen has 10 fields; the reply is index 8, not 7), tategaki columns joined
+  without a space, safeTextRect sliver rule.
+- `e376b10` safeTextRect MIN_RELATIVE 0.18 -> 0.55 and the starter-cancellation hand-off.
+- latest: PanelStore retries a load cut short by the starter's interrupt (its own class doc
+  already required that the shared download survive caller cancellation).
+
+Still open: full green `Verify (tests + build)` on the branch, then the release steps.
