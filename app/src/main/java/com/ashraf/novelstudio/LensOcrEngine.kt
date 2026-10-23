@@ -569,7 +569,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 } catch (e: ExecutionException) {
                     val cause = e.cause ?: e
                     if (firstError == null) firstError = cause
-                    if (cause is HttpStatus && cause.code !in RETRYABLE_STATUS) throw cause
+                    if (cause is HttpStatus && cause.status !in RETRYABLE_STATUS) throw cause
                     // Primary failed fast: do not wait for a backoff, try the other path right now.
                     if (!hedged && budgetMs - (SystemClock.elapsedRealtime() - started) >= minimumAttemptMs) {
                         hedged = true; running++
