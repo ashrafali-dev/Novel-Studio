@@ -482,7 +482,7 @@ internal object WebModeWriter {
         if(bb.style.zIndex!==zz)bb.style.zIndex=zz;
         if(bb.style.display!=='flex')bb.style.display='flex';
         var fw=String(Math.round(R.rw));
-        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,Math.max(gg[5]*R.rw*1.5,bb.getAttribute('data-sf')==='1'?R.oh*0.8:0));}
+        if(szChanged||bb.getAttribute('data-fw')!==fw){bb.setAttribute('data-sz',sz);bb.setAttribute('data-fw',fw);fit(bb,gg[5]*R.rw);}
       }}
     var raf=0,lastRun=0,forceNext=false,settleT=0,ro=null;
     function sched(){

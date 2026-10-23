@@ -258,14 +258,24 @@ internal object OcrRescan {
         val cw = reg.r - reg.l
         val ch = reg.b - reg.t
         if (cw < 12 || ch < 8) return emptyList()
-        val crop = Bitmap.createBitmap(bmp, reg.l, reg.t, cw, ch)
+        // A tight crop (e.g. 140x96) gives Lens no context and it answers "no text". Send the row WITH the
+        // surrounding artwork; text that falls outside the original region is dropped again below.
+        val padX = Math.max(40, (cw * 0.25f).toInt())
+        val padY = Math.max(40, (ch * 1.0f).toInt())
+        val ex0 = (reg.l - padX).coerceAtLeast(0)
+        val ey0 = (reg.t - padY).coerceAtLeast(0)
+        val ex1 = (reg.r + padX).coerceAtMost(bmp.width)
+        val ey1 = (reg.b + padY).coerceAtMost(bmp.height)
+        val pcw = ex1 - ex0
+        val pch = ey1 - ey0
+        val crop = Bitmap.createBitmap(bmp, ex0, ey0, pcw, pch)
         val made = ArrayList<Bitmap>()
         try {
-            var f = Math.min(3f, Math.max(1f, 96f / ch))
-            val longest = Math.max(cw, ch) * f
+            var f = Math.min(3f, Math.max(1f, 240f / Math.min(pcw, pch)))
+            val longest = Math.max(pcw, pch) * f
             if (longest > 2400f) f = Math.max(1f, f * 2400f / longest)
             val base: Bitmap = if (f > 1.05f) {
-                val up = Bitmap.createScaledBitmap(crop, (cw * f).toInt(), (ch * f).toInt(), true)
+                val up = Bitmap.createScaledBitmap(crop, (pcw * f).toInt(), (pch * f).toInt(), true)
                 made.add(up)
                 up
             } else crop
@@ -299,10 +309,13 @@ internal object OcrRescan {
                     else engine.recognizeRegion(look, script)
                 OcrLineFusion.addAll(best, res.blocks.filterNot { OcrPost.isNoise(it) })
             }
-            val sc = base.width.toFloat() / cw
+            val sc = base.width.toFloat() / pcw
             return best.map { b ->
                 val s = OcrPost.scaled(b, 1f / sc)
-                s.copy(top = s.top + reg.t, left = s.left + reg.l, cx = s.cx + reg.l, cy = s.cy + reg.t)
+                s.copy(top = s.top + ey0, left = s.left + ex0, cx = s.cx + ex0, cy = s.cy + ey0)
+            }.filter { b ->
+                // only what sits on the region we were asked about (the padding is context, not new text)
+                b.cx >= reg.l - 6 && b.cx <= reg.r + 6 && b.cy >= reg.t - 6 && b.cy <= reg.b + 6
             }
         } finally {
             for (m in made) m.recycle()
@@ -398,7 +411,7 @@ internal object OcrRescan {
 
     // ------------------------------------------------------------------ Google Lens: selective audit
 
-    private val auditPool = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+    private val auditPool = java.util.concurrent.Executors.newFixedThreadPool(5) { r ->
         Thread(r, "ns-lens-audit").apply { isDaemon = true }
     }
     @Volatile private var auditMisses = 0
@@ -419,7 +432,7 @@ internal object OcrRescan {
         val now = android.os.SystemClock.elapsedRealtime()
         if (now < auditPausedUntil) return base
         val regions: List<Region> = try {
-            findUncovered(bmp, base.blocks, 2)
+            findUncovered(bmp, base.blocks, 5)
         } catch (_: Exception) { emptyList() } catch (_: OutOfMemoryError) { emptyList() }
         if (regions.isEmpty()) return base
         val tasks = regions.map { reg ->
@@ -449,7 +462,7 @@ internal object OcrRescan {
             if (before != current) recovered += usable.size
         }
         if (recovered == 0) {
-            if (++auditMisses >= 3) { auditPausedUntil = now + 20_000L; auditMisses = 0 }
+            if (++auditMisses >= 8) { auditPausedUntil = now + 5_000L; auditMisses = 0 }
         } else auditMisses = 0
         Log.i(TAG, "lens-audit regions=${regions.size} recovered=$recovered ms=${android.os.SystemClock.elapsedRealtime() - now}")
         return if (recovered > 0) OcrResult(current) else base

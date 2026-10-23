@@ -2196,7 +2196,7 @@ internal class WebModeExtractor(
                 // Selective, speed-neutral completeness audit (see OcrRescan.augmentRemote): free when nothing is
                 // uncovered, otherwise only the suspicious crops are re-read, in parallel and under a deadline.
                 if (!Prefs.bool(wv.context, "lensAudit", true) || core.blocks.isEmpty() && fastMode) return core
-                return try { OcrRescan.augmentRemote(engine, bmp, core, st.current, if (fastMode) 1200L else 2500L) }
+                return try { OcrRescan.augmentRemote(engine, bmp, core, st.current, if (fastMode) 2200L else 3500L) }
                 catch (_: Exception) { core } catch (_: OutOfMemoryError) { core }
             }
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
@@ -2354,7 +2354,7 @@ internal class WebModeExtractor(
         // If a live Lens panel's URL is not immediately readable, stop waiting and OCR the pixels already onscreen.
         private const val LENS_IMAGE_FETCH_WAIT_MS = 900L
         private const val VISIBLE_FETCH_WAIT_MS = 7_000L
-        private const val SCREEN_LENS_DEADLINE_MS = 7_000L
+        private const val SCREEN_LENS_DEADLINE_MS = 12_000L
         private const val JOB_MAX_MS = 12 * 60_000L
         private const val VALIDITY_CHECK_INTERVAL_MS = 250L
         private const val MIN_W = 120

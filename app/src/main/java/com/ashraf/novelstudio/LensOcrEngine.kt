@@ -251,7 +251,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 }
             }
             var jpeg = encode(work, JPEG_QUALITY)
-            if (jpeg.size > MAX_UPLOAD_BYTES) jpeg = encode(work, 60)
+            if (jpeg.size > MAX_UPLOAD_BYTES) jpeg = encode(work, 62)
             if (jpeg.size > MAX_UPLOAD_BYTES) throw OcrUnavailableException("Google Lens: picture too large to upload")
             return Prepared(jpeg, work.width, work.height)
         } finally {
@@ -701,14 +701,14 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
         private const val MIN_SIDE = 16
-        private const val MAX_AREA = 1_500_000L
-        private const val MAX_DIMENSION = 1600
-        private const val JPEG_QUALITY = 40
+        private const val MAX_AREA = 4_000_000L
+        private const val MAX_DIMENSION = 2400
+        private const val JPEG_QUALITY = 78
         private const val MAX_UPLOAD_BYTES = 3_500_000
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
         // Realtime screenshot reading is latency-sensitive; a slow endpoint must not stall the reader.
-        private const val FAST_TOTAL_DEADLINE_MS = 6_500L
+        private const val FAST_TOTAL_DEADLINE_MS = 10_000L
         private const val FAST_MIN_ATTEMPT_MS = 1_000L
         private const val FAST_MAX_ATTEMPTS = 2
         private const val CONNECT_MS = 7_000L
