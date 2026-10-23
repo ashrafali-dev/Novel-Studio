@@ -390,9 +390,10 @@ internal object WebModeTextRemover {
             Photo.inpaint(bgr, maskMat, restoredBgr, radius.toDouble().coerceIn(1.0, 12.0), Photo.INPAINT_TELEA)
             if (restoredBgr.empty()) return null
             Imgproc.cvtColor(restoredBgr, restoredRgba, Imgproc.COLOR_BGR2RGBA)
-            restoredBitmap = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
-            Utils.matToBitmap(restoredRgba, restoredBitmap)
-            return IntArray(rw * rh).also { restoredBitmap.getPixels(it, 0, rw, 0, 0, rw, rh) }
+            val outputBitmap = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
+            restoredBitmap = outputBitmap
+            Utils.matToBitmap(restoredRgba, outputBitmap)
+            return IntArray(rw * rh).also { outputBitmap.getPixels(it, 0, rw, 0, 0, rw, rh) }
         } catch (_: Throwable) {
             return null
         } finally {
