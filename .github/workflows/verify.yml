@@ -123,4 +123,4 @@ jobs:
       # Downloads the pinned model files once on the runner (never on the phone) and checks that the
       # app's hardcoded SHA-256 values, the CTC class count and the 48 px input height are consistent.
       - name: Validate pinned PaddleOCR packs
-        run: bash tools/check_paddle_models.sh "$RUNNER_TEMP/paddle-check"
+        run: bash -x tools/check_paddle_models.sh "$RUNNER_TEMP/paddle-check"

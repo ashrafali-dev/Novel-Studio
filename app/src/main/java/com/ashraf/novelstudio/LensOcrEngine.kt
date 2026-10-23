@@ -471,6 +471,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             var waitMs = BACKOFF_MS shl attempt
             // Report what THIS attempt's requests really received before any retry overwrites it.
             val onExit = { root: Attempt -> previousRoot = root; publishThis(root) }
+            // A 2xx answer (e.g. 200 without the objects layer) is kept aside separately: it must be
+            // reported as the server's answer, but a 200 is not a network fault and cannot trip the breaker.
+            var answer: LensTransport.Answer? = null
             try {
                 return race(payload, info, remaining, connectMs, hedgeAfterMs, minimumAttemptMs, firstBound = attempt % 2 == 0, previous = previousRoot, onRoot = onExit)
             } catch (e: HttpStatus) {
@@ -492,9 +495,14 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                     throw OcrUnavailableException("Google Lens: TLS certificate problem (${describe(e)})", e)
                 }
                 last = e
+            } catch (e: LensTransport.Answer) {
+                // A REAL server answer, not a fault: a 200 that carried no usable reply is reported to
+                // the caller as-is; a 4xx/5xx was already handled (or rethrown) above.
+                answer = e
             } catch (e: IOException) {
                 last = e    // UnknownHostException, ConnectException, SocketException ("Socket closed"), EOF, ...
             }
+            answer?.let { throw it }
             val jitter = (random.nextInt(120)).toLong()
             val elapsed = SystemClock.elapsedRealtime() - started
             if (attempt == attemptLimit - 1 || elapsed + waitMs + jitter + minimumAttemptMs > deadlineMs) break
@@ -579,8 +587,6 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             for (f in futures) f.cancel(true)
         }
         val err = firstError
-        // The primary attempt's own answer (e.g. 200 without objects) is what the caller must judge.
-        if (err is LensTransport.Answer) throw err
         if (err is IOException) throw err
         if (err != null) throw IOException(err.javaClass.simpleName + ": " + (err.message ?: ""), err)
         throw SocketTimeoutException("no reply within ${budgetMs}ms")

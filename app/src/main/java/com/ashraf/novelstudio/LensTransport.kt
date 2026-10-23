@@ -1,6 +1,6 @@
 package com.ashraf.novelstudio
 
-import java.io.IOException
+import java.io.InterruptedIOException
 
 /**
  * Describes what one Lens request really received. Kept separate from the Android engine so the
@@ -9,8 +9,11 @@ import java.io.IOException
  */
 internal object LensTransport {
 
-    /** The server's answer for one POST: the HTTP status code and what it returned. */
-    class Answer(val status: Int, val meta: String)
+    /**
+     * The server's answer for one POST: the HTTP status code and what it returned. It is a Throwable so
+     * the status travels inside an IOException through the retry/hedge machinery (see HttpStatus).
+     */
+    class Answer(val status: Int, val meta: String) : java.io.IOException(meta)
 
     /**
      * Network layers wrap the transport failure (`SocketTimeoutException`, interrupted reads) inside a

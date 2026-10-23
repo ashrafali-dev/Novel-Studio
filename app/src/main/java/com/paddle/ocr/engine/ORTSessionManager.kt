@@ -99,13 +99,18 @@ class ORTSessionManager(
         return runSession(ortEnv, session, recInputName, input, shape, "recognition")
     }
 
+    /**
+     * Frees the ONNX sessions. Callers must make sure no inference is running (NovelStudio serialises
+     * every OCR call through OcrGate). Closing is idempotent here: a session already closed by an
+     * earlier release must not throw and turn a re-initialisation into a misleading failure.
+     */
     fun release() {
         try {
-            detSession?.close()
+            runCatching { detSession?.close() }
         } finally {
             detSession = null
             try {
-                recSession?.close()
+                runCatching { recSession?.close() }
             } finally {
                 recSession = null
                 env = null

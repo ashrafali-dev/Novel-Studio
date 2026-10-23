@@ -24,7 +24,8 @@ bad() { printf 'FAIL: %s\n' "$*"; fail=1; }
 # Python package installed by the workflow. Everything else is plain bash/curl.
 
 check_pack() {
-  local repo="$1" rev="$2" onnx_file="$3" yml_file="$4" want_onnx_sha="$5" label="$6"
+  # role: "rec" runs the dictionary/input-height/class checks; "det" only verifies the pinned file.
+  local role="$1" repo="$2" rev="$3" onnx_file="$4" yml_file="$5" want_onnx_sha="$6" label="$7"
   local dir="$WORK/$repo" base="https://huggingface.co/$repo/resolve/$rev"
   mkdir -p "$dir"
   note "== $label ($repo @ ${rev:0:7})"
@@ -50,6 +51,11 @@ check_pack() {
   local got
   got="$(sha256sum "$dir/$onnx_file" | cut -d' ' -f1)"
   if [ "$got" != "$want_onnx_sha" ]; then bad "$label: downloaded sha256 $got != $want_onnx_sha"; else note "ok   downloaded ONNX sha256 matches"; fi
+
+  if [ "$role" = "det" ]; then
+    note "ok   detector pack verified (dictionary checks do not apply)"
+    return
+  fi
 
   curl -fsSL --retry 3 --max-time 120 -o "$dir/$yml_file" "$base/$yml_file" || { bad "$label: yml download failed"; return; }
   grep -q '^PostProcess:' "$dir/$yml_file" || bad "$label: yml has no top-level PostProcess:"
@@ -88,19 +94,19 @@ PY
   fi
 }
 
-check_pack "PaddlePaddle/PP-OCRv6_small_det_onnx" \
+check_pack "det" "PaddlePaddle/PP-OCRv6_small_det_onnx" \
   "5994b4f1a827310b6d38f6b13716af6381847be0" "inference.onnx" "inference.yml" \
   "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e" "detector (shared by every pack)"
 
-check_pack "PaddlePaddle/PP-OCRv6_small_rec_onnx" \
+check_pack "rec" "PaddlePaddle/PP-OCRv6_small_rec_onnx" \
   "d9754520d68905205e3bbf32142a337d843353c4" "inference.onnx" "inference.yml" \
   "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634" "PP-OCRv6 Small recogniser"
 
-check_pack "PaddlePaddle/PP-OCRv6_medium_rec_onnx" \
+check_pack "rec" "PaddlePaddle/PP-OCRv6_medium_rec_onnx" \
   "12b418c3792e3ccf3fed807eb17863981051955e" "inference.onnx" "inference.yml" \
   "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba" "PP-OCRv6 Medium recogniser"
 
-check_pack "PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx" \
+check_pack "rec" "PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx" \
   "5c6f574b8e2230adf4287b33e736d71b9fabd28e" "inference.onnx" "inference.yml" \
   "92f0b7785e64fc9090106a241cf4c1eb97472824558272751b88a2a4476d3a08" "PP-OCRv5 Korean recogniser"
 
