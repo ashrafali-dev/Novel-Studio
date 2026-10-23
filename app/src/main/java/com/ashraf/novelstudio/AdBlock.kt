@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.webkit.WebResourceResponse
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -127,9 +129,10 @@ APP: Kotlin Android WebView app "NovelStudio" (AGP 8.2.2, Kotlin 1.9.22, minSdk 
 PROBLEM: with AdBlock ON some web pages come up blank or broken; with AdBlock OFF the same page loads fine.
 
 HOW THE ADBLOCK WORKS NOW
-1. Network (WebViewClient.shouldInterceptRequest, sub-resources only, not the main frame): a request is blocked when the full URL string contains any of these substrings: ${PATTERNS.joinToString(" ")} -- or when its host (or any parent domain) is in a list of ${hosts.size} ad/tracker hosts. A blocked request gets an empty 200 response with Content-Type text/plain.
+1. Network (WebViewClient.shouldInterceptRequest, sub-resources only, not the main frame): requests to the SAME registrable domain as the top-level page are never blocked by the generic rules. A THIRD-PARTY request is blocked when its host (or any parent domain) is in a list of ${hosts.size} ad/tracker hosts, or - for non-image/font/css URLs only - when the full URL contains one of: ${PATTERNS.joinToString(" ")}. A blocked request gets a neutral stand-in (stub script / empty css / 1x1 gif / empty html / 204), not an error.
 2. Navigation gate (shouldOverrideUrlLoading, main frame, only when there is NO user gesture): the navigation is cancelled only if blockReason(url) matches a rule above. Other cross-domain redirects are allowed and only logged.
-3. Cosmetic (JS run in onPageFinished): injects CSS that hides ${COSMETIC_SEL}  and REMOVES (element.remove()) every element matching [class*="ad-"],[id*="ad-"],[class*="advert"],[id*="advert"],[class*="popup"],[id*="popup"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"], plus a MutationObserver that does the same for later nodes.
+3. Cosmetic (JS run in onPageFinished): injects CSS that hides high-confidence ad markup, and HIDES (never removes) elements whose class/id TOKEN starts with one of ${FUZZY_TOKENS.joinToString(" ")}; elements holding real content (a reader container, 2+ pictures, long text, taller than 1.6 screens) are skipped. A MutationObserver does the same for later nodes. The full selector list: ${COSMETIC_SEL}.
+3b. Self-healing: if the page looks blank/ad-wall AND the blocker acted, the app reloads once with lighter blocking (host list only, no cosmetic) and remembers it, then once more with the blocker off for that site.
 4. Debug modes (the first line of the report shows the current one): Full, Network only, Cosmetic only, Log only (nothing is blocked or removed, everything that WOULD be is logged).
 
 HOW TO READ THE REPORT
@@ -191,12 +194,62 @@ RULES FOR YOUR ANSWER
      */
     fun shouldBlockRequest(u: Uri, headers: Map<String, String>?): Boolean {
         val ref = headers?.entries?.firstOrNull { it.key.equals("Referer", true) }?.value ?: "-"
-        val page = (if (ref != "-") Uri.parse(ref).host else null) ?: pageHost
+        // First party = the TOP-LEVEL page. The Referer of an ad iframe's own sub-requests is the ad iframe, which
+        // would make every one of them look "first party".
+        val page = pageHost ?: (if (ref != "-") Uri.parse(ref).host else null)
         val why = blockReason(u, page) ?: return false
         val enforce = networkEnforce
+        if (enforce) blockedThisPage++
         logEntry("${if (enforce) "BLOCK" else "WOULD-BLOCK"} [$why] type=${guessType(u, headers)} referer=$ref url=$u")
         return enforce
     }
+
+    /** Requests the blocker stopped on the current page (reset on every navigation); used by the health check. */
+    @Volatile var blockedThisPage = 0
+
+    private val EMPTY_GIF: ByteArray by lazy { android.util.Base64.decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", android.util.Base64.DEFAULT) }
+
+    /**
+     * What a blocked request gets back. An empty "text/plain" for everything (the old behaviour) made the page's
+     * OWN code crash: a missing `googletag` / `gtag` / `adsbygoogle` throws, and one uncaught error can stop the
+     * lazy-loader that puts the manga panels on screen. Like the "redirect to a neutral resource" of desktop
+     * blockers, scripts now get harmless stubs and every other type an empty body of the matching type.
+     */
+    fun blockedResponse(u: Uri, headers: Map<String, String>?): WebResourceResponse {
+        val path = (u.path ?: "").lowercase()
+        val full = u.toString().lowercase()
+        val isScript = guessType(u, headers) == "script" || path.contains(".js") || full.contains("gtag/js") || full.contains("gtm.js")
+        return when {
+            isScript -> WebResourceResponse("application/javascript", "utf-8", ByteArrayInputStream(STUB_JS.toByteArray()))
+            else -> when (guessType(u, headers)) {
+                "stylesheet" -> WebResourceResponse("text/css", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                "image" -> WebResourceResponse("image/gif", null, ByteArrayInputStream(EMPTY_GIF))
+                "document/iframe" -> WebResourceResponse("text/html", "utf-8", ByteArrayInputStream("<!doctype html><title></title>".toByteArray()))
+                "json/xhr", "xhr" -> WebResourceResponse("application/json", "utf-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                else -> WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+            }
+        }
+    }
+
+    /** Neutral stand-ins for the globals ad/analytics scripts define, so the site's own code keeps running. */
+    private const val STUB_JS = """(function(){try{var w=window;
+w.canRunAds=true;w.adsLoaded=true;
+w.adsbygoogle=w.adsbygoogle||[];
+w.dataLayer=w.dataLayer||[];
+w.gtag=w.gtag||function(){};w.ga=w.ga||function(){};w.fbq=w.fbq||function(){};
+var q=(w.googletag&&w.googletag.cmd&&w.googletag.cmd.length!==undefined)?w.googletag.cmd:[];
+function chain(o,names){names.forEach(function(k){o[k]=function(){return o;};});return o;}
+var g=w.googletag||{};
+g.apiReady=true;
+g.pubads=function(){return chain({},['addEventListener','setTargeting','collapseEmptyDivs','enableSingleRequest','disableInitialLoad','refresh','enableLazyLoad','setPrivacySettings','set','clear','updateCorrelator']);};
+g.defineSlot=function(){return chain({},['addService','setTargeting','defineSizeMapping','setCollapseEmptyDiv','updateTargetingFromMap']);};
+g.defineOutOfPageSlot=function(){return null;};
+g.enableServices=function(){};g.display=function(){};g.destroySlots=function(){return true;};
+g.sizeMapping=function(){var b={};return chain(b,['addSize']),b.build=function(){return [];},b;};
+g.cmd={push:function(f){try{if(typeof f==='function')f();}catch(e){}return 1;}};
+w.googletag=g;
+for(var i=0;i<q.length;i++){try{if(typeof q[i]==='function')q[i]();}catch(e){}}
+}catch(e){}})();"""
 
     /**
      * Collect page links and already-requested resources for optional AI classification.
@@ -313,14 +366,24 @@ RULES FOR YOUR ANSWER
     fun probeJs(): String = "(function(){try{" +
         "function d(e){return {t:e.tagName,id:(e.id||'').slice(0,60),c:(typeof e.className==='string'?e.className:'').slice(0,80),n:(e.textContent||'').length};}" +
         "var css=[];try{document.querySelectorAll(${org.json.JSONObject.quote(COSMETIC_SEL)}).forEach(function(e){css.push(d(e));});}catch(e){}" +
-        "return JSON.stringify({log:(window.__nsAdLog||[]).slice(0,80),css:css.slice(0,80),text:document.body?document.body.innerText.length:-1,html:document.documentElement.outerHTML.length,snip:document.documentElement.outerHTML.slice(0,900)});" +
+        "var imgs=0;try{imgs=Array.prototype.filter.call(document.images,function(i){return i.naturalWidth>=150&&i.naturalHeight>=100;}).length;}catch(e){}" +
+        "var tx=document.body?document.body.innerText:'';" +
+        "var ab=(tx.length<4000&&/(disable|turn off|pause|whitelist|allow).{0,50}ad ?block|ad ?block(er)?.{0,40}(detected|enabled|is on)/i.test(tx.slice(0,1500)))?1:0;" +
+        "return JSON.stringify({log:(window.__nsAdLog||[]).slice(0,80),css:css.slice(0,80),text:tx.length,imgs:imgs,ab:ab,html:document.documentElement.outerHTML.length,snip:document.documentElement.outerHTML.slice(0,900)});" +
         "}catch(e){return '{}';}})()"
 
-    fun recordProbe(pageUrl: String?, raw: String?) {
+    /**
+     * Logs the probe and decides whether the page looks BROKEN BY THE BLOCKER, so ordinary users never have to
+     * paste rules. Broken = (almost no text and no real picture, or an "disable your ad blocker" wall) AND the
+     * blocker actually blocked/hid something here. Verdict: 0 = fine, 1 = reload with lighter blocking (host list
+     * only, no cosmetic) and remember that for the site, 2 = still broken: switch the blocker off for the site.
+     * At most two automatic reloads per site per app run.
+     */
+    fun recordProbe(ctx: Context, pageUrl: String?, raw: String?): Int {
         try {
-            val str = org.json.JSONTokener(raw ?: return).nextValue() as? String ?: return
+            val str = org.json.JSONTokener(raw ?: return 0).nextValue() as? String ?: return 0
             val o = org.json.JSONObject(str)
-            logEntry("PAGE url=$pageUrl bodyTextLen=${o.optInt("text")} htmlLen=${o.optInt("html")}")
+            logEntry("PAGE url=$pageUrl bodyTextLen=${o.optInt("text")} imgs=${o.optInt("imgs")} adWall=${o.optInt("ab")} htmlLen=${o.optInt("html")} blocked=$blockedThisPage")
             logEntry("HTML-START ${o.optString("snip").replace("\n", " ")}")
             val log = o.optJSONArray("log")
             if (log != null) for (i in 0 until log.length()) {
@@ -332,8 +395,27 @@ RULES FOR YOUR ANSWER
                 val e = css.getJSONObject(i)
                 logEntry("CSS-HIDDEN <${e.optString("t")} id='${e.optString("id")}' class='${e.optString("c")}'> textLen=${e.optInt("n")}")
             }
+            val hidden = (0 until (log?.length() ?: 0)).count { log!!.getJSONObject(it).optString("k") == "hidden" } + (css?.length() ?: 0)
+            val touched = blockedThisPage + hidden
+            val broken = (o.optInt("text") < 40 && o.optInt("imgs") == 0 && o.optInt("html") > 0) || o.optInt("ab") == 1
+            if (!broken || touched <= 0 || networkEnforce.not()) return 0
+            val host = Uri.parse(pageUrl ?: return 0).host ?: return 0
+            val key = registrable(host)
+            val level = synchronized(healLevel) { healLevel[key] ?: 0 }
+            if (level >= 2) return 0
+            synchronized(healLevel) { healLevel[key] = level + 1 }
+            if (level == 0) {
+                relaxHosts = relaxHosts + key
+                Prefs.put(ctx, "adblockRelaxHosts", relaxHosts.joinToString(","))
+            } else {
+                autoOffHosts = autoOffHosts + key
+                Prefs.put(ctx, "adblockAutoOffHosts", autoOffHosts.joinToString(","))
+            }
+            logEntry("AUTO-HEAL level=${level + 1} host=$key (page looked broken, blocked=$blockedThisPage hidden=$hidden)")
+            return level + 1
         } catch (e: Exception) {
             logEntry("PAGE probe failed: ${e.message}")
+            return 0
         }
     }
 
@@ -355,9 +437,27 @@ RULES FOR YOUR ANSWER
         "/pagead/", "/adserver/", "/ads/", "/ads.", "/adframe", "/adservice", "/adclick",
         "adsbygoogle.js", "googlesyndication", "doubleclick", "googleadservices",
         "popunder", "popup_ad", "/banner-ad", "/banners/", "/advert/", "/advertising/",
-        "/sponsor/", "prebid", "bidder", "tracking-pixel", "analytics.js", "gtag/js",
-        "collect?v=", "/beacon", "fingerprint"
+        "/sponsor/", "prebid", "tracking-pixel", "analytics.js", "gtag/js"
+        // removed: "bidder", "collect?v=", "/beacon", "fingerprint" - they match legitimate resources
+        // (Cloudflare's challenge/beacon scripts, bot-check libraries, site APIs).
     )
+    private val STATIC_EXT = setOf(
+        "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "ico", "bmp",
+        "woff", "woff2", "ttf", "otf", "css", "mp4", "webm", "m3u8", "mp3"
+    )
+
+    /** Registrable domain, public-suffix aware for the common 2-level suffixes (co.uk, com.bd, ...). */
+    fun registrable(h: String): String {
+        val parts = h.lowercase().trim('.').split('.')
+        if (parts.size <= 2) return parts.joinToString(".")
+        val last2 = parts.takeLast(2).joinToString(".")
+        return if (last2 in publicSuffixGuards) parts.takeLast(3).joinToString(".") else last2
+    }
+
+    private fun thirdParty(reqHost: String?, page: String?): Boolean {
+        if (reqHost == null || page == null) return false   // unknown: never guess "third party"
+        return registrable(reqHost) != registrable(page)
+    }
 
     @Volatile private var hosts: Set<String> = builtIn.toHashSet()
 
@@ -369,6 +469,8 @@ RULES FOR YOUR ANSWER
         val ai = File(ctx.filesDir, "ai-blocklist.txt")
         if (ai.exists()) ai.forEachLine { val t = it.trim().lowercase(); if (t.isNotEmpty()) s.add(t) }
         hosts = s
+        relaxHosts = Prefs.get(ctx, "adblockRelaxHosts", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        autoOffHosts = Prefs.get(ctx, "adblockAutoOffHosts", "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         parseRules(Prefs.get(ctx, "adblockRules", ""))
         debugMode = (Prefs.get(ctx, "adblockDebugMode", "0").toIntOrNull() ?: 0).coerceIn(0, 3)
     }
@@ -379,8 +481,21 @@ RULES FOR YOUR ANSWER
     // domain; the broad URL patterns and cosmetic rules below break it.
     @Volatile var extraExempt: Set<String> = emptySet()   // user rules (SiteRules)
 
+    @Volatile private var relaxHosts: Set<String> = emptySet()     // auto-learned: hosts-list only, no cosmetic
+    @Volatile private var autoOffHosts: Set<String> = emptySet()   // auto-learned: blocker fully off
+    private val healLevel = HashMap<String, Int>()
+
+    fun isRelaxed(page: String?): Boolean {
+        val h = page?.lowercase() ?: return false
+        return relaxHosts.any { hostMatches(h, it) }
+    }
+
+    /** Page host OR request host is exempt (a "no ads" site setting must also cover the CDNs that page uses). */
+    fun exempt(host: String?, page: String?): Boolean = exempt(host) || exempt(page)
+
     fun exempt(host: String?): Boolean {
         val h = (host ?: return false).lowercase()
+        if (autoOffHosts.any { hostMatches(h, it) }) return true
         if (h == "webnovel.com" || h.endsWith(".webnovel.com")) return true
         // Tapas is a JavaScript-heavy SPA; generic ad filters can block URLs needed for episode rendering.
         // Exempt its pages and subresources from network and cosmetic filtering to avoid reader stalls.
@@ -392,7 +507,7 @@ RULES FOR YOUR ANSWER
 
     /** Which rule matches this URL ("pattern:/ads/" or "host:example.com"), or null if none. */
     fun blockReason(u: Uri, page: String? = pageHost): String? {
-        if (exempt(u.host)) return null
+        if (exempt(u.host, page)) return null
         val full = u.toString()
         if (siteRules.isNotEmpty()) {
             val rs = rulesFor(page)
@@ -404,8 +519,18 @@ RULES FOR YOUR ANSWER
                 r.blockHost.firstOrNull { hostMatches(rh, it) }?.let { return "rule:block-host:$it" }
             }
         }
-        PATTERNS.firstOrNull { full.contains(it) }?.let { return "pattern:$it" }
-        var h = u.host ?: return null
+        val reqHost = u.host
+        // Like desktop blockers: the site's OWN requests (same registrable domain as the top-level page) are never
+        // blocked by generic rules. Ads live on other domains; blocking first-party URLs is what broke readers.
+        val third = thirdParty(reqHost, page)
+        val relaxed = isRelaxed(page)
+        val ext = (u.path ?: "").substringAfterLast('.', "").lowercase()
+        // Panels, fonts and stylesheets are never judged by a URL SUBSTRING (only by the ad-host list below).
+        if (third && !relaxed && ext !in STATIC_EXT) {
+            PATTERNS.firstOrNull { full.contains(it) }?.let { return "pattern:$it" }
+        }
+        if (page != null && !third) return null
+        var h = reqHost ?: return null
         val set = hosts
         while (h.contains('.')) {
             if (set.contains(h)) return "host:$h"
@@ -416,27 +541,40 @@ RULES FOR YOUR ANSWER
 
     fun blocked(u: Uri): Boolean = blockReason(u) != null
 
-    private const val COSMETIC_SEL = ".adsbygoogle,ins.adsbygoogle,[id^=google_ads],[id*=div-gpt-ad],[id*=taboola],[id*=outbrain]," +
-        "[class*=adsbygoogle],[class*=ad-banner],[class*=ad-container],[class*=advert],[class*=advertisement]," +
-        "[class*=ads-wrapper],[class*=ad-slot],[class*=popup],[class*=popunder],[id*=ad-banner],[id*=advert]," +
-        "[id*=popup],[id*=popunder],[class*=sponsored],[class*=social-share],[class*=push-notification]," +
-        "iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=adsterra]"
+    // High-confidence ad markup: hidden with plain CSS.
+    private const val HARD_SEL = ".adsbygoogle,ins.adsbygoogle,[id^=google_ads],[id*=div-gpt-ad],[id*=taboola],[id*=outbrain]," +
+        "[class*=adsbygoogle],iframe[src*=doubleclick],iframe[src*=googlesyndication],iframe[src*=adsterra]"
+
+    // Fuzzy names. They match only at the START of a class/id token ("ad-banner", "advert-box"), never in the
+    // middle of a word: the old [class*="ad-"] also matched "re*ad-*container", "lo*ad-*more", "down*load-*", "he*ad-*"
+    // and, because those elements were REMOVED, deleted the whole reader on Madara-theme manga sites.
+    private val FUZZY_TOKENS = listOf(
+        "ad-", "ads-", "ad_", "ads_", "advert", "banner-ad", "sponsored", "popup-ad", "popunder", "push-notification"
+    )
+    private val FUZZY_SEL: String = FUZZY_TOKENS.joinToString(",") { "[class^=\"$it\"],[class*=\" $it\"],[id^=\"$it\"]" }
+    private val COSMETIC_SEL: String get() = "$HARD_SEL,$FUZZY_SEL"
+
+    // An element that holds the page's real content is never hidden, whatever its class is called.
+    private const val CONTENT_GUARD = "article,main,[role=main],#content,#main,.reading-content,.read-container,.chapter-content," +
+        ".entry-content,#chapter-content,#readerarea,.reader-area,.chapter-container,.wp-manga-chapter-img,.page-break"
+
+    private const val OFF_JS = "(function(){try{var s=document.getElementById('__nsAdStyle');if(s)s.remove();if(window.__nsAdObs)window.__nsAdObs.disconnect();}catch(e){}})();"
 
     fun cosmeticJs(page: String? = pageHost): String {
         val rs = if (siteRules.isEmpty()) emptyList() else rulesFor(page)
-        if (rs.any { !it.cosmetic || it.off }) {
-            return "(function(){try{var s=document.getElementById('__nsAdStyle');if(s)s.remove();if(window.__nsAdObs)window.__nsAdObs.disconnect();}catch(e){}})();"
-        }
+        if (rs.any { !it.cosmetic || it.off } || isRelaxed(page)) return OFF_JS
         val keep = rs.flatMap { it.keep }.joinToString(",")
-        var sel = if (keep.isEmpty()) COSMETIC_SEL else COSMETIC_SEL.split(",").joinToString(",") { "$it:not($keep)" }
+        val hard = if (keep.isEmpty()) HARD_SEL else HARD_SEL.split(",").joinToString(",") { "$it:not($keep)" }
         val extra = rs.flatMap { it.hide }
-        if (extra.isNotEmpty()) sel += "," + extra.joinToString(",")
+        val sel = if (extra.isNotEmpty()) hard + "," + extra.joinToString(",") else hard
         val css = sel + "{display:none!important;visibility:hidden!important;pointer-events:none!important}"
         val dry = cosmeticDry
         return """(function(){
           try{
             var DRY=$dry;
             var KEEP=${org.json.JSONObject.quote(keep)};
+            var FUZZY=${org.json.JSONObject.quote(FUZZY_SEL)};
+            var GUARD=${org.json.JSONObject.quote(CONTENT_GUARD)};
             window.__nsAdLog=window.__nsAdLog||[];
             var note=function(k,e){
               try{
@@ -449,24 +587,45 @@ RULES FOR YOUR ANSWER
               if(!s){s=document.createElement('style');s.id='__nsAdStyle';(document.head||document.documentElement).appendChild(s);}
               s.textContent=css;
             }
-            var kill=function(root){
+            // Real content is never hidden: it holds the reader / article, several pictures, lots of text or is
+            // taller than a screen and a half. Ads are none of those.
+            var risky=function(e){
               try{
-                root.querySelectorAll('[class*="ad-"],[id*="ad-"],[class*="advert"],[id*="advert"],[class*="popup"],[id*="popup"],iframe[src*="doubleclick"],iframe[src*="googlesyndication"]').forEach(function(e){
-                  if(e.tagName==='BODY'||e.tagName==='HTML')return;
-                  if(KEEP&&(e.matches(KEEP)||e.closest(KEEP)))return;
-                  if(DRY){note('would-remove',e);return;}
-                  note('removed',e);
-                  e.remove();
-                });
-              }catch(e){}
+                if(e.querySelector(GUARD))return true;
+                if(e.querySelectorAll('img,picture,video,canvas').length>=2)return true;
+                if((e.innerText||'').length>600)return true;
+                var r=e.getBoundingClientRect();
+                if(r.height>(window.innerHeight||800)*1.6)return true;
+              }catch(x){}
+              return false;
             };
-            kill(document);
+            var hide=function(e){
+              try{
+                if(!e||e.nodeType!==1||e.tagName==='BODY'||e.tagName==='HTML'||e.getAttribute('data-ns-ad'))return;
+                if(KEEP&&(e.matches(KEEP)||e.closest(KEEP)))return;
+                if(risky(e)){note('kept-content',e);return;}
+                if(DRY){note('would-hide',e);return;}
+                // hidden, never removed: the page's own scripts may still hold a reference to this node
+                e.setAttribute('data-ns-ad','1');
+                e.style.setProperty('display','none','important');
+                note('hidden',e);
+              }catch(x){}
+            };
+            var scan=function(root){
+              try{
+                if(root.matches&&root.matches(FUZZY))hide(root);
+                if(root.querySelectorAll)root.querySelectorAll(FUZZY).forEach(hide);
+              }catch(x){}
+            };
+            scan(document);
             if(window.__nsAdObs)window.__nsAdObs.disconnect();
+            var queue=[],timer=0;
             window.__nsAdObs=new MutationObserver(function(ms){
               for(var i=0;i<ms.length;i++)for(var j=0;j<ms[i].addedNodes.length;j++){
                 var n=ms[i].addedNodes[j];
-                if(n.nodeType===1)kill(n.parentNode||document);
+                if(n.nodeType===1)queue.push(n);
               }
+              if(!timer&&queue.length){timer=setTimeout(function(){timer=0;var q=queue;queue=[];for(var k=0;k<q.length&&k<300;k++)scan(q[k]);},150);}
             });
             window.__nsAdObs.observe(document.documentElement,{childList:true,subtree:true});
           }catch(e){}
