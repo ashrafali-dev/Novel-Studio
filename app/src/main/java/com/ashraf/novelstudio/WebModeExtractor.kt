@@ -2000,7 +2000,8 @@ internal class WebModeExtractor(
                 if (i !in inside) continue
                 val members = inside.filter { !consumed[it] }
                 if (i !in members) continue
-                if (!b.vertical && members.size < 2 && bands.isNullOrEmpty()) continue   // a lone horizontal line needs nothing
+                // Even a single horizontal line in a detected closed bubble should use that bubble's
+                // verified interior for placement and its glyph rectangle for erasing.
 
                 // The closed speech-bubble outline is stronger evidence than line spacing/alignment:
                 // every OCR row whose centre lies inside this same interior belongs to ONE bubble.
@@ -2046,7 +2047,10 @@ internal class WebModeExtractor(
                 val tilt = OcrPost.usableTilt(b.angle)          // never upside down, never sideways
                 val rotated = Math.abs(tilt) >= 6f
                 val others = rects.filterIndexed { j, _ -> j != i }
-                val s = WmBubbleStyle.analyse(bmp, rects[i], others, expand = !rotated)
+                // Do not expand a text-only box just because the surrounding page is flat white:
+                // white page margins and the white bubble fill are indistinguishable by strip colour alone.
+                // Closed-bubble grouping above already supplies its verified interior via refinedBox.
+                val s = WmBubbleStyle.analyse(bmp, rects[i], others, expand = false)
                 var cx: Float; var cy: Float; var bw: Float; var bh: Float
                 // Wipe the old lettering COMPLETELY: OCR boxes are tight, but outlines, glow, shadows and
                 // descenders reach past them. Pad by a share of the line height (more on artwork).
