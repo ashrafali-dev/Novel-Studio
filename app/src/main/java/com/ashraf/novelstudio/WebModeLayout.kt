@@ -806,6 +806,38 @@ internal object WmBubbleStyle {
     }
 
     /**
+     * Fraction of sampled points around an OCR box that touch this connected fill mask.
+     * Unlike the bubble's rectangular bounds, this respects curved edges such as the lower corner
+     * of an oval balloon. Kept pure so the shape-vs-aside decision can be regression tested on the JVM.
+     */
+    fun rectBoundaryCoverage(
+        rect: IntArray, originX: Int, originY: Int, maskW: Int, maskH: Int,
+        fillMask: BooleanArray, margin: Int = 3
+    ): Float {
+        if (rect.size < 4 || rect[2] <= rect[0] || rect[3] <= rect[1] ||
+            maskW <= 0 || maskH <= 0 || fillMask.size < maskW.toLong().times(maskH).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()) {
+            return 0f
+        }
+        val left = rect[0]; val right = rect[2] - 1
+        val top = rect[1]; val bottom = rect[3] - 1
+        var hits = 0; var samples = 0
+        fun sample(gx: Int, gy: Int) {
+            samples++
+            val lx = gx - originX; val ly = gy - originY
+            if (lx in 0 until maskW && ly in 0 until maskH && fillMask[ly * maskW + lx]) hits++
+        }
+        for (step in 0..4) {
+            val gx = left + (right - left) * step / 4
+            val gy = top + (bottom - top) * step / 4
+            sample(gx, top - margin)
+            sample(gx, bottom + margin)
+            sample(left - margin, gy)
+            sample(right + margin, gy)
+        }
+        return if (samples == 0) 0f else hits.toFloat() / samples
+    }
+
+    /**
      * Finds the whole inside of the speech bubble around [box] by flooding its fill colour (the text
      * is just "holes" in that fill) and returns [l, t, r, b] of that inside, or null when this is not
      * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
@@ -874,27 +906,9 @@ internal object WmBubbleStyle {
         // per OCR box and reuses the flood-fill already done above.
         if (membershipOut != null) {
             membershipOut.clear()
-            fun onInteriorSide(rect: IntArray): Boolean {
-                if (rect.size < 4 || rect[2] <= rect[0] || rect[3] <= rect[1]) return false
-                val left = rect[0]; val right = rect[2] - 1
-                val top = rect[1]; val bottom = rect[3] - 1
-                var hits = 0; var samples = 0
-                fun sample(gx: Int, gy: Int) {
-                    samples++
-                    val lx = gx - x0; val ly = gy - y0
-                    if (lx in 0 until w && ly in 0 until h && seen[ly * w + lx]) hits++
-                }
-                for (step in 0..4) {
-                    val gx = left + (right - left) * step / 4
-                    val gy = top + (bottom - top) * step / 4
-                    sample(gx, top - 3)
-                    sample(gx, bottom + 3)
-                    sample(left - 3, gy)
-                    sample(right + 3, gy)
-                }
-                return samples > 0 && hits * 100 >= samples * 65
+            for (rect in allRects) {
+                membershipOut.add(rectBoundaryCoverage(rect, x0, y0, w, h, seen) >= 0.65f)
             }
-            for (rect in allRects) membershipOut.add(onInteriorSide(rect))
         }
 
         // Real-time grouping only needs the bubble's inside, not proof of missed lettering.
