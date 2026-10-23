@@ -137,7 +137,9 @@ internal object WebModeWriter {
         for(var k=0;k<16;k++){var an=k*Math.PI/8,rr=(k%2?0.03:0.05);sh.push((Math.cos(an)*rr).toFixed(3)+'em '+(Math.sin(an)*rr).toFixed(3)+'em 0 '+it.o);}
         t.style.textShadow=sh.join(',');
         t.style.fontWeight='700';
-      }else if(it.g2&&it.g2!==it.fg){
+      }
+      // Gradient fill and outline are independent: keep both when the source letters have both.
+      if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
         t.style.background='linear-gradient('+(it.gh?'to right':'to bottom')+','+it.fg+','+it.g2+')';
         t.style.webkitBackgroundClip='text'; t.style.backgroundClip='text';
