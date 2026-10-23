@@ -1987,16 +1987,10 @@ internal class WebModeExtractor(
                 val regionKey = "${inter[0]}:${inter[1]}:${inter[2]}:${inter[3]}"
                 if (!triedInteriors.add(regionKey)) continue
 
-                val inside = blocks.indices.filter { j ->
-                    val cxj = blocks[j].cx
-                    val cyj = blocks[j].cy
-                    val inBounds = cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
-                    val inFill = membership.getOrNull(j) == true
-                    val boxCoverage = BubbleGrouping.rectOverlapFraction(rects[j], inter)
-                    // An oval's rectangular bounds include its corners/outside page; require both the
-                    // real flood-filled fill around the OCR box and most of the box within the interior bounds.
-                    inBounds && inFill && boxCoverage >= 0.8f
-                }
+                // The connected fill mask is authoritative: the rectangle is only a render box and can
+                // exclude genuine text at a curved balloon edge. OCR boxes whose surrounding pixels are
+                // not connected to this bubble's fill are excluded even when their centres lie in its bbox.
+                val inside = blocks.indices.filter { j -> membership.getOrNull(j) == true }
                 if (i !in inside) continue
                 val members = inside.filter { !consumed[it] }
                 if (i !in members) continue
