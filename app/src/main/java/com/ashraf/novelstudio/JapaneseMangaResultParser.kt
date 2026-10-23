@@ -52,7 +52,9 @@ internal object JapaneseMangaResultParser {
                         angle = 0f, font = font,
                         bg = bg, fg = fg, fg2 = fg,
                         soft = region.optBoolean("soft", false),
-                        sourceText = text
+                        sourceText = text,
+                        // Japanese manga lettering is usually written in columns.
+                        vertical = region.optBoolean("vertical", false)
                     )
                 )
             }

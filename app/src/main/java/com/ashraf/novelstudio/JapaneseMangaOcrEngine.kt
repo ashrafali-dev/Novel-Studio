@@ -268,7 +268,7 @@ internal class RoutingOcrEngine : OcrEngine {
     private fun useful(result: OcrResult): Boolean =
         result.blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } } >= 2
 
-    private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult): OcrResult {
+    private fun route(bitmap: Bitmap, script: OcrScript, run: (OcrEngine, OcrScript) -> OcrResult): OcrResult {
         val waited = OcrGate.Waited()
         val t0 = android.os.SystemClock.elapsedRealtime()
         val foregroundRoute = !OcrGate.isBackgroundThread()
@@ -306,7 +306,7 @@ internal class RoutingOcrEngine : OcrEngine {
     }
 
     private fun routeInner(
-        bitmap: Bitmap, script: OcrScript, run: (OcrEngine) -> OcrResult,
+        bitmap: Bitmap, script: OcrScript, run: (OcrEngine, OcrScript) -> OcrResult,
         report: (String, Boolean) -> Unit
     ): OcrResult {
         val chosen = try {
@@ -329,7 +329,7 @@ internal class RoutingOcrEngine : OcrEngine {
             }
             mlKit
         }
-        if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit) }
+        if (chosen === mlKit) { report("mlkit", selectedMode != "mlkit"); return run(mlKit, script) }
 
         if (chosen is LensOcrEngine) {
             // Lens is an online engine using an unofficial endpoint. Its failures are expected and must
@@ -337,7 +337,7 @@ internal class RoutingOcrEngine : OcrEngine {
             var lens: OcrResult? = null
             var failure: String? = null
             try {
-                lens = run(chosen)
+                lens = run(chosen, script)
             } catch (e: OcrUnavailableException) {
                 failure = (e.message ?: "unavailable").take(160)
                 // "cancelled" = a newer scan replaced this one (scroll/page change): expected, not a Lens fault.
@@ -382,7 +382,7 @@ internal class RoutingOcrEngine : OcrEngine {
         }
 
         return try {
-            val primary = run(chosen)
+            val primary = run(chosen, script)
             if (useful(primary)) {
                 // Label what REALLY read the page: Korean is Paddle only with the Korean pack, otherwise ML Kit.
                 when ((chosen as? PaddleProfileOcrEngine)?.familyFor(script)) {
@@ -396,7 +396,14 @@ internal class RoutingOcrEngine : OcrEngine {
                 OcrEngineStatus.lastError = "$selectedMode returned no usable text for ${script.name}; using ML Kit fallback"
                 Log.w("NovelStudioOCR", OcrEngineStatus.lastError)
                 report("mlkit(empty-primary)", true)
-                run(mlKit)
+                // The requested script may simply be wrong (Naver serves Korean under a JAPANESE-looking
+                // URL). Read the same panel with ML Kit under the script the picture actually uses.
+                val fixed = OcrScriptDetect.pick(primary.blocks)?.takeIf { it != script }
+                val fallback = run(mlKit, fixed ?: script)
+                if (fixed != null) {
+                    OcrEngineStatus.lastError = "empty primary for ${script.name}; ML Kit read it as ${fixed.name}"
+                }
+                fallback
             }
         } catch (e: Exception) {
             // "detection: OrtException – <first 70 chars of ONNX Runtime's message>" (no recognised text involved).
@@ -420,29 +427,29 @@ internal class RoutingOcrEngine : OcrEngine {
             OcrEngineStatus.copyOnce(appContext, "NovelStudio $engineLabel error: $full")
             Log.w("NovelStudioOCR", "${selectedMode} failed ($why); falling back to ML Kit: ${e.message}", e)
             report("mlkit(error:$why)", true)
-            run(mlKit)
+            run(mlKit, script)
         } catch (e: OutOfMemoryError) {
             Log.w("NovelStudioOCR", "${selectedMode} ran out of memory; falling back to ML Kit")
             report("mlkit(oom)", true)
-            run(mlKit)
+            run(mlKit, script)
         } catch (e: LinkageError) {
             Log.w("NovelStudioOCR", "${selectedMode} native runtime unavailable; falling back to ML Kit: ${e.message}")
             report("mlkit(link-error)", true)
-            run(mlKit)
+            run(mlKit, script)
         }
     }
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult =
-        route(bitmap, script) { it.recognize(bitmap, script) }
+        route(bitmap, script) { engine, s -> engine.recognize(bitmap, s) }
 
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult =
-        route(bitmap, script) { it.recognizeFast(bitmap, script) }
+        route(bitmap, script) { engine, s -> engine.recognizeFast(bitmap, s) }
 
     override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
-        route(bitmap, script) { it.recognizeFallback(bitmap, script) }
+        route(bitmap, script) { engine, s -> engine.recognizeFallback(bitmap, s) }
 
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult =
-        route(bitmap, script) { it.recognizeRegion(bitmap, script) }
+        route(bitmap, script) { engine, s -> engine.recognizeRegion(bitmap, s) }
 
     /** Never frees an engine while it is reading: the release runs on its own thread, behind OcrGate. */
     override fun close() {

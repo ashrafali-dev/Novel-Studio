@@ -2,6 +2,7 @@ package com.ashraf.novelstudio
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
@@ -26,8 +27,42 @@ internal data class WmBubble(
     /** Bengali text already translated for this position. Empty means not translated yet. */
     val translatedText: String = "",
     /** Colour of the lettering's outline (SFX / titles drawn as fill + stroke); 0 = no outline. */
-    val stroke: Int = 0
-)
+    val stroke: Int = 0,
+    /**
+     * Shape of the real speech balloon, normalized to the source image (x0,y0,x1,y1,...).
+     * The writer keeps the translated text inside this contour instead of guessing a rectangle;
+     * empty when the detector gave no shape (plain rectangle box then).
+     */
+    val poly: FloatArray? = null,
+    /**
+     * True when the original lettering runs top-to-bottom in columns (Japanese manga, some Korean
+     * lettering). Text metrics alone cannot tell: a two-line vertical Korean bubble looks like a short
+     * horizontal one. The writer switches the translated text to the column engine for these.
+     */
+    val vertical: Boolean = false
+) {
+    /**
+     * Same bubble, but with the outline text must stay inside.
+     * [maskBox] = the points are already normalized; otherwise they are pixels of an [imageWidth] x
+     * [imageHeight] picture. Only the *area* is used (BubbleGeometry takes the largest rectangle inside
+     * it), so a concave or oval outline needs no curve fitting.
+     */
+    fun withPolygon(
+        points: List<Pair<Float, Float>>,
+        imageWidth: Int,
+        imageHeight: Int,
+        maskBox: Boolean = false
+    ): WmBubble {
+        if (points.size < 3) return this
+        if (!maskBox && (imageWidth <= 0 || imageHeight <= 0)) return this
+        val flat = FloatArray(points.size * 2)
+        for ((i, p) in points.withIndex()) {
+            flat[i * 2] = if (maskBox) p.first.coerceIn(0f, 1f) else (p.first / imageWidth.toFloat()).coerceIn(0f, 1f)
+            flat[i * 2 + 1] = if (maskBox) p.second.coerceIn(0f, 1f) else (p.second / imageHeight.toFloat()).coerceIn(0f, 1f)
+        }
+        return copy(poly = flat)
+    }
+}
 
 /**
  * The bubbles of one chapter, in the same order as their text paragraphs in the chapter text that is
@@ -41,12 +76,19 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             .put("s", b.src).put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
             .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
             .put("fg2", b.fg2).put("sf", b.soft)
-            .put("srcText", b.sourceText).put("tr", b.translatedText).put("so", b.stroke))
-        return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
+            .put("srcText", b.sourceText).put("tr", b.translatedText).put("so", b.stroke)
+            .put("pg", b.poly?.let { p -> JSONArray(p.map { r5(it) }) } ?: JSONArray())
+            .put("vt", b.vertical))
+        return JSONObject().put("v", 4).put("to", titleOffset).put("b", a).toString()
     }
 
     companion object {
         private fun r5(x: Float): Double = Math.round(x * 100000.0) / 100000.0
+
+        private fun parsePoly(a: JSONArray?): FloatArray? {
+            if (a == null || a.length() < 6 || a.length() % 2 != 0) return null
+            return FloatArray(a.length()) { i -> a.optDouble(i, 0.0).toFloat().coerceIn(0f, 1f) }
+        }
 
         fun fromJson(s: String): WebModeLayout? = try {
             val o = JSONObject(s)
@@ -61,7 +103,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.getDouble("a").toFloat(), b.getDouble("f").toFloat(),
                     b.getInt("bg"), b.getInt("fg"),
                     b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false),
-                    b.optString("srcText", ""), b.optString("tr", ""), b.optInt("so", 0)
+                    b.optString("srcText", ""), b.optString("tr", ""), b.optInt("so", 0),
+                    parsePoly(b.optJSONArray("pg")), b.optBoolean("vt", false)
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
@@ -185,6 +228,14 @@ internal object WebModeLayoutStore {
     @Synchronized
     fun put(ctx: Context, url: String, layout: WebModeLayout) {
         val k = key(url)
+        // A rejected/empty image decode can produce NaN or a zero-width box. JSON cannot store NaN
+        // ("null"), and one such bubble broke fromJson for the whole chapter on the next start.
+        layout.bubbles.firstOrNull { b ->
+            !(b.cx.isFinite() && b.cy.isFinite() && b.w.isFinite() && b.h.isFinite() && b.w > 0f && b.h > 0f)
+        }?.let {
+            Log.w("WebModeLayout", "dropping a bubble with invalid geometry from the stored scan")
+            return
+        }
         // Load persisted translations before comparing so a restart cannot resurrect bubbles from
         // an old page after the reader recycles its canvas at the same URL/coordinates.
         val previousLayout = mem[k] ?: if (isShonenJumpPlus(url)) get(ctx, url) else null
@@ -765,6 +816,15 @@ internal object WmBubbleStyle {
      * a flat bubble. It also returns null unless there is leftover lettering inside the bubble that no
      * recognised block ([allRects]) accounts for - i.e. text the OCR missed.
      */
+    /**
+     * Outline used for placement only: the flat white area around the text, when it closes inside the
+     * probe window. Unlike [bubbleInterior] this never scans for unread ink, so it is cheap enough for a
+     * real-time panel. `null` on artwork / black pages = the rectangle fit stays in charge.
+     */
+    fun tryBubbleInterior(bmp: Bitmap, box: IntArray): IntArray? = try {
+        bubbleInterior(bmp, box, emptyList(), requireLeftover = false)
+    } catch (_: Exception) { null } catch (_: OutOfMemoryError) { null }
+
     fun bubbleInterior(
         bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true,
         bandsOut: MutableList<IntArray>? = null, minBand: Int = 6
@@ -966,5 +1026,30 @@ internal object WmBubbleStyle {
         val fg = (0xFF shl 24) or ((rr / take).toInt() shl 16) or ((gg / take).toInt() shl 8) or (bb / take).toInt()
         // Anti-aliasing and busy artwork can blur the estimate; if it is not clearly readable, use black/white.
         return if (abs(lum(fg) - lum(bg)) < MIN_CONTRAST) fallback else fg
+    }
+
+    /** WCAG contrast ratio between two opaque colours (1..21). */
+    fun contrastRatio(a: Int, b: Int): Double {
+        fun lin(c: Int): Double {
+            val v = c / 255.0
+            return if (v <= 0.03928) v / 12.92 else Math.pow((v + 0.055) / 1.055, 2.4)
+        }
+        fun lum2(c: Int) = 0.2126 * lin((c shr 16) and 255) + 0.7152 * lin((c shr 8) and 255) + 0.0722 * lin(c and 255)
+        val la = lum2(a); val lb = lum2(b)
+        return (maxOf(la, lb) + 0.05) / (minOf(la, lb) + 0.05)
+    }
+
+    /**
+     * Translated text colour that is readable ON the colour the overlay actually paints.
+     * The old writer reused the *original* lettering colour: when the cleaner falls back to an opaque
+     * cover box, black text on a black bubble (or white on white) is invisible. Pick black/white by
+     * contrast instead, and keep a coloured look only when it is clearly readable.
+     */
+    fun readableTextColour(preferred: Int, background: Int): Int {
+        val dark = 0xFF171717.toInt()
+        val light = 0xFFFFFFFF.toInt()
+        val bg = background or 0xFF000000.toInt()
+        if (contrastRatio(preferred, bg) >= 4.5) return preferred
+        return if (contrastRatio(light, bg) > contrastRatio(dark, bg)) light else dark
     }
 }

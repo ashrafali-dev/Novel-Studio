@@ -9,6 +9,41 @@ internal object WebModeLogic {
 
     fun normalizeUrl(u: String): String = u.substringBefore('#').trim()
 
+    /** URL shapes that only navigation art / UI graphics use (checked on the URL path only, never the query). */
+    private val NAV_IMAGE = Regex(
+        "/logo|favicon|/icon|/avatar|/sprite|/badge|/banner|/sns_|/share|/btn_|/button|/advert|/ads?/" +
+            "|payment|store_badge|google-play|app-store|\\.svg(?:\\?|$)",
+        RegexOption.IGNORE_CASE
+    )
+    private val DECOR_IMAGE = Regex("/background|/bg_|/bg\\.|/bg-|/pattern|/texture|/footer|/header|/divider|/spacer|/blank\\.", RegexOption.IGNORE_CASE)
+
+    /**
+     * True for images that are part of the site's chrome, not of the comic page.
+     *
+     * The live log repeatedly listed `m.comic.naver.com 367x156@1985` and `255x89` as "panels": those
+     * are navigation tiles / promo banners. They were downloaded, OCRed (burning a Lens request each)
+     * and their recognised text ("이전화", "다음화", a promotion sentence) was sent to the chatbot as
+     * if it were dialogue, so the reply could no longer be bound to the bubbles.
+     *
+     * Manga panels are portrait and large; navigation art is wide and short, and lives on the same
+     * host as the page (or carries a chrome/logo-ish URL). A data:/canvas URL is never chrome.
+     */
+    fun isSiteChrome(src: String, w: Int, h: Int, pageHost: String): Boolean {
+        val s = src.trim()
+        if (s.isBlank() || s.startsWith("data:")) return false
+        val path = s.substringAfter("://", s).substringAfter('/', "")
+        // 1) The URL path itself says it is decoration (logo/badge/background whatever the host).
+        if (NAV_IMAGE.containsMatchIn("/$path") || DECOR_IMAGE.containsMatchIn("/$path")) return true
+        if (w <= 0 || h <= 0) return false
+        val host = try { java.net.URI(s).host.orEmpty().removePrefix("www.") } catch (_: Exception) { "" }
+        val sameHost = host.isNotBlank() && pageHost.isNotBlank() &&
+            (host == pageHost || host.endsWith(".$pageHost"))
+        // 2) A wide, short image served by the page's own host: navigation tile / preview strip.
+        if (sameHost && w > h * 1.3f && h < 260) return true
+        // 3) A very small image from the page's host that is not a comic strip (strips are tall).
+        return sameHost && w < 200 && h < 200
+    }
+
     /** Remove duplicate image URLs and order panels by their position in the page. */
     fun dedupeAndOrder(refs: List<PanelRef>): List<PanelRef> =
         refs.distinctBy { normalizeUrl(it.src) }

@@ -120,7 +120,11 @@ function __uiClean(t){
   /Action\s+completed\s+or\s+failed\.?\s*Please\s+check\s+the\s+page\s+and\s+try\s+again\.?/ig,
   /Claude\s+finished\s+the\s+response/ig,
   /OCR\s*[:：]?[^\n]*(?:screen capture|স্ক্রিন ক্যাপচার|খালি ফেরত এসেছে)[^\n]*/ig,
-  /(?:Force extract|জোর করে বের করা হয়েছে)[^\n]*(?:screen capture|স্ক্রিন ক্যাপচার|খালি)[^\n]*/ig
+  /(?:Force extract|জোর করে বের করা হয়েছে)[^\n]*(?:screen capture|স্ক্রিন ক্যাপচার|খালি)[^\n]*/ig,
+  // Word-level chrome that the phone layout paints next to / under the answer (Copy, Share, the
+  // composer's own "Send"/"Edit" tools). Only whole words, so a translation that mentions "send"
+  // inside a sentence is untouched; markers are kept.
+  /(^|\n)[ \t]*(?:Copy|Copied|Share|Edit|Regenerate|Retry|Read aloud|Like|Dislike|Good response|Bad response|Sources?|Stop generating|Send message|Edit message|Answer now)[ \t]*(?=\n|$)/ig
  ];
  rules.forEach(function(r){s=s.replace(r,' ');});
  return s.replace(/[ \t]+/g,' ').replace(/ *\n */g,'\n').replace(/\n{3,}/g,'\n\n').trim();
@@ -143,8 +147,27 @@ function __ntext(p,e){
  var i=(p.b&&e.querySelector(p.b))||e.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]')||e;
  try{
   var c=i.cloneNode(true);
-  var remove='button,[role="button"],nav,aside,svg,script,style,noscript,textarea,input,time,[class*="thinking"],[class*="reasoning"],[class*="thought"],[class*="think"],[data-testid*="thinking"],[data-testid*="reasoning"],[data-testid*="thought"],[data-testid*="think"],[aria-label*="thinking"],[aria-label*="reasoning"],[aria-label*="think"]';
-  c.querySelectorAll(remove).forEach(function(x){x.remove();});
+  // UI chrome that is painted INTO the message on a phone (icons, toolbars, the app-owned prompt card
+  // that was typed into the composer and is echoed above the answer). It used to be copied with the
+  // answer, so the reply no longer matched the [NNN] markers and nothing could be placed.
+  var remove='button,[role="button"],nav,aside,svg,script,style,noscript,textarea,input,time,'
+   +'[role="menu"],[role="toolbar"],[role="status"],[role="tooltip"],[aria-live],'
+   +'[class*="thinking"],[class*="reasoning"],[class*="thought"],[class*="think"],[data-testid*="thinking"],[data-testid*="reasoning"],[data-testid*="thought"],[data-testid*="think"],[aria-label*="thinking"],[aria-label*="reasoning"],[aria-label*="think"],'
+   +'[class*="toolbar"],[class*="message-actions"],[class*="messageActions"],[class*="message-footer"],[class*="messageFooter"],[class*="feedback"],[class*="copy-button"],[class*="attachment"],[class*="file-chip"],[class*="fileChip"],[class*="user-prompt"],[class*="prompt-card"],[class*="promptCard"],'
+   +'[data-testid*="copy"],[data-testid*="feedback"],[data-testid*="toolbar"],[data-testid*="message-action"],[data-testid*="attachment"],'
+   +'[aria-label*="Copy"],[aria-label*="Share"],[aria-label*="like"],[aria-label*="dislike"],[aria-label*="Regenerate"],[aria-label*="Read aloud"],[aria-label*="Good response"],[aria-label*="Bad response"]';
+  // Leaf-level removal only: an ancestor wrapper of the answer may itself have a "toolbar"/"feedback"
+  // class (ChatGPT/DeepSeek stack several), and removing it would empty the whole reply. A chrome node
+  // is anything that is NOT the message body container and whose own text has no [NNN] markers.
+  [].slice.call(c.querySelectorAll(remove)).forEach(function(x){
+   try{
+    if(x.contains(c))return;                       // never the root
+    var txt=String(x.innerText||x.textContent||'');
+    if(/\[\d{3,}\]/.test(txt))return;               // it carries answer markers: it IS part of the answer
+    if(x.querySelector&&x.querySelector('.markdown,.prose,[class*="markdown"],[class*="prose"]'))return;
+    x.remove();
+   }catch(ignore){}
+  });
   [].slice.call(c.querySelectorAll('*')).reverse().forEach(function(x){
    var t=__nrm(x.innerText||x.textContent);
    if(t.length<220&&/^(?:Message collapsed(?: Show more)?(?: just now)?|Show more|just now|Untangling(?: Untangling)?|Claude is thinking|Claude is responding|Write a message(?:\.{3}|…)?|Claude is AI and can make mistakes\.?|Haiku 5\.5 Low|DeepThink(?: Search)?)$/i.test(t))x.remove();

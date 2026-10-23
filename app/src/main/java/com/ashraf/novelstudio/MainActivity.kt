@@ -109,7 +109,11 @@ class MainActivity : Activity() {
     private var prefetchSourceChapter: Chapter? = null
     private val prefetchGapMs = 4000L
     // Web Mode (OCR for image chapters). Off by default; the menu switch only picks the extraction strategy.
-    private val webModeLazy = lazy { WebModeExtractor(handler, UA) }
+    private val webModeLazy = lazy {
+        // The writer reads placement toggles (outline fit) while building the in-page script.
+        WebModeWriter.ctx = applicationContext
+        WebModeExtractor(handler, UA)
+    }
     private val webMode: WebModeExtractor get() = webModeLazy.value
     private var webModeHandle: WebModeExtractor.Handle? = null
     private var webModePrefetchHandle: WebModeExtractor.Handle? = null
@@ -1154,6 +1158,24 @@ class MainActivity : Activity() {
         val seenInBatch = HashSet<String>()
         val batch = ArrayList<WmBubble>()
         val batchTop = ArrayList<Int>()
+        // Already translated in an earlier pass? Put those bubbles on the page NOW (no chatbot request),
+        // then send whatever is still missing in page order. Read-ahead used to walk its own OCR order,
+        // so a panel far below could take the chatbot's turn while the visible bubble stayed untranslated.
+        val cachedBubbles = ArrayList<WmBubble>()
+        val cachedValues = ArrayList<String>()
+        for (panel in panels.sortedBy { it.top }) {
+            for (bubble in panel.bubbles.sortedWith(compareBy<WmBubble>({ it.cy }, { it.cx }))) {
+                if (bubble.sourceText.isBlank()) continue
+                val hit = rtAheadTranslationCache[rtAheadBubbleCacheKey(bubble)] ?: continue
+                cachedBubbles.add(bubble); cachedValues.add(hit)
+            }
+        }
+        if (cachedBubbles.isNotEmpty()) {
+            placeCachedBubbles(
+                page, cachedBubbles, cachedValues,
+                cachedBubbles.mapTo(HashSet()) { WebModeLayout.fingerprint(it) }
+            )
+        }
         for (panel in panels.sortedBy { it.top }) {
             val ordered = panel.bubbles
                 .filter { it.sourceText.isNotBlank() && !isRealtimeUiChromeText(it.sourceText) }
@@ -1775,6 +1797,25 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
                 val value = aligned.getOrNull(i)?.trim().orEmpty()
                 if (value.isNotBlank()) {
                     rtAheadTranslationCache[rtAheadBubbleCacheKey(task.layout.bubbles[i])] = value
+                }
+            }
+            // Panels the reader can already see get their translation the moment it arrives instead of
+            // waiting for the next OCR round (the picture used to stay untranslated on screen while its
+            // Bengali text sat in the cache).
+            if (cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
+                val onScreen = ArrayList<WmBubble>()
+                val onScreenValues = ArrayList<String>()
+                for (i in task.layout.bubbles.indices) {
+                    val value = aligned.getOrNull(i)?.trim().orEmpty()
+                    if (value.isNotBlank() && isBubbleOnScreen(task.layout.bubbles[i])) {
+                        onScreen.add(task.layout.bubbles[i]); onScreenValues.add(value)
+                    }
+                }
+                if (onScreen.isNotEmpty()) {
+                    placeCachedBubbles(
+                        cleanUrl(task.pageUrl), onScreen, onScreenValues,
+                        onScreen.mapTo(HashSet()) { WebModeLayout.fingerprint(it) }
+                    )
                 }
             }
         }
@@ -6495,7 +6536,18 @@ return t.length>=40?'TXT:'+t:'';
         // the page. Let it finish caching upcoming panels while the visible panel is scanned and
         // translated; cancelling it on every viewport change made the 9-panel read-ahead starve.
         // For a manual/full-chapter extraction, stop read-ahead so foreground extraction gets priority.
-        if (!realtimeViewport) {
+        // But while the reader is ON this viewport, the visible panel always owns the OCR engines:
+        // a 4-panel read-ahead already occupied them for 13-20 s each (log: gateWaitMs=20835), so a
+        // fresh panel waited almost half a minute for pixels the reader was looking at.
+        var resumeAheadAfterVisible = false
+        if (realtimeViewport) {
+            resumeAheadAfterVisible = aheadOcrHandle != null
+            aheadOcrHandle?.cancel()
+            aheadOcrHandle = null
+            aheadOcrSeq++
+            aheadOcrStage = ""
+            aheadOcrPct = -1
+        } else {
             aheadOcrHandle?.cancel()
             aheadOcrHandle = null
             aheadOcrSeq++
@@ -6530,6 +6582,9 @@ return t.length>=40?'TXT:'+t:'';
                     webModeLastProgressAtMs = android.os.SystemClock.elapsedRealtime()
                     webModeStage = stage
                     webModePct = pct
+                    // Real-time runs through the same status label. The chip used to be suppressed in
+                    // realtime mode, so a 30-55 s panel read showed nothing at all on screen.
+                    if (realtimeViewport) showRealtimeStatus(stage, pct)
                     updateProgressUi()
                 }
             },
@@ -6649,12 +6704,29 @@ return t.length>=40?'TXT:'+t:'';
                                 handleChapter(out.chapter, useSavedTranslation = useSaved)
                             }
                             // Only realtime viewport scans may resume the ahead-translation queue.
-                            if (realtimeViewport) handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
+                            if (realtimeViewport) {
+                                handler.postDelayed({ pumpRealtimeAheadTranslation() }, 350L)
+                                // The aheadOCR pass was cancelled while this viewport was read (visible
+                                // pixels always win). Start a fresh one only AFTER the batch has been
+                                // handed to the chatbot, so the next panels are ready when the reader scrolls.
+                                if (resumeAheadAfterVisible && aheadOcrHandle == null && webModeHandle == null) {
+                                    handler.postDelayed({
+                                        if (token == navToken && aheadOcrHandle == null && webModeHandle == null &&
+                                            DeepSeekRealtimeTranslation.isEnabled(this)) startAheadOcr()
+                                    }, 600L)
+                                }
+                            }
                         }
                         is WebModeOutcome.Failure -> {
                             // Even when OCR/network fails, the clean screenshot fingerprint may already
                             // have proved that this canvas now shows a different manga page.
                             clearCanvasTransitionOverlay(novelWv.url.orEmpty())
+                            if (realtimeViewport && resumeAheadAfterVisible && out.error != WebModeError.NAVIGATION_INVALIDATED) {
+                                handler.postDelayed({
+                                    if (token == navToken && aheadOcrHandle == null && webModeHandle == null &&
+                                        DeepSeekRealtimeTranslation.isEnabled(this)) startAheadOcr()
+                                }, 1200L)
+                            }
                             updateProgressUi()
                             deepSeekLastOcrAtMs = System.currentTimeMillis()
                             if (realtimeViewport &&
@@ -9130,6 +9202,82 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
     }
 
     // ---- translation status card + the ring around the extract button
+    // ------------------------------------------------------------------ realtime status chip
+    private var rtChip: TextView? = null
+    private var rtChipAtMs = 0L
+
+    /**
+     * "Panel 2/4 - reading with Lens - 8s" for the live viewport read.
+     * Real-time used to be completely silent while a screen OCR took 5-55 s, which is exactly the
+     * "I cannot see what it is reading" complaint. This is a small, non-blocking label; it never
+     * covers the picture for long (auto-hides after the pass is quiet) and tapping it does nothing
+     * except dismiss, so it can sit above the reader without stealing taps from the page.
+     */
+    private fun showRealtimeStatus(stage: String, pct: Int) {
+        val label = rtChipLabel(stage, pct) ?: return
+        rtChipAtMs = System.currentTimeMillis()
+        val chip = rtChip ?: TextView(this).apply {
+            textSize = 11.5f
+            typeface = boldMedium
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            elevation = dp(7).toFloat()
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(0xE6181B28.toInt())
+                setStroke(dp(1), 0x668C9CFF)
+            }
+            isClickable = true
+            setOnClickListener { hideRealtimeStatus() }
+            content?.addView(this, FrameLayout.LayoutParams(WC, WC).also {
+                it.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                it.bottomMargin = dp(56)
+            })
+            rtChip = this
+        }
+        chip.text = label
+        if (chip.visibility != View.VISIBLE) {
+            chip.alpha = 0f
+            chip.visibility = View.VISIBLE
+            chip.animate().alpha(1f).setDuration(140).start()
+        }
+        chip.bringToFront()
+        // The pages that never finish (dead Lens endpoint, missing model) must not leave a stale
+        // message on screen: hide it two seconds after the last stage update.
+        handler.removeCallbacks(rtChipHide)
+        handler.postDelayed(rtChipHide, 2500L)
+    }
+
+    private val rtChipHide = Runnable {
+        if (System.currentTimeMillis() - rtChipAtMs < 1800L) return@Runnable
+        hideRealtimeStatus()
+    }
+
+    private fun hideRealtimeStatus() {
+        val chip = rtChip ?: return
+        chip.animate().cancel()
+        chip.animate().alpha(0f).setDuration(180).withEndAction {
+            if (chip.alpha < 0.05f) chip.visibility = View.GONE
+        }.start()
+    }
+
+    /** Short, honest description of the current OCR stage; null means "nothing worth showing". */
+    private fun rtChipLabel(stage: String, pct: Int): String? {
+        val s = stage.trim()
+        if (s.isEmpty()) return null
+        val engine = when (Prefs.get(this, "ocrEngine", "mlkit")) {
+            "lens" -> "Lens"
+            "paddle_heavy" -> "Paddle M"
+            "paddle_small" -> "Paddle S"
+            "manga" -> "Manga OCR"
+            "rapid_onnx" -> "RapidOCR"
+            else -> "ML Kit"
+        }
+        val p = if (pct in 0..100) " $pct%" else ""
+        return "Reading panel - $s ($engine)$p"
+    }
+
     private fun updateProgressUi() {
         // Real-time DeepSeek mode should not keep popping the large progress card over panels.
         // OCR/translation continues normally; the small scan status dot remains the indicator.
@@ -9413,7 +9561,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             "✏️ AdBlock Rules (paste)", menuPrefetchDepthLabel(), menuWebModeLabel(), DeepSeekRealtimeTranslation.menuLabel(this),
             "📝 Edit Prompt For Live Translation", menuForceLabel(),
             "🤖 AI Scan Page Links & Update AdBlock", menuRtPromptLabel(),
-            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(),
+            "🎌 Japanese Manga Engine (optional)", menuTextRemovalLabel(), menuInpaintLabel(),
+            "🫧 Text Placement (fit + vertical)",
             menuAutoFreshChatLabel(), menuExtraChatDelayLabel(), menuScanIntervalLabel(),
             "🖼 Scan Report: images (Copy)", menuForceLoadLabel(), menuSendHoldLabel(),
             "🐞 Copy crash / freeze log", menuBatchLabel(),
@@ -9571,7 +9720,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                           else "📝 Only the text is sent (no prompt) — scan & real-time")
                 }
                 38 -> {
-                    val on = !Prefs.bool(this, "wmTextRemoval", false)
+                    val on = !Prefs.bool(this, "wmTextRemoval", true)
                     Prefs.putBool(this, "wmTextRemoval", on)
                     if (on) {
                         toast("🧽 Text Remover ON — next Web Mode/Japanese Manga OCR scan will clean only safe text pixels.")
@@ -9581,6 +9730,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                         toast("🧽 Text Remover OFF — active cleaned overlay removed; original page remains intact.")
                     }
                     refresh(i, menuTextRemovalLabel())
+                }
+                54 -> {
+                    toggleInpaintModel()
+                    refresh(i, menuInpaintLabel())
+                }
+                55 -> {
+                    placementSettingsDialog()
+                    dlg.dismiss()
                 }
                 39 -> {
                     val on = !autoFreshChatEnabled
@@ -10252,7 +10409,80 @@ ${rows.take(220).joinToString("\n")}
         (if (Prefs.adblock(this)) "✅" else "⬜") + " Ad Block"
 
     private fun menuTextRemovalLabel(): String =
-        (if (Prefs.bool(this, "wmTextRemoval", false)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
+        (if (Prefs.bool(this, "wmTextRemoval", true)) "✅" else "⬜") + " 🧽 Text Remover (Webtoon + Manga)"
+
+    /**
+     * AI inpainting (LaMa, ONNX) for lettering that sits on artwork. The engine and its 37 MB model
+     * downloader already existed, but nothing ever set "wmAiInpaint", so that code was dead and
+     * crowded bubbles over art kept the old flat-card overlay forever.
+     */
+    private fun menuInpaintLabel(): String = when {
+        !Prefs.bool(this, "wmAiInpaint", false) -> "⬜ 🎨 AI Inpaint on artwork (optional)"
+        WebModeInpainter.isReady(this) -> "✅ 🎨 AI Inpaint on artwork"
+        WebModeInpainter.isDownloading() -> "⏳ 🎨 AI Inpaint — downloading model…"
+        else -> "⬇️ 🎨 AI Inpaint — tap to download model"
+    }
+
+    private fun toggleInpaintModel() {
+        if (!Prefs.bool(this, "wmAiInpaint", false)) {
+            Prefs.putBool(this, "wmAiInpaint", true)
+            if (WebModeInpainter.isReady(this)) {
+                toast("🎨 AI Inpaint ON — artwork bubbles with text are rebuilt instead of covered")
+                return
+            }
+            toast("🎨 AI Inpaint ON — downloading the 37 MB model once (Wi-Fi recommended)")
+            WebModeInpainter.download(this,
+                onProgress = { got, total ->
+                    if (total > 0) runOnUiThread {
+                        val pct = (got * 100 / total).toInt().coerceIn(0, 100)
+                        if (pct % 10 == 0) toastQuiet("⬇️ Inpaint model $pct%")
+                    }
+                },
+                onDone = { error ->
+                    runOnUiThread {
+                        if (error == null) {
+                            WebModeInpainter.warmUpAsync(this)
+                            toast("✅ AI Inpaint model ready")
+                        } else {
+                            Prefs.putBool(this, "wmAiInpaint", false)
+                            toast("❌ Inpaint model download failed: $error (AI Inpaint turned OFF)")
+                        }
+                    }
+                })
+            return
+        }
+        // ON: one tap turns the AI off but keeps the model for later.
+        Prefs.putBool(this, "wmAiInpaint", false)
+        toast("🎨 AI Inpaint OFF — flat colour fill is used for artwork bubbles (model kept)")
+    }
+
+    private var lastQuietToastAtMs = 0L
+    private fun toastQuiet(msg: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastQuietToastAtMs < 1200L) return
+        lastQuietToastAtMs = now
+        toast(msg)
+    }
+
+    /** Small modal: AI placement toggles (outline-aware fit / vertical columns), not a second menu. */
+    private fun placementSettingsDialog() {
+        val labels = listOf(
+            (if (Prefs.bool(this, "wmLooseFit", true)) "✅" else "⬜") +
+                " 🫧 Fit text inside the real balloon outline\n" +
+                "Uses the largest rectangle that fits the bubble shape (oval / tail / two-lobed).",
+            (if (Prefs.bool(this, "wmVerticalText", true)) "✅" else "⬜") +
+                " 📜 Vertical (column) layout for manga\n" +
+                "Original lettering that ran top-to-bottom keeps that direction, right-to-left columns."
+        )
+        listDialog("🫧 Text placement", labels, { i ->
+            if (i == 0) {
+                Prefs.putBool(this, "wmLooseFit", !Prefs.bool(this, "wmLooseFit", true))
+            } else {
+                Prefs.putBool(this, "wmVerticalText", !Prefs.bool(this, "wmVerticalText", true))
+            }
+            toast(if (i == 0) "Changes apply to the next placed translation" else "Changes apply to the next placed translation")
+        }, null)
+    }
 
     /** Glass bottom sheet with one tappable row per label (long-press optional). */
     /** A sheet with a search box on top; used for the long language lists. */

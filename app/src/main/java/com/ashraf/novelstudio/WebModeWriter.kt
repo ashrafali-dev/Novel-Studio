@@ -16,6 +16,8 @@ import org.json.JSONObject
 internal object WebModeWriter {
     /** Height (CSS px) of the dock that floats over the page; the in-page OCR tools button sits above it. */
     @Volatile var bottomInsetPx: Int = 0
+    /** Application context for reading placement preferences when a script is built. */
+    @Volatile var ctx: android.content.Context? = null
 
     private const val BODY = """
 (function(paras,title,font,size,pid){
@@ -112,6 +114,9 @@ internal object WebModeWriter {
       b.setAttribute('data-bg',it.bg);
       b.setAttribute('data-sf',it.sf?'1':'0');
       b.setAttribute('data-g',[it.cx,it.cy,it.w,it.h,it.a,it.f].join(','));
+      // Safe text area inside the real balloon outline (fractions of the box). Empty = fit() alone.
+      if(it.sa&&it.sa.length===4)b.setAttribute('data-sa',it.sa.join(','));
+      if(it.vt&&__VERT__)b.setAttribute('data-vt','1');
       b.style.cssText='position:absolute;left:0;top:0;display:none;box-sizing:border-box;overflow:visible;'
         +'align-items:center;justify-content:center;padding:3px;pointer-events:none;will-change:transform;'
         // If the underlying source image was cleaned, do not put an opaque box over it:
@@ -316,6 +321,11 @@ internal object WebModeWriter {
       if(baseMatch&&!baseAmbiguous){cache[s]=baseMatch;return baseMatch;}
       miss[s]=now; return null;
     }
+    // Vertical lettering: one glyph per line, so line count == glyph count.
+    function vGlyphCount(b){
+      var t=b&&b.firstChild;
+      return t?String(t.textContent||'').length:0;
+    }
     // Largest font (up to maxPx) at which the text still fits inside its box.
     function fit(b,maxPx){
       var t=b&&b.firstChild;
@@ -325,8 +335,53 @@ internal object WebModeWriter {
       // Keep a safety inset so Bengali vowel signs and the last wrapped line remain inside.
       var boxW=b.clientWidth,boxH=b.clientHeight;
       if(boxW<8||boxH<8)return;
+      // The OCR box is the union of letters, NOT the balloon. With an outline attached the text goes
+      // into the largest rectangle that is entirely inside the balloon (computed on the Kotlin side,
+      // BubbleGeometry) so it can never spill over the edge or leave the old margins.
       var availW=Math.max(12,boxW*0.88);
       var availH=Math.max(12,boxH*0.86);
+      var offX=0,offY=0;
+      var sa=(b.getAttribute('data-sa')||'').split(',');
+      if(sa.length===4){
+        var x0=parseFloat(sa[0]),y0=parseFloat(sa[1]),x1=parseFloat(sa[2]),y1=parseFloat(sa[3]);
+        if(isFinite(x0)&&isFinite(y0)&&isFinite(x1)&&isFinite(y1)&&x1>x0&&y1>y0){
+          availW=Math.max(12,boxW*(x1-x0)*0.97);
+          availH=Math.max(12,boxH*(y1-y0)*0.97);
+          offX=boxW*((x0+x1)/2)-boxW/2;
+          offY=boxH*((y0+y1)/2)-boxH/2;
+        }
+      }
+      // Shift the inner text block to the centre of the safe area (the box itself stays put).
+      t.style.transform=(offX||offY)?('translate('+offX.toFixed(1)+'px,'+offY.toFixed(1)+'px)'):'';
+      // Vertical lettering (Japanese/Chinese manga, some Korean): one glyph per row, columns run
+      // right-to-left. Writing-mode alone cannot do this in every WebView, so the text is broken into
+      // explicit lines and each line gets one character per row.
+      if(b.getAttribute('data-vt')==='1'&&t.textContent){
+        var V='︐︒︓︔︕︖︵︶︹︺︽︾︿﹀﹁﹂﹃﹄︻︼︑︱︙';
+        var SPC={'،':'︐','。':'︒','!':'︕','?':'︖','(':'︵',')':'︶','「':'﹁','」':'﹂','。':'︒','、':'︑','，':'︐','：':'︓','；':'︔','！':'︕','？':'︖','（':'︵','）':'︶','…':'︙','～':'〜','ー':'︱'};
+        var src=String(t.textContent).replace(/\\s+/g,'');
+        var chars=[];
+        for(var ci=0;ci<src.length;ci++){var c=src.charAt(ci);chars.push(SPC[c]||c);}
+        t.textContent='';
+        for(ci=0;ci<chars.length;ci++){
+          var ln=document.createElement('div');
+          // A long vertical column would exceed the safe height: wrap into the next column by
+          // emitting a block line every N glyphs (N measured from the safe box height).
+          ln.textContent=chars[ci];
+          t.appendChild(ln);
+        }
+        t.style.display='flex';t.style.flexDirection='column';t.style.alignItems='center';
+        t.style.lineHeight='1.08';t.style.letterSpacing='0';
+        t.style.textAlign='center';
+        var vSiz=NaN, vBest=1.5, vLo=1.5, vHi=Math.max(2,Number(maxPx)||12);
+        for(var vn=0;vn<14;vn++){
+          vSiz=(vLo+vHi)/2; t.style.fontSize=vSiz+'px';
+          var vfits=(t.scrollHeight<=availH+1)&&(t.getBoundingClientRect().width<=availW+1);
+          if(vfits){vBest=vSiz;vLo=vSiz;}else{vHi=vSiz;}
+        }
+        t.style.fontSize=vBest+'px';
+        return;
+      }
       t.style.width=availW+'px';
       t.style.maxWidth=availW+'px';
       t.style.minWidth='0';
@@ -370,6 +425,13 @@ internal object WebModeWriter {
       t.style.overflow='visible';
     }
     var MARGIN=1400;
+    // Vertical text: the glyphs are one HTML line each, so a column is as tall as its character count.
+    // This helper returns how a bubble would be laid out after an optional height change, so the
+    // overlap cut below can size a vertical bubble (its text cannot be re-wrapped like horizontal text).
+    function vHeightFor(b,h){
+      var t=b&&b.firstChild, fs=parseFloat(t&&t.style.fontSize)||12;
+      return vGlyphCount(b)*fs*1.08+6;
+    }
     // Two bubbles whose boxes overlap partly (joined / burst bubbles): the later one used to paint its
     // background over the first one's text. Cut the overlap away so both stay fully readable.
     function resolve(L){
@@ -894,16 +956,23 @@ internal object WebModeWriter {
             if (i in hidden) continue
             val t = WmSfx.fix(translated.getOrNull(i)?.trim().orEmpty())
             if (t.isEmpty()) continue
+            // Transparent translation only where THIS bubble's old lettering was really erased; a bubble the
+            // cleaner skipped keeps its cover box, so the old text never shows through the translation.
+            val cleaned = WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b)) &&
+                canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true
+            // With a cover box this background is a solid fill, so the text colour must read against it.
+            // Without one the bubble's own white shows: the original colour is already the right choice.
+            val ink = if (cleaned) b.fg else WmBubbleStyle.readableTextColour(b.fg, b.bg)
             arr.put(JSONObject()
                 .put("t", t).put("s", WebModeLogic.normalizeUrl(b.src))
                 .put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
                 .put("a", r5(b.angle)).put("f", r5(b.font))
-                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft).put("o", if (b.stroke != 0) css(b.stroke) else "")
-                // Transparent translation only where THIS bubble's old lettering was really erased; a bubble the
-                // cleaner skipped keeps its cover box, so the old text never shows through the translation.
-                .put("cl", if (WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b)) &&
-                    canShowCleanImage[WebModeLogic.normalizeUrl(b.src)] == true)
-                    WebModeTextRemovalCache.urlFor(b.src).orEmpty() else ""))
+                .put("bg", css(b.bg)).put("fg", css(ink)).put("g2", css(b.fg2)).put("sf", b.soft).put("o", if (b.stroke != 0) css(b.stroke) else "")
+                // Original lettering ran in columns: lay the translation out the same way.
+                .put("vt", b.vertical)
+                .put("cl", if (cleaned) WebModeTextRemovalCache.urlFor(b.src).orEmpty() else "")
+                // Text-safe area [x0,y0,x1,y1] as fractions of the translated bubble box; empty = fit() alone.
+                .put("sa", safeArea(b)))
         }
         // The translated text goes in last, so nothing in it can be mistaken for a placeholder.
         val sources = JSONArray()
@@ -919,6 +988,33 @@ internal object WebModeWriter {
             .replace("__PID__", JSONObject.quote(pageId))
             .replace("__ITEMS__", arr.toString())
             .replace("__SOURCES__", sources.toString())
+            .replace("__VERT__", if (ctx?.let { Prefs.bool(it, "wmVerticalText", true) } == true) "true" else "false")
+    }
+
+    /**
+     * Where the text may go inside a bubble, as [x0,y0,x1,y1] fractions of the bubble box (which is
+     * centred on [WmBubble.cx]/[WmBubble.cy]). From the balloon outline when one exists, otherwise an
+     * empty array and the script falls back to the histogram rectangle of the rounded box.
+     */
+    private fun safeArea(b: WmBubble): JSONArray {
+        // User switch: "fit inside the real balloon outline". Off = the plain 0.88/0.86 box inset,
+        // which some letterers prefer for tight rectangular word balloons.
+        val c = ctx ?: return JSONArray()
+        if (!Prefs.bool(c, "wmLooseFit", true)) return JSONArray()
+        val frame = BubbleGeometry.frame(b.poly) ?: return JSONArray()
+        if (BubbleGeometry.isBoxLike(b.poly, b.w, b.h)) return JSONArray()
+        val bl = b.cx - b.w / 2f; val bt = b.cy - b.h / 2f
+        val br = b.cx + b.w / 2f; val bb = b.cy + b.h / 2f
+        if (br <= bl || bb <= bt) return JSONArray()
+        val safe = BubbleGeometry.safeTextRect(frame, bl, bt, br, bb) ?: return JSONArray()
+        // safe[] is relative to the box; the script wants fractions of the box itself (0..1).
+        val fw = br - bl; val fh = bb - bt
+        val x0 = (safe[0] / fw).coerceIn(0f, 1f)
+        val y0 = (safe[1] / fh).coerceIn(0f, 1f)
+        val x1 = (safe[2] / fw).coerceIn(0f, 1f)
+        val y1 = (safe[3] / fh).coerceIn(0f, 1f)
+        if (x1 - x0 < 0.15f || y1 - y0 < 0.15f) return JSONArray()
+        return JSONArray(listOf(r5(x0), r5(y0), r5(x1), r5(y1)))
     }
 }
 

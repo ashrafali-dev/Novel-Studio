@@ -421,7 +421,9 @@ class JapaneseMangaEngineActivity : Activity() {
                 fg = fg,
                 fg2 = fg,
                 soft = r.optBoolean("soft", false),
-                sourceText = text
+                sourceText = text,
+                // The manga engine already grouped the columns and reported their direction.
+                vertical = r.optBoolean("vertical", false)
             ))
         }
         return out
