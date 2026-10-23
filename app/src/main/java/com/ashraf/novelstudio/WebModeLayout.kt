@@ -32,7 +32,9 @@ internal data class WmBubble(
     val maskCx: Float = cx,
     val maskCy: Float = cy,
     val maskW: Float = w,
-    val maskH: Float = h
+    val maskH: Float = h,
+    /** True when the sampled lettering gradient runs left-to-right rather than top-to-bottom. */
+    val gradientHorizontal: Boolean = false
 )
 
 /**
@@ -48,7 +50,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
             .put("fg2", b.fg2).put("sf", b.soft)
             .put("srcText", b.sourceText).put("tr", b.translatedText).put("so", b.stroke)
-            .put("mcx", r5(b.maskCx)).put("mcy", r5(b.maskCy)).put("mw", r5(b.maskW)).put("mh", r5(b.maskH)))
+            .put("mcx", r5(b.maskCx)).put("mcy", r5(b.maskCy)).put("mw", r5(b.maskW)).put("mh", r5(b.maskH))
+            .put("gh", b.gradientHorizontal))
         return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
@@ -72,7 +75,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.optDouble("mcx", b.getDouble("cx")).toFloat(),
                     b.optDouble("mcy", b.getDouble("cy")).toFloat(),
                     b.optDouble("mw", b.getDouble("w")).toFloat(),
-                    b.optDouble("mh", b.getDouble("h")).toFloat()
+                    b.optDouble("mh", b.getDouble("h")).toFloat(),
+                    b.optBoolean("gh", false)
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
@@ -638,7 +642,11 @@ internal object WebModeLayoutStore {
  * the tight text box (so a longer translation has room instead of overflowing).
  */
 internal object WmBubbleStyle {
-    class Style(val l: Int, val t: Int, val r: Int, val b: Int, val bg: Int, val fg: Int, val fg2: Int, val soft: Boolean, val stroke: Int = 0)
+    class Style(
+        val l: Int, val t: Int, val r: Int, val b: Int,
+        val bg: Int, val fg: Int, val fg2: Int, val soft: Boolean,
+        val stroke: Int = 0, val gradientHorizontal: Boolean = false
+    )
 
     private const val TOL = 38          // per-channel distance still counted as "the same background"
     private const val STEP = 2
@@ -669,20 +677,41 @@ internal object WmBubbleStyle {
             if (ringFlat(bmp, l - rp, t - rp, r + rp, b + rp, outer)) bg = outer
         }
         val mid = (t + b) / 2
+        val midX = (l + r) / 2
         val fgTop = textColour(bmp, l, t, r, maxOf(t + 1, mid), bg)
         val fgBot = textColour(bmp, l, minOf(mid, b - 1), r, b, bg)
+        val fgLeft = textColour(bmp, l, t, maxOf(l + 1, midX), b, bg)
+        val fgRight = textColour(bmp, minOf(midX, r - 1), t, r, b, bg)
         val fgAll = textColour(bmp, l, t, r, b, bg)
-        // Two clearly different halves = a gradient lettering: keep both ends, else one colour.
-        val grad = colourDist(fgTop, fgBot) > 70 && contrast(fgTop, bg) >= MIN_CONTRAST && contrast(fgBot, bg) >= MIN_CONTRAST
-        var fg = if (grad) fgTop else fgAll
-        var fg2 = if (grad) fgBot else fgAll
+        // Check both main axes: vertical Japanese text and horizontal SFX can have left-to-right gradients.
+        // Select the stronger high-contrast axis, instead of silently turning that gradient into a solid fill.
+        val verticalDist = colourDist(fgTop, fgBot)
+        val horizontalDist = colourDist(fgLeft, fgRight)
+        val verticalGrad = verticalDist > 70 &&
+            contrast(fgTop, bg) >= MIN_CONTRAST && contrast(fgBot, bg) >= MIN_CONTRAST
+        val horizontalGrad = horizontalDist > 70 &&
+            contrast(fgLeft, bg) >= MIN_CONTRAST && contrast(fgRight, bg) >= MIN_CONTRAST
+        val gradientHorizontal = horizontalGrad && (!verticalGrad || horizontalDist > verticalDist * 1.1f)
+        val grad = verticalGrad || horizontalGrad
+        var fg = when {
+            gradientHorizontal -> fgLeft
+            verticalGrad -> fgTop
+            else -> fgAll
+        }
+        var fg2 = when {
+            gradientHorizontal -> fgRight
+            verticalGrad -> fgBot
+            else -> fgAll
+        }
         // Outlined lettering (fill + stroke): the old code took the colour farthest from the background, which
         // is the OUTLINE (e.g. white), so a dark-red "GRIT" with a white edge came out plain white. Read the
         // fill from the inside of the strokes and the outline from their edge, and keep both.
         var stroke = 0
+        var keepGradientHorizontal = gradientHorizontal
         val probe = outlineProbe(bmp, l, t, r, b, bg)
         if (probe != null) {
             fg = probe[0]; fg2 = probe[0]; stroke = probe[1]
+            keepGradientHorizontal = false
         }
         // Only speech-bubble-like (light) interiors are grown; on black pages the cover stays on the text itself.
         if (expand && lum(bg) > 70) {
@@ -719,7 +748,7 @@ internal object WmBubbleStyle {
             if (gt > 6) t += 3
             if (gb > 6) b -= 3
         }
-        return Style(l, t, r, b, bg, fg, fg2, soft, stroke)
+        return Style(l, t, r, b, bg, fg, fg2, soft, stroke, keepGradientHorizontal)
     }
 
     /**
