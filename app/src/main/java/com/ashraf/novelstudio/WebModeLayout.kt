@@ -822,9 +822,11 @@ internal object WmBubbleStyle {
         val top = rect[1]; val bottom = rect[3] - 1
         var hits = 0; var samples = 0
         fun sample(gx: Int, gy: Int) {
-            samples++
             val lx = gx - originX; val ly = gy - originY
-            if (lx in 0 until maskW && ly in 0 until maskH && fillMask[ly * maskW + lx]) hits++
+            // A ring point outside the bitmap/crop is unknown, not evidence that this is an exterior box.
+            if (lx !in 0 until maskW || ly !in 0 until maskH) return
+            samples++
+            if (fillMask[ly * maskW + lx]) hits++
         }
         for (step in 0..4) {
             val gx = left + (right - left) * step / 4
