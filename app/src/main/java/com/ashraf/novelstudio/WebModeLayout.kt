@@ -26,7 +26,12 @@ internal data class WmBubble(
     /** Bengali text already translated for this position. Empty means not translated yet. */
     val translatedText: String = "",
     /** Colour of the lettering's outline (SFX / titles drawn as fill + stroke); 0 = no outline. */
-    val stroke: Int = 0
+    val stroke: Int = 0,
+    /** Text-pixel bounds used only by the remover; render bounds above may cover the whole balloon. */
+    val maskCx: Float = cx,
+    val maskCy: Float = cy,
+    val maskW: Float = w,
+    val maskH: Float = h
 )
 
 /**
@@ -41,7 +46,8 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             .put("s", b.src).put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
             .put("a", r5(b.angle)).put("f", r5(b.font)).put("bg", b.bg).put("fg", b.fg)
             .put("fg2", b.fg2).put("sf", b.soft)
-            .put("srcText", b.sourceText).put("tr", b.translatedText).put("so", b.stroke))
+            .put("srcText", b.sourceText).put("tr", b.translatedText).put("so", b.stroke)
+            .put("mcx", r5(b.maskCx)).put("mcy", r5(b.maskCy)).put("mw", r5(b.maskW)).put("mh", r5(b.maskH)))
         return JSONObject().put("v", 2).put("to", titleOffset).put("b", a).toString()
     }
 
@@ -61,7 +67,11 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                     b.getDouble("a").toFloat(), b.getDouble("f").toFloat(),
                     b.getInt("bg"), b.getInt("fg"),
                     b.optInt("fg2", b.getInt("fg")), b.optBoolean("sf", false),
-                    b.optString("srcText", ""), b.optString("tr", ""), b.optInt("so", 0)
+                    b.optString("srcText", ""), b.optString("tr", ""), b.optInt("so", 0),
+                    b.optDouble("mcx", b.getDouble("cx")).toFloat(),
+                    b.optDouble("mcy", b.getDouble("cy")).toFloat(),
+                    b.optDouble("mw", b.getDouble("w")).toFloat(),
+                    b.optDouble("mh", b.getDouble("h")).toFloat()
                 ))
             }
             WebModeLayout(o.optInt("to", 1), list)
@@ -767,12 +777,15 @@ internal object WmBubbleStyle {
      */
     fun bubbleInterior(
         bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true,
-        bandsOut: MutableList<IntArray>? = null, minBand: Int = 6
+        bandsOut: MutableList<IntArray>? = null, minBand: Int = 6, vertical: Boolean = false
     ): IntArray? {
         val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
         if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
         val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
-        val mx = maxOf(40, (bwid * 0.9f).toInt()); val my = maxOf(40, (bhei * 1.2f).toInt())
+        val mx = if (vertical) maxOf(80, minOf(260, (bhei * 0.55f).toInt()))
+            else maxOf(40, (bwid * 0.9f).toInt())
+        val my = if (vertical) maxOf(80, minOf(300, (bhei * 0.6f).toInt()))
+            else maxOf(40, (bhei * 1.2f).toInt())
         val x0 = (box[0] - mx).coerceAtLeast(0); val y0 = (box[1] - my).coerceAtLeast(0)
         val x1 = (box[2] + mx).coerceAtMost(bmp.width); val y1 = (box[3] + my).coerceAtMost(bmp.height)
         val w = x1 - x0; val h = y1 - y0

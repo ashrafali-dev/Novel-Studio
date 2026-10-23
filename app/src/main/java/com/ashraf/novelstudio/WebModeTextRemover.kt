@@ -80,10 +80,10 @@ internal object WebModeTextRemover {
                 .toList()
 
             for (bubble in boundedBubbles) {
-                val cx = bubble.cx * width
-                val cy = bubble.cy * height
-                val bw = bubble.w * width
-                val bh = bubble.h * height
+                val cx = bubble.maskCx * width
+                val cy = bubble.maskCy * height
+                val bw = bubble.maskW * width
+                val bh = bubble.maskH * height
                 if (!cx.isFinite() || !cy.isFinite() || !bw.isFinite() || !bh.isFinite()) continue
                 // ox/oy = the exact OCR box (where the old lettering is).
                 val ox0 = (cx - bw / 2f).toInt().coerceIn(0, width - 1)

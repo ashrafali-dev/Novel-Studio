@@ -1914,6 +1914,7 @@ internal class WebModeExtractor(
             // Keep the recognised text and geometry aligned with every remaining block.
             val refinedText = arrayOfNulls<String>(blocks.size)
             val refinedBox = arrayOfNulls<IntArray>(blocks.size)
+            val refinedMaskBox = arrayOfNulls<IntArray>(blocks.size)
             val refinedFont = arrayOfNulls<Float>(blocks.size)
             val consumed = BooleanArray(blocks.size)
             // Cache interiors so multi-line text in the same balloon triggers only one retry.
@@ -1945,6 +1946,7 @@ internal class WebModeExtractor(
                     (l - pad).coerceAtLeast(0), (t - pad).coerceAtLeast(0),
                     (r + pad).coerceAtMost(bmp.width), (bt + pad).coerceAtMost(bmp.height)
                 )
+                refinedMaskBox[i] = intArrayOf(l, t, r, bt)
                 refinedFont[i] = if (fonts.isEmpty()) null else fonts[fonts.size / 2]
                 for (j in grp) if (j != i) consumed[j] = true
             }
@@ -1957,20 +1959,21 @@ internal class WebModeExtractor(
             for (i in blocks.indices) {
                 if (consumed[i]) continue
                 val b = blocks[i]
-                if (b.vertical || Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
+                if (!b.vertical && Math.abs(OcrPost.usableTilt(b.angle)) >= 6f) continue
 
                 val ownFont = if (b.fontPx > 0f) b.fontPx else b.h
                 // The exhaustive leftover-ink scan is only useful during a thorough chapter pass.
                 // In realtime mode, passing a band collector forces bubbleInterior to scan every pixel
                 // again and compare it against every OCR box; a tall panel with many bubbles can stall.
                 // Without a collector the helper returns immediately after finding the bubble's fill.
-                val bands: MutableList<IntArray>? = if (fastMode) null else ArrayList()
-                // Realtime screens optimise for latency: flood-filling up to 1.2M pixels around
-                // every OCR block repeatedly was the dominant freeze on long/mobile Webtoon panels.
-                // Keep this expensive interior/leftover audit only for thorough chapter extraction.
-                val inter: IntArray? = if (fastMode) null else try {
+                // Japanese vertical columns need the enclosing balloon bounds even in real-time mode;
+                // the cheap interior pass returns after flood-fill and skips the leftover-text audit.
+                val bands: MutableList<IntArray>? = if (fastMode || b.vertical) null else ArrayList()
+                // Keep the expensive leftover-ink audit for thorough horizontal scans only.
+                val inter: IntArray? = if (fastMode && !b.vertical) null else try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
-                        bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()))
+                        bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()),
+                        vertical = b.vertical)
                 } catch (_: Exception) { null }
                 if (inter == null) {
                     // No closed outline found (tail leaks into the artwork, thick outline ...). Lines that sit
@@ -1989,14 +1992,17 @@ internal class WebModeExtractor(
                 if (i !in inside) continue
                 val members = inside.filter { !consumed[it] }
                 if (i !in members) continue
-                if (members.size < 2 && bands.isNullOrEmpty()) continue   // a lone, fully read line needs nothing
+                if (!b.vertical && members.size < 2 && bands.isNullOrEmpty()) continue   // a lone horizontal line needs nothing
 
                 // The closed speech-bubble outline is stronger evidence than line spacing/alignment:
                 // every OCR row whose centre lies inside this same interior belongs to ONE bubble.
                 // Splitting these rows back into sentence-like groups creates several Bengali overlays
                 // inside one Korean balloon (the exact failure seen with tall/multiline webtoon balloons).
                 // Keep the outline as the grouping boundary and translate its complete contents together.
-                val ordered = members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
+                val ordered = if (b.vertical) {
+                    // Japanese/Chinese vertical writing reads from the rightmost column to the left.
+                    members.sortedWith(compareByDescending<Int> { blocks[it].cx }.thenBy { blocks[it].cy })
+                } else members.sortedWith(compareBy({ blocks[it].cy }, { blocks[it].cx }))
                 val fonts = ordered.map { blocks[it].fontPx }.filter { it > 0f }.sorted()
                 val medFont = if (fonts.isEmpty()) ownFont else fonts[fonts.size / 2]
                 val lines = ordered.mapTo(ArrayList<BubbleLine>()) {
@@ -2005,11 +2011,24 @@ internal class WebModeExtractor(
                 // Recover missed bubble rows only during a thorough scan; doing up to three extra
                 // OCR inferences for every visible bubble made real-time reading feel frozen.
                 if (bands?.isNotEmpty() == true && !fastMode) recoverBubbleLines(bmp, st, inter, bands, lines, medFont)
-                val joinedText = lines.sortedBy { it.cy }.joinToString(" ") { it.text }
-                    .replace(Regex("\\s+"), " ").trim()
+                val joinedText = if (b.vertical) {
+                    BubbleGrouping.joinLines(ordered.map { blocks[it].text.replace(NEWLINES, " ") })
+                } else {
+                    lines.sortedBy { it.cy }.joinToString(" ") { it.text }
+                        .replace(Regex("\\s+"), " ").trim()
+                }
                 if (joinedText.isBlank()) continue
+                // Keep the actual glyph area for cleaning; the balloon interior is only for translated text.
+                var ml = Int.MAX_VALUE; var mt = Int.MAX_VALUE
+                var mr = Int.MIN_VALUE; var mb = Int.MIN_VALUE
+                for (j in members) {
+                    val rc = rects[j]
+                    ml = minOf(ml, rc[0]); mt = minOf(mt, rc[1])
+                    mr = maxOf(mr, rc[2]); mb = maxOf(mb, rc[3])
+                }
                 refinedText[i] = joinedText
                 refinedBox[i] = inter
+                refinedMaskBox[i] = if (ml < mr && mt < mb) intArrayOf(ml, mt, mr, mb) else rects[i]
                 refinedFont[i] = medFont
                 for (j in members) if (j != i) consumed[j] = true
             }
@@ -2040,6 +2059,7 @@ internal class WebModeExtractor(
                     cx = (rb[0] + rb[2]) / 2f; cy = (rb[1] + rb[3]) / 2f
                     bw = (rb[2] - rb[0]) - 4f; bh = (rb[3] - rb[1]) - 4f
                 }
+                val maskBox = refinedMaskBox[i] ?: rects[i]
                 val nb = WmBubble(
                     src = src,
                     cx = (x0 + cx * k) / fullW, cy = (y0 + cy * k) / fullH,
@@ -2047,7 +2067,11 @@ internal class WebModeExtractor(
                     angle = if (rotated) tilt else 0f,
                     font = (refinedFont[i] ?: b.fontPx) * k / fullW,
                     bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft, stroke = s.stroke,
-                    sourceText = text
+                    sourceText = text,
+                    maskCx = (x0 + (maskBox[0] + maskBox[2]) / 2f * k) / fullW,
+                    maskCy = (y0 + (maskBox[1] + maskBox[3]) / 2f * k) / fullH,
+                    maskW = (maskBox[2] - maskBox[0]) * k / fullW,
+                    maskH = (maskBox[3] - maskBox[1]) * k / fullH
                 )
                 // Same text seen by two overlapping slices: keep the bigger box once.
                 var dup = -1
