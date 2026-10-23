@@ -1,5 +1,6 @@
 package com.ashraf.novelstudio
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,5 +39,16 @@ class WebModeLayoutTest {
     @Test fun fullDifferentPageIsStillATransition() {
         val other = listOf(b("aaa bbb ccc", 0.1f, 0.1f), b("ddd eee fff", 0.5f, 0.5f), b("ggg hhh iii", 0.9f, 0.9f))
         assertTrue(WebModeLayoutStore.canvasTransitionDetected(pageA, other))
+    }
+
+    @Test fun horizontalGradientAxisSurvivesLayoutSerialization() {
+        val original = b("GRIT", 0.5f, 0.5f).copy(
+            fg = 0xFFCC2200.toInt(), fg2 = 0xFFFFDD00.toInt(), gradientHorizontal = true
+        )
+        val decoded = WebModeLayout.fromJson(WebModeLayout(0, listOf(original)).toJson())
+        assertTrue(decoded != null)
+        assertTrue(decoded!!.bubbles.single().gradientHorizontal)
+        assertEquals(original.fg, decoded.bubbles.single().fg)
+        assertEquals(original.fg2, decoded.bubbles.single().fg2)
     }
 }
