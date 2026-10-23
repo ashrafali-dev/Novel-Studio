@@ -5891,7 +5891,7 @@ return t.length>=40?'TXT:'+t:'';
             if (Prefs.adblock(this@MainActivity) && view === novelWv && url != null) {
                 // Debug evidence only: what the cosmetic filter touched + how much text the page has.
                 handler.postDelayed({
-                    if (novelWv.url == url) novelWv.evaluateJavascript(AdBlock.probeJs()) { AdBlock.recordProbe(url, it) }
+                    if (novelWv.url == url) novelWv.evaluateJavascript(AdBlock.probeJs()) { AdBlock.recordProbe(this@MainActivity, url, it) }
                 }, 2500)
             }
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
