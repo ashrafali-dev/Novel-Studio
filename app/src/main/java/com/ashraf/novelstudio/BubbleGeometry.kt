@@ -78,7 +78,8 @@ internal object BubbleGeometry {
         if (R - L <= 0f || B - T <= 0f) return null
         // Refuse a "safe area" that is only a fragment of the box: in that case the detector polygon
         // was the lettering itself, not the balloon, and the rectangle fit is better.
-        if (R - L < (boxRight - boxLeft) * MIN_RELATIVE &&
+        // A sliver in EITHER dimension means the polygon was the lettering, not the balloon.
+        if (R - L < (boxRight - boxLeft) * MIN_RELATIVE ||
             B - T < (boxBottom - boxTop) * MIN_RELATIVE) return null
         return floatArrayOf(L - boxLeft, T - boxTop, R - boxLeft, B - boxTop)
     }

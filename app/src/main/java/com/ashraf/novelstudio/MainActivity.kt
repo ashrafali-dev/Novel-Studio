@@ -6031,12 +6031,14 @@ return t.length>=40?'TXT:'+t:'';
 
     // ================================================================== extraction
     /**
-     * Pull the reply text out of a readLen() answer (field 10, URI-encoded). Kept here so the JSON
-     * unquoting is applied first and a literal '|' in the answer cannot shift the fields.
+     * Pull the reply text out of a readLen() answer (the LAST of its 10 fields, URI-encoded). Kept
+     * here so the JSON unquoting is applied first and a literal '|' in the answer cannot shift the
+     * fields. After dropping field 0 nine remain, so the reply is at index 8; the limit = 9 stops
+     * the split there and keeps any '|' inside the reply.
      */
     internal fun pollReplyText(raw: String?): String {
         val joined = decode(raw)
-        val encoded = joined.substringAfter('|', "").split('|', limit = 8).getOrNull(7) ?: ""
+        val encoded = joined.substringAfter('|', "").split('|', limit = 9).getOrNull(8) ?: ""
         if (encoded.isEmpty()) return ""
         return try { java.net.URLDecoder.decode(encoded, "UTF-8") } catch (_: Exception) { "" }
     }

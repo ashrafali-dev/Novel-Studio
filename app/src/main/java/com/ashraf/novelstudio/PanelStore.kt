@@ -67,42 +67,73 @@ internal class PanelStore(
      * but the download itself keeps running for the other waiters.
      */
     fun loadOrJoin(key: String, timeoutMs: Long, load: () -> ByteArray?): ByteArray? {
-        val existing: CompletableFuture<Panel>
-        val startedHere: Boolean
-        synchronized(lock) {
-            val done = completed[key]
-            if (done != null && done.bytes != null) {
-                // Promote to the live cache and drop the finished marker.
-                completed.remove(key)
-                putBytesLocked(key, done.bytes)
-                return done.bytes
-            }
-            val running = inFlight[key]
-            if (running != null) {
-                existing = running.future
-                startedHere = false
-            } else {
-                val f = CompletableFuture<Panel>()
-                inFlight[key] = InFlight(f, nowMs())
-                existing = f
-                startedHere = true
-                fetches.incrementAndGet()
-            }
-        }
+        val deadline = nowMs() + timeoutMs
         joiners.incrementAndGet()
         try {
-            if (startedHere) {
-                val result = try {
-                    Panel(load(), null)
-                } catch (t: Throwable) {
-                    Panel(null, t.message ?: t.javaClass.simpleName)
+            while (true) {
+                val existing: CompletableFuture<Panel>
+                val startedHere: Boolean
+                synchronized(lock) {
+                    // A live cache hit must never start (or join) a fetch.
+                    bytesByKey[key]?.let { return it }
+                    val done = completed[key]
+                    if (done != null && done.bytes != null) {
+                        // Promote to the live cache and drop the finished marker.
+                        completed.remove(key)
+                        putBytesLocked(key, done.bytes)
+                        return done.bytes
+                    }
+                    val running = inFlight[key]
+                    if (running != null) {
+                        existing = running.future
+                        startedHere = false
+                    } else {
+                        val f = CompletableFuture<Panel>()
+                        inFlight[key] = InFlight(f, nowMs())
+                        existing = f
+                        startedHere = true
+                        fetches.incrementAndGet()
+                    }
                 }
-                finish(key, result)
-                return result.bytes
+                if (startedHere) {
+                    val result = try {
+                        Panel(load(), null)
+                    } catch (t: Throwable) {
+                        // The starter being cancelled (scrolled away) says nothing about the panel:
+                        // free the slot and let a waiter take over instead of failing everybody.
+                        if (t is InterruptedException || Thread.currentThread().isInterrupted) {
+                            abandon(key, existing)
+                            throw t
+                        }
+                        Panel(null, t.message ?: t.javaClass.simpleName)
+                    }
+                    finish(key, result)
+                    return result.bytes
+                }
+                val got = await(existing, (deadline - nowMs()).coerceAtLeast(1L))
+                if (got != null) return got.bytes
+                // A null here is either a real failure (the future completed with no bytes) or a
+                // timeout. In the latter case the fetch may still be running for others: only retry
+                // when it was abandoned, otherwise this caller simply gives up like before.
+                if (isInFlight(key)) {
+                    if (nowMs() >= deadline) return null
+                    continue
+                }
+                return null
             }
-            return await(existing, timeoutMs)?.bytes
         } finally {
             joiners.decrementAndGet()
+        }
+    }
+
+    /**
+     * The starter could not finish (cancelled). Its waiters must not receive a failure, so the shared
+     * future is left uncompleted and the slot cleared: the next caller starts a real fetch.
+     */
+    private fun abandon(key: String, future: CompletableFuture<Panel>) {
+        synchronized(lock) {
+            val entry = inFlight[key]
+            if (entry != null && entry.future === future) inFlight.remove(key)
         }
     }
 
@@ -168,6 +199,9 @@ internal class PanelStore(
             if (eldest == key) continue
             it.remove()
             bytesTotal -= bytesByKey.remove(eldest)?.size ?: 0
+            // The finished marker holds the same bytes; leaving it behind would keep the evicted
+            // panel alive and defeat the budget.
+            completed.remove(eldest)
         }
     }
 

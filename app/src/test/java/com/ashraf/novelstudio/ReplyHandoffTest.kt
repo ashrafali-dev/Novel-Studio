@@ -34,8 +34,8 @@ class ReplyHandoffTest {
         val encoded = URLEncoder.encode(reply, "UTF-8")
         assertFalse("the wire field must not contain a separator", encoded.contains('|'))
         val wire = "3|0|40|2|1|ok|1|1|0|" + encoded
-        // Same extraction as pollJob: drop the first field, then take the eighth of the rest.
-        val pollText = wire.substringAfter('|', "").split('|', limit = 8).getOrNull(7) ?: ""
+        // Same extraction as pollReplyText: readLen answers with 10 fields; the reply is the last.
+        val pollText = wire.substringAfter('|', "").split('|', limit = 9).getOrNull(8) ?: ""
         assertEquals(reply, URLDecoder.decode(pollText, "UTF-8"))
     }
 }

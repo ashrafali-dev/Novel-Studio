@@ -21,7 +21,8 @@ class LensAnalysisTest {
     @Test fun ordinaryScreenshotIsNeverResized() {
         assertEquals(1080, LensAnalysis.preparedSize(1080, 2400).w)
         assertEquals(2400, LensAnalysis.preparedSize(1080, 2400).h)
-        assertEquals(2400, LensAnalysis.preparedSize(2400, 2400).w)       // at the limit, still native
+        // 2400x2400 is over MAX_AREA (5.76 MP), so it is resized; see oversizedAreaIsResized...
+        assertTrue(LensAnalysis.preparedSize(2400, 2400).w.toLong() * LensAnalysis.preparedSize(2400, 2400).h <= LensAnalysis.MAX_AREA)
         assertEquals(1600, LensAnalysis.preparedSize(1200, 1600).h)
     }
 

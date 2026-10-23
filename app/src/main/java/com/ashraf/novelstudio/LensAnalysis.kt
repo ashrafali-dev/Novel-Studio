@@ -16,10 +16,11 @@ internal object LensAnalysis {
     class Prepared(val w: Int, val h: Int)
 
     /**
-     * Ordinary phone screenshots stay at native size (Chromium Lens behaviour). Only resize when the
-     * picture is BOTH larger than [MAX_AREA] pixels AND longer than [MAX_DIMENSION] on a side — and then
-     * to a size that satisfies the area limit too. The previous rule only checked both maxima, so a
-     * 2400x2400 screenshot could be re-encoded with no resize and still exceed the 3.5 MB body limit.
+     * Ordinary phone screenshots stay at native size (Chromium Lens behaviour). A picture is left
+     * alone only when BOTH its area is within [MAX_AREA] AND its sides are within [MAX_DIMENSION];
+     * otherwise it is scaled by the tighter of the two limits, so the result satisfies both. The
+     * previous rule only checked the two maxima, so a 2400x2400 screenshot could be re-encoded with
+     * no resize and still exceed the 3.5 MB body limit.
      */
     fun preparedSize(w: Int, h: Int): Prepared {
         require(w > 0 && h > 0) { "empty image" }
