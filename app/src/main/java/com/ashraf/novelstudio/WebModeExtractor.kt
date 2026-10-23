@@ -2067,6 +2067,7 @@ internal class WebModeExtractor(
                     angle = if (rotated) tilt else 0f,
                     font = (refinedFont[i] ?: b.fontPx) * k / fullW,
                     bg = s.bg, fg = s.fg, fg2 = s.fg2, soft = s.soft, stroke = s.stroke,
+                    gradientHorizontal = s.gradientHorizontal,
                     sourceText = text,
                     maskCx = (x0 + (maskBox[0] + maskBox[2]) / 2f * k) / fullW,
                     maskCy = (y0 + (maskBox[1] + maskBox[3]) / 2f * k) / fullH,
