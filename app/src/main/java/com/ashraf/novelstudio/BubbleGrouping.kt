@@ -123,23 +123,6 @@ internal object BubbleGrouping {
         separated: ((OcrBlock, OcrBlock) -> Boolean)? = null
     ): List<Int> = groups(blocks, pool + i, separated).first { i in it }
 
-    /**
-     * Fraction of an OCR rectangle that lies inside a proposed speech-bubble interior rectangle.
-     * Used together with the real flood-fill membership test: the flood fill confirms the curved
-     * boundary, while this rejects boxes whose centres happen to be inside but whose glyphs mostly
-     * spill outside the bubble (e.g. a nearby webtoon aside).
-     */
-    fun rectOverlapFraction(rect: IntArray, bounds: IntArray): Float {
-        if (rect.size < 4 || bounds.size < 4) return 0f
-        val l = rect[0]; val t = rect[1]; val r = rect[2]; val b = rect[3]
-        val bl = bounds[0]; val bt = bounds[1]; val br = bounds[2]; val bb = bounds[3]
-        val area = (r - l).toLong() * (b - t).toLong()
-        if (area <= 0L) return 0f
-        val iw = (minOf(r, br) - maxOf(l, bl)).coerceAtLeast(0)
-        val ih = (minOf(b, bb) - maxOf(t, bt)).coerceAtLeast(0)
-        return ((iw.toLong() * ih.toLong()).toFloat() / area.toFloat()).coerceIn(0f, 1f)
-    }
-
     private fun isUnspacedScript(c: Char): Boolean {
         val b = Character.UnicodeBlock.of(c)
         return b == Character.UnicodeBlock.HIRAGANA || b == Character.UnicodeBlock.KATAKANA ||
