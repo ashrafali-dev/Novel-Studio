@@ -421,12 +421,20 @@ internal object WebModeLayoutStore {
         persist(ctx, url)
     }
 
-    private fun samePosition(a: WmBubble, b: WmBubble): Boolean =
-        WebModeLogic.normalizeUrl(a.src) == WebModeLogic.normalizeUrl(b.src) &&
-            kotlin.math.abs(a.cx - b.cx) < 0.012f &&
-            kotlin.math.abs(a.cy - b.cy) < 0.012f &&
-            kotlin.math.abs(a.w - b.w) < 0.018f &&
-            kotlin.math.abs(a.h - b.h) < 0.018f
+    /**
+     * Is [b] a re-read of the SAME bubble as [a]? Tolerances are relative to the bubble's own size. They used to be
+     * fixed fractions of the whole image (0.012), which on a 12000 px tall webtoon strip is ~140 px: two different
+     * bubbles one under the other counted as "the same position", and mergeLayouts replaced one by the other, so a
+     * real bubble silently vanished. Different bubbles are at least a bubble-height apart; a re-read only jitters.
+     */
+    internal fun samePosition(a: WmBubble, b: WmBubble): Boolean {
+        if (WebModeLogic.normalizeUrl(a.src) != WebModeLogic.normalizeUrl(b.src)) return false
+        val maxW = maxOf(a.w, b.w); val maxH = maxOf(a.h, b.h)
+        if (maxW <= 0f || maxH <= 0f) return false
+        if (kotlin.math.abs(a.cx - b.cx) > 0.15f * maxW + 0.0008f) return false
+        if (kotlin.math.abs(a.cy - b.cy) > 0.15f * maxH + 0.0008f) return false
+        return minOf(a.w, b.w) / maxW > 0.75f && minOf(a.h, b.h) / maxH > 0.75f
+    }
 
     private fun boxOverlapOfSmaller(a: WmBubble, b: WmBubble): Float {
         val left = maxOf(a.cx - a.w / 2f, b.cx - b.w / 2f)

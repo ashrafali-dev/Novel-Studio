@@ -1260,6 +1260,7 @@ internal class WebModeExtractor(
             if (!req.visibleOnly) evalWait(wrap(JS_FORCE_HIDE)) { null }
             if (!req.visibleOnly) evalWait(wrap(LIB + JS_FORCE_TOP)) { null }
             var stable = 0
+            var driftRetries = 0
             var steps = 0
             while (true) {
                 if (!alive()) { forceFail(WebModeError.NAVIGATION_INVALIDATED); return }
@@ -1303,6 +1304,21 @@ internal class WebModeExtractor(
                     if (hideOverlayForShot && info != null) {
                         try { observeCanvasPixelFingerprints(bmp, info, meta.url) }
                         catch (e: Exception) { Log.w(TAG, "Canvas fingerprint failed: ${e.javaClass.simpleName}") }
+                    }
+                }
+                // The crop rectangles in [info] were measured BEFORE the screenshot (plus up to ~1.3 s of blank-capture
+                // retries). If the page moved in between, every bubble fraction would be computed against the wrong
+                // image offset and the translation would land on the wrong bubble. Re-measure (one tiny script) and
+                // take the screenshot again instead of placing text from a shifted frame.
+                if (bmp != null && req.visibleOnly && info != null && info.has("sy") && driftRetries < 2) {
+                    val probe = evalWait(wrap(LIB + JS_SCROLL_PROBE)) { parseJson(it) }
+                    if (probe != null &&
+                        (Math.abs(probe.optDouble("y") - info.optDouble("sy")) > 1.0 ||
+                            Math.abs(probe.optDouble("h") - info.optDouble("sh")) > 2.0)) {
+                        driftRetries++
+                        OcrDiag.log("FORCE_STEP", "page moved during capture (dy=${probe.optDouble("y") - info.optDouble("sy")}) -> recapture $driftRetries/2")
+                        bmp.recycle()
+                        continue
                     }
                 }
                 forceShots++
@@ -2700,7 +2716,13 @@ return JSON.stringify({m:window.__nsWmMut||0,l:window.__nsWmLoad||0,p:p});
 var sc=scroller(),c=cands(sc,undefined,true,true),vw=window.innerWidth||de.clientWidth||0,vh=window.innerHeight||0,o=[];
 for(var i=0;i<c.length;i++){var p=c[i];
   if(p.d&&p.vb>0&&p.vt<vh&&(p.vl+p.fw)>0&&p.vl<vw)o.push(p);}
-return JSON.stringify({vw:vw,vh:vh,imgs:o});
+return JSON.stringify({vw:vw,vh:vh,sy:(sc?sc.scrollTop:(window.pageYOffset||de.scrollTop||0)),sh:(sc?sc.scrollHeight:(de.scrollHeight||0)),imgs:o});
+"""
+
+        /** Tiny re-measure used right after a screenshot: did the page move while PixelCopy was running? */
+        private const val JS_SCROLL_PROBE = """
+var sc=scroller();
+return JSON.stringify({y:(sc?sc.scrollTop:(window.pageYOffset||de.scrollTop||0)),h:(sc?sc.scrollHeight:(de.scrollHeight||0))});
 """
 
         private const val JS_FORCE_SCROLL = """
