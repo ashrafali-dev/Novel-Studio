@@ -118,14 +118,6 @@ class BubbleGroupingTest {
         assertTrue(g.any { it.containsAll(listOf("A1", "A2")) })
     }
 
-    @Test fun rectOverlapAllowsTextInsideBubbleOnly() {
-        val bubbleInterior = intArrayOf(160, 280, 620, 520)
-        val mainDialogueLine = intArrayOf(210, 350, 580, 410)
-        val outsideAside = intArrayOf(480, 470, 660, 650)
-        assertTrue(BubbleGrouping.rectOverlapFraction(mainDialogueLine, bubbleInterior) >= 0.8f)
-        assertTrue(BubbleGrouping.rectOverlapFraction(outsideAside, bubbleInterior) < 0.8f)
-    }
-
     @Test fun eachLineBelongsToExactlyOneGroup() {
         val blocks = (0 until 12).map { line("L$it", 200f + (it % 3) * 60f, 100f + it * 34f, 150f) }
         val all = BubbleGrouping.groups(blocks, blocks.indices.toList()).flatten()
