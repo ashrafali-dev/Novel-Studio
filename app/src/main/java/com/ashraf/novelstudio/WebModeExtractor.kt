@@ -1058,9 +1058,11 @@ internal class WebModeExtractor(
             }
             val b = captureByPixelCopy(allowWindowFallback = !req.visibleOnly)
             if (b != null && !isBlank(b)) {
-                // A full-window screenshot can contain native overlays, but realtime PixelCopy only
-                // captures the WebView rectangle; walking the whole native view tree here just adds latency.
-                if (!req.visibleOnly) try { maskNativeOverlays(b) } catch (_: Throwable) {}
+                // PixelCopy copies that rectangle of the WINDOW, so everything drawn above the WebView (status pill,
+                // URL bar, buttons, toasts) is in the bitmap too. Lens read that UI text, the chatbot translated it
+                // ("Reading the page" -> Bengali chip) and it was pasted onto the page. Mask it in realtime as well;
+                // the view-tree walk is one cheap main-thread hop.
+                try { maskNativeOverlays(b) } catch (_: Throwable) {}
                 return b
             }
             b?.recycle()
@@ -1398,8 +1400,10 @@ internal class WebModeExtractor(
                 // Lens returns whole paragraphs from a precise recogniser: use its lenient filter, not the ML Kit one.
                 val lensOn = (engine as? RoutingOcrEngine)?.usesRemoteTextDetection() == true
                 val noisy: (OcrBlock) -> Boolean = { b -> if (lensOn) OcrPost.isNoiseLens(b) else OcrPost.isNoise(b) }
+                val dropOwnBengali = Langs.target(wv.context) == "Bengali"
                 val blocks = result.blocks
-                    .filter { it.text.isNotBlank() && !noisy(it) }
+                    .filter { it.text.isNotBlank() && !noisy(it) &&
+                        !(dropOwnBengali && OcrPost.isMostlyBengaliScript(it.text)) }
                     .sortedWith(compareBy<OcrBlock>({ it.top }, { it.left }))
                 val letters = blocks.sumOf { block -> block.text.count { ch -> ch.isLetterOrDigit() } }
                 OcrDiag.log("SCREEN_OCR", "step=$forceStepNo ${bmp.width}x${bmp.height} ms=${SystemClock.elapsedRealtime() - t0} " +
@@ -1877,8 +1881,12 @@ internal class WebModeExtractor(
             // middle rows from the ink detector. Never discard an edge reading on the assumption that
             // another slice will find it; the fuller overlapping reading can upgrade it below.
             val tOcr = android.os.SystemClock.elapsedRealtime()
+            // Our own Bengali overlay can be inside a screen capture: never treat it as source text.
+            val dropOwnBengali = Langs.target(wv.context) == "Bengali"
             val blocks = OcrPost.mergeNeighbours(
-                (preRecognized ?: recognize(bmp, st, fastMode)).blocks.filter { it.text.isNotBlank() }, bmp)
+                (preRecognized ?: recognize(bmp, st, fastMode)).blocks.filter {
+                    it.text.isNotBlank() && !(dropOwnBengali && OcrPost.isMostlyBengaliScript(it.text))
+                }, bmp)
             ocrMs = android.os.SystemClock.elapsedRealtime() - tOcr
             lineCount = blocks.size
             if (blocks.isEmpty()) return
@@ -2168,7 +2176,13 @@ internal class WebModeExtractor(
             val core = recognizeCore(bmp, st, fastMode)
             // Lens is a single-pass remote OCR engine, including when it returns no text. Never send
             // the same image through a second audit request; it only adds another upload/cache encode.
-            if (lensSelected) return core
+            if (lensSelected) {
+                // Selective, speed-neutral completeness audit (see OcrRescan.augmentRemote): free when nothing is
+                // uncovered, otherwise only the suspicious crops are re-read, in parallel and under a deadline.
+                if (!Prefs.bool(wv.context, "lensAudit", true) || core.blocks.isEmpty() && fastMode) return core
+                return try { OcrRescan.augmentRemote(engine, bmp, core, st.current, if (fastMode) 1200L else 2500L) }
+                catch (_: Exception) { core } catch (_: OutOfMemoryError) { core }
+            }
             // Real-time/visible reading must return promptly. The optional uncovered-ink audit can
             // launch several additional recognizer calls per slice; the thorough chapter scan keeps it.
             if (fastMode || !Prefs.bool(wv.context, "ocrRescan", true)) return core
@@ -2790,7 +2804,9 @@ if(sc){
   var sr=sc.getBoundingClientRect();
   vpBottom=Math.max(sr.top,Math.min(vpH,sr.bottom));
 }
-c=c.filter(function(p){return p.vt>=vpBottom-2;});
+// Panels below the viewport, PLUS panels that straddle its bottom/top edge: a bubble cut by the screen edge is
+// only half visible, so the visible scan reads half of it. The whole picture is read here instead.
+c=c.filter(function(p){var pb=p.vt+(p.h||0);return p.vt>=vpBottom-2||(p.vt<vpBottom-2&&pb>vpBottom-2)||(p.vt<0&&pb>0);});
 // Use the page's document-space top for a stable reading order across batches.
 c.sort(function(a,b){return all?(a.t-b.t):(a.vt-b.vt);});
 return JSON.stringify({lang:document.documentElement.lang||'',url:location.href,imgs:c.slice(0,__N__)});

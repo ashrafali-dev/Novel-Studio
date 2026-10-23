@@ -396,6 +396,65 @@ internal object OcrRescan {
         return OcrResult(current)
     }
 
+    // ------------------------------------------------------------------ Google Lens: selective audit
+
+    private val auditPool = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "ns-lens-audit").apply { isDaemon = true }
+    }
+    @Volatile private var auditMisses = 0
+    @Volatile private var auditPausedUntil = 0L
+
+    /**
+     * Speed-neutral completeness check for a remote (Google Lens) read.
+     *  1. A purely local pixel pass ([findUncovered], a few ms) looks for text-like ink that NO Lens block covers.
+     *  2. Nothing suspicious (the normal case) -> [base] is returned immediately: zero added latency.
+     *  3. Only the suspicious spots (max 2) are cropped and sent to Lens IN PARALLEL, with a hard deadline; the
+     *     whole page is never re-sent. The Lens engine caches by image bytes, so an unchanged crop is free.
+     *  4. Self-limiting: three audits in a row that recover nothing (artwork that merely looks like text) pause
+     *     the audit for 20 s, so a page full of drawings cannot slow the reader down.
+     */
+    fun augmentRemote(
+        engine: OcrEngine, bmp: Bitmap, base: OcrResult, script: OcrScript, deadlineMs: Long = 1500L
+    ): OcrResult {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now < auditPausedUntil) return base
+        val regions: List<Region> = try {
+            findUncovered(bmp, base.blocks, 2)
+        } catch (_: Exception) { emptyList() } catch (_: OutOfMemoryError) { emptyList() }
+        if (regions.isEmpty()) return base
+        val tasks = regions.map { reg ->
+            java.util.concurrent.Callable<List<OcrBlock>> {
+                try { readRegion(engine, bmp, reg, script, true) } catch (_: Exception) { emptyList() }
+            }
+        }
+        val futures = try {
+            auditPool.invokeAll(tasks, deadlineMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt(); return base
+        }
+        val current = ArrayList<OcrBlock>(base.blocks)
+        var recovered = 0
+        for ((i, f) in futures.withIndex()) {
+            if (f.isCancelled) continue                       // missed the deadline: keep the fast result
+            val got = try { f.get() } catch (_: Exception) { continue }
+            val usable = got.filter { !OcrPost.isNoiseLens(it) }
+            if (usable.isEmpty()) continue
+            val anchor = regions[i].anchor
+            if (anchor != null) {
+                val combined = usable.sortedWith(compareBy({ it.top }, { it.left })).joinToString(" ") { it.text }
+                if (letters(combined) <= letters(anchor.text) || OcrLineFusion.agreement(anchor.text, combined) < 0.88f) continue
+            }
+            val before = current.toList()
+            OcrLineFusion.addAll(current, usable)
+            if (before != current) recovered += usable.size
+        }
+        if (recovered == 0) {
+            if (++auditMisses >= 3) { auditPausedUntil = now + 20_000L; auditMisses = 0 }
+        } else auditMisses = 0
+        Log.i(TAG, "lens-audit regions=${regions.size} recovered=$recovered ms=${android.os.SystemClock.elapsedRealtime() - now}")
+        return if (recovered > 0) OcrResult(current) else base
+    }
+
     // ------------------------------------------------------------------ debug images
 
     private var savedCount = 0

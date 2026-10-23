@@ -168,6 +168,18 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
         val mapStart = SystemClock.elapsedRealtime()
         val allBlocks = LensProtocol.toBlocks(response, bitmap.width, bitmap.height, prepared.w, prepared.h)
+        // Text WITHOUT a position is not a complete OCR result: it can be neither placed in the right bubble nor
+        // audited, and caching it would freeze the gap. Report it as a failure (not "no text found") and do not cache.
+        val positionlessLines = response.paragraphs.sumOf { p ->
+            p.lines.count { it.text.isNotBlank() && it.box == null && p.box == null && !OcrPost.isSiteMark(it.text) }
+        }
+        if (allBlocks.isEmpty() && positionlessLines > 0) {
+            val diagnostic = "TEXT_WITHOUT_POSITIONS http=${currentHttpStatus()}; paragraphs=$paragraphCount lines=$lineCount " +
+                "positionlessLines=$positionlessLines lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes shape=${response.shape}"
+            OcrEngineStatus.setLensDiagnostic(diagnostic)
+            Log.w(TAG, diagnostic)
+            throw OcrUnavailableException("Google Lens: text without positions")
+        }
         val lines = allBlocks.filterNot { OcrPost.isNoiseLens(it) }
             .sortedWith(compareBy({ it.top }, { it.left }))
         val mapMs = SystemClock.elapsedRealtime() - mapStart
@@ -178,7 +190,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             "replyBytes=${body.size}; objects=${response.valid}; " +
             "shape=${response.shape}; paragraphs=$paragraphCount lines=$lineCount nonEmptyLines=$nonEmptyLineCount " +
             "textChars=$textChars lineBoxes=$lineBoxes paragraphBoxes=$paragraphBoxes " +
-            "blocksBeforeNoise=${allBlocks.size} blocksAfterNoise=${lines.size} " +
+            "blocksBeforeNoise=${allBlocks.size} blocksAfterNoise=${lines.size} positionlessLines=$positionlessLines " +
             "script=${script.name} upload=${prepared.w}x${prepared.h}; $timing"
         OcrEngineStatus.setLensDiagnostic(diagnostic)
         if (lines.isEmpty()) Log.w(TAG, "NO_TEXT $diagnostic") else Log.i(TAG, "PARSED $diagnostic")

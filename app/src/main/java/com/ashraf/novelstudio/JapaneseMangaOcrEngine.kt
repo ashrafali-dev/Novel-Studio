@@ -340,7 +340,8 @@ internal class RoutingOcrEngine : OcrEngine {
                 lens = run(chosen)
             } catch (e: OcrUnavailableException) {
                 failure = (e.message ?: "unavailable").take(160)
-                OcrEngineStatus.toastOnce(appContext, "Google Lens request failed\\n$failure")
+                // "cancelled" = a newer scan replaced this one (scroll/page change): expected, not a Lens fault.
+                if (!failure.endsWith("cancelled")) OcrEngineStatus.toastOnce(appContext, "Google Lens request failed\n$failure")
             } catch (e: Exception) {
                 failure = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(160)
                 Log.w("NovelStudioOCR", "lens failed unexpectedly", e)

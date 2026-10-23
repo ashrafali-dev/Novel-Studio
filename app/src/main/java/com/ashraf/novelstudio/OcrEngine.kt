@@ -143,6 +143,17 @@ internal object OcrPost {
         return false
     }
 
+    /**
+     * True when the text is (mostly) Bengali script. The app paints its own Bengali translation into the page; a
+     * screen capture contains those overlays, Lens reads them back and the chatbot "translates" them again
+     * (stacked, garbled overlays). With Bengali as the target language nothing worth translating is Bengali.
+     */
+    fun isMostlyBengaliScript(text: String): Boolean {
+        var letters = 0; var bn = 0
+        for (c in text) if (c.isLetter()) { letters++; if (c.code in 0x0980..0x09FF) bn++ }
+        return letters > 0 && bn * 100 >= letters * 60
+    }
+
     /** True for a scan-site watermark line ("asurascans.com"). Used per LINE so one watermark never drops a whole bubble. */
     fun isSiteMark(text: String): Boolean = SITE.containsMatchIn(text.trim())
 
