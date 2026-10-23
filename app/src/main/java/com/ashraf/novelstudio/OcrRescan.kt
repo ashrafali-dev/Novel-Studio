@@ -450,15 +450,22 @@ internal object OcrRescan {
         for ((i, f) in futures.withIndex()) {
             if (f.isCancelled) continue                       // missed the deadline: keep the fast result
             val got = try { f.get() } catch (_: Exception) { continue }
-            val usable = got.filter { !OcrPost.isNoiseLens(it) }
-            if (usable.isEmpty()) continue
             val anchor = regions[i].anchor
+            // A recovered line must be NEW text. If it sits on a block Lens already returned it is the same
+            // text read twice (different box/spelling) and would be translated and painted twice on top of
+            // each other, so it is dropped. Partial-row upgrades (anchor != null) keep their own check below.
+            val usable = got.filter { g ->
+                !OcrPost.isNoiseLens(g) &&
+                    (anchor != null || base.blocks.none { b -> OcrPost.overlapOfSmaller(b, g) >= 0.3f })
+            }
+            if (usable.isEmpty()) continue
             if (anchor != null) {
                 val combined = usable.sortedWith(compareBy({ it.top }, { it.left })).joinToString(" ") { it.text }
                 if (letters(combined) <= letters(anchor.text) || OcrLineFusion.agreement(anchor.text, combined) < 0.88f) continue
             }
             val before = current.toList()
-            OcrLineFusion.addAll(current, usable)
+            if (anchor != null) OcrLineFusion.addAll(current, usable)
+            else { current.addAll(usable); current.sortWith(compareBy({ it.top }, { it.left })) }
             if (before != current) recovered += usable.size
         }
         if (recovered == 0) {

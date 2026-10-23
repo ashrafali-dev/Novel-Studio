@@ -19,7 +19,7 @@ internal object BubbleGrouping {
         val fb = if (b.fontPx > 0f) b.fontPx else b.h
         if (fa <= 0f || fb <= 0f) return false
         val ratio = fa / fb
-        if (ratio < (if (loose) 0.4f else 0.55f) || ratio > (if (loose) 2.5f else 1.8f)) return false
+        if (ratio < (if (loose) 0.65f else 0.6f) || ratio > (if (loose) 1.55f else 1.7f)) return false
         val scale = maxOf(fa, fb)
         val atop = a.cy - a.h / 2f
         val abot = a.cy + a.h / 2f
@@ -34,8 +34,8 @@ internal object BubbleGrouping {
     }
 
     /** A line may join an existing group only if its font is within this ratio of the group's median font. */
-    const val GROUP_FONT_RATIO_MIN = 0.5f
-    const val GROUP_FONT_RATIO_MAX = 2.0f
+    const val GROUP_FONT_RATIO_MIN = 0.65f
+    const val GROUP_FONT_RATIO_MAX = 1.55f
     /**
      * Once a group has 2+ lines its own leading is known: a new line must sit within
      * max(LEADING_TOLERANCE x median leading, MIN_LEADING_FONTS x font) of the last line.
