@@ -139,7 +139,7 @@ internal object WebModeWriter {
         t.style.fontWeight='700';
       }else if(it.g2&&it.g2!==it.fg){
         // the original lettering was a gradient: keep it
-        t.style.background='linear-gradient(to bottom,'+it.fg+','+it.g2+')';
+        t.style.background='linear-gradient('+(it.gh?'to right':'to bottom')+','+it.fg+','+it.g2+')';
         t.style.webkitBackgroundClip='text'; t.style.backgroundClip='text';
         t.style.webkitTextFillColor='transparent'; t.style.color='transparent';
       }
@@ -898,7 +898,8 @@ internal object WebModeWriter {
                 .put("t", t).put("s", WebModeLogic.normalizeUrl(b.src))
                 .put("cx", r5(b.cx)).put("cy", r5(b.cy)).put("w", r5(b.w)).put("h", r5(b.h))
                 .put("a", r5(b.angle)).put("f", r5(b.font))
-                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("sf", b.soft).put("o", if (b.stroke != 0) css(b.stroke) else "")
+                .put("bg", css(b.bg)).put("fg", css(b.fg)).put("g2", css(b.fg2)).put("gh", b.gradientHorizontal)
+                .put("sf", b.soft).put("o", if (b.stroke != 0) css(b.stroke) else "")
                 // Transparent translation only where THIS bubble's old lettering was really erased; a bubble the
                 // cleaner skipped keeps its cover box, so the old text never shows through the translation.
                 .put("cl", if (WebModeTextRemovalCache.isErased(b.src, WebModeTextRemovalCache.bubbleKey(b)) &&
