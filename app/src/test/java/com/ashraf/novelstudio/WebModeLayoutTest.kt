@@ -41,6 +41,23 @@ class WebModeLayoutTest {
         assertTrue(WebModeLayoutStore.canvasTransitionDetected(pageA, other))
     }
 
+    @Test fun curvedBubbleFillRejectsAsideWhoseCentreIsInsideRectangularBounds() {
+        val w = 100; val h = 100
+        val fill = BooleanArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            val dx = (x - 50) / 40f
+            val dy = (y - 50) / 40f
+            fill[y * w + x] = dx * dx + dy * dy <= 1f
+        }
+        // Both centres lie in [10,10..90,90], but the second box lies outside the oval's lower-right curve.
+        val dialogue = intArrayOf(38, 35, 62, 50)
+        val aside = intArrayOf(62, 62, 95, 95)
+        val dialogueCoverage = WmBubbleStyle.rectBoundaryCoverage(dialogue, 0, 0, w, h, fill)
+        val asideCoverage = WmBubbleStyle.rectBoundaryCoverage(aside, 0, 0, w, h, fill)
+        assertTrue(dialogueCoverage >= 0.65f)
+        assertTrue(asideCoverage < 0.65f)
+    }
+
     @Test fun horizontalGradientAxisSurvivesLayoutSerialization() {
         val original = b("GRIT", 0.5f, 0.5f).copy(
             fg = 0xFFCC2200.toInt(), fg2 = 0xFFFFDD00.toInt(), gradientHorizontal = true
