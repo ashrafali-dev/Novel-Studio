@@ -110,7 +110,26 @@ jobs:
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK"
           APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
-          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          REPORT="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+          printf '%s\n' "$REPORT"
+          # Same pinned certificate build.yml enforces on the publish path, so a green verify run
+          # is always installable over the established release.
+          EXPECTED_CERT_SHA256="3e783739eb6e9aadf8bd9f5b23f8fb99a65c4cfabdcb8ec8fb09c2921dcbb44b"
+          ACTUAL="$(printf '%s\n' "$REPORT" | awk '/certificate SHA-256 digest:/ {print tolower($NF); exit}')"
+          if [ "$ACTUAL" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::Signing certificate changed. Expected $EXPECTED_CERT_SHA256, got ${ACTUAL:-missing}"
+            exit 1
+          fi
+          echo "PASS: permanent Novel Studio release signing certificate."
+
+      # Required, not best-effort: the APK is the product of this job.
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovelStudio-SIGNED-RELEASE-APK
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
 
   paddle-models:
     name: PaddleOCR model validation
