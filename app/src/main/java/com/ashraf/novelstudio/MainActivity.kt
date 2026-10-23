@@ -6030,6 +6030,17 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     // ================================================================== extraction
+    /**
+     * Pull the reply text out of a readLen() answer (field 10, URI-encoded). Kept here so the JSON
+     * unquoting is applied first and a literal '|' in the answer cannot shift the fields.
+     */
+    internal fun pollReplyText(raw: String?): String {
+        val joined = decode(raw)
+        val encoded = joined.substringAfter('|', "").split('|', limit = 8).getOrNull(7) ?: ""
+        if (encoded.isEmpty()) return ""
+        return try { java.net.URLDecoder.decode(encoded, "UTF-8") } catch (_: Exception) { "" }
+    }
+
     private fun decode(raw: String?): String = try {
         if (raw == null || raw == "null") "" else JSONArray("[$raw]").getString(0)
     } catch (e: Exception) { "" }
@@ -8308,6 +8319,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val sendFailed = parts.getOrNull(5) == "failed"
                 val uiDone = parts.getOrNull(6) == "1"
                 val meaningfulReply = parts.getOrNull(7) == "1"
+                // Reply text this poll already read (field 10, URI-encoded); see pollReplyText.
+                val pollText = pollReplyText(raw)
                 // Every marker has some text after it (even just "~" / "..." / "!!"): the chatbot did answer.
                 val filledReply = parts.getOrNull(8) == "1"
                 val got = parts.getOrNull(4) == "1" || n > n0
@@ -8379,6 +8392,21 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 updateProgressUi()
 
                 when {
+                    // Hand the reply this poll already read to finishJob. Only live bubble batches use it
+                    // (they carry no page markers to strip); every other path re-reads exactly as before.
+                    completed && isDeepSeekLivePanel(ch) && ReplyHandoff.usablePollText(
+                        pollText, got, completed
+                    ) != null -> {
+                        val reply = pollText!!
+                        val cacheStarted = android.os.SystemClock.elapsedRealtime()
+                        chatWv.evaluateJavascript(Js.cacheReply(reply)) {
+                            Log.i(
+                                "NovelStudioOCR",
+                                "REPLY_HANDOFF cacheMs=${android.os.SystemClock.elapsedRealtime() - cacheStarted} chars=${reply.length}"
+                            )
+                            finishJob(tok, ch, reply)
+                        }
+                    }
                     completed -> finishJob(tok, ch)
                     livePanelBatch && got && !meaningfulReply && !(filledReply && allMarkers) && !streaming && st >= 8 && elapsed >= 12_000L ->
                         failJob(tok, ch, "The chatbot returned only paragraph markers, not a translation. Tap ⚡ to retry.")
@@ -8423,10 +8451,21 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             .trim()
     }
 
-    private fun finishJob(tok: Int, ch: Chapter) {
+    /**
+     * [pollReply] = the reply the last completion poll already read. Live bubble batches use it directly
+     * (Js.cacheReply stored it for this readText call, which returns it without a page scan); every other
+     * job passes null and re-reads the page as before.
+     */
+    private fun finishJob(tok: Int, ch: Chapter, pollReply: String? = null) {
         if (tok != runToken) return
-        chatWv.evaluateJavascript(Js.readText()) { raw ->
-            if (tok != runToken) return@evaluateJavascript
+        // readText() returns the reply stored by Js.cacheReply for live batches without re-scanning the
+        // page; any other job has no cached reply and the page is read exactly as before.
+        chatWv.evaluateJavascript(Js.readText()) { raw -> completeJob(tok, ch, raw) }
+    }
+
+    private fun completeJob(tok: Int, ch: Chapter, raw: String) {
+        run {
+            if (tok != runToken) return@run
             // Only a request carrying its own bubble layout is a live overlay batch. A geometry-free
             // text fallback or a deliberate full-page extract must use the normal chapter pipeline.
             val livePanelBatch = isRealtimeBubbleBatch(ch)
@@ -8442,16 +8481,16 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 updateProgressUi()
                 startNext()
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
-                return@evaluateJavascript
+                return@run
             }
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
-                return@evaluateJavascript
+                return@run
             }
             if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
                 failJob(tok, ch, "Could not read the answer")
-                return@evaluateJavascript
+                return@run
             }
             // Markers are internal alignment data only. Never expose them in the
             // clipboard or saved chapter, but keep the raw marked response for DOM
@@ -8459,7 +8498,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val t = stripInternalMarkers(rawTranslation)
             if (t.isBlank() || (!livePanelBatch && t.length < 30)) {
                 failJob(tok, ch, "Could not read the translation")
-                return@evaluateJavascript
+                return@run
             }
             val aheadTaskKey = keyOf(ch)
             val aheadTask = rtAheadTranslationTasksByJobKey[aheadTaskKey]
@@ -8468,7 +8507,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 // never save it as a chapter or try to put it on the screen early.
                 deferNextChatbotRequest()
                 finishRealtimeAheadTranslation(aheadTaskKey, aheadTask, rawTranslation)
-                return@evaluateJavascript
+                return@run
             }
             // Scanning: a reply that cannot be matched to the bubbles used to be saved as a good translation
             // (the AI always answers something). Treat it as a failure instead.
@@ -8478,7 +8517,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val placed = WebModeLayout.align(rawTranslation, lay)
                     if (placed == null || placed.none { !it.isNullOrBlank() }) {
                         failJob(tok, ch, "The chatbot answer could not be matched to the page.", fallback = true)
-                        return@evaluateJavascript
+                        return@run
                     }
                 }
             }
