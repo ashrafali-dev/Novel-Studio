@@ -7,6 +7,11 @@ on:
 permissions:
   contents: write
 
+# A newer commit supersedes an older APK build on the same branch.
+concurrency:
+  group: novelstudio-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
