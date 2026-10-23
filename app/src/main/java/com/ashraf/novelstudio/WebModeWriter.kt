@@ -127,7 +127,7 @@ internal object WebModeWriter {
         // Bengali vowel signs (ি ী ু ৃ ে ৈ) stick out above and below the line box; room for them
         // stops them being clipped by the box edge or by the gradient's background-clip.
         +'padding:0.16em 0.1em;'
-        +'overflow-wrap:normal;hyphens:none;font-kerning:normal;'
+        +'overflow-wrap:anywhere;hyphens:none;font-kerning:normal;'
         // Keep browser defaults for complex-script shaping (including Bengali conjuncts).
         +'font-variant-ligatures:normal;text-rendering:optimizeLegibility;';
       b.style.setProperty('font-family',fam,'important'); t.style.setProperty('font-family',fam,'important');
