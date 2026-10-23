@@ -206,9 +206,12 @@ internal object OcrPost {
                     // middle line of a 3-line bubble vanished: top+bottom were fused, the middle one stayed
                     // behind (or was painted over by the fused box) and was never translated.
                     if (hasBlockBetween(work, a, b)) continue
-                    // Two stacked speech bubbles are close enough to look like one paragraph by geometry alone.
-                    // If the picture shows a bubble outline / artwork between the two texts they are separate.
-                    if (image != null && !a.vertical && outlineBetween(image, a, b)) {
+                    // Do not skip over an OCR column between two other columns. That intermediate column
+                    // must be joined first; otherwise a stray column can bridge two separate balloons.
+                    if (a.vertical && hasColumnBetween(work, a, b)) continue
+                    // Geometry alone cannot tell two neighboring balloons from two neighboring columns.
+                    // Check the actual pixels between columns as well as the familiar horizontal line gap.
+                    if (image != null && (if (a.vertical) columnOutlineBetween(image, a, b) else outlineBetween(image, a, b))) {
                         vetoed.getOrPut(a) { java.util.IdentityHashMap() }[b] = true
                         continue
                     }
@@ -302,10 +305,87 @@ internal object OcrPost {
         val left = if (a.cx <= b.cx) a else b
         val right = if (left === a) b else a
         val gap = (right.cx - right.w / 2) - (left.cx + left.w / 2)
-        if (gap > f * 0.9f || gap < -f * 0.5f) return false
+        // Manga column separation is relative to the local em-size, not a fixed pixel distance.
+        // Permit a little raster/OCR overlap, but not two substantially overlapping text boxes:
+        // overlap often means the boxes came from separate adjacent balloons or a bad detector merge.
+        if (gap > f * 0.9f || gap < -f * 0.15f) return false
         val oy = Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2)
         val shorter = Math.min(a.h, b.h)
         return shorter > 0f && oy >= shorter * 0.4f
+    }
+
+    /**
+     * Pixel-space safeguard for tategaki: a nearly continuous vertical ink line in the gap between
+     * two OCR columns is strong evidence of a balloon/panel boundary, not normal column leading.
+     * The gap is normalized against glyph size elsewhere; this method only evaluates a usable gap.
+     */
+    fun columnOutlineBetween(img: Bitmap, a: OcrBlock, b: OcrBlock): Boolean {
+        if (!a.vertical || !b.vertical) return false
+        try {
+            val left = if (a.cx <= b.cx) a else b
+            val right = if (left === a) b else a
+            val x0 = kotlin.math.ceil(left.cx + left.w / 2f).toInt().coerceIn(0, img.width - 1)
+            val x1 = kotlin.math.floor(right.cx - right.w / 2f).toInt().coerceIn(x0, img.width)
+            val gap = x1 - x0
+            val font = maxOf(
+                if (a.fontPx > 0f) a.fontPx else a.w,
+                if (b.fontPx > 0f) b.fontPx else b.w
+            )
+            if (gap < maxOf(2f, font * 0.08f)) return false
+            val y0 = maxOf(a.cy - a.h / 2f, b.cy - b.h / 2f)
+            val y1 = minOf(a.cy + a.h / 2f, b.cy + b.h / 2f)
+            val overlap = y1 - y0
+            if (overlap < maxOf(8f, font * 0.8f)) return false
+            // Ignore the first/last 12% where glyph tops/bottoms and bubble curves are most common.
+            val ya = (y0 + overlap * 0.12f).toInt().coerceIn(0, img.height - 1)
+            val yb = (y1 - overlap * 0.12f).toInt().coerceIn(ya + 1, img.height)
+            if (yb - ya < 8) return false
+            val stepY = maxOf(1, (yb - ya) / 96)
+            val values = ArrayList<Int>()
+            var y = ya
+            while (y < yb) {
+                var x = x0
+                while (x < x1) {
+                    values.add(luma(img.getPixel(x, y)))
+                    x += maxOf(1, gap / 32)
+                }
+                y += stepY
+            }
+            if (values.size < 12) return false
+            val median = values.sorted()[values.size / 2]
+            // Bubble outlines are coherent across height; nearby glyph/texture speckles are not.
+            var x = x0
+            while (x < x1) {
+                var off = 0
+                var count = 0
+                y = ya
+                while (y < yb) {
+                    if (kotlin.math.abs(luma(img.getPixel(x, y)) - median) > 62) off++
+                    count++
+                    y += stepY
+                }
+                if (count >= 8 && off * 100 >= count * 62) return true
+                x++
+            }
+            return false
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
+    /** True when another vertical OCR column lies between [a] and [b] with substantial y-overlap. */
+    private fun hasColumnBetween(all: List<OcrBlock>, a: OcrBlock, b: OcrBlock): Boolean {
+        val lx = minOf(a.cx, b.cx)
+        val rx = maxOf(a.cx, b.cx)
+        for (c in all) {
+            if (c === a || c === b || !c.vertical) continue
+            if (c.cx <= lx || c.cx >= rx) continue
+            val overlap = minOf(a.cy + a.h / 2f, b.cy + b.h / 2f, c.cy + c.h / 2f) -
+                maxOf(a.cy - a.h / 2f, b.cy - b.h / 2f, c.cy - c.h / 2f)
+            val shortest = minOf(a.h, b.h, c.h)
+            if (shortest > 0f && overlap >= shortest * 0.25f) return true
+        }
+        return false
     }
 
     /** True when another block sits vertically between [a] and [b] and overlaps either one horizontally. */
@@ -357,8 +437,11 @@ internal object OcrPost {
             val r = Math.max(a.cx + a.w / 2, b.cx + b.w / 2)
             val t = Math.min(a.cy - a.h / 2, b.cy - b.h / 2)
             val bt = Math.max(a.cy + a.h / 2, b.cy + b.h / 2)
+            // Japanese/Chinese characters do not take spaces between vertical columns. Hangul/Latin
+            // still receive a separator through joinLines(), based on the actual scripts at the seam.
+            val joined = BubbleGrouping.joinLines(listOf(rightB.text.trim(), leftB.text.trim()))
             return OcrBlock(
-                rightB.text.trim() + " " + leftB.text.trim(), t.toInt(), l.toInt(),
+                joined, t.toInt(), l.toInt(),
                 (l + r) / 2f, (t + bt) / 2f, r - l, bt - t, 0f,
                 Math.max(a.fontPx, b.fontPx), true
             )
