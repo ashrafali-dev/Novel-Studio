@@ -246,7 +246,9 @@ internal object WebModeTextRemover {
                     for (ry in sy0 until sy1) for (rx in sx0 until sx1) {
                         val i = ry * rw + rx
                         if (selected[i].toInt() == 0 && protect[i].toInt() == 0 &&
-                            distance(region[i], bg) >= 9f) selected[i] = 1
+                            // White/black bubble interiors often retain very faint antialias/JPEG residue.
+                            // The mask is tightly confined to the OCR box plus a small font-scaled margin.
+                            distance(region[i], bg) >= 3f) selected[i] = 1
                     }
                 }
 
@@ -265,7 +267,8 @@ internal object WebModeTextRemover {
                                 if (nx < 0 || nx >= rw) continue
                                 val ni = ny * rw + nx
                                 if (mask[ni].toInt() == 0 && protect[ni].toInt() == 0 &&
-                                    distance(region[ni], bg) >= 8f) mask[ni] = 1
+                                    // Include low-contrast edge pixels that leave visible ghosts under black text.
+                                    distance(region[ni], bg) >= 3f) mask[ni] = 1
                             }
                         }
                     }
