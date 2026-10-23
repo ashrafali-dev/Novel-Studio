@@ -6,6 +6,7 @@ import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
+import android.util.Log
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -57,6 +58,17 @@ internal object WebModeInpainter {
         crashes < MAX_CRASHES && modelFile(ctx).let { it.isFile && it.length() in MIN_BYTES..MAX_BYTES }
     fun isDownloading(): Boolean = downloading.get()
     fun isLoaded(): Boolean = session != null
+
+    /** One-line description of the model file on disk, for the failure dialog. Safe to call any time. */
+    fun fileState(ctx: Context): String {
+        val f = modelFile(ctx)
+        if (!f.isFile) return "Model file: not present"
+        val mb = f.length() / (1024.0 * 1024.0)
+        val size = String.format(java.util.Locale.US, "%.1f", mb)
+        val verdict = if (f.length() in MIN_BYTES..MAX_BYTES) "size OK"
+            else "size OUT OF RANGE (expected ${MIN_BYTES / 1_000_000}-${MAX_BYTES / 1_000_000} MB)"
+        return "Model file: $size MB, $verdict"
+    }
 
     /** Why the last load attempt failed (empty when it never failed). Shown by the menu row. */
     @Volatile var lastLoadError: String = ""

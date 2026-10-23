@@ -478,10 +478,10 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             } catch (e: HttpStatus) {
                 answer = e
                 last = e
-                if (e.code !in RETRYABLE_STATUS) {
+                if (e.status !in RETRYABLE_STATUS) {
                     // 400/401/403/404...: wrong key, blocked or changed endpoint. Retrying cannot help.
-                    Breaker.permanent("HTTP ${e.code}")
-                    throw OcrUnavailableException("Google Lens: HTTP ${e.code} (endpoint or key rejected)", e)
+                    Breaker.permanent("HTTP ${e.status}")
+                    throw OcrUnavailableException("Google Lens: HTTP ${e.status} (endpoint or key rejected)", e)
                 }
                 if (e.retryAfterMs > 0) waitMs = maxOf(waitMs, e.retryAfterMs)
             } catch (e: SocketTimeoutException) {
