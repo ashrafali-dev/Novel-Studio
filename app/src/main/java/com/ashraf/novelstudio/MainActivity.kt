@@ -3047,6 +3047,9 @@ return t.length>=40?'TXT:'+t:'';
         applyForceLoadImages()
         Js.sendHoldMs = sendHoldPref()
         CrashLog.install(this)
+        // Finish or undo what a previous process left half-done (an interrupted model download or a
+        // native model load that killed the process). Loads nothing native, so it cannot crash start-up.
+        try { WebModeInpainter.restore(this) } catch (_: Throwable) { }
         chatWv.webViewClient = ChatClient()
         chatWv.settings.setSupportMultipleWindows(true)
         chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
@@ -10419,7 +10422,11 @@ ${rows.take(220).joinToString("\n")}
      * crowded bubbles over art kept the old flat-card overlay forever.
      */
     private fun menuInpaintLabel(): String = when {
-        !Prefs.bool(this, "wmAiInpaint", false) -> "⬜ 🎨 AI Inpaint on artwork (optional)"
+        !Prefs.bool(this, "wmAiInpaint", false) -> {
+            val why = WebModeInpainter.lastLoadError
+            if (why.isBlank()) "⬜ 🎨 AI Inpaint on artwork (optional)"
+            else "⚠️ 🎨 AI Inpaint off — model failed: ${why.take(48)}"
+        }
         WebModeInpainter.isReady(this) -> "✅ 🎨 AI Inpaint on artwork"
         WebModeInpainter.isDownloading() -> "⏳ 🎨 AI Inpaint — downloading model…"
         else -> "⬇️ 🎨 AI Inpaint — tap to download model"
@@ -10448,6 +10455,22 @@ ${rows.take(220).joinToString("\n")}
                         } else {
                             Prefs.putBool(this, "wmAiInpaint", false)
                             toast("❌ Inpaint model download failed: $error (AI Inpaint turned OFF)")
+                            // Offer the safe way out instead of leaving a model that kills this phone's runtime.
+                            AlertDialog.Builder(this)
+                                .setTitle("🎨 AI Inpaint could not start")
+                                .setMessage(
+                                    "The model was downloaded but this phone's ONNX Runtime could not use it.\n\n" +
+                                        error + "\n\n" + WebModeInpainter.fileState(this) +
+                                        "\n\nThe feature stays OFF, so start-up is unaffected. You can delete the " +
+                                        "model file and try the download again."
+                                )
+                                .setPositiveButton("Delete model") { _, _ ->
+                                    val ok = WebModeInpainter.delete(this)
+                                    Prefs.putBool(this, "wmAiInpaint", false)
+                                    toast(if (ok) "🗑 Model deleted — AI Inpaint stays off" else "Could not delete the model file")
+                                }
+                                .setNegativeButton("Keep off", null)
+                                .show()
                         }
                     }
                 })

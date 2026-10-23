@@ -77,7 +77,22 @@ Do not trust earlier crashed sessions. Every entry has a commit hash once commit
 
 ## Commits
 
-(append here: hash — one line — verified-by)
+- `73d268a` verify.yml + this log — CI run 40031720598: build ok, tests failed only because Gradle
+  evaluates release signing without secrets (fixed with a throwaway keystore in the test job).
+- `9110f50` Lens reporting/limits + Paddle config validation + remote model check — CI 40033355467:
+  the model-check job PASSED.
+- `a37f088` compile fixes (LensTransport.Answer is an IOException, open class) — see CI after `7b04f83`.
+- `7b04f83` shared PanelStore + PanelOcrCache (Bug B) — unit tests PanelStoreTest, PanelOcrCacheTest.
+
+## Verified evidence so far
+
+- Paddle model packs: pinned revisions serve exactly the SHA-256 the app hardcodes (small det
+  9 880 512 B `d73e0058…`, small rec 21 159 378 B `5435fd74…`, medium rec 76 554 979 B
+  `9c09abf0…`, Korean rec 13 418 787 B `92f0b778…`), recognisers report `dict + blank + space`
+  classes and a 48 px input height (CI job "PaddleOCR model validation" = success).
+- Lens: a 200 body without objects_response was thrown as `reply without text layer`; the
+  diagnostic only ever showed the LAST attempt's status with no cause. Both are fixed and tested.
+
 
 ## Blocker: chatbot latency measurements need on-device/WebView runs
 

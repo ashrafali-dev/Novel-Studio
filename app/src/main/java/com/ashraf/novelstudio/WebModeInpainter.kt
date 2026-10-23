@@ -45,6 +45,43 @@ internal object WebModeInpainter {
     fun isDownloading(): Boolean = downloading.get()
     fun isLoaded(): Boolean = session != null
 
+    /** Why the last load attempt failed (empty when it never failed). Shown by the menu row. */
+    @Volatile var lastLoadError: String = ""
+        private set
+
+    /**
+     * Startup safety net (main thread, once per process): puts back everything the previous process
+     * left behind. Nothing here loads the model or ONNX Runtime, so it cannot be the reason the app
+     * dies at start.
+     *
+     *  - `inpaintOpening` is written just before a session is created. If it is still set now, the
+     *    previous process died INSIDE the native model load: switch the feature off and count it.
+     *  - `downloadPending` marks "the user turned AI Inpaint on and the model is being fetched". If it
+     *    is still set, that process died during the download (the original report: "the app crashes
+     *    when the model is downloaded"); finish the job on the next start instead of assuming success.
+     *  - a stale `.part` file is removed so the next attempt starts cleanly.
+     */
+    fun restore(ctx: Context) {
+        val app = ctx.applicationContext
+        try { File(File(app.filesDir, "wm_inpaint"), "$MODEL_NAME.part").delete() } catch (_: Throwable) {}
+        if (Prefs.get(app, "inpaintOpening", "0") == "1") {
+            Prefs.put(app, "inpaintOpening", "0")
+            noteFailure(app, "process died while loading the inpaint model")
+            Log.w(TAG, "previous start-up died while opening the inpaint model; AI Inpaint disabled")
+            return
+        }
+        if (Prefs.get(app, "inpaintDownloadPending", "0") == "1") {
+            Prefs.put(app, "inpaintDownloadPending", "0")
+            if (isReady(app)) {
+                // The bytes on disk are complete and valid; only the "turn it on" step was interrupted.
+                Prefs.putBool(app, "wmAiInpaint", true)
+            } else {
+                Prefs.putBool(app, "wmAiInpaint", false)
+                Log.w(TAG, "previous inpaint model download did not finish; AI Inpaint disabled until a new download")
+            }
+        }
+    }
+
     /** Loads the model in the background (several seconds), so the first scanned page never waits for it. */
     fun warmUpAsync(ctx: Context) {
         if (session != null || sessionFailed || !isReady(ctx) || !warming.compareAndSet(false, true)) return
@@ -66,6 +103,9 @@ internal object WebModeInpainter {
     fun download(ctx: Context, onProgress: (Long, Long) -> Unit, onDone: (String?) -> Unit) {
         if (!downloading.compareAndSet(false, true)) { onDone("ডাউনলোড ইতিমধ্যে চলছে"); return }
         val app = ctx.applicationContext
+        // Remember across process death that a download is in progress (see restore()).
+        Prefs.put(app, "inpaintDownloadPending", "1")
+        Prefs.put(app, "inpaintCrashes", "0")
         Thread {
             var error: String? = null
             var conn: HttpURLConnection? = null
@@ -74,6 +114,10 @@ internal object WebModeInpainter {
                 target.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw IllegalStateException("ফোল্ডার তৈরি করা যায়নি") }
                 val part = File(target.parentFile, target.name + ".part")
                 part.delete()
+                // A failed download must never leave the previous .onnx at a length that passes
+                // isReady() only halfway: remove the old file up front and keep target present only
+                // after the checksum matched (rename below).
+                if (target.exists() && !target.delete()) throw IllegalStateException("পুরোনো ফাইল মুছতে পারা যায়নি")
                 conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 20000; readTimeout = 45000; instanceFollowRedirects = true
                     setRequestProperty("User-Agent", "NovelStudio-Inpaint/1")
@@ -103,18 +147,28 @@ internal object WebModeInpainter {
                 val hex = digest.digest().joinToString("") { "%02x".format(it) }
                 if (hex != MODEL_SHA256) throw IllegalStateException("ফাইলের চেকসাম মেলেনি")
                 if (target.exists()) target.delete()
-                if (!part.renameTo(target)) throw IllegalStateException("ফাইল সংরক্ষণ ব্যর্থ")
+                if (!part.renameTo(target)) {
+                    // Some filesystems refuse renameTo across the same directory under memory pressure;
+                    // copy + fsync instead of leaving the model missing.
+                    part.copyTo(target, overwrite = true)
+                    if (!target.isFile || target.length() != part.length()) throw IllegalStateException("ফাইল সংরক্ষণ ব্যর্থ")
+                    part.delete()
+                }
                 // Prove right now that this phone's ONNX Runtime can run the model; otherwise say so instead of failing silently.
                 sessionFailed = false
+                lastLoadError = ""
                 if (session(app) == null) {
                     target.delete()
                     sessionFailed = false
-                    throw IllegalStateException("মডেল লোড হয়নি — এই অ্যাপের ONNX Runtime সংস্করণ মডেলটির জন্য পুরনো হতে পারে")
+                    throw IllegalStateException(
+                        "মডেল লোড হয়নি" + (if (lastLoadError.isNotBlank()) " ($lastLoadError)" else "")
+                    )
                 }
             } catch (e: Throwable) {
                 error = e.message ?: "ডাউনলোড ব্যর্থ"
                 try { File(File(app.filesDir, "wm_inpaint"), "$MODEL_NAME.part").delete() } catch (_: Throwable) {}
             } finally {
+                Prefs.put(app, "inpaintDownloadPending", "0")
                 try { conn?.disconnect() } catch (_: Throwable) {}
                 downloading.set(false)
                 onDone(error)
@@ -126,22 +180,53 @@ internal object WebModeInpainter {
     private fun session(ctx: Context): OrtSession? {
         session?.let { return it }
         if (sessionFailed || !isReady(ctx)) return null
+        // Marker for the next start: if this process dies inside createSession (native abort, not a
+        // Java exception), restore() sees it and switches AI Inpaint off instead of repeating the crash.
+        markOpening(ctx)
         return try {
-            val env = OrtEnvironment.getEnvironment()
-            val opts = OrtSession.SessionOptions()
-            opts.setIntraOpNumThreads(maxOf(2, minOf(4, Runtime.getRuntime().availableProcessors())))
-            // Required by this int4/int8 model: dequantize the weights once at load so it runs like fp32.
-            opts.addConfigEntry("session.disable_quant_qdq", "1")
-            val s = env.createSession(modelFile(ctx).absolutePath, opts)
+            val s = openSession(modelFile(ctx).absolutePath)
             val names = s.inputNames.toList()
             imageName = if (names.contains("image")) "image" else names[0]
             maskName = if (names.contains("mask")) "mask" else names[names.size - 1]
             session = s
+            clearOpening(ctx)
             s
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w(TAG, "inpaint session failed: ${t.javaClass.name}: ${t.message}")
+            val retry = runCatching { openSession(modelFile(ctx).absolutePath, lean = true) }.getOrNull()
+            if (retry != null) {
+                session = retry
+                lastLoadError = ""
+                clearOpening(ctx)
+                return retry
+            }
             sessionFailed = true
+            lastLoadError = "${t.javaClass.simpleName}: ${t.message ?: "model could not be loaded"}"
+            clearOpening(ctx)
             null
         }
+    }
+
+    /**
+     * Creates the ORT session. The quantized LaMa graph stores int4/int8 tensors with QuantizeLinear /
+     * DequantizeLinear pairs; folding them at load is what makes it run at fp32 speed. [lean] is the
+     * fallback after a failure: one thread, no arena and no QDQ fold, which needs the least native memory.
+     */
+    private fun openSession(path: String, lean: Boolean = false): OrtSession {
+        val env = OrtEnvironment.getEnvironment()
+        val opts = OrtSession.SessionOptions()
+        opts.setIntraOpNumThreads(if (lean) 1 else maxOf(2, minOf(3, Runtime.getRuntime().availableProcessors())))
+        try { opts.setCPUArenaAllocator(false) } catch (_: Throwable) {}
+        if (!lean) opts.addConfigEntry("session.disable_quant_qdq", "1")
+        return env.createSession(path, opts)
+    }
+
+    private fun markOpening(ctx: Context) {
+        Prefs.put(ctx, "inpaintOpening", "1")
+    }
+
+    private fun clearOpening(ctx: Context) {
+        Prefs.put(ctx, "inpaintOpening", "0")
     }
 
     /**

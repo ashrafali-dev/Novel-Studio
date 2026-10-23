@@ -477,6 +477,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             try {
                 return race(payload, info, remaining, connectMs, hedgeAfterMs, minimumAttemptMs, firstBound = attempt % 2 == 0, previous = previousRoot, onRoot = onExit)
             } catch (e: HttpStatus) {
+                answer = e
                 last = e
                 if (e.code !in RETRYABLE_STATUS) {
                     // 400/401/403/404...: wrong key, blocked or changed endpoint. Retrying cannot help.
@@ -496,8 +497,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 }
                 last = e
             } catch (e: LensTransport.Answer) {
-                // A REAL server answer, not a fault: a 200 that carried no usable reply is reported to
-                // the caller as-is; a 4xx/5xx was already handled (or rethrown) above.
+                // A REAL server answer that carried no usable reply (e.g. 200 without objects). Report
+                // it to the caller as-is; it is not a network fault and must not trip the breaker.
                 answer = e
             } catch (e: IOException) {
                 last = e    // UnknownHostException, ConnectException, SocketException ("Socket closed"), EOF, ...

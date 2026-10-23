@@ -728,7 +728,7 @@ internal class WebModeExtractor(
                 progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
                 submitFetch(i)
                 submitFetch(i + FETCH_AHEAD)
-                val bytes = if (pool != null) {
+                val fetched = if (pool != null) {
                     val fetchWaitMs = when {
                         lensParallel -> LENS_IMAGE_FETCH_WAIT_MS
                         req.visibleOnly -> VISIBLE_FETCH_WAIT_MS
@@ -740,7 +740,7 @@ internal class WebModeExtractor(
                 futures[i] = null
                 // The shared store is authoritative: it serves bytes the read-ahead already downloaded
                 // (this job's own fetch may have been joined to it) and avoids a second download.
-                val bytes = bytes ?: sharedPanelBytes(
+                val bytes = fetched ?: sharedPanelBytes(
                     p, meta.url,
                     if (req.visibleOnly) VISIBLE_FETCH_WAIT_MS else (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
                 )
