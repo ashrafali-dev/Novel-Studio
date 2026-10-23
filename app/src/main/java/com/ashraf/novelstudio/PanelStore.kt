@@ -96,16 +96,27 @@ internal class PanelStore(
                     }
                 }
                 if (startedHere) {
-                    val result = try {
-                        Panel(load(), null)
-                    } catch (t: Throwable) {
-                        // The starter being cancelled (scrolled away) says nothing about the panel:
-                        // free the slot and let a waiter take over instead of failing everybody.
-                        if (t is InterruptedException || Thread.currentThread().isInterrupted) {
-                            abandon(key, existing)
-                            throw t
+                    // Cancelling the caller must not cancel the shared download (see the contract
+                    // above): a load cut short by this thread's interrupt is retried with the
+                    // interrupt cleared, so the bytes still reach everyone waiting on it.
+                    var result: Panel
+                    var retried = false
+                    while (true) {
+                        try {
+                            result = Panel(load(), null)
+                            break
+                        } catch (t: Throwable) {
+                            if (t !is InterruptedException && !Thread.currentThread().isInterrupted) {
+                                result = Panel(null, t.message ?: t.javaClass.simpleName)
+                                break
+                            }
+                            // Clears the flag AND tells us whether this attempt was interrupted.
+                            if (!Thread.interrupted() || retried) {
+                                abandon(key, existing)
+                                throw t
+                            }
+                            retried = true
                         }
-                        Panel(null, t.message ?: t.javaClass.simpleName)
                     }
                     finish(key, result)
                     return result.bytes
