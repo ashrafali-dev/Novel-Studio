@@ -43,6 +43,9 @@ jobs:
           keytool -list -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
           echo "Permanent release keystore and alias validated."
 
+      - name: Run JVM regression tests
+        run: gradle testDebugUnitTest --no-daemon
+
       - name: Build signed release APK
         env:
           KEYSTORE_FILE: ${{ runner.temp }}/novelstudio-release.jks
