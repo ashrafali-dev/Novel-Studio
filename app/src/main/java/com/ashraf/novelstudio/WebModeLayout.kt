@@ -813,7 +813,8 @@ internal object WmBubbleStyle {
      */
     fun bubbleInterior(
         bmp: Bitmap, box: IntArray, allRects: List<IntArray>, requireLeftover: Boolean = true,
-        bandsOut: MutableList<IntArray>? = null, minBand: Int = 6, vertical: Boolean = false
+        bandsOut: MutableList<IntArray>? = null, minBand: Int = 6, vertical: Boolean = false,
+        membershipOut: MutableList<Boolean>? = null
     ): IntArray? {
         val bg = ringMedian(bmp, box[0], box[1], box[2], box[3], 3)
         if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
@@ -865,6 +866,37 @@ internal object WmBubbleStyle {
         var l = 0; while (l < w && cols[l] * 10 < maxCol * 3) l++
         var r = w - 1; while (r > l && cols[r] * 10 < maxCol * 3) r--
         if (r - l < 12 || b - t < 12) return null
+
+        // Keep the actual flood-filled interior shape, not only its rectangular bounds. A nearby aside can
+        // have its centre inside the bounds of an oval while sitting outside its curved edge. Test the ring
+        // just outside each OCR box against the connected fill pixels: interior text has fill around it;
+        // exterior text does not. This stays cheap in realtime because it only samples a few dozen pixels
+        // per OCR box and reuses the flood-fill already done above.
+        if (membershipOut != null) {
+            membershipOut.clear()
+            fun onInteriorSide(rect: IntArray): Boolean {
+                if (rect.size < 4 || rect[2] <= rect[0] || rect[3] <= rect[1]) return false
+                val left = rect[0]; val right = rect[2] - 1
+                val top = rect[1]; val bottom = rect[3] - 1
+                var hits = 0; var samples = 0
+                fun sample(gx: Int, gy: Int) {
+                    samples++
+                    val lx = gx - x0; val ly = gy - y0
+                    if (lx in 0 until w && ly in 0 until h && seen[ly * w + lx]) hits++
+                }
+                for (step in 0..4) {
+                    val gx = left + (right - left) * step / 4
+                    val gy = top + (bottom - top) * step / 4
+                    sample(gx, top - 3)
+                    sample(gx, bottom + 3)
+                    sample(left - 3, gy)
+                    sample(right + 3, gy)
+                }
+                return samples > 0 && hits * 100 >= samples * 65
+            }
+            for (rect in allRects) membershipOut.add(onInteriorSide(rect))
+        }
+
         // Real-time grouping only needs the bubble's inside, not proof of missed lettering.
         if (!requireLeftover && bandsOut == null) return intArrayOf(l + x0, t + y0, r + x0 + 1, b + y0 + 1)
         // Leftover lettering = "holes" in the bubble fill (between the fill's left and right edge of each row, so
