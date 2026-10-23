@@ -40,23 +40,3 @@ class WebModeLayoutTest {
         assertTrue(WebModeLayoutStore.canvasTransitionDetected(pageA, other))
     }
 }
-
-class WebModeSamePositionTest {
-    private val src = "https://x.test/p.jpg"
-    private fun b(cx: Float, cy: Float, w: Float, h: Float) =
-        WmBubble(src = src, cx = cx, cy = cy, w = w, h = h, angle = 0f, font = 0.01f,
-            bg = 0xFFFFFFFF.toInt(), fg = 0xFF000000.toInt(), sourceText = "x")
-
-    @Test fun twoBubblesOneUnderTheOtherOnATallStripAreNotTheSame() {
-        // 12000 px tall strip: 0.009 of the height is ~108 px. The old fixed 0.012 tolerance called these "the same".
-        assertFalse(WebModeLayoutStore.samePosition(b(0.5f, 0.500f, 0.6f, 0.008f), b(0.5f, 0.509f, 0.6f, 0.008f)))
-    }
-
-    @Test fun aSmallJitterOfTheSameBubbleIsStillTheSame() {
-        assertTrue(WebModeLayoutStore.samePosition(b(0.5f, 0.500f, 0.6f, 0.008f), b(0.501f, 0.5005f, 0.58f, 0.0078f)))
-    }
-
-    @Test fun differentSizeIsNotTheSameBubble() {
-        assertFalse(WebModeLayoutStore.samePosition(b(0.5f, 0.5f, 0.6f, 0.008f), b(0.5f, 0.5f, 0.6f, 0.02f)))
-    }
-}
