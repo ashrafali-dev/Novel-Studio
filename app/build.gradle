@@ -77,4 +77,6 @@ dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 
     testImplementation 'junit:junit:4.13.2'
+    // Real JSON implementation for local JVM unit tests (Android's org.json stubs are not executable there).
+    testImplementation 'org.json:json:20240303'
 }
