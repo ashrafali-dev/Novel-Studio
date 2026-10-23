@@ -127,7 +127,7 @@ class PanelStoreTest {
     }
 
     @Test fun byteBudgetIsEnforced() {
-        val store = PanelStore(maxBytes = 100L)
+        val store = PanelStore(maxBytes = 100)
         store.loadOrJoin("a", 1_000L, { ByteArray(60) { 1 } })
         store.loadOrJoin("b", 1_000L, { ByteArray(60) { 2 } })
         val cached = listOf("a", "b").count { store.peek(it) != null }

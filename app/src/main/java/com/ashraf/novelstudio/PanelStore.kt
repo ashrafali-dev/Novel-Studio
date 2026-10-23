@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Pure JVM: no Android types, so the behaviour is tested without a device.
  */
 internal class PanelStore(
-    private val maxBytes: Long = 32L * 1024 * 1024,
+    private val maxBytes: Int = 32 * 1024 * 1024,
     private val maxCompletedEntries: Int = 128,
     private val nowMs: () -> Long = { System.currentTimeMillis() }
 ) {
@@ -42,7 +42,7 @@ internal class PanelStore(
     private val bytesByKey = object : LinkedHashMap<String, ByteArray>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean = false
     }
-    private val bytesTotal = longArrayOf(0L)
+    private var bytesTotal = 0
     private val completed = object : LinkedHashMap<String, Completed>(maxCompletedEntries, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Completed>?): Boolean =
             size > maxCompletedEntries
@@ -146,28 +146,28 @@ internal class PanelStore(
 
     fun evict(key: String) {
         synchronized(lock) {
-            bytesByKey.remove(key)?.let { bytesTotal[0] -= it.size }
+            bytesByKey.remove(key)?.let { bytesTotal -= it.size }
             completed.remove(key)
         }
     }
 
     fun clear() {
         synchronized(lock) {
-            bytesByKey.clear(); completed.clear(); bytesTotal[0] = 0L
+            bytesByKey.clear(); completed.clear(); bytesTotal = 0
             inFlight.clear()
         }
     }
 
     private fun putBytesLocked(key: String, bytes: ByteArray) {
         val previous = bytesByKey.put(key, bytes)
-        if (previous != null) bytesTotal[0] -= previous.size
-        bytesTotal[0] += bytes.size
+        if (previous != null) bytesTotal -= previous.size
+        bytesTotal += bytes.size
         val it = bytesByKey.keys.iterator()
-        while (bytesTotal[0] > maxBytes && it.hasNext()) {
+        while (bytesTotal > maxBytes && it.hasNext()) {
             val eldest = it.next()
             if (eldest == key) continue
             it.remove()
-            bytesTotal[0] -= bytesByKey.remove(eldest)?.size ?: 0
+            bytesTotal -= bytesByKey.remove(eldest)?.size ?: 0
         }
     }
 

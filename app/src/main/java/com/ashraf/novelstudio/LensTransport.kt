@@ -13,7 +13,7 @@ internal object LensTransport {
      * The server's answer for one POST: the HTTP status code and what it returned. It is a Throwable so
      * the status travels inside an IOException through the retry/hedge machinery (see HttpStatus).
      */
-    class Answer(val status: Int, val meta: String) : java.io.IOException(meta)
+    open class Answer(val status: Int, val meta: String) : java.io.IOException(meta)
 
     /**
      * Network layers wrap the transport failure (`SocketTimeoutException`, interrupted reads) inside a
