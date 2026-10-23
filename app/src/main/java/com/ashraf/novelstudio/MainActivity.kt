@@ -1803,18 +1803,20 @@ one-word translation. Each marker must stay faithful to its own ${Langs.source(t
             // waiting for the next OCR round (the picture used to stay untranslated on screen while its
             // Bengali text sat in the cache).
             if (cleanUrl(task.pageUrl) == cleanUrl(novelWv.url.orEmpty())) {
-                val onScreen = ArrayList<WmBubble>()
-                val onScreenValues = ArrayList<String>()
+                val placedBubbles = ArrayList<WmBubble>()
+                val placedValues = ArrayList<String>()
                 for (i in task.layout.bubbles.indices) {
                     val value = aligned.getOrNull(i)?.trim().orEmpty()
-                    if (value.isNotBlank() && isBubbleOnScreen(task.layout.bubbles[i])) {
-                        onScreen.add(task.layout.bubbles[i]); onScreenValues.add(value)
+                    if (value.isNotBlank()) {
+                        placedBubbles.add(task.layout.bubbles[i]); placedValues.add(value)
                     }
                 }
-                if (onScreen.isNotEmpty()) {
+                if (placedBubbles.isNotEmpty()) {
+                    // Off-screen bubbles are simply hidden by the overlay script until their image
+                    // enters the viewport, so placing the whole batch here is safe and cheap.
                     placeCachedBubbles(
-                        cleanUrl(task.pageUrl), onScreen, onScreenValues,
-                        onScreen.mapTo(HashSet()) { WebModeLayout.fingerprint(it) }
+                        cleanUrl(task.pageUrl), placedBubbles, placedValues,
+                        placedBubbles.mapTo(HashSet()) { WebModeLayout.fingerprint(it) }
                     )
                 }
             }
@@ -5932,7 +5934,7 @@ return t.length>=40?'TXT:'+t:'';
             if (Prefs.adblock(this@MainActivity) && view === novelWv && url != null) {
                 // Debug evidence only: what the cosmetic filter touched + how much text the page has.
                 handler.postDelayed({
-                    if (novelWv.url == url) novelWv.evaluateJavascript(AdBlock.probeJs()) { AdBlock.recordProbe(url, it) }
+                    if (novelWv.url == url) novelWv.evaluateJavascript(AdBlock.probeJs()) { AdBlock.recordProbe(this@MainActivity, url, it) }
                 }, 2500)
             }
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)

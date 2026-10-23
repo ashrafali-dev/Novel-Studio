@@ -820,8 +820,8 @@ internal class WebModeExtractor(
                 // Only the very first completed panel gets this treatment, and the first panel is
                 // always submitted first, so reading order of the page is never changed.
                 val doneOrder = (lensOcrFutures.indices).filter { lensOcrFutures[it] != null }
-                val waiter = java.util.concurrent.ExecutorCompletionService<Pair<Int, LensPanelOcrAttempt>>(
-                    java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "ns-lens-order") })
+                val waiterPool = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "ns-lens-order") }
+                val waiter = java.util.concurrent.ExecutorCompletionService<Pair<Int, LensPanelOcrAttempt>>(waiterPool)
                 for (idx in doneOrder) {
                     val f = lensOcrFutures[idx]!!
                     waiter.submit(java.util.concurrent.Callable {
@@ -852,7 +852,7 @@ internal class WebModeExtractor(
                     }
                 } catch (_: Throwable) {
                 } finally {
-                    waiter.shutdownNow()
+                    waiterPool.shutdownNow()
                 }
                 val batchStartedAt = SystemClock.elapsedRealtime()
                 var submitted = 0
