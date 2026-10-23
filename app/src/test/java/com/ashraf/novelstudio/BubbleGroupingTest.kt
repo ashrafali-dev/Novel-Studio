@@ -71,11 +71,19 @@ class BubbleGroupingTest {
         assertEquals(2, groups(listOf(line("BIG", 300f, 100f, 200f, 90f), line("tiny caption", 300f, 160f, 120f, 18f))).size)
     }
 
-    @Test fun verticalColumnsAreNotMergedByThisPath() {
-        // Documents current behaviour: vertical columns stay individual (no vertical grouping on this path).
-        val g = groups(listOf(
-            line("縦書き", 300f, 200f, 30f, 120f, vertical = true), line("テキスト", 340f, 200f, 30f, 120f, vertical = true)))
-        assertEquals(2, g.size)
+    @Test fun japaneseVerticalColumnsMergeRightToLeftWithoutInsertedSpace() {
+        val left = line("日本語", 300f, 200f, 30f, 120f, vertical = true)
+        val right = line("縦書き", 340f, 200f, 30f, 120f, vertical = true)
+        val merged = OcrPost.mergeNeighbours(listOf(left, right))
+        assertEquals(1, merged.size)
+        assertEquals("縦書き日本語", merged.single().text)
+    }
+
+    @Test fun verticalColumnsBeyondOneEmGapStaySeparate() {
+        // With 30 px glyphs, a 40 px edge-to-edge gap is greater than the 0.9-em joining threshold.
+        val left = line("左の列", 300f, 200f, 30f, 120f, vertical = true)
+        val right = line("右の列", 370f, 200f, 30f, 120f, vertical = true)
+        assertEquals(2, OcrPost.mergeNeighbours(listOf(left, right)).size)
     }
 
     @Test fun overlappingBoxesOfOneBubbleGroup() {
