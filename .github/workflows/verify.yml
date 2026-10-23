@@ -51,8 +51,10 @@ jobs:
       - name: Run JVM unit tests
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
+      # Diagnostics only: a quota error here must not turn a green test run red.
       - name: Upload test reports
-        if: always()
+        if: always() && !cancelled()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-reports
