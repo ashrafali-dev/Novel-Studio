@@ -10,7 +10,8 @@ import kotlin.math.abs
  * Where one piece of recognised text sat on its image. Everything is a fraction of the image, so it
  * still fits when the page is shown at another width: [cx]/[cy] centre, [w]/[h] box size, [font]
  * glyph size as a fraction of the image WIDTH. [angle] is in degrees, [bg]/[fg] are ARGB colours
- * sampled from the original artwork.
+ * sampled from the original artwork. [maskCx]/[maskCy]/[maskW]/[maskH] retain the original glyph area
+ * when [cx]/[cy]/[w]/[h] are expanded to the full speech balloon for translated text.
  */
 internal data class WmBubble(
     val src: String,
