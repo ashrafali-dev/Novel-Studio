@@ -417,7 +417,20 @@ function __box(){
     var baseOcc=occ();
     var expected=__nrm(text);
     function boxText(){return String((box.tagName==='TEXTAREA'||box.tagName==='INPUT')?box.value:(box.innerText||box.textContent)||'').trim();}
-    function composerMatches(){return box.isConnected&&__nrm(boxText())===expected;}
+    function composerMatches(){
+      if(!box||!box.isConnected)return false;
+      var cur=__nrm(boxText());
+      if(cur===expected)return true;
+      // Rich editors (ProseMirror/Lexical) may change a few characters while committing a long prompt
+      // (list markers, rules, smart punctuation). The text is in the box: accept it when it starts and ends
+      // like what we sent and has almost the same length (a double insertion would be ~2x and is refused).
+      var n=expected.length;
+      if(!n||!cur||n<200)return false;
+      var ratio=cur.length/n;
+      if(ratio<0.97||ratio>1.03)return false;
+      var head=expected.slice(0,50),tail=expected.slice(-50);
+      return cur.indexOf(head)>=0&&cur.slice(-120).indexOf(tail)>=0;
+    }
     function sentOk(){
       var r=boxText();
       return (!r||r.length<Math.min(text.trim().length,20)) || (tailN.length>0&&occ()>baseOcc);
