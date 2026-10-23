@@ -5,6 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import java.io.ByteArrayOutputStream
+import com.paddle.ocr.util.OpenCVUtils
+import org.opencv.android.Utils
+import org.opencv.core.CvType
+import org.opencv.core.Mat
+import org.opencv.imgproc.Imgproc
+import org.opencv.photo.Photo
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
@@ -276,8 +282,11 @@ internal object WebModeTextRemover {
                     if (aiFill != null) aiBudget--
                 }
                 // Artwork without AI: onion-peel (Telea-style) fill, outside in, layer by layer.
-                val tele = if (soft && aiFill == null)
-                    onionFill(region, mask, rw, rh, (fontPx * 0.3f).toInt().coerceIn(4, 10), bg) else null
+                val tele = if (soft && aiFill == null) {
+                    val radius = (fontPx * 0.3f).toInt().coerceIn(4, 10)
+                    openCvTeleaFill(context, region, mask, rw, rh, radius)
+                        ?: onionFill(region, mask, rw, rh, radius, bg)
+                } else null
                 // Fill only the masked glyph pixels from their surroundings (never repaint a whole box).
                 val out = region.copyOf()
                 for (ry in 0 until rh) {
@@ -341,6 +350,59 @@ internal object WebModeTextRemover {
             return false
         } finally {
             bitmap.recycle()
+        }
+    }
+
+    /**
+     * Run OpenCV's Telea inpainting on the text-shaped mask for artwork lettering.
+     * If the native library or operation is unavailable, the caller falls back to the lightweight
+     * Kotlin fill so the OCR/translation flow remains usable.
+     */
+    private fun openCvTeleaFill(
+        context: Context,
+        region: IntArray,
+        mask: ByteArray,
+        rw: Int,
+        rh: Int,
+        radius: Int
+    ): IntArray? {
+        if (rw <= 0 || rh <= 0 || region.size < rw * rh || mask.size < rw * rh) return null
+        if (!OpenCVUtils.init(context)) return null
+
+        val sourceBitmap = try {
+            Bitmap.createBitmap(region, rw, rh, Bitmap.Config.ARGB_8888)
+        } catch (_: Throwable) {
+            return null
+        }
+        val rgba = Mat()
+        val bgr = Mat()
+        val maskMat = Mat()
+        val restoredBgr = Mat()
+        val restoredRgba = Mat()
+        var restoredBitmap: Bitmap? = null
+        try {
+            Utils.bitmapToMat(sourceBitmap, rgba)
+            if (rgba.empty()) return null
+            Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
+            maskMat.create(rh, rw, CvType.CV_8UC1)
+            val cvMask = ByteArray(rw * rh) { i -> if (mask[i].toInt() != 0) 0xFF.toByte() else 0 }
+            maskMat.put(0, 0, cvMask)
+            Photo.inpaint(bgr, maskMat, restoredBgr, radius.toDouble().coerceIn(1.0, 12.0), Photo.INPAINT_TELEA)
+            if (restoredBgr.empty()) return null
+            Imgproc.cvtColor(restoredBgr, restoredRgba, Imgproc.COLOR_BGR2RGBA)
+            restoredBitmap = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
+            Utils.matToBitmap(restoredRgba, restoredBitmap)
+            return IntArray(rw * rh).also { restoredBitmap.getPixels(it, 0, rw, 0, 0, rw, rh) }
+        } catch (_: Throwable) {
+            return null
+        } finally {
+            try { restoredBitmap?.recycle() } catch (_: Throwable) {}
+            try { sourceBitmap.recycle() } catch (_: Throwable) {}
+            try { rgba.release() } catch (_: Throwable) {}
+            try { bgr.release() } catch (_: Throwable) {}
+            try { maskMat.release() } catch (_: Throwable) {}
+            try { restoredBgr.release() } catch (_: Throwable) {}
+            try { restoredRgba.release() } catch (_: Throwable) {}
         }
     }
 
