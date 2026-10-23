@@ -9583,23 +9583,23 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             0 to Ic.BOOK, 1 to Ic.CLOCK, 3 to Ic.BOOKMARK, 4 to Ic.BOOKMARK, 5 to Ic.SPARK,
             7 to Ic.RELOAD, 9 to Ic.MOON, 12 to Ic.SPARK, 14 to Ic.BOLT, 15 to Ic.SHIELD,
             16 to Ic.RELOAD, 19 to Ic.BOOK, 20 to Ic.TEXT, 21 to Ic.SLIDERS, 23 to Ic.TEXT, 24 to Ic.LOCK,
-            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT,
-            39 to Ic.RELOAD, 40 to Ic.CLOCK, 41 to Ic.CLOCK, 22 to Ic.SEARCH, 42 to Ic.SEARCH, 43 to Ic.BOLT, 44 to Ic.CLOCK, 45 to Ic.SEARCH, 46 to Ic.SPARK, 47 to Ic.SPARK, 48 to Ic.BOLT, 49 to Ic.RELOAD, 50 to Ic.SEARCH, 51 to Ic.SPARK, 52 to Ic.SEARCH, 53 to Ic.SLIDERS, 54 to Ic.SPARK, 55 to Ic.BOLT, 56 to Ic.SHARE, 57 to Ic.SEARCH, 58 to Ic.SEARCH, 59 to Ic.RELOAD
+            27 to Ic.SHIELD, 28 to Ic.TEXT, 29 to Ic.SLIDERS, 30 to Ic.BOLT, 31 to Ic.GLOBE, 32 to Ic.SPARK, 33 to Ic.SPARK, 34 to Ic.BOLT, 35 to Ic.SPARK, 36 to Ic.TEXT, 37 to Ic.TEXT, 38 to Ic.TEXT, 39 to Ic.SPARK, 40 to Ic.TEXT,
+            41 to Ic.RELOAD, 42 to Ic.CLOCK, 43 to Ic.CLOCK, 22 to Ic.SEARCH, 44 to Ic.SEARCH, 45 to Ic.BOLT, 46 to Ic.CLOCK, 47 to Ic.SEARCH, 48 to Ic.SPARK, 49 to Ic.SPARK, 50 to Ic.BOLT, 51 to Ic.RELOAD, 52 to Ic.SEARCH, 53 to Ic.SPARK, 54 to Ic.SEARCH, 55 to Ic.SLIDERS, 56 to Ic.SPARK, 57 to Ic.BOLT, 58 to Ic.SHARE, 59 to Ic.SEARCH, 60 to Ic.SEARCH, 61 to Ic.RELOAD
         )
         // Everyday rows stay open; everything technical lives behind one ADVANCED fold.
         val daily = listOf(
-            "COMMUNITY" to listOf(56),
+            "COMMUNITY" to listOf(58),
             "LIBRARY" to listOf(0, 4, 1, 3),
-            "TRANSLATE" to listOf(5, 33, 54, 7),
-            "OCR" to listOf(53, 50, 57, 58, 59),
+            "TRANSLATE" to listOf(5, 33, 56, 7),
+            "OCR" to listOf(55, 52, 59, 60, 61),
             "READER" to listOf(9, 20, 23),
-            "APP" to listOf(55)
+            "APP" to listOf(57)
         )
         val advanced = listOf(
-            "TRANSLATION" to listOf(47, 12, 19, 14, 26, 30, 39, 40, 44, 46),
-            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 41, 43, 48, 49, 51),
+            "TRANSLATION" to listOf(49, 12, 19, 14, 26, 30, 41, 42, 46, 48),
+            "WEBTOON TOOLS" to listOf(31, 32, 36, 34, 37, 38, 39, 40, 43, 45, 50, 51, 53),
             "BROWSER" to listOf(15, 16, 21, 24, 29, 35),
-            "DIAGNOSTICS" to listOf(22, 27, 28, 42, 45, 52)
+            "DIAGNOSTICS" to listOf(22, 27, 28, 44, 47, 54)
         )
         lateinit var dlg: Dialog
         val rows = HashMap<Int, SheetRow>()
@@ -9667,10 +9667,10 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast(if (on) "🖼 Web Mode on — tap ● to read image chapters with OCR" else "📖 Web Mode off — normal text extraction")
                 }
                 33 -> { dlg.dismiss(); editRealtimePrompt() }
-                54 -> { dlg.dismiss(); editScanPrompt() }
-                55 -> { dlg.dismiss(); showUpdateNotice() }
-                56 -> { dlg.dismiss(); showCommunityChooser() }
-                57 -> {
+                56 -> { dlg.dismiss(); editScanPrompt() }
+                57 -> { dlg.dismiss(); showUpdateNotice() }
+                58 -> { dlg.dismiss(); showCommunityChooser() }
+                59 -> {
                     dlg.dismiss()
                     val host = try { Uri.parse(novelWv.url.orEmpty()).host.orEmpty().removePrefix("www.") } catch (_: Exception) { "" }
                     AlertDialog.Builder(this)
@@ -9733,15 +9733,15 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     }
                     refresh(i, menuTextRemovalLabel())
                 }
-                54 -> {
+                39 -> {
                     toggleInpaintModel()
                     refresh(i, menuInpaintLabel())
                 }
-                55 -> {
+                40 -> {
                     placementSettingsDialog()
                     dlg.dismiss()
                 }
-                39 -> {
+                41 -> {
                     val on = !autoFreshChatEnabled
                     Prefs.putBool(this, "autoNewChat", on)
                     chatRequestCount = 0
@@ -9750,40 +9750,40 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     toast(if (on) "🔄 Auto new chat ON — every $chatNewWindowEvery requests"
                           else "🔄 Auto new chat OFF — stay in the current chat")
                 }
-                53 -> { dlg.dismiss(); ocrModelsDialog() }
-                51 -> {
+                55 -> { dlg.dismiss(); ocrModelsDialog() }
+                53 -> {
                     val on = !Prefs.bool(this, "ocrRescan", true)
                     Prefs.putBool(this, "ocrRescan", on)
                     refresh(i, menuOcrRescanLabel())
                     toast(if (on) "🩹 OCR rescan ON — lines the first pass missed are re-read"
                           else "🩹 OCR rescan OFF — normal OCR only")
                 }
-                52 -> {
+                54 -> {
                     val on = !Prefs.bool(this, "ocrDebug", false)
                     Prefs.putBool(this, "ocrDebug", on)
                     refresh(i, menuOcrDebugLabel())
                     toast(if (on) "🔬 OCR debug ON — marked slices go to the app's private folder (Android/data › files › ocr_debug, newest 12), NOT the Gallery. Resets to OFF on restart"
                           else "🔬 OCR debug OFF")
                 }
-                50 -> {
+                52 -> {
                     val cur = ocrLangCodes.indexOf(Prefs.get(this, "ocrLang", "auto")).let { if (it < 0) 0 else it }
                     Prefs.put(this, "ocrLang", ocrLangCodes[(cur + 1) % ocrLangCodes.size])
                     refresh(i, menuOcrLangLabel())
                     toast(menuOcrLangLabel())
                 }
-                49 -> {
+                51 -> {
                     Prefs.put(this, "barsMode", ((barsMode() + 1) % 3).toString())
                     if (barsHidden && !barsAnimating) setBarsHidden(false)
                     syncToonBars()
                     refresh(i, menuBarsLabel())
                     toast(menuBarsLabel())
                 }
-                48 -> {
+                50 -> {
                     Prefs.put(this, "scanFastFirst", if (Prefs.get(this, "scanFastFirst", "1") == "1") "0" else "1")
                     refresh(i, menuScanFastLabel())
                     toast(menuScanFastLabel())
                 }
-                47 -> {
+                49 -> {
                     // One tap back to the settings that work best for reading webtoons.
                     Prefs.put(this, "rtBatchLevel", "2")
                     Prefs.put(this, "sendHoldMs", "0"); Js.sendHoldMs = 0L
@@ -9793,38 +9793,38 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     dlg.dismiss()
                     toast("✨ Recommended: batching Big · Send instant · scan interval Auto · fast-first OCR · force-load OFF")
                 }
-                46 -> {
+                48 -> {
                     Prefs.put(this, "rtBatchLevel", ((rtBatchLevel() + 1) % 4).toString())
                     refresh(i, menuBatchLabel())
                     toast(menuBatchLabel())
                 }
-                58 -> {
+                60 -> {
                     dlg.dismiss()
                     val full = OcrDiag.report(this, novelWv.url.orEmpty()) +
                         "\n--- CRASH / FREEZE LOG (tail) ---\n" + CrashLog.read().takeLast(6_000).ifBlank { "(none)" }
                     copy(full)
                     toast("🔬 OCR log copied (" + (full.length / 1000) + " KB) — paste it to Claude")
                 }
-                59 -> {
+                61 -> {
                     OcrDiag.clear()
                     toast("🧹 OCR log cleared — now open the page, scan, then copy the log")
                 }
-                45 -> {
+                47 -> {
                     dlg.dismiss()
                     val log = CrashLog.read().takeLast(20_000)
                     if (log.isBlank()) toast("🐞 No crash or freeze recorded yet")
                     else { copy(log); toast("🐞 Log copied — paste it here") }
                 }
-                44 -> editSendHold { refresh(i, menuSendHoldLabel()) }
-                43 -> {
+                46 -> editSendHold { refresh(i, menuSendHoldLabel()) }
+                45 -> {
                     Prefs.put(this, "forceLoadImages", if (forceLoadOn()) "0" else "1")
                     applyForceLoadImages()
                     refresh(i, menuForceLoadLabel())
                     toast(if (forceLoadOn()) "⚡ ON — reload the page for it to take effect" else "Force-load OFF — reload the page")
                 }
                 22 -> { dlg.dismiss(); diagnosePage() }
-                42 -> { dlg.dismiss(); diagnoseScanImages() }
-                41 -> {
+                44 -> { dlg.dismiss(); diagnoseScanImages() }
+                43 -> {
                     // Wait after every scroll step of a full scan. Raise it for sites whose images only
                     // load once they reach the screen; Auto keeps the fast built-in cadence.
                     val steps = longArrayOf(0L, 150L, 300L, 500L, 800L, 1_200L, 2_000L)
@@ -9833,7 +9833,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     refresh(i, menuScanIntervalLabel())
                     toast(menuScanIntervalLabel())
                 }
-                40 -> {
+                42 -> {
                     val steps = longArrayOf(0L, 300L, 600L, 1_000L)
                     val current = steps.indexOf(chatExtraDelayMs).let { if (it < 0) 0 else it }
                     val next = steps[(current + 1) % steps.size]
