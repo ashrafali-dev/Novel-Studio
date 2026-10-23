@@ -128,7 +128,11 @@ internal object BubbleGrouping {
         return b == Character.UnicodeBlock.HIRAGANA || b == Character.UnicodeBlock.KATAKANA ||
             b == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
             b == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION ||
-            b == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS
+            b == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS ||
+            // Japanese punctuation often begins a neighbouring vertical column (notably … and 〽).
+            // Treat these as seam-safe only when the character on the other side is also unspaced;
+            // this avoids removing ordinary English word spacing.
+            c in "…‥〜～、。，．！？：；（）〔〕［］｛｝〈〉《》「」『』【】〝〟〰〽―─━"
     }
 
     /** Joins the lines of one bubble: a space between words/Hangul lines, none between Japanese/Chinese lines. */
