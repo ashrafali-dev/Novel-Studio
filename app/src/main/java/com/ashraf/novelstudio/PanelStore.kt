@@ -111,30 +111,34 @@ internal class PanelStore(
                     return result.bytes
                 }
                 val got = await(existing, (deadline - nowMs()).coerceAtLeast(1L))
-                if (got != null) return got.bytes
-                // A null here is either a real failure (the future completed with no bytes) or a
-                // timeout. In the latter case the fetch may still be running for others: only retry
-                // when it was abandoned, otherwise this caller simply gives up like before.
-                if (isInFlight(key)) {
+                if (got === RETRY) {
                     if (nowMs() >= deadline) return null
-                    continue
+                    continue          // the starter was cancelled: this caller becomes the starter
                 }
-                return null
+                return got?.bytes      // real result, or a genuine failure/timeout
             }
         } finally {
             joiners.decrementAndGet()
         }
     }
 
+    /** A future completed with this value means "the starter was cancelled; retry as a new fetch". */
+    private val RETRY = Panel(null, null)
+
     /**
-     * The starter could not finish (cancelled). Its waiters must not receive a failure, so the shared
-     * future is left uncompleted and the slot cleared: the next caller starts a real fetch.
+     * The starter could not finish (cancelled). Its waiters must not receive a failure, so the slot is
+     * cleared and the future is completed with [RETRY], which wakes every waiter so one of them takes
+     * the job over instead of waiting out its timeout.
      */
     private fun abandon(key: String, future: CompletableFuture<Panel>) {
-        synchronized(lock) {
+        val owned = synchronized(lock) {
             val entry = inFlight[key]
-            if (entry != null && entry.future === future) inFlight.remove(key)
+            if (entry != null && entry.future === future) {
+                inFlight.remove(key)
+                true
+            } else false
         }
+        if (owned) future.complete(RETRY)
     }
 
     /** Publishes a result for [key] without starting a fetch (used by a cancelled job that has bytes). */

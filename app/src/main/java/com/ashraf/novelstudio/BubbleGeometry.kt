@@ -21,7 +21,7 @@ import kotlin.math.roundToInt
  */
 internal object BubbleGeometry {
     private const val MASK_MAX = 96
-    private const val MIN_RELATIVE = 0.18f
+    private const val MIN_RELATIVE = 0.55f
 
     /** Normalized balloon outline (x0,y0,x1,y1,...) plus its bounds, all in 0..1 image fractions. */
     class Frame(val poly: FloatArray, val left: Float, val top: Float, val right: Float, val bottom: Float) {
@@ -78,7 +78,8 @@ internal object BubbleGeometry {
         if (R - L <= 0f || B - T <= 0f) return null
         // Refuse a "safe area" that is only a fragment of the box: in that case the detector polygon
         // was the lettering itself, not the balloon, and the rectangle fit is better.
-        // A sliver in EITHER dimension means the polygon was the lettering, not the balloon.
+        // A rectangle that covers less than half the box (e.g. the inscribed rect of a triangle) means
+        // the polygon was the lettering, not the balloon: the caller's rectangle fit is better.
         if (R - L < (boxRight - boxLeft) * MIN_RELATIVE ||
             B - T < (boxBottom - boxTop) * MIN_RELATIVE) return null
         return floatArrayOf(L - boxLeft, T - boxTop, R - boxLeft, B - boxTop)
