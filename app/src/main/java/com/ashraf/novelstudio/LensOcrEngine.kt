@@ -16,7 +16,6 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.SecureRandom
-import java.security.cert.CertificateException
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.Callable
@@ -491,7 +490,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 Thread.currentThread().interrupt()    // genuine cancellation: not a network fault, do not retry
                 throw OcrUnavailableException("Google Lens: cancelled", e)
             } catch (e: SSLException) {
-                if (isCertificateProblem(e)) {
+                if (LensTransport.isCertificateProblem(e)) {
                     Breaker.permanent("TLS certificate")
                     throw OcrUnavailableException("Google Lens: TLS certificate problem (${describe(e)})", e)
                 }
@@ -711,12 +710,6 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         }
     }
 
-    private fun isCertificateProblem(e: Throwable): Boolean {
-        var t: Throwable? = e
-        var depth = 0
-        while (t != null && depth++ < 8) { if (t is CertificateException) return true; t = t.cause }
-        return false
-    }
 
     /** "UnknownHostException (GaiException: android_getaddrinfo failed: EAI_NODATA ...)" - no recognised text involved. */
     private fun describe(e: Throwable): String = LensTransport.describe(e)

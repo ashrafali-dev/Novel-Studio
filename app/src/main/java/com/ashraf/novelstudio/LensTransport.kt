@@ -39,4 +39,9 @@ internal object LensTransport {
 
     /** True when the thread was interrupted (a cancelled scan), as opposed to a network fault. */
     fun isCancellation(error: Throwable): Boolean = error is InterruptedIOException || error is InterruptedException
+
+    /** A TLS trust failure (certificate chain rejected), not a transient connection problem. */
+    fun isCertificateProblem(error: Throwable): Boolean =
+        generateSequence(error) { it.cause }.take(8)
+            .any { it is java.security.cert.CertificateException }
 }

@@ -28,26 +28,81 @@ internal object WebModeInpainter {
     private const val MIN_BYTES = 20_000_000L
     private const val MAX_BYTES = 150_000_000L
     private const val SIZE = 512
+    /** RAM the loaded, running graph needs beyond its file size (native off-heap allocations). */
+    private const val MODEL_RUNTIME_HEADROOM_MB = 180L
 
     private val downloading = AtomicBoolean(false)
     private val warming = AtomicBoolean(false)
+    private const val TAG = "NsInpaint"
+    /** Crashes/freezes attributed to the model before the feature is switched off for good. */
+    const val MAX_CRASHES = 2
     /** Set when one inpaint took longer than 9 s on this phone: AI is skipped from then on (until the app restarts). */
     @Volatile var tooSlow = false
+    /**
+     * How many crashes/freezes this phone already attributed to the model (persisted). At [MAX_CRASHES]
+     * the feature stays off until the user turns it on again (see [restore] and [noteFailure]).
+     */
+    @Volatile var crashes = 0
     @Volatile private var session: OrtSession? = null
     @Volatile private var sessionFailed = false
     @Volatile private var imageName = "image"
     @Volatile private var maskName = "mask"
+    /** One session, one load, one inference at a time. */
+    private val modelLock = Any()
 
     private fun modelFile(ctx: Context): File =
         File(File(ctx.applicationContext.filesDir, "wm_inpaint"), MODEL_NAME)
 
-    fun isReady(ctx: Context): Boolean = modelFile(ctx).let { it.isFile && it.length() in MIN_BYTES..MAX_BYTES }
+    fun isReady(ctx: Context): Boolean =
+        crashes < MAX_CRASHES && modelFile(ctx).let { it.isFile && it.length() in MIN_BYTES..MAX_BYTES }
     fun isDownloading(): Boolean = downloading.get()
     fun isLoaded(): Boolean = session != null
 
     /** Why the last load attempt failed (empty when it never failed). Shown by the menu row. */
     @Volatile var lastLoadError: String = ""
         private set
+
+    /**
+     * Notes that the process died or froze while the model was resident. Called from [restore] when the
+     * previous process left the "opening the model" marker behind. At [MAX_CRASHES] AI Inpaint is switched
+     * off in preferences, so the next start cannot repeat the crash.
+     */
+    fun noteFailure(ctx: Context, reason: String) {
+        crashes = (crashes + 1).coerceAtMost(MAX_CRASHES)
+        Prefs.put(ctx, "inpaintCrashes", crashes.toString())
+        Log.w(TAG, "inpaint failure #$crashes ($reason); crashes=$crashes/$MAX_CRASHES")
+        if (crashes >= MAX_CRASHES) {
+            sessionFailed = true
+            Prefs.putBool(ctx, "wmAiInpaint", false)
+        }
+    }
+
+    /** Explicit user action ("turn it on again") clears the crash guard so a fixed model gets a fresh chance. */
+    fun resetFailures(ctx: Context) {
+        crashes = 0
+        sessionFailed = false
+        Prefs.put(ctx, "inpaintCrashes", "0")
+    }
+
+    /** Drops the loaded model (memory pressure, or the user turned the feature off). Reloads on next use. */
+    fun unload() {
+        synchronized(modelLock) {
+            runCatching { session?.close() }
+            session = null
+        }
+    }
+
+    /**
+     * Whether this phone has headroom for the loaded graph. LaMa's first run allocates roughly three
+     * times the file size; when that is not available the native allocator aborts the process instead
+     * of throwing. [Warm-up][warmUpAsync] therefore declines to load, and the caller keeps the fast
+     * non-AI remover, rather than risking a crash for an optional feature.
+     */
+    fun memoryBudgetAllowsModel(): Boolean {
+        val rt = Runtime.getRuntime()
+        val free = rt.freeMemory() + (rt.maxMemory() - rt.totalMemory())
+        return free >= MODEL_RUNTIME_HEADROOM_MB * 1024L * 1024L
+    }
 
     /**
      * Startup safety net (main thread, once per process): puts back everything the previous process
@@ -63,6 +118,7 @@ internal object WebModeInpainter {
      */
     fun restore(ctx: Context) {
         val app = ctx.applicationContext
+        crashes = (Prefs.get(app, "inpaintCrashes", "0").toIntOrNull() ?: 0).coerceIn(0, MAX_CRASHES)
         try { File(File(app.filesDir, "wm_inpaint"), "$MODEL_NAME.part").delete() } catch (_: Throwable) {}
         if (Prefs.get(app, "inpaintOpening", "0") == "1") {
             Prefs.put(app, "inpaintOpening", "0")
@@ -85,27 +141,33 @@ internal object WebModeInpainter {
     /** Loads the model in the background (several seconds), so the first scanned page never waits for it. */
     fun warmUpAsync(ctx: Context) {
         if (session != null || sessionFailed || !isReady(ctx) || !warming.compareAndSet(false, true)) return
+        // Not enough free memory: the optional AI simply stays off this session; no crash, no wait.
+        if (!memoryBudgetAllowsModel()) { warming.set(false); return }
         val app = ctx.applicationContext
         Thread {
             try { session(app) } catch (_: Throwable) {} finally { warming.set(false) }
         }.apply { isDaemon = true; name = "wm-inpaint-warmup" }.start()
     }
 
-    @Synchronized
     fun delete(ctx: Context): Boolean {
-        try { session?.close() } catch (_: Throwable) {}
-        session = null
-        sessionFailed = false
-        return !modelFile(ctx).exists() || modelFile(ctx).delete()
+        synchronized(modelLock) {
+            try { session?.close() } catch (_: Throwable) {}
+            session = null
+            sessionFailed = false
+        }
+        val gone = !modelFile(ctx).exists() || modelFile(ctx).delete()
+        // A deleted model must never be re-loaded on the next start by a stale crash guard.
+        if (gone) resetFailures(ctx)
+        return gone
     }
 
     /** Downloads the model on a background thread. [onDone] gets null on success, otherwise a short error. */
     fun download(ctx: Context, onProgress: (Long, Long) -> Unit, onDone: (String?) -> Unit) {
         if (!downloading.compareAndSet(false, true)) { onDone("ডাউনলোড ইতিমধ্যে চলছে"); return }
         val app = ctx.applicationContext
-        // Remember across process death that a download is in progress (see restore()).
+        // Remember across process death that a download is in progress (see restore()). The crash guard
+        // is reset only when the new bytes are validated, never up front: a repeated failure must stay counted.
         Prefs.put(app, "inpaintDownloadPending", "1")
-        Prefs.put(app, "inpaintCrashes", "0")
         Thread {
             var error: String? = null
             var conn: HttpURLConnection? = null
@@ -154,16 +216,15 @@ internal object WebModeInpainter {
                     if (!target.isFile || target.length() != part.length()) throw IllegalStateException("ফাইল সংরক্ষণ ব্যর্থ")
                     part.delete()
                 }
-                // Prove right now that this phone's ONNX Runtime can run the model; otherwise say so instead of failing silently.
+                // Proving the model works does NOT belong here: on phones where the native allocator
+                // aborts, a load on this thread killed the whole app ("the app closes when the model is
+                // downloaded") and left nothing behind that said why. The original report names exactly
+                // this moment, but the crash was the consequence, not the cause: a model that cannot be
+                // loaded is now discovered by the silent, guarded warm-up, and the user sees the reason
+                // in the menu instead of losing the app.
                 sessionFailed = false
                 lastLoadError = ""
-                if (session(app) == null) {
-                    target.delete()
-                    sessionFailed = false
-                    throw IllegalStateException(
-                        "মডেল লোড হয়নি" + (if (lastLoadError.isNotBlank()) " ($lastLoadError)" else "")
-                    )
-                }
+                resetFailures(app)
             } catch (e: Throwable) {
                 error = e.message ?: "ডাউনলোড ব্যর্থ"
                 try { File(File(app.filesDir, "wm_inpaint"), "$MODEL_NAME.part").delete() } catch (_: Throwable) {}
@@ -171,6 +232,11 @@ internal object WebModeInpainter {
                 Prefs.put(app, "inpaintDownloadPending", "0")
                 try { conn?.disconnect() } catch (_: Throwable) {}
                 downloading.set(false)
+                if (error == null) {
+                    // A nice-to-have feature must not take the app down when the model turns out to be
+                    // unusable on this phone: the guarded load reports back instead of dying on start.
+                    runCatching { if (session(app) == null) lastLoadError = lastLoadError.ifBlank { "model could not be loaded" } }
+                }
                 onDone(error)
             }
         }.apply { isDaemon = true; name = "wm-inpaint-download" }.start()
@@ -182,6 +248,8 @@ internal object WebModeInpainter {
         if (sessionFailed || !isReady(ctx)) return null
         // Marker for the next start: if this process dies inside createSession (native abort, not a
         // Java exception), restore() sees it and switches AI Inpaint off instead of repeating the crash.
+        // It is taken back outside this call (see finishOpening), NOT right after createSession: the
+        // deadliest failure (allocator abort on the first layers) can happen at the first run.
         markOpening(ctx)
         return try {
             val s = openSession(modelFile(ctx).absolutePath)
@@ -189,7 +257,7 @@ internal object WebModeInpainter {
             imageName = if (names.contains("image")) "image" else names[0]
             maskName = if (names.contains("mask")) "mask" else names[names.size - 1]
             session = s
-            clearOpening(ctx)
+            // The marker is cleared by the caller after the first run proved the model loadable.
             s
         } catch (t: Throwable) {
             Log.w(TAG, "inpaint session failed: ${t.javaClass.name}: ${t.message}")
@@ -234,9 +302,20 @@ internal object WebModeInpainter {
      * [mask] is region-local (rw*rh, non-zero = erase). Returns an rw*rh array whose masked entries hold the
      * new ARGB colour, or null when the model is unavailable or anything fails (caller falls back).
      */
-    @Synchronized
     fun fill(ctx: Context, bitmap: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, mask: ByteArray): IntArray? {
-        val s = session(ctx) ?: return null
+        // Loading (which may fail natively) and every inference go through the same lock: one session,
+        // one 512x512 forward pass at a time, so a second load, an unload or delete() can never pull the
+        // session away from under a running inference.
+        synchronized(modelLock) {
+            if (crashes >= MAX_CRASHES) return null     // the guard switched the feature off
+            val s = session(ctx) ?: return null
+            return inferLocked(ctx, s, bitmap, x0, y0, rw, rh, mask)
+        }
+    }
+
+    private fun inferLocked(
+        ctx: Context, s: OrtSession, bitmap: Bitmap, x0: Int, y0: Int, rw: Int, rh: Int, mask: ByteArray
+    ): IntArray? {
         val t0 = SystemClock.elapsedRealtime()
         var scaledIn: Bitmap? = null
         var srcBmp: Bitmap? = null
@@ -323,6 +402,8 @@ internal object WebModeInpainter {
                 res[at] = big[sy * side + sx]
             }
             if (SystemClock.elapsedRealtime() - t0 > 9000L) tooSlow = true
+            // Load AND first run finished without killing the process: the model is safe on this phone.
+            clearOpening(ctx)
             return res
         } catch (_: Throwable) {
             return null

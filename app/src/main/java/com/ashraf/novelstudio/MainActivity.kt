@@ -10473,6 +10473,8 @@ ${rows.take(220).joinToString("\n")}
 
     private fun toggleInpaintModel() {
         if (!Prefs.bool(this, "wmAiInpaint", false)) {
+            // An explicit "on" gives the model a new chance after an earlier failure.
+            WebModeInpainter.resetFailures(this)
             Prefs.putBool(this, "wmAiInpaint", true)
             if (WebModeInpainter.isReady(this)) {
                 toast("🎨 AI Inpaint ON — artwork bubbles with text are rebuilt instead of covered")
