@@ -854,9 +854,13 @@ internal object WmBubbleStyle {
         if (!ringFlat(bmp, box[0], box[1], box[2], box[3], bg)) return null
         val bwid = box[2] - box[0]; val bhei = box[3] - box[1]
         val mx = if (vertical) maxOf(80, minOf(260, (bhei * 0.55f).toInt()))
-            else maxOf(40, (bwid * 0.9f).toInt())
+            // Horizontal OCR boxes are one line high, but the bubble may be a tall oval. Search far
+            // enough laterally to find its closed border instead of cutting a crop through the fill.
+            else maxOf(120, minOf(500, (bwid * 1.1f).toInt()))
         val my = if (vertical) maxOf(80, minOf(300, (bhei * 0.6f).toInt()))
-            else maxOf(40, (bhei * 1.2f).toInt())
+            // Do NOT scale y-search by the OCR line height: that clipped the top/bottom of Korean
+            // webtoon balloons. Approximate bubble height from line width, with a bounded pixel budget.
+            else maxOf(180, minOf(500, (bwid * 0.9f).toInt()))
         val x0 = (box[0] - mx).coerceAtLeast(0); val y0 = (box[1] - my).coerceAtLeast(0)
         val x1 = (box[2] + mx).coerceAtMost(bmp.width); val y1 = (box[3] + my).coerceAtMost(bmp.height)
         val w = x1 - x0; val h = y1 - y0
