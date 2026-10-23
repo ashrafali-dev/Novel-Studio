@@ -1969,11 +1969,14 @@ internal class WebModeExtractor(
                 // Japanese vertical columns need the enclosing balloon bounds even in real-time mode;
                 // the cheap interior pass returns after flood-fill and skips the leftover-text audit.
                 val bands: MutableList<IntArray>? = if (fastMode || b.vertical) null else ArrayList()
-                // Keep the expensive leftover-ink audit for thorough horizontal scans only.
-                val inter: IntArray? = if (fastMode && !b.vertical) null else try {
+                // Realtime skips leftover-ink OCR, but MUST still detect the real speech-balloon interior.
+                // Otherwise white page space joins the OCR rows and the translation box drifts outside the bubble.
+                // These few membership samples reuse the flood-fill below, so no second image scan is needed.
+                val membership = ArrayList<Boolean>(rects.size)
+                val inter: IntArray? = try {
                     WmBubbleStyle.bubbleInterior(bmp, rects[i], rects, requireLeftover = false,
                         bandsOut = bands, minBand = Math.max(6, (ownFont * 0.45f).toInt()),
-                        vertical = b.vertical)
+                        vertical = b.vertical, membershipOut = membership)
                 } catch (_: Exception) { null }
                 if (inter == null) {
                     // No closed outline found (tail leaks into the artwork, thick outline ...). Lines that sit
@@ -1987,7 +1990,12 @@ internal class WebModeExtractor(
                 val inside = blocks.indices.filter { j ->
                     val cxj = blocks[j].cx
                     val cyj = blocks[j].cy
-                    cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
+                    val inBounds = cxj >= inter[0] && cxj < inter[2] && cyj >= inter[1] && cyj < inter[3]
+                    val inFill = membership.getOrNull(j) == true
+                    val boxCoverage = BubbleGrouping.rectOverlapFraction(rects[j], inter)
+                    // An oval's rectangular bounds include its corners/outside page; require both the
+                    // real flood-filled fill around the OCR box and most of the box within the interior bounds.
+                    inBounds && inFill && boxCoverage >= 0.8f
                 }
                 if (i !in inside) continue
                 val members = inside.filter { !consumed[it] }
