@@ -45,6 +45,48 @@ class BookwormProgress(context: Context) : View(context) {
     private val d = resources.displayMetrics.density
     private fun dp(v: Float) = v * d
 
+    // "Calm" progress strip: a flat accent track. Same [progress] / [running] / [holdMs] contract.
+    private val calm = true
+    private val calmTrack = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x1AFFFFFF }
+    private val calmFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val calmShine = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var calmPhase = 0f
+    private val calmShimmer = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 1600
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener { calmPhase = it.animatedValue as Float; invalidate() }
+    }
+
+    private fun drawCalm(c: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f) return
+        val hh = dp(4f)
+        val y = h / 2f
+        val r = hh / 2f
+        c.drawRoundRect(0f, y - r, w, y + r, r, r, calmTrack)
+        val fw = maxOf(w * shown / 100f, if (shown > 0f) hh else 0f)
+        if (fw > 0f) {
+            calmFill.shader = LinearGradient(0f, 0f, maxOf(fw, 1f), 0f, UiTheme.accentA, UiTheme.accentB, Shader.TileMode.CLAMP)
+            c.drawRoundRect(0f, y - r, fw, y + r, r, r, calmFill)
+            if (running) {
+                val bw = w * 0.28f
+                val x = -bw + (fw + bw) * calmPhase
+                calmShine.shader = LinearGradient(x, 0f, x + bw, 0f,
+                    intArrayOf(0x00FFFFFF, 0x55FFFFFF, 0x00FFFFFF), null, Shader.TileMode.CLAMP)
+                val save = c.save()
+                c.clipRect(0f, 0f, fw, h)
+                c.drawRoundRect(x, y - r, x + bw, y + r, r, r, calmShine)
+                c.restoreToCount(save)
+            }
+        }
+        if (running && !calmShimmer.isStarted) calmShimmer.start()
+        if (!running && calmShimmer.isStarted) calmShimmer.cancel()
+        if (!running) calmShine.shader = null
+    }
+
+
     /** Real translation percentage. The worm position is derived from this only. */
     var progress: Int = 0
         set(v) {
@@ -182,6 +224,7 @@ class BookwormProgress(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        calmShimmer.cancel()
         tick?.cancel(); tick = null; phase = 0f; gait = 0f
         moveAnim?.cancel(); moveAnim = null
         celebAnim?.cancel(); celebAnim = null
@@ -208,6 +251,7 @@ class BookwormProgress(context: Context) : View(context) {
 
     // ------------------------------------------------------------------ drawing
     override fun onDraw(canvas: Canvas) {
+        if (calm) { drawCalm(canvas); return }
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f) return

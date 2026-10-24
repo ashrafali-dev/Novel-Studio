@@ -2421,8 +2421,10 @@ return t.length>=40?'TXT:'+t:'';
     private lateinit var shortcutScroll: HorizontalScrollView
     private lateinit var addressBox: LinearLayout
     private lateinit var progressPct: TextView
-    private lateinit var snackView: TextView
-    private var snackHide: Runnable? = null
+    private lateinit var snack: Snackbar
+    private lateinit var snackSlot: FrameLayout
+    private lateinit var dockRowHost: FrameLayout
+    private var insetsApplied = false
     private var progressShown = false
     private var pulse: ValueAnimator? = null
 
@@ -2889,16 +2891,16 @@ return t.length>=40?'TXT:'+t:'';
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    // ================================================================== theme ("Aurora Glass", see Ui.kt)
+    // ================================================================== theme ("Calm", see Ui.kt)
     private val cBg = UiTheme.bg
-    private val cSurface = 0xFF0C0E15.toInt()
-    private val cPill = 0xFF171A24.toInt()
-    private val cChip = 0xFF1D2130.toInt()
-    private val cField = 0xFF141722.toInt()
-    private val cFieldStroke = 0xFF2A2F42.toInt()
-    private val cStroke = 0xFF262B3C.toInt()
-    private val cCard = 0xFF141722.toInt()
-    private val cCardActive = 0xFF1C2238.toInt()
+    private val cSurface = UiTheme.surface
+    private val cPill = UiTheme.surfaceRaised
+    private val cChip = UiTheme.surfaceRaised
+    private val cField = UiTheme.surface
+    private val cFieldStroke = 0x1AFFFFFF
+    private val cStroke = 0x17FFFFFF
+    private val cCard = UiTheme.surface
+    private val cCardActive = 0xFF20202A.toInt()
     private val cTxt = UiTheme.text
     private val cDim = UiTheme.dim
     private val cAccent = UiTheme.accent
@@ -2979,6 +2981,42 @@ return t.length>=40?'TXT:'+t:'';
             it.layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
         }
 
+    /**
+     * Edge-to-edge: transparent system bars, the app draws its own surfaces. Every top-level surface is
+     * pushed clear of the status bar (top) and the navigation bar / gesture inset (bottom).
+     */
+    @Suppress("DEPRECATION")
+    private fun applyWindowInsets(vararg views: View) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+        } else {
+            window.decorView.systemUiVisibility =
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        }
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
+        // Dark theme: light (white) status bar glyphs.
+        window.decorView.systemUiVisibility =
+            window.decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        val apply = {
+            Insets.capture(this)
+            if (Insets.top + Insets.bottom > 0) {
+                for (v in views) {
+                    v.setPadding(v.paddingLeft, Insets.top + if (v === homeView) dp(2) else 0, v.paddingRight, Insets.bottom)
+                }
+                insetsApplied = true
+            }
+        }
+        apply()
+        window.decorView.setOnApplyWindowInsetsListener { _, i ->
+            apply()
+            i
+        }
+        // A second pass once the first frame is measured (insets are not always dispatched before that).
+        window.decorView.post { if (!insetsApplied) apply() }
+    }
+
     private fun appBackground(): Drawable {
         fun glow(cx: Float, cy: Float, color: Int, radiusDp: Int) = GradientDrawable().apply {
             gradientType = GradientDrawable.RADIAL_GRADIENT
@@ -2994,30 +3032,58 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     // ---- floating message (replaces the system Toast, which cannot be styled)
+    /** State of a short status message, inferred from its leading glyph. */
+    private fun snackKind(msg: String): Snackbar.Kind = when {
+        msg.startsWith("✅") || msg.startsWith("💾") || msg.startsWith("🔖") -> Snackbar.Kind.SUCCESS
+        msg.startsWith("❌") || msg.startsWith("⚠") || msg.startsWith("🚫") -> Snackbar.Kind.ERROR
+        msg.startsWith("⏳") || msg.startsWith("⟳") || msg.startsWith("⏹") || msg.startsWith("🔄") -> Snackbar.Kind.PROGRESS
+        msg.startsWith("🧪") || msg.startsWith("🎌") || msg.startsWith("🖼") -> Snackbar.Kind.WARN
+        else -> Snackbar.Kind.INFO
+    }
+
+    /** Strip the leading emoji/symbol used only to signal state; the state is shown by the icon instead. */
+    private fun snackText(msg: String): String {
+        val m = msg.replace(Regex("^(?:[\\u2190-\\u21FF\\u2600-\\u27BF\\uD83C-\\uDBFF\\uDC00-\\uDFFF\\u2B00-\\u2BFF\\uFE0F\\u200D]+ ?)+"), "").trim()
+        return m.ifEmpty { msg }
+    }
+
     private fun showSnack(msg: String) {
         runOnUiThread {
-            if (!::snackView.isInitialized || !hasWindowFocus()) {
-                // a dialog/sheet is on top of the app window: the system toast is still visible there
+            if (!::snackSlot.isInitialized) {
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 return@runOnUiThread
             }
-            snackHide?.let { handler.removeCallbacks(it) }
-            snackView.animate().cancel()
-            snackView.text = msg
-            snackView.visibility = View.VISIBLE
-            snackView.alpha = 0f
-            snackView.translationY = dp(16).toFloat()
-            snackView.animate().alpha(1f).translationY(0f).setDuration(190).start()
-            val r = Runnable { hideSnack() }
-            snackHide = r
-            handler.postDelayed(r, (2200L + msg.length * 28L).coerceAtMost(6500L))
+            val kind = snackKind(msg)
+            val text = snackText(msg)
+            if (!hasWindowFocus()) {
+                // a dialog/sheet is on top of the app window: the system toast is still visible there
+                Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+                return@runOnUiThread
+            }
+            snackKindLast = kind
+            if (::homeView.isInitialized && homeView.visibility == View.VISIBLE) {
+                homeView.showNotice(text, kind)
+                return@runOnUiThread
+            }
+            snack.show(text, kind, autoHideMs = (2600L + text.length * 24L).coerceIn(2600L, 6000L))
+            updateDockVisibility()
         }
     }
 
     private fun hideSnack() {
-        if (!::snackView.isInitialized) return
-        snackView.animate().alpha(0f).translationY(dp(10).toFloat()).setDuration(170)
-            .withEndAction { snackView.visibility = View.GONE }.start()
+        if (::snack.isInitialized) snack.dismiss()
+        updateDockVisibility()
+    }
+
+    private var snackKindLast: Snackbar.Kind = Snackbar.Kind.INFO
+
+    /** The dock controls are swapped for the notification strip while a message is visible. */
+    private fun updateDockVisibility() {
+        if (!::snackSlot.isInitialized || !::dockRowHost.isInitialized) return
+        if (::homeView.isInitialized && homeView.visibility == View.VISIBLE) return   // home has its own dock
+        val showing = ::snack.isInitialized && snack.shown
+        snackSlot.visibility = if (showing) View.VISIBLE else View.GONE
+        dockRowHost.visibility = if (showing) View.INVISIBLE else View.VISIBLE
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -3371,6 +3437,46 @@ return t.length>=40?'TXT:'+t:'';
             setOnLongClickListener { newBrowserTab("https://www.google.com/"); true }
         }
 
+        // ---- Reader ("Calm") top pill: [back] [title + status] [tabs] [reload] [⋯].
+        // Shown in Scan / Live in place of the browser address field. Back and ⋯ keep their handlers from
+        // the address field (double tap = tab grid, long press = tab grid) and the menu button.
+        expandIcon = ImageView(this).apply {
+            setImageDrawable(IconDrawable(Ic.BACK, UiTheme.text, 1.9f))
+            val p = dp(10)
+            setPadding(p, p, p, p)
+            background = Glass.ripple(this@MainActivity, null)
+            contentDescription = "Back"
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            isClickable = true
+            setOnClickListener { if (novelWv.canGoBack()) novelWv.goBack() else showHome() }
+            setOnLongClickListener { showTabGrid(); true }
+        }
+        expandLabel = TextView(this).apply {
+            text = "Novel Studio"
+            textSize = 14f
+            typeface = medium
+            setTextColor(UiTheme.text)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(6), 0, dp(6), 0)
+            isClickable = true
+            setOnLongClickListener { showTabGrid(); true }
+            setOnClickListener { novelWv.evaluateJavascript("try{window.scrollTo({top:0,behavior:'smooth'})}catch(e){window.scrollTo(0,0)}", null) }
+        }
+        expandBarPill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), 0, dp(2), 0)
+            background = Glass.panel(this@MainActivity, 24, strong = true)
+            elevation = dp(8).toFloat()
+            visibility = View.GONE
+            addView(expandIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(expandLabel, LinearLayout.LayoutParams(0, dp(40), 1f))
+            addView(tabCountBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
+            addView(reloadBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
+            addView(iconButton(Ic.DOTS, "More — reader controls", 20, 40, UiTheme.iconIdle) { showModeSheet() },
+                LinearLayout.LayoutParams(dp(40), dp(40)))
+        }
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -3380,9 +3486,16 @@ return t.length>=40?'TXT:'+t:'';
             addView(tabCountBtn, LinearLayout.LayoutParams(dp(34), dp(34)))
             addView(addressBox)
         }
+        topBarOuter = topBar
+        val topStack = FrameLayout(this).apply {
+            addView(topBar, FrameLayout.LayoutParams(MP, dp(52)))
+            addView(expandBarPill, FrameLayout.LayoutParams(MP, dp(48), Gravity.CENTER))
+        }
+        expandLabel.setOnClickListener { readerControlsSheet() }
+        expandLabel.setOnLongClickListener { showTabGrid(); true }
         val topWrap = FrameLayout(this).apply {
             setPadding(dp(10), dp(8), dp(10), dp(4))
-            addView(topBar, FrameLayout.LayoutParams(MP, dp(52)))
+            addView(topStack, FrameLayout.LayoutParams(MP, dp(52)))
         }
 
         // tab rail (only visible with 2+ tabs) and quick-site shortcuts (only while typing an address)
@@ -3669,39 +3782,43 @@ return t.length>=40?'TXT:'+t:'';
             addView(dockBtn(Ic.FORWARD, "Next chapter") { step("next") })
             addView(dockBtn(Ic.GRID, "Menu") { menu() }.also { menuBtnView = it })
         }
+        // Notification strip shares the dock's footprint: it replaces the dock row while visible, so no text
+        // ever covers the page / translated bubbles.
+        snack = Snackbar(this)
+        snackSlot = FrameLayout(this).apply {
+            visibility = View.GONE
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            addView(snack, FrameLayout.LayoutParams(MP, WC, Gravity.CENTER))
+        }
+        dockRowHost = FrameLayout(this).apply { addView(dock, FrameLayout.LayoutParams(MP, dp(68))) }
+        val snackSlotInner = snackSlot
         val dockWrap = FrameLayout(this).apply {
+            id = View.generateViewId()
             clipChildren = false
             clipToPadding = false
-            // Top padding >= the button's overhang (~11dp) + badge: hardware layers / elevation clip anything outside this view.
-            setPadding(dp(14), dp(18), dp(14), dp(12))
-            addView(dock, FrameLayout.LayoutParams(MP, dp(68)))
+            addView(dockRowHost, FrameLayout.LayoutParams(MP, WC))
+            addView(snackSlotInner, FrameLayout.LayoutParams(MP, WC, Gravity.CENTER))
         }
         dockBar = dock
         dockWrapView = dockWrap
+        SnackbarHost.register(this, object : SnackbarHost {
+            override val isSnackbarVisible: Boolean get() = ::snack.isInitialized && snack.shown
+            override fun show(message: String, kind: Snackbar.Kind, actionLabel: String?, onAction: (() -> Unit)?, autoHideMs: Long) {
+                snackKindLast = kind
+                if (::homeView.isInitialized && homeView.visibility == View.VISIBLE) {
+                    homeView.showNotice(message, kind)
+                    return
+                }
+                snack.show(message, kind, actionLabel, onAction, autoHideMs)
+                updateDockVisibility()
+            }
+        })
         // The bars float over the page in Web Mode; their size can change (tab rail, shortcuts), so follow it.
         val barSizeWatcher = View.OnLayoutChangeListener { _, _, t, _, b, _, ot, _, ob ->
             if (b - t != ob - ot) handler.post { applyFloatingBars() }
         }
         chromeTopView.addOnLayoutChangeListener(barSizeWatcher)
         dockWrap.addOnLayoutChangeListener(barSizeWatcher)
-
-        snackView = TextView(this).apply {
-            textSize = 13f
-            typeface = medium
-            setTextColor(UiTheme.text)
-            maxWidth = dp(330)
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(0xF2292D3F.toInt(), 0xF2181B28.toInt())
-            ).apply {
-                cornerRadius = dp(22).toFloat()
-                setStroke(dp(1), 0x38FFFFFF)
-            }
-            elevation = dp(16).toFloat()
-            visibility = View.GONE
-            setOnClickListener { hideSnack() }
-        }
 
         val main = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -3722,17 +3839,31 @@ return t.length>=40?'TXT:'+t:'';
             onSearch = { q -> go(q) }
             onMenu = { menu() }
             onHub = { part -> Hub.open(this@MainActivity, part) }
+            onDockHost = { toolbar -> homeView.setToolbar(toolbar) }
+            onOpenLibrary = { openLibraryManager() }
+            onOpenUpdates = { openLibraryManager() }
+            onOpenSources = { openLibraryManager() }
+            onExport = { novel -> exportAll(novel) }
+            onShelfMore = { s -> shelfMoreSheet(s) }
         }
+        val homeDock = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+        }
+        homeView.attachDock(homeDock)
         val root = FrameLayout(this).apply {
             background = appBackground()
             addView(main, FrameLayout.LayoutParams(MP, MP))
             addView(homeView, FrameLayout.LayoutParams(MP, MP))
+            addView(homeDock, FrameLayout.LayoutParams(MP, WC, Gravity.BOTTOM))
             addView(modeOverlay, FrameLayout.LayoutParams(dp(230), dp(230), Gravity.CENTER))
             addView(floatBoltHost, FrameLayout.LayoutParams(dp(60), dp(60), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(20) })
-            addView(snackView, FrameLayout.LayoutParams(WC, WC, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).also { it.bottomMargin = dp(106) })
             addView(tourOverlay, FrameLayout.LayoutParams(MP, MP))
         }
         setContentView(root)
+        applyWindowInsets(root, main, homeView, homeDock, dockWrap, chromeTopView)
+        bindHomeToolbar(homeDock)
         handler.post(scanIndicatorRunnable)
 
         buildStrip()
@@ -3765,6 +3896,286 @@ return t.length>=40?'TXT:'+t:'';
             handler.postDelayed({ if (!isFinishing) showLanguageSheet(true) }, 500L)
         }
         handler.postDelayed({ maybeAskCommunity() }, 12_000L)
+    }
+
+    /**
+     * Library manager: search across saved books, rename / export / delete, and mark updates as seen.
+     * Built entirely on the existing [Store] data — the same rows the menu's old "Library" list showed.
+     */
+    /**
+     * Home dock, search state: the empty slot next to the search field becomes the reading-mode switch and
+     * the view control (the same handlers as the reading dock). Moved back out when Search closes.
+     */
+    private fun bindHomeToolbar(homeDock: View) {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(4), 0)
+            addView(modeChip, LinearLayout.LayoutParams(0, dp(44), 1.0f))
+            addView(dockBtn(Ic.SPLIT, "Page view") { cycleMode() }, LinearLayout.LayoutParams(dp(44), dp(44)))
+            addView(dockBtn(Ic.DOTS, "Menu") { menu() }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        }
+        homeView.setToolbar(bar)
+        // Reposition the window's bottom inset onto the floating home dock (it overlays the home view).
+        homeDock.setPadding(homeDock.paddingLeft, homeDock.paddingTop, homeDock.paddingRight, Insets.bottom)
+    }
+
+    private fun openLibraryManager() {
+        val all = Store.novelNames(this)
+        var q = ""
+        lateinit var dlg: Dialog
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(16))
+            background = Sheets.sheetBackground(this@MainActivity)
+        }
+        col.addView(sheetHandle())
+        col.addView(TextView(this).apply {
+            text = "Library"
+            textSize = Type.title
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+            setPadding(dp(4), 0, dp(4), dp(2))
+        })
+        col.addView(TextView(this).apply {
+            text = "${all.size} book" + (if (all.size == 1) "" else "s") + " · " + all.sumOf { Store.chapters(this@MainActivity, it).size } + " saved chapters"
+            textSize = Type.caption
+            setTextColor(UiTheme.dim)
+            setPadding(dp(4), 0, dp(4), dp(12))
+        })
+        val search = EditText(this).apply {
+            hint = "Search books or chapters"
+            setSingleLine()
+            textSize = Type.body
+            setTextColor(UiTheme.text)
+            setHintTextColor(UiTheme.faint)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = Glass.solid(this@MainActivity, 0x0FFFFFFF, 14, UiTheme.strokeSoft)
+        }
+        col.addView(search, LinearLayout.LayoutParams(MP, WC).also { it.bottomMargin = dp(6) })
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun render() {
+            body.removeAllViews()
+            val qq = q.trim()
+            val names = all.filter { n ->
+                qq.isEmpty() || n.contains(qq, true) ||
+                    Store.chapters(this@MainActivity, n).any { it.label().contains(qq, true) }
+            }
+            if (names.isEmpty()) {
+                body.addView(TextView(this@MainActivity).apply {
+                    text = if (all.isEmpty()) "Library is empty. Saved translations appear here." else "No book matches \"$qq\"."
+                    textSize = Type.label
+                    setTextColor(UiTheme.dim)
+                    setPadding(dp(6), dp(18), dp(6), dp(18))
+                })
+                return
+            }
+            for (n in names) {
+                val chs = Store.chapters(this@MainActivity, n)
+                val info = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(4), dp(10), dp(4), dp(10))
+                    contentDescription = "$n, ${chs.size} chapters"
+                    addView(Covers.view(this@MainActivity, n, 40, 56, 9, 17f), LinearLayout.LayoutParams(dp(40), dp(56)).also { it.marginEnd = dp(12) })
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(TextView(this@MainActivity).apply {
+                            text = n
+                            textSize = Type.body
+                            typeface = medium
+                            setTextColor(UiTheme.text)
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        })
+                        addView(TextView(this@MainActivity).apply {
+                            text = "${chs.size} chapters" + (chs.lastOrNull()?.label()?.let { " · " + it } ?: "")
+                            textSize = Type.caption
+                            setTextColor(UiTheme.faint)
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                            setPadding(0, dp(2), 0, 0)
+                        })
+                    }, LinearLayout.LayoutParams(0, WC, 1f))
+                    addView(iconButton(Ic.DOTS, "Book actions", 18, 40, UiTheme.iconIdle) { bookSheet(n) },
+                        LinearLayout.LayoutParams(dp(40), dp(40)))
+                }
+                val row = FrameLayout(this@MainActivity).apply {
+                    background = Glass.ripple(this@MainActivity, null, 14)
+                    isClickable = true
+                    setOnClickListener { dlg.dismiss(); chapterListDialog(n) }
+                    addView(info, FrameLayout.LayoutParams(MP, WC))
+                }
+                body.addView(row, LinearLayout.LayoutParams(MP, WC))
+            }
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) { q = s?.toString().orEmpty(); render() }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        render()
+        col.addView(body, LinearLayout.LayoutParams(MP, WC))
+        if (all.isNotEmpty()) {
+            col.addView(TextView(this).apply {
+                text = "Export all books"
+                textSize = Type.label
+                typeface = medium
+                setTextColor(UiTheme.accent)
+                gravity = Gravity.CENTER
+                setPadding(dp(14), dp(11), dp(14), dp(11))
+                background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x0FFFFFFF, 14, UiTheme.strokeSoft), 14)
+                isClickable = true
+                setOnClickListener { dlg.dismiss(); exportAll(null) }
+            }, LinearLayout.LayoutParams(MP, WC).also { it.topMargin = dp(10) })
+        }
+        val scroll = MaxHeightScroll(this, (resources.displayMetrics.heightPixels * 0.82f).toInt()).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(col, ViewGroup.LayoutParams(MP, WC))
+        }
+        dlg = Sheets.create(this, scroll)
+        dlg.show()
+        LibraryModel.updates(this, markSeen = true)   // opening the library marks updates as seen
+    }
+
+    private fun bookSheet(name: String) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(22))
+            background = Sheets.sheetBackground(this@MainActivity)
+        }
+        box.addView(sheetHandle())
+        box.addView(TextView(this).apply {
+            text = name
+            textSize = Type.heading
+            typeface = boldMedium
+            setTextColor(UiTheme.text)
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(2), 0, dp(2), dp(10))
+        })
+        lateinit var dlg: Dialog
+        fun act(ic: Ic, title: String, sub: String, color: Int = UiTheme.text, onClick: () -> Unit) {
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = Glass.ripple(this@MainActivity, null, 14)
+                isClickable = true
+                setOnClickListener { onClick() }
+                addView(FrameLayout(this@MainActivity).apply {
+                    background = Glass.oval(0x14FFFFFF)
+                    addView(ImageView(this@MainActivity).apply { setImageDrawable(IconDrawable(ic, color)) },
+                        FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER))
+                }, LinearLayout.LayoutParams(dp(34), dp(34)).also { it.marginEnd = dp(12) })
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(this@MainActivity).apply {
+                        text = title; textSize = Type.body; typeface = medium; setTextColor(color)
+                    })
+                    addView(TextView(this@MainActivity).apply {
+                        text = sub; textSize = Type.caption; setTextColor(UiTheme.dim)
+                    })
+                }, LinearLayout.LayoutParams(0, WC, 1f))
+            }, LinearLayout.LayoutParams(MP, WC))
+        }
+        act(Ic.BOOK, "Chapter list", "Open any saved chapter", onClick = { dlg.dismiss(); chapterListDialog(name) })
+        act(Ic.SAVE, "Export as text", "Save this book with the system file picker", onClick = { dlg.dismiss(); exportAll(name) })
+        act(Ic.EDIT, "Rename", "Change the name used for future chapters", onClick = {
+            dlg.dismiss()
+            renameBookDialog(name)
+        })
+        act(Ic.TRASH, "Delete book", "Remove every saved chapter", UiTheme.danger, onClick = {
+            dlg.dismiss()
+            Sheets.confirm(this, "Delete book?", "All saved chapters of \"$name\" will be removed. This cannot be undone.", "Delete", danger = true) {
+                Store.deleteNovel(this, name)
+                notifyLibraryChanged()
+                toast("Deleted $name")
+            }
+        })
+        dlg = Sheets.create(this, box)
+        dlg.show()
+    }
+
+    private fun renameBookDialog(old: String) {
+        val et = EditText(this).apply {
+            setText(old)
+            setSingleLine()
+            setTextColor(UiTheme.text)
+            setHintTextColor(UiTheme.faint)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = Glass.solid(this@MainActivity, 0x0FFFFFFF, 12, UiTheme.strokeSoft)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(16))
+            background = Glass.panel(this@MainActivity, Space.radiusL, strong = true)
+            addView(TextView(this@MainActivity).apply {
+                text = "Rename book"
+                textSize = Type.heading
+                typeface = boldMedium
+                setTextColor(UiTheme.text)
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "Future chapters saved from this book use the new name too."
+                textSize = Type.label
+                setTextColor(UiTheme.dim)
+                setPadding(0, dp(6), 0, dp(12))
+            })
+            addView(et, LinearLayout.LayoutParams(MP, WC))
+        }
+        val dlg = Sheets.create(this, box, bottom = false, dim = 0.55f)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, dp(16), 0, 0)
+        }
+        row.addView(TextView(this).apply {
+            text = "Cancel"
+            textSize = Type.body
+            typeface = medium
+            setTextColor(UiTheme.text)
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = Glass.ripple(this@MainActivity, Glass.solid(this@MainActivity, 0x14FFFFFF, Space.radiusM, UiTheme.strokeSoft), Space.radiusM)
+            setOnClickListener { dlg.dismiss() }
+        }, LinearLayout.LayoutParams(WC, WC).also { it.marginEnd = dp(8) })
+        row.addView(TextView(this).apply {
+            text = "Save"
+            textSize = Type.body
+            typeface = medium
+            setTextColor(UiTheme.onAccent)
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            background = Glass.ripple(this@MainActivity, Glass.accent(this@MainActivity, Space.radiusM), Space.radiusM)
+            setOnClickListener {
+                val n = et.text.toString().trim()
+                if (n.isNotEmpty()) Store.rename(this@MainActivity, old, n)
+                dlg.dismiss()
+                notifyLibraryChanged()
+            }
+        }, LinearLayout.LayoutParams(WC, WC))
+        box.addView(row, LinearLayout.LayoutParams(MP, WC))
+        dlg.show()
+    }
+
+    /** More-actions sheet for a saved book, opened from the home Library section. */
+    private fun shelfMoreSheet(s: LibraryModel.Shelf) = bookSheet(s.name)
+
+    private fun chapterListDialog(name: String) {
+        val l = Store.chapters(this, name)
+        if (l.isEmpty()) return
+        listDialog(name + "\nLong-press a chapter to delete it", l.map { it.label() },
+            { i ->
+                LibraryModel.recordRead(this, name, l[i].id)
+                startActivity(Intent(this, ReaderActivity::class.java).putExtra("novel", name).putExtra("id", l[i].id))
+            },
+            { i ->
+                Sheets.confirm(this, "Delete chapter?", "\"${l[i].label()}\" will be removed from the library.", "Delete", danger = true) {
+                    Store.delete(this, l[i].id)
+                    notifyLibraryChanged()
+                }
+            })
     }
 
     // ------------------------------------------------------------------ home screen
@@ -3972,7 +4383,16 @@ return t.length>=40?'TXT:'+t:'';
     private fun refreshHome() {
         if (!::homeView.isInitialized) return
         val novel = siteShortcuts().map { HomeSite(it.first, it.second) }
-        homeView.render(homeRecents(), novel, comicSiteShortcuts())
+        homeView.render(
+            homeRecents(), novel, comicSiteShortcuts(),
+            LibraryModel.shelves(this), LibraryModel.updates(this), LibraryModel.sources(this)
+        )
+    }
+
+    /** Library previews changed (book opened, chapter fetched, source toggled). */
+    private fun notifyLibraryChanged() {
+        if (!::homeView.isInitialized) return
+        handler.post { if (isFinishing) return@post; refreshHome() }
     }
 
     /** Webtoon / comic starting points. Edit this list to add your own sites. */
@@ -5009,6 +5429,9 @@ return t.length>=40?'TXT:'+t:'';
             if (changed && !first && ::modeOverlay.isInitialized) modeOverlay.play(idx)
         }
         if (::extractBtn.isInitialized) extractBtn.modeIndex = idx
+        if (::expandLabel.isInitialized && ::expandBarPill.isInitialized && expandBarPill.visibility == View.VISIBLE) {
+            expandLabel.text = pageTitleShort()
+        }
         refreshPrefetchChip()
     }
 
@@ -5136,7 +5559,61 @@ return t.length>=40?'TXT:'+t:'';
         }
         if (target != ReadMode.NOVEL) Prefs.put(this, "lastToonSub", if (target == ReadMode.REALTIME) "rt" else "scan")
         refreshModeChip()
+        applyReaderChrome(target)
         trackReadModeSelection()
+    }
+
+    private lateinit var topBarOuter: View
+    private lateinit var expandBarPill: LinearLayout
+    private lateinit var expandIcon: ImageView
+    private lateinit var expandLabel: TextView
+    private var expandedAddress = false
+    private var boxedTop = false
+
+    /**
+     * Reader chrome per mode ("Calm"):
+     *  - Novel: full browser chrome — tabs, address field, reload. Reading the current page needs no dock
+     *    for chapters, so the dock stays as built.
+     *  - WebToon (Scan / Live): one quiet pill — back, page title + live status, reload, overflow. The dock is
+     *    gone; the controls it held (previous/next chapter, view switch, modes) live in the overflow sheet,
+     *    and the extract bolt floats above the page. No dark bars sit over the comic art.
+     */
+    private fun applyReaderChrome(read: ReadMode) {
+        if (!::chromeTopView.isInitialized || !::topBarOuter.isInitialized) return
+        val toon = read != ReadMode.NOVEL
+        chromeTopView.background = if (toon) null else floatingBarBg(26)
+        (topBarOuter.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (toon) { lp.setMargins(0, dp(8), 0, dp(4)); lp.height = dp(48); topBarOuter.layoutParams = lp }
+            else { lp.setMargins(0, dp(8), 0, dp(4)); lp.height = dp(52); topBarOuter.layoutParams = lp }
+        }
+        if (toon) {
+            expandBarPill.visibility = View.VISIBLE
+            expandBarPill.background = Glass.panel(this, 24, strong = true)
+            expandLabel.text = pageTitleShort()
+            expandIcon.setImageDrawable(IconDrawable(Ic.BACK, UiTheme.text, 1.9f))
+            tabCountBtn.visibility = View.VISIBLE
+            applyReaderBars()
+        } else {
+            expandBarPill.visibility = View.GONE
+            addressBox.visibility = View.VISIBLE
+            tabCountBtn.visibility = View.VISIBLE
+            (chromeTopView.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+                if (lp.bottomMargin != 0) { lp.bottomMargin = 0; chromeTopView.layoutParams = lp }
+            }
+            syncToonBars()
+        }
+    }
+
+    /** Title of the calm reader pill: the page's own title, or the mode + site when that is unhelpful. */
+    private fun pageTitleShort(): String {
+        val t = try { novelWv.title.orEmpty().trim() } catch (_: Exception) { "" }
+        if (t.isNotEmpty() && t.length <= 42) return t
+        val host = try { Uri.parse(novelWv.url.orEmpty()).host.orEmpty().removePrefix("www.") } catch (_: Exception) { "" }
+        return when (currentReadMode()) {
+            ReadMode.REALTIME -> "Live" + if (host.isNotBlank()) " · $host" else ""
+            ReadMode.SCAN -> "Scan" + if (host.isNotBlank()) " · $host" else ""
+            else -> t.ifBlank { "Novel Studio" }
+        }
     }
 
     private fun showModeSheet() {
@@ -5543,6 +6020,7 @@ return t.length>=40?'TXT:'+t:'';
      */
     private fun applyFloatingBars() {
         try {
+            if (currentReadMode() != ReadMode.NOVEL && mode == Mode.NOVEL) { applyReaderBars(); return }
             if (!::chromeTopView.isInitialized || !::dockWrapView.isInitialized || !::contentHolderView.isInitialized) return
             if (barsHidden || barsAnimating) return
             val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
@@ -5574,6 +6052,27 @@ return t.length>=40?'TXT:'+t:'';
             (scanDot.layoutParams as? FrameLayout.LayoutParams)?.let { it.topMargin = dp(10) + topH; scanDot.layoutParams = it }
         } catch (_: Exception) { }
     }
+
+    /**
+     * Calm reader bars (Scanning + Live): the page reaches the top edge and the quiet pill floats over it.
+     * The dock stays as a normal row under the page (so its notification slot, progress strip and controls
+     * keep working and nothing is drawn over the comic art). Only the top bar floats.
+     */
+    private fun applyReaderBars() {
+        try {
+            if (!::chromeTopView.isInitialized) return
+            val topLp = chromeTopView.layoutParams as? LinearLayout.LayoutParams ?: return
+            val topH = if (chromeTopView.height > 0) chromeTopView.height else dp(64)
+            if (topLp.bottomMargin == -topH) return
+            topLp.bottomMargin = -topH
+            chromeTopView.layoutParams = topLp
+            chromeTopView.elevation = 0f
+            fl(progressBox)?.let { lp -> lp.topMargin = dp(8) + topH; progressBox.layoutParams = lp }
+            fl(scanDot)?.let { lp -> lp.topMargin = dp(8) + topH; scanDot.layoutParams = lp }
+        } catch (_: Throwable) { }
+    }
+
+    private fun fl(v: View?): FrameLayout.LayoutParams? = v?.layoutParams as? FrameLayout.LayoutParams
 
     private fun cycleMode() {
         setMode(when (mode) {
@@ -5944,6 +6443,9 @@ return t.length>=40?'TXT:'+t:'';
             }
             if (darkMode() == 2) view?.evaluateJavascript(Js.DARK_ON, null)
             if (url != null) {
+                if (view === novelWv && ::expandLabel.isInitialized && expandBarPill.visibility == View.VISIBLE) {
+                    expandLabel.text = pageTitleShort()
+                }
                 Prefs.put(this@MainActivity, "lastNovelUrl", url)
                 if (view === novelWv && !restoringTab) {
                     browserTabs.getOrNull(activeTabIndex)?.url = url
@@ -10698,47 +11200,7 @@ ${rows.take(220).joinToString("\n")}
     }
 
     // ---------- offline library ----------
-    private fun libraryNovels() {
-        val names = Store.novelNames(this)
-        if (names.isEmpty()) return toast("Library is empty. Saved translations will appear here.")
-        val labels = names.map { it + "   (" + Store.chapters(this, it).size + " chapters)" }
-        listDialog("📚 Library", labels, { i -> novelActions(names[i]) }, null)
-    }
-
-    private fun novelActions(name: String) {
-        AlertDialog.Builder(this).setTitle(name)
-            .setItems(arrayOf("📖 Chapter List", "⬇️ Export this novel as TXT", "✏️ Rename", "🗑 Delete Novel")) { _, k ->
-                when (k) {
-                    0 -> chapterList(name)
-                    1 -> exportAll(name)
-                    2 -> renameNovel(name)
-                    3 -> AlertDialog.Builder(this).setMessage("Delete all translations for \"$name\"?")
-                        .setPositiveButton("Delete") { _, _ -> Store.deleteNovel(this, name) }
-                        .setNegativeButton("No", null).show()
-                    else -> {}
-                }
-            }.show()
-    }
-
-    private fun chapterList(name: String) {
-        val l = Store.chapters(this, name)
-        if (l.isEmpty()) return
-        listDialog(name + " (long-press to delete)", l.map { it.label() },
-            { i -> startActivity(Intent(this, ReaderActivity::class.java).putExtra("novel", name).putExtra("id", l[i].id)) },
-            { i ->
-                AlertDialog.Builder(this).setMessage("Delete \"${l[i].label()}\"?")
-                    .setPositiveButton("Delete") { _, _ -> Store.delete(this, l[i].id) }
-                    .setNegativeButton("No", null).show()
-            })
-    }
-
-    private fun renameNovel(old: String) {
-        val et = EditText(this).apply { setText(old) }
-        AlertDialog.Builder(this).setTitle("Novel name")
-            .setView(et)
-            .setPositiveButton("Save") { _, _ -> Store.rename(this, old, et.text.toString().trim()) }
-            .setNegativeButton("Cancel", null).show()
-    }
+    private fun libraryNovels() = openLibraryManager()
 
     private fun exportAll(novel: String?) {
         if (Store.list(this).isEmpty()) return toast("There are no translations to export")
@@ -10893,6 +11355,7 @@ ${rows.take(220).joinToString("\n")}
     override fun onBackPressed() {
         when {
             ::tourOverlay.isInitialized && tourOverlay.isRunning() -> tourOverlay.finish()
+            ::homeView.isInitialized && homeView.visibility == View.VISIBLE && homeView.handleBack() -> Unit
             homeVisible() -> super.onBackPressed()
             activeWv.canGoBack() -> activeWv.goBack()
             else -> showHome()

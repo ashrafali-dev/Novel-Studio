@@ -174,6 +174,12 @@ object Store {
         }
     }
 
+    /** Chapters already saved for [ch]'s novel, in reading order (read-only; used by the Library updates). */
+    fun siblings(c: Context, ch: Chapter): List<Tr> {
+        val novel = Prefs.get(c, "alias_" + ch.novel.ifBlank { "Unknown" }, ch.novel.ifBlank { "Unknown" })
+        return chapters(c, novel)
+    }
+
     fun readRaw(c: Context, id: Long): String =
         try { File(dir(c), "$id.txt").readText() } catch (_: Exception) { "" }
 
