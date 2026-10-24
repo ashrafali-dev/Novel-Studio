@@ -118,3 +118,22 @@ CI had been failing since `b304a63`; the Bug C change was written but never comp
   already required that the shared download survive caller cancellation).
 
 Still open: full green `Verify (tests + build)` on the branch, then the release steps.
+
+## Released 1.7.0 (2026-10-24)
+
+- `eb6b15a` CI green (40043905170, all 3 jobs, no failed steps).
+- Merge commit `18cc26e` (main = d94788b + eb6b15a); build.yml on main success (40044399609).
+- Tag `v1.7.0` -> `18cc26e`; tag build 40044964176 success.
+- Release https://github.com/ashrafali-dev/Novel-Studio/releases/tag/v1.7.0
+  asset NovelStudio-SIGNED-RELEASE-APK.apk, 73 821 603 B, state=uploaded,
+  served by the API (HTTP 206, application/vnd.android.package-archive).
+
+Known environment issue: plain `github.com/.../releases/download/...` returns 404
+from this network for EVERY release asset, including the pre-existing `ci-latest`.
+The authenticated asset API serves it correctly.
+
+Outstanding:
+- Chatbot reply latency is still unmeasured (WebView DOM JS; no emulator in CI).
+- verify.yml does not run on main (build.yml does), so main's PR-style job matrix
+  is only validated on feature branches.
+- Actions artifact quota is exhausted; APK artifacts are best-effort.
