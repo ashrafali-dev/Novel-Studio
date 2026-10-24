@@ -137,3 +137,32 @@ Outstanding:
 - verify.yml does not run on main (build.yml does), so main's PR-style job matrix
   is only validated on feature branches.
 - Actions artifact quota is exhausted; APK artifacts are best-effort.
+
+## 2026-10-24 Reading Panel / Live Lens pipeline diagnosis
+
+Branch `fix/live-panel-reply-completion-20261024` (from main 18cc26e).
+
+Reproduced from the screenshot, by reading the code (no device): Claude answered
+`[001]…[007]`, two bubbles got `[008] B` / `[009] Q`, no bubble was painted, and the
+app said "did not send any text".
+
+P1  WebModeLayout.align accepts a one-character body as a translation.
+    `body.isNotEmpty()` is the only test, so `[008] B` becomes the text of bubble 8.
+    Proven: aligning the screenshot reply with n=9 yields out[7]="B", out[8]="Q"
+    and `pass:true`. Symptom 3 (and 1: bogus bubbles count toward the 70% floor).
+
+P2  align's 70% admission rule discards the WHOLE reply on a reading-panel scan.
+    titleOffset=1 there, so `found*100 >= n*70` applies; 6/7 = 85% passes but e.g.
+    4/7 = 57% returns null, and applyTranslation then toasts "Could not show the
+    translation" and places nothing. Live batches are unaffected (titleOffset=0).
+    This is the "translation visible in the chatbot, no bubble painted" case.
+
+P3  Completion needs `meaningfulReply || (filledReply && allMarkers)`.
+    A reply that is only markers has neither, so polling continues to the 6-minute
+    timeout even though the chatbot finished, and the user is told the chatbot sent
+    no text (symptom 2). A one-char body like "B" also passes __meaningful, so the
+    opposite error exists too: garbage is accepted as done.
+
+Planned fixes: reject implausible one-char bodies, make the 70% rule per-marker
+instead of all-or-nothing, and treat "all markers present and stable" as a valid
+completion signal. Each gets a JVM test.
