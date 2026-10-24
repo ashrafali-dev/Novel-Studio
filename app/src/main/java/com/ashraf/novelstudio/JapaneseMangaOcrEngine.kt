@@ -393,7 +393,13 @@ internal class RoutingOcrEngine : OcrEngine {
                 primary
             }
             else {
-                OcrEngineStatus.lastError = "$selectedMode returned no usable text for ${script.name}; using ML Kit fallback"
+                // Log what the local engine DID return. Only counts and geometry - never the recognised text.
+                // "0 boxes" = the detector found no text; "3 boxes, 0 letters" = recognition decoded nothing
+                // (usually a dictionary/class-count problem), and the two need different fixes.
+                val boxes = primary.blocks.size
+                val letters = primary.blocks.sumOf { b -> b.text.count { it.isLetterOrDigit() } }
+                OcrEngineStatus.lastError = "$selectedMode returned no usable text for ${script.name} " +
+                    "(boxes=$boxes letters=$letters); using ML Kit fallback"
                 Log.w("NovelStudioOCR", OcrEngineStatus.lastError)
                 report("mlkit(empty-primary)", true)
                 // The requested script may simply be wrong (Naver serves Korean under a JAPANESE-looking

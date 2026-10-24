@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master, fix/whole-bubble-translation-context, feature/stylized-multilingual-comic-ocr, fix/realtime-batch-page-identity]
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -136,4 +137,28 @@ jobs:
               --target "$GITHUB_SHA"
           fi
 
+          echo "APK release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+
+      - name: Publish signed APK to the versioned Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          ASSET="NovelStudio-SIGNED-RELEASE-APK.apk"
+          TAG="${GITHUB_REF#refs/tags/}"
+          test -s "$APK"
+          cp "$APK" "$ASSET"
+          # Never overwrite an existing versioned release: a published version is immutable.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite it."
+            exit 1
+          fi
+          gh release create "$TAG" "$ASSET" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Novel Studio ${TAG#v}" \
+            --notes-file docs/release-notes.md \
+            --latest \
+            --target "$GITHUB_SHA"
           echo "APK release page: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

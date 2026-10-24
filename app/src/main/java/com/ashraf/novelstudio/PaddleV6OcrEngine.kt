@@ -79,6 +79,15 @@ internal class PaddleV6OcrEngine(
             recScoreThresh = 0f,
             recBatchSize = p.recognitionBatchSize
         )
+        // The dictionary the runtime will read must match the files the installer validated. A config
+        // that the runtime cannot parse (ModelConfig throws ConfigParseFailed) turns every recognition
+        // into an empty result, which used to be reported as "no text" and silently fell back to ML Kit.
+        PaddleConfigValidator.inspect(runCatching { files.config.readText(Charsets.UTF_8) }.getOrDefault(""))
+            ?: run {
+                failureMessage = "${p.label} recognition dictionary is missing or unreadable; re-download the model"
+                failedVersion = currentVersion
+                throw OcrUnavailableException(failureMessage!!)
+            }
         val created = try {
             PaddleRuntime(
                 appContext,

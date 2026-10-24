@@ -3047,6 +3047,9 @@ return t.length>=40?'TXT:'+t:'';
         applyForceLoadImages()
         Js.sendHoldMs = sendHoldPref()
         CrashLog.install(this)
+        // Finish or undo what a previous process left half-done (an interrupted model download or a
+        // native model load that killed the process). Loads nothing native, so it cannot crash start-up.
+        try { WebModeInpainter.restore(this) } catch (_: Throwable) { }
         chatWv.webViewClient = ChatClient()
         chatWv.settings.setSupportMultipleWindows(true)
         chatWv.settings.javaScriptCanOpenWindowsAutomatically = true
@@ -6027,6 +6030,19 @@ return t.length>=40?'TXT:'+t:'';
     }
 
     // ================================================================== extraction
+    /**
+     * Pull the reply text out of a readLen() answer (the LAST of its 10 fields, URI-encoded). Kept
+     * here so the JSON unquoting is applied first and a literal '|' in the answer cannot shift the
+     * fields. After dropping field 0 nine remain, so the reply is at index 8; the limit = 9 stops
+     * the split there and keeps any '|' inside the reply.
+     */
+    internal fun pollReplyText(raw: String?): String {
+        val joined = decode(raw)
+        val encoded = joined.substringAfter('|', "").split('|', limit = 9).getOrNull(8) ?: ""
+        if (encoded.isEmpty()) return ""
+        return try { java.net.URLDecoder.decode(encoded, "UTF-8") } catch (_: Exception) { "" }
+    }
+
     private fun decode(raw: String?): String = try {
         if (raw == null || raw == "null") "" else JSONArray("[$raw]").getString(0)
     } catch (e: Exception) { "" }
@@ -8305,6 +8321,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 val sendFailed = parts.getOrNull(5) == "failed"
                 val uiDone = parts.getOrNull(6) == "1"
                 val meaningfulReply = parts.getOrNull(7) == "1"
+                // Reply text this poll already read (field 10, URI-encoded); see pollReplyText.
+                val pollText = pollReplyText(raw)
                 // Every marker has some text after it (even just "~" / "..." / "!!"): the chatbot did answer.
                 val filledReply = parts.getOrNull(8) == "1"
                 val got = parts.getOrNull(4) == "1" || n > n0
@@ -8376,6 +8394,21 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 updateProgressUi()
 
                 when {
+                    // Hand the reply this poll already read to finishJob. Only live bubble batches use it
+                    // (they carry no page markers to strip); every other path re-reads exactly as before.
+                    completed && isDeepSeekLivePanel(ch) && ReplyHandoff.usablePollText(
+                        pollText, got, completed
+                    ) != null -> {
+                        val reply = pollText!!
+                        val cacheStarted = android.os.SystemClock.elapsedRealtime()
+                        chatWv.evaluateJavascript(Js.cacheReply(reply)) {
+                            Log.i(
+                                "NovelStudioOCR",
+                                "REPLY_HANDOFF cacheMs=${android.os.SystemClock.elapsedRealtime() - cacheStarted} chars=${reply.length}"
+                            )
+                            finishJob(tok, ch, reply)
+                        }
+                    }
                     completed -> finishJob(tok, ch)
                     livePanelBatch && got && !meaningfulReply && !(filledReply && allMarkers) && !streaming && st >= 8 && elapsed >= 12_000L ->
                         failJob(tok, ch, "The chatbot returned only paragraph markers, not a translation. Tap ⚡ to retry.")
@@ -8420,10 +8453,21 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             .trim()
     }
 
-    private fun finishJob(tok: Int, ch: Chapter) {
+    /**
+     * [pollReply] = the reply the last completion poll already read. Live bubble batches use it directly
+     * (Js.cacheReply stored it for this readText call, which returns it without a page scan); every other
+     * job passes null and re-reads the page as before.
+     */
+    private fun finishJob(tok: Int, ch: Chapter, pollReply: String? = null) {
         if (tok != runToken) return
-        chatWv.evaluateJavascript(Js.readText()) { raw ->
-            if (tok != runToken) return@evaluateJavascript
+        // readText() returns the reply stored by Js.cacheReply for live batches without re-scanning the
+        // page; any other job has no cached reply and the page is read exactly as before.
+        chatWv.evaluateJavascript(Js.readText()) { raw -> completeJob(tok, ch, raw) }
+    }
+
+    private fun completeJob(tok: Int, ch: Chapter, raw: String) {
+        run {
+            if (tok != runToken) return@run
             // Only a request carrying its own bubble layout is a live overlay batch. A geometry-free
             // text fallback or a deliberate full-page extract must use the normal chapter pipeline.
             val livePanelBatch = isRealtimeBubbleBatch(ch)
@@ -8439,16 +8483,16 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 updateProgressUi()
                 startNext()
                 handler.postDelayed({ pumpRealtimeAheadTranslation() }, 220L)
-                return@evaluateJavascript
+                return@run
             }
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
-                return@evaluateJavascript
+                return@run
             }
             if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
                 failJob(tok, ch, "Could not read the answer")
-                return@evaluateJavascript
+                return@run
             }
             // Markers are internal alignment data only. Never expose them in the
             // clipboard or saved chapter, but keep the raw marked response for DOM
@@ -8456,7 +8500,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val t = stripInternalMarkers(rawTranslation)
             if (t.isBlank() || (!livePanelBatch && t.length < 30)) {
                 failJob(tok, ch, "Could not read the translation")
-                return@evaluateJavascript
+                return@run
             }
             val aheadTaskKey = keyOf(ch)
             val aheadTask = rtAheadTranslationTasksByJobKey[aheadTaskKey]
@@ -8465,7 +8509,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                 // never save it as a chapter or try to put it on the screen early.
                 deferNextChatbotRequest()
                 finishRealtimeAheadTranslation(aheadTaskKey, aheadTask, rawTranslation)
-                return@evaluateJavascript
+                return@run
             }
             // Scanning: a reply that cannot be matched to the bubbles used to be saved as a good translation
             // (the AI always answers something). Treat it as a failure instead.
@@ -8475,7 +8519,7 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     val placed = WebModeLayout.align(rawTranslation, lay)
                     if (placed == null || placed.none { !it.isNullOrBlank() }) {
                         failJob(tok, ch, "The chatbot answer could not be matched to the page.", fallback = true)
-                        return@evaluateJavascript
+                        return@run
                     }
                 }
             }
@@ -10419,7 +10463,11 @@ ${rows.take(220).joinToString("\n")}
      * crowded bubbles over art kept the old flat-card overlay forever.
      */
     private fun menuInpaintLabel(): String = when {
-        !Prefs.bool(this, "wmAiInpaint", false) -> "⬜ 🎨 AI Inpaint on artwork (optional)"
+        !Prefs.bool(this, "wmAiInpaint", false) -> {
+            val why = WebModeInpainter.lastLoadError
+            if (why.isBlank()) "⬜ 🎨 AI Inpaint on artwork (optional)"
+            else "⚠️ 🎨 AI Inpaint off — model failed: ${why.take(48)}"
+        }
         WebModeInpainter.isReady(this) -> "✅ 🎨 AI Inpaint on artwork"
         WebModeInpainter.isDownloading() -> "⏳ 🎨 AI Inpaint — downloading model…"
         else -> "⬇️ 🎨 AI Inpaint — tap to download model"
@@ -10427,6 +10475,8 @@ ${rows.take(220).joinToString("\n")}
 
     private fun toggleInpaintModel() {
         if (!Prefs.bool(this, "wmAiInpaint", false)) {
+            // An explicit "on" gives the model a new chance after an earlier failure.
+            WebModeInpainter.resetFailures(this)
             Prefs.putBool(this, "wmAiInpaint", true)
             if (WebModeInpainter.isReady(this)) {
                 toast("🎨 AI Inpaint ON — artwork bubbles with text are rebuilt instead of covered")
@@ -10448,6 +10498,22 @@ ${rows.take(220).joinToString("\n")}
                         } else {
                             Prefs.putBool(this, "wmAiInpaint", false)
                             toast("❌ Inpaint model download failed: $error (AI Inpaint turned OFF)")
+                            // Offer the safe way out instead of leaving a model that kills this phone's runtime.
+                            AlertDialog.Builder(this)
+                                .setTitle("🎨 AI Inpaint could not start")
+                                .setMessage(
+                                    "The model was downloaded but this phone's ONNX Runtime could not use it.\n\n" +
+                                        error + "\n\n" + WebModeInpainter.fileState(this) +
+                                        "\n\nThe feature stays OFF, so start-up is unaffected. You can delete the " +
+                                        "model file and try the download again."
+                                )
+                                .setPositiveButton("Delete model") { _, _ ->
+                                    val ok = WebModeInpainter.delete(this)
+                                    Prefs.putBool(this, "wmAiInpaint", false)
+                                    toast(if (ok) "🗑 Model deleted — AI Inpaint stays off" else "Could not delete the model file")
+                                }
+                                .setNegativeButton("Keep off", null)
+                                .show()
                         }
                     }
                 })

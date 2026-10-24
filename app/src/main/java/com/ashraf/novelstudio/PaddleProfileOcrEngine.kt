@@ -63,6 +63,11 @@ internal class PaddleProfileOcrEngine(
                 Log.i("NovelStudioOCR", "paddleProfile released idle Paddle sessions")
             }
             return call(when (family) { "paddle-ko" -> paddleKo; "mlkit-korean" -> mlKitCjk; else -> paddleV6 })
+        } catch (e: OcrUnavailableException) {
+            // Model/config/native failure. The router falls back to ML Kit; this line makes the reason
+            // visible so a broken model is not mistaken for a page without text.
+            Log.w("NovelStudioPaddle", "paddleProfile failed family=$family language=${script.name}: ${e.message}")
+            throw e
         } finally {
             if (activeFamily != family) {
                 Log.i("NovelStudioOCR", "paddleProfile language=${script.name} activeFamily=$family " +

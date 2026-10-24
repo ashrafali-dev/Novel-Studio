@@ -16,7 +16,6 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.SecureRandom
-import java.security.cert.CertificateException
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.Callable
@@ -64,6 +63,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
     private fun currentHttpMeta(): String = lastHttpMeta.get() ?: "no HTTP response yet"
 
     override fun recognize(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
+    /** Same upload as [recognize]; only the retry deadline (10 s vs 22 s) is shorter. */
     override fun recognizeFast(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script, fastMode = true)
     override fun recognizeRegion(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
 
@@ -71,16 +71,22 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
      * The router can request a fallback pass after a partial read. Return the cached Lens result for
      * the same bitmap (read() hits its image cache) rather than reporting an artificial empty result,
      * which incorrectly changes the actual-engine status to ML Kit.
+     *
+     * A partial answer does not refresh the cache: "some of the text" must not replace a full previous
+     * reading for the next three minutes.
      */
-    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult = read(bitmap, script)
+    override fun recognizeFallback(bitmap: Bitmap, script: OcrScript): OcrResult =
+        read(bitmap, script, cacheResult = false)
 
     override fun close() { synchronized(cache) { cache.clear() } }
 
     // ---------------------------------------------------------------------------------------------
 
-    private fun read(bitmap: Bitmap, script: OcrScript, fastMode: Boolean = false): OcrResult {
+    private fun read(bitmap: Bitmap, script: OcrScript, fastMode: Boolean = false, cacheResult: Boolean = true): OcrResult {
         if (bitmap.isRecycled) throw OcrUnavailableException("Google Lens: bitmap was recycled")
-        if (bitmap.width < MIN_SIDE || bitmap.height < MIN_SIDE) return OcrResult(emptyList())
+        if (bitmap.width < LensAnalysis.MIN_SIDE_FOR_UPLOAD || bitmap.height < LensAnalysis.MIN_SIDE_FOR_UPLOAD) {
+            return OcrResult(emptyList())
+        }
 
         val t0 = SystemClock.elapsedRealtime()
         val prepared = prepare(bitmap)
@@ -118,14 +124,18 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             "upload=${prepared.w}x${prepared.h} jpegBytes=${prepared.jpeg.size} payloadBytes=${payload.size} " +
             "endpoint=${endpoint().substringAfter("://").substringBefore("/")}")
         var networkMs = 0L
+        var successfulCause: Throwable? = null
         val networkStart = SystemClock.elapsedRealtime()
         val body = try {
             post(payload, fastMode).also { networkMs = SystemClock.elapsedRealtime() - networkStart }
         } catch (e: OcrUnavailableException) {
             networkMs = SystemClock.elapsedRealtime() - networkStart
+            // post() makes every HTTP attempt report the status IT received (see post()), so this is the
+            // REAL status of the failed request and not a neighbour's success or a stale thread value.
             val diagnostic = "request failed; networkMs=$networkMs; totalMs=${SystemClock.elapsedRealtime() - t0}; http=${currentHttpStatus()}; ${currentHttpMeta()}; error=${e.message ?: e.javaClass.simpleName}"
             OcrEngineStatus.setLensDiagnostic(diagnostic)
             Log.e(TAG, diagnostic)
+            successfulCause = LensTransport.answerCause(e)
             throw e
         }
 
@@ -157,13 +167,17 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             Breaker.transient("server error ${response.serverError}")
             throw OcrUnavailableException("Google Lens: server error ${response.serverError}")
         }
+        // No objects_response in the reply: the server answered the upload without a text layer. The
+        // cause below the exception is a bare HttpStatus(200), which is what the diagnostic shows, so
+        // "http=200 paragraphs=0 lines=0" is never mistaken for "this picture has no text".
         if (!response.valid) {
-            val diagnostic = "missing objects_response; http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
-                "objects=false; paragraphs=$paragraphCount lines=$lineCount"
+            val cause = successfulCause?.let { " cause=${describe(it)}" } ?: ""
+            val diagnostic = "SMART_REPLY_NO_OBJECTS http=${currentHttpStatus()}; ${currentHttpMeta()}; replyBytes=${body.size}; " +
+                "objects=false; paragraphs=$paragraphCount lines=$lineCount shape=${response.shape}$cause"
             OcrEngineStatus.setLensDiagnostic(diagnostic)
             Log.w(TAG, diagnostic)
             Breaker.transient("reply without objects")
-            throw OcrUnavailableException("Google Lens: reply without text layer")
+            throw OcrUnavailableException("Google Lens: reply without text layer", successfulCause)
         }
 
         val mapStart = SystemClock.elapsedRealtime()
@@ -195,7 +209,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         OcrEngineStatus.setLensDiagnostic(diagnostic)
         if (lines.isEmpty()) Log.w(TAG, "NO_TEXT $diagnostic") else Log.i(TAG, "PARSED $diagnostic")
         Breaker.success()
-        remember(key, lines)
+        if (cacheResult) remember(key, lines)
         Log.i(TAG, "ok lines=${lines.size} sent=${prepared.w}x${prepared.h} bytes=${prepared.jpeg.size} ms=$totalMs")
         Log.i(TAG, "TIMING imageId=${java.lang.Long.toHexString(key)} cacheHit=false prepareMs=$prepareMs keyCacheMs=$keyCacheMs " +
             "payloadBuildMs=$payloadBuildMs networkMs=$networkMs parseMs=$parseMs mapMs=$mapMs totalMs=$totalMs")
@@ -235,14 +249,11 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 owned = flat
                 work = flat
             }
-            val area = work.width.toLong() * work.height.toLong()
-            if (area > MAX_AREA && (work.width > MAX_DIMENSION || work.height > MAX_DIMENSION)) {
+            val size = LensAnalysis.preparedSize(work.width, work.height)
+            if (size.w != work.width || size.h != work.height) {
                 // Match Chromium Lens image preparation: retain native dimensions for ordinary
-                // phone screenshots; only resize when the image exceeds the area AND 1600px bounds.
-                val k = minOf(MAX_DIMENSION.toDouble() / work.width, MAX_DIMENSION.toDouble() / work.height)
-                val sw = (work.width * k).toInt().coerceAtLeast(1)
-                val sh = (work.height * k).toInt().coerceAtLeast(1)
-                val scaled = Bitmap.createScaledBitmap(work, sw, sh, true)
+                // phone screenshots; only resize when the upload limits are really exceeded.
+                val scaled = Bitmap.createScaledBitmap(work, size.w, size.h, true)
                 if (scaled !== work) {
                     val old = owned
                     owned = scaled
@@ -329,6 +340,8 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         // A blank Lens response should not suppress another attempt for the full positive-cache TTL.
         // Keep a brief negative-cache window to avoid hammering Lens for every identical live frame,
         // then let a later scan retry the same image in case Lens's response was transiently incomplete.
+        // Only an actual "no text in this picture" answer is cached; a 200 without objects_response
+        // left textBlocks == 0 too and was wrongly frozen for 3 minutes (see remember()).
         val ttl = if (c.lines.isEmpty()) EMPTY_CACHE_TTL_MS else CACHE_TTL_MS
         if (SystemClock.elapsedRealtime() - c.at > ttl) { cache.remove(key); null } else c.lines
     }
@@ -363,17 +376,68 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
 
     private fun apiKey(): String = Prefs.get(app, "lensApiKey", "").trim().ifEmpty { DEFAULT_API_KEY }
 
-    private class HttpStatus(val code: Int, val retryAfterMs: Long) : IOException("HTTP $code")
+    /**
+     * The server answered with a status. This IS the [LensTransport.Answer] of that attempt, so the
+     * status travels bottom-up with the failure instead of being reconstructed from shared state.
+     */
+    private class HttpStatus(code: Int, val retryAfterMs: Long) : LensTransport.Answer(code, "HTTP $code")
 
-    /** State of ONE HTTP attempt; written by the worker thread, read by the caller. */
+    /**
+     * State of ONE HTTP attempt; written by the worker thread, read by the caller.
+     *
+     * [previous] links the attempts of one logical request in the order they STARTED. Two visible panels
+     * can be in flight on the same engine at once, and the hedging path may start a second attempt after
+     * the first one already failed. Reading only "the newest attempt that has a status" therefore mixed
+     * the outcomes of different images (a failed upload reporting the OTHER panel's 200, or 0/0 status).
+     */
     private class Attempt {
         @Volatile var conn: HttpURLConnection? = null
         @Volatile var body: ByteArray? = null
         @Volatile var status = 0
         @Volatile var meta = "no HTTP response yet"
+        @Volatile var gotResponse = false
+        @Volatile var previous: Attempt? = null
     }
 
     private fun publish(a: Attempt) { lastHttpStatus.set(a.status); lastHttpMeta.set(a.meta) }
+
+    /**
+     * Best description of what the SERVER answered for this attempt: its own response, else the latest
+     * response of an earlier attempt of the same request, else this attempt's transport state. Never the
+     * status of another request running concurrently on this engine.
+     */
+    private fun publishThis(a: Attempt) {
+        var target: Attempt? = a
+        var chosen: Attempt? = null
+        var guard = 0
+        while (target != null && guard++ < 8) {
+            val t = target
+            if (t.gotResponse) { chosen = t; break }
+            if (target === a) chosen = t    // fallback: a's own state (e.g. 0 + connection error)
+            target = t.previous
+        }
+        val c = chosen ?: a
+        lastHttpStatus.set(c.status)
+        lastHttpMeta.set(c.meta)
+    }
+
+    /** The HTTP attempt whose answer this request should be judged by (see [publishThis]). */
+    private fun primaryOf(root: Attempt): Attempt {
+        var a = root
+        var guard = 0
+        while (a.previous != null && guard++ < 8) a = a.previous!!
+        return a
+    }
+
+    private fun metaFor(a: Attempt): Attempt {
+        var t: Attempt? = a
+        var guard = 0
+        while (t != null && guard++ < 8) {
+            if (t.gotResponse) return t
+            t = t.previous
+        }
+        return primaryOf(a)
+    }
 
     /** One logical request: bounded retries inside one overall deadline. Throws [OcrUnavailableException] only. */
     private fun post(payload: ByteArray, fastMode: Boolean): ByteArray {
@@ -386,25 +450,38 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         val connectMs = if (fastMode) FAST_CONNECT_MS else CONNECT_MS
         val started = SystemClock.elapsedRealtime()
         var last: Exception? = null
+        var previousRoot: Attempt? = null
         for (attempt in 0 until attemptLimit) {
-            if (Thread.currentThread().isInterrupted) throw OcrUnavailableException("Google Lens: cancelled")
+            // Cancellation is reported with the status of whatever the server said so far, so a
+            // "cancelled" line is never printed together with a misleading http=0.
+            if (Thread.currentThread().isInterrupted) {
+                previousRoot?.let { publishThis(it) }
+                throw OcrUnavailableException("Google Lens: cancelled (before request)")
+            }
             val remaining = deadlineMs - (SystemClock.elapsedRealtime() - started)
             if (remaining < minimumAttemptMs) break
             val info = netInfo()
             if (!info.online) {
                 // Not counted by the breaker: going offline is cheap to detect, and the moment the connection
                 // returns Lens must work again instead of staying paused.
+                previousRoot?.let { publishThis(it) }
                 throw OcrUnavailableException("Google Lens: no internet connection")
             }
             var waitMs = BACKOFF_MS shl attempt
+            // Report what THIS attempt's requests really received before any retry overwrites it.
+            val onExit = { root: Attempt -> previousRoot = root; publishThis(root) }
+            // A 2xx answer (e.g. 200 without the objects layer) is kept aside separately: it must be
+            // reported as the server's answer, but a 200 is not a network fault and cannot trip the breaker.
+            var answer: LensTransport.Answer? = null
             try {
-                return race(payload, info, remaining, connectMs, hedgeAfterMs, minimumAttemptMs, firstBound = attempt % 2 == 0)
+                return race(payload, info, remaining, connectMs, hedgeAfterMs, minimumAttemptMs, firstBound = attempt % 2 == 0, previous = previousRoot, onRoot = onExit)
             } catch (e: HttpStatus) {
+                answer = e
                 last = e
-                if (e.code !in RETRYABLE_STATUS) {
+                if (e.status !in RETRYABLE_STATUS) {
                     // 400/401/403/404...: wrong key, blocked or changed endpoint. Retrying cannot help.
-                    Breaker.permanent("HTTP ${e.code}")
-                    throw OcrUnavailableException("Google Lens: HTTP ${e.code} (endpoint or key rejected)", e)
+                    Breaker.permanent("HTTP ${e.status}")
+                    throw OcrUnavailableException("Google Lens: HTTP ${e.status} (endpoint or key rejected)", e)
                 }
                 if (e.retryAfterMs > 0) waitMs = maxOf(waitMs, e.retryAfterMs)
             } catch (e: SocketTimeoutException) {
@@ -413,14 +490,19 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 Thread.currentThread().interrupt()    // genuine cancellation: not a network fault, do not retry
                 throw OcrUnavailableException("Google Lens: cancelled", e)
             } catch (e: SSLException) {
-                if (isCertificateProblem(e)) {
+                if (LensTransport.isCertificateProblem(e)) {
                     Breaker.permanent("TLS certificate")
                     throw OcrUnavailableException("Google Lens: TLS certificate problem (${describe(e)})", e)
                 }
                 last = e
+            } catch (e: LensTransport.Answer) {
+                // A REAL server answer that carried no usable reply (e.g. 200 without objects). Report
+                // it to the caller as-is; it is not a network fault and must not trip the breaker.
+                answer = e
             } catch (e: IOException) {
                 last = e    // UnknownHostException, ConnectException, SocketException ("Socket closed"), EOF, ...
             }
+            answer?.let { throw it }
             val jitter = (random.nextInt(120)).toLong()
             val elapsed = SystemClock.elapsedRealtime() - started
             if (attempt == attemptLimit - 1 || elapsed + waitMs + jitter + minimumAttemptMs > deadlineMs) break
@@ -442,17 +524,21 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
      */
     private fun race(
         payload: ByteArray, info: NetInfo, budgetMs: Long, connectMs: Long,
-        hedgeAfterMs: Long, minimumAttemptMs: Long, firstBound: Boolean
+        hedgeAfterMs: Long, minimumAttemptMs: Long, firstBound: Boolean,
+        previous: Attempt?, onRoot: (Attempt) -> Unit
     ): ByteArray {
         val started = SystemClock.elapsedRealtime()
         val cs = ExecutorCompletionService<Attempt>(HTTP_POOL)
         val attempts = ArrayList<Attempt>(2)
         val futures = ArrayList<Future<Attempt>>(2)
         val firstUsesBound = firstBound && info.network != null
+        var root: Attempt? = null
         fun launch(bound: Boolean) {
             val a = Attempt()
-            val left = (budgetMs - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(minimumAttemptMs)
+            a.previous = previous
             attempts.add(a)
+            if (root == null) root = a
+            val left = (budgetMs - (SystemClock.elapsedRealtime() - started)).coerceAtLeast(minimumAttemptMs)
             futures.add(cs.submit(Callable { a.body = postOnce(payload, info.network, bound, left, connectMs, a); a }))
         }
         launch(firstUsesBound)
@@ -478,12 +564,12 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
                 try {
                     val a = done.get()
                     winner = a
-                    publish(a)
+                    publish(metaFor(a))
                     return a.body ?: throw IOException("empty Lens reply")
                 } catch (e: ExecutionException) {
                     val cause = e.cause ?: e
                     if (firstError == null) firstError = cause
-                    if (cause is HttpStatus && cause.code !in RETRYABLE_STATUS) throw cause
+                    if (cause is HttpStatus && cause.status !in RETRYABLE_STATUS) throw cause
                     // Primary failed fast: do not wait for a backoff, try the other path right now.
                     if (!hedged && budgetMs - (SystemClock.elapsedRealtime() - started) >= minimumAttemptMs) {
                         hedged = true; running++
@@ -495,7 +581,7 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             Thread.currentThread().interrupt()
             throw InterruptedIOException("cancelled")
         } finally {
-            if (winner == null) attempts.lastOrNull()?.let { publish(it) }
+            root?.let(onRoot)
             // Cut everything that did not deliver; keep the winner's socket for keep-alive reuse.
             for (a in attempts) if (a !== winner && a.body == null) try { a.conn?.disconnect() } catch (_: Throwable) {}
             for (f in futures) f.cancel(true)
@@ -533,8 +619,17 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             c.setRequestProperty("Connection", "keep-alive")
             // No Accept-Encoding header on purpose: then HttpURLConnection negotiates gzip AND decodes it itself.
             c.outputStream.use { it.write(payload); it.flush() }
-            val code = c.responseCode
+            // The server's answer is recorded the moment it exists, so timeouts while reading the body and
+            // cancellations still show the real HTTP status instead of "http=0".
+            val code = try {
+                c.responseCode
+            } catch (e: IOException) {
+                a.meta = "path=${if (bound && network != null) "bound" else "default"} requestBytes=${payload.size} " +
+                    "transport=${describe(e)}"
+                throw e
+            }
             a.status = code
+            a.gotResponse = true
             a.meta = "contentType=${c.contentType ?: "unknown"} encoding=${c.contentEncoding ?: "none"} " +
                 "headerLength=${c.getHeaderField("Content-Length") ?: "unknown"} requestBytes=${payload.size} " +
                 "path=${if (bound && network != null) "bound" else "default"}"
@@ -545,18 +640,26 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
             }
             // Read to the end BEFORE disconnect(): disconnecting under a pending read is what produces
             // "Socket closed".
-            val reply = c.inputStream.use { ins ->
-                val out = ByteArrayOutputStream(16 * 1024)
-                val buf = ByteArray(16 * 1024)
-                var total = 0
-                while (true) {
-                    val n = ins.read(buf)
-                    if (n < 0) break
-                    total += n
-                    if (total > MAX_RESPONSE_BYTES) throw IOException("Lens reply too large")
-                    out.write(buf, 0, n)
+            val reply = try {
+                c.inputStream.use { ins ->
+                    val out = ByteArrayOutputStream(16 * 1024)
+                    val buf = ByteArray(16 * 1024)
+                    var total = 0
+                    while (true) {
+                        val n = ins.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > MAX_RESPONSE_BYTES) throw IOException("Lens reply too large")
+                        out.write(buf, 0, n)
+                    }
+                    out.toByteArray()
                 }
-                out.toByteArray()
+            } catch (e: IOException) {
+                // 200 received, body cut (timeout, socket closed, cancelled). That is a REAL server answer:
+                // record how far the body got so the diagnostic does not claim http=0.
+                a.meta = "status=200 bodyReadInterrupted path=${if (bound && network != null) "bound" else "default"} " +
+                    "requestBytes=${payload.size}; ${describe(e)}"
+                throw e
             }
             responseFullyRead = true
             Log.i(TAG, "HTTP_RESPONSE status=$code ${a.meta} replyBytes=${reply.size}")
@@ -607,21 +710,9 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         }
     }
 
-    private fun isCertificateProblem(e: Throwable): Boolean {
-        var t: Throwable? = e
-        var depth = 0
-        while (t != null && depth++ < 8) { if (t is CertificateException) return true; t = t.cause }
-        return false
-    }
 
     /** "UnknownHostException (GaiException: android_getaddrinfo failed: EAI_NODATA ...)" - no recognised text involved. */
-    private fun describe(e: Throwable): String {
-        val root = generateSequence(e) { it.cause }.take(8).last()
-        val head = e.javaClass.simpleName
-        val tail = (root.message ?: e.message ?: "").replace(Regex("\\s+"), " ").trim().take(110)
-        val rootName = if (root !== e) root.javaClass.simpleName + (if (tail.isNotEmpty()) ": " else "") else ""
-        return head + (if (tail.isNotEmpty() || rootName.isNotEmpty()) " ($rootName$tail)" else "")
-    }
+    private fun describe(e: Throwable): String = LensTransport.describe(e)
 
     // ---- circuit breaker (process-wide, so recreating the engine does not forget a dead endpoint) ------
 
@@ -700,9 +791,6 @@ internal class LensOcrEngine(context: Context) : OcrEngine {
         private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
-        private const val MIN_SIDE = 16
-        private const val MAX_AREA = 4_000_000L
-        private const val MAX_DIMENSION = 2400
         private const val JPEG_QUALITY = 78
         private const val MAX_UPLOAD_BYTES = 3_500_000
         private const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024

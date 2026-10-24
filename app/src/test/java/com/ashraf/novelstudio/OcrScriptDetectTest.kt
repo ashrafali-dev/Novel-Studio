@@ -44,8 +44,9 @@ class BubbleGeometryTest {
     @Test fun fullRectangleKeepsTheWholeBox() {
         val f = BubbleGeometry.frame(rect(0.1f, 0.1f, 0.5f, 0.3f))!!
         val safe = BubbleGeometry.safeTextRect(f, 0.1f, 0.1f, 0.5f, 0.3f)!!
-        assertTrue(safe[2] - safe[0] > 0.9f * 0.4f)
-        assertTrue(safe[3] - safe[1] > 0.9f * 0.2f)
+        // A rectangle fill keeps almost the whole box; the 6% per-side inset (padX/padY) is kept.
+        assertTrue(safe[2] - safe[0] > 0.85f * 0.4f)
+        assertTrue(safe[3] - safe[1] > 0.85f * 0.2f)
     }
 
     @Test fun ovalOutlineShrinksToItsWidestInside() {

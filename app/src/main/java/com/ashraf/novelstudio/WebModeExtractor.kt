@@ -126,9 +126,13 @@ internal class WebModeExtractor(
     private val aheadWorker: ExecutorService = Executors.newSingleThreadExecutor { r ->
         Thread(r, "ns-webmode-ahead").apply { priority = 3 }   // was MIN_PRIORITY (1): read-ahead OCR must keep up
     }
-    private val aheadCache = object : LinkedHashMap<String, PanelOcr>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PanelOcr>?): Boolean = size > 60
-    }
+    // OCR results by picture identity, shared by read-ahead and the visible scan, including the reading
+    // that is currently in progress (a visible panel waits for it instead of reading the panel again).
+    private val panelOcr = PanelOcrCache()
+    // Panel FILES owned by the extractor (one per activity), shared by the visible scan and read-ahead:
+    // the same panel is fetched once no matter which job looks at it first, and its bytes survive the
+    // cancellation of the job that downloaded them. Keyed by the normalized panel URL.
+    private val panelBytes = PanelStore()
     private val aheadDone: MutableSet<String> = ConcurrentHashMap.newKeySet()
     // Panels the read-ahead gave up on (no text, too small, or the download failed twice). They must not
     // keep occupying the look-ahead window, otherwise art-only panels would stop it from moving forward.
@@ -337,10 +341,11 @@ internal class WebModeExtractor(
             for ((index, p) in refs.withIndex()) {
                 if (!alive()) return
                 val key = WebModeLogic.normalizeUrl(p.src)
+                val ocrKey = PanelOcrCache.key(p.src, p.w, p.h)
                 // Deliver cached OCR too. A previous successful OCR must not be invisible to the translation cache.
-                val cached = synchronized(aheadCache) { aheadCache[key] }
-                if (cached != null) {
-                    emitReady(WebModeAheadPanel(p.src, p.top, cached.text, cached.bubbles))
+                val known = panelOcr.get(ocrKey)
+                if (known != null) {
+                    emitReady(WebModeAheadPanel(p.src, p.top, known.text, known.bubbles))
                     cachedCount++
                     progress("Read-ahead OCR: cache ready $cachedCount/$total", cachedCount * 99 / total)
                     continue
@@ -349,24 +354,29 @@ internal class WebModeExtractor(
                 aheadDone.remove(key)
                 try {
                     progress("Read-ahead OCR: loading image ${index + 1}/$total", index * 99 / total)
-                    val bytes = fetchWithRetry(p, pageUrl) ?: run {
+                    // Only the download is retried here; the OCR below is shared with the visible scan and
+                    // runs at most once per panel, so a failed reading is not repeated by both sides.
+                    val bytes = sharedPanelBytes(p, pageUrl, 25_000L) ?: run {
                         if ((aheadFails.merge(key, 1) { x, y -> x + y } ?: 1) >= 2) aheadBlank.add(key)
                         null
                     } ?: continue
-                    // Full-quality OCR (not the fast one-pass reading): this runs in the background.
                     progress("Read-ahead OCR: reading text ${index + 1}/$total", index * 99 / total)
-                    val po = ocrBytes(bytes, script, p.src, fastMode = true) ?: run { aheadBlank.add(key); null } ?: continue
-                    // Do not poison the read-ahead cache with an empty OCR result; the visible scan
-                    // gets another attempt when the panel reaches the viewport.
-                    if (po.text.isBlank()) {
-                        // Skipped by read-ahead from now on (the visible scan still reads it when it arrives).
+                    // Joins a reading the visible scan already started (and vice versa). Empty results are
+                    // never cached; the visible scan gets its own attempt when the panel reaches the viewport.
+                    var decodedButEmpty = false
+                    val value = panelOcr.getOrJoin(ocrKey, 60_000L) {
+                        val po = ocrBytes(bytes, script, p.src, fastMode = true)
+                        if (po == null) null
+                        else if (po.text.isBlank()) { decodedButEmpty = true; null }
+                        else PanelOcrCache.Value(po.text, po.bubbles)
+                    }
+                    if (value == null) {
                         aheadBlank.add(key)
-                        progress("Read-ahead OCR: no text; skipping panel", index * 99 / total)
+                        if (decodedButEmpty) progress("Read-ahead OCR: no text; skipping panel", index * 99 / total)
                         continue
                     }
-                    synchronized(aheadCache) { aheadCache[key] = po }
                     aheadDone.add(key)
-                    emitReady(WebModeAheadPanel(p.src, p.top, po.text, po.bubbles))
+                    emitReady(WebModeAheadPanel(p.src, p.top, value.text, value.bubbles))
                     cachedCount++
                     progress("Read-ahead OCR: cached panel $cachedCount/$total", cachedCount * 99 / total)
                 } catch (_: OcrUnavailableException) {
@@ -704,7 +714,7 @@ internal class WebModeExtractor(
                 if (elapsed() > JOB_MAX_MS) { diag.timedOut = true; fail(WebModeError.TIMEOUT); return }
                 if (req.visibleOnly && req.forceOcrSrc.isNullOrBlank()) {
                     // Real-time: this panel may already have been read ahead (download + full OCR done).
-                    val hit = synchronized(aheadCache) { aheadCache[WebModeLogic.normalizeUrl(p.src)] }
+                    val hit = panelOcr.get(PanelOcrCache.key(p.src, p.w, p.h))
                     if (hit != null) {
                         diag.downloaded++; diag.decoded++
                         val ct = hit.text
@@ -718,7 +728,7 @@ internal class WebModeExtractor(
                 progress("Loading image ${i + 1}/$total", 10 + i * 89 / total)
                 submitFetch(i)
                 submitFetch(i + FETCH_AHEAD)
-                val bytes = if (pool != null) {
+                val fetched = if (pool != null) {
                     val fetchWaitMs = when {
                         lensParallel -> LENS_IMAGE_FETCH_WAIT_MS
                         req.visibleOnly -> VISIBLE_FETCH_WAIT_MS
@@ -728,6 +738,12 @@ internal class WebModeExtractor(
                     catch (_: Throwable) { futures[i]?.cancel(true); null }
                 } else fetchWithRetry(p, meta.url)
                 futures[i] = null
+                // The shared store is authoritative: it serves bytes the read-ahead already downloaded
+                // (this job's own fetch may have been joined to it) and avoids a second download.
+                val bytes = fetched ?: sharedPanelBytes(
+                    p, meta.url,
+                    if (req.visibleOnly) VISIBLE_FETCH_WAIT_MS else (JOB_MAX_MS - elapsed()).coerceAtLeast(1L)
+                )
                 OcrDiag.log("FETCH", "panel ${i + 1}/$total ${if (bytes == null) "FAILED" else "${bytes.size}B"} in ${SystemClock.elapsedRealtime() - tFetch}ms ${if (p.src.startsWith("data:", true)) "(canvas export)" else p.src.take(70)}")
                 if (bytes == null) {
                     fetchFailed++; diag.failed++
@@ -788,8 +804,18 @@ internal class WebModeExtractor(
                             Log.w(TAG, "Force OCR crop failed; retrying bitmap crop: ${cropError.javaClass.simpleName}: ${cropError.message}")
                             ocrBytes(bytes, script, p.src, fastMode = false, crop = req.forceOcrRegion, cropFallback = true)
                         }
-                    } else {
+                    } else if (targeted) {
+                        // A user-selected region is not the whole panel: never share that reading by key.
                         ocrBytes(bytes, script, p.src, fastMode = fastPass)
+                    } else {
+                        // One reading per picture, shared with the read-ahead in both directions: joins a
+                        // reading it already started, and publishes this one for read-ahead callers.
+                        val ocrKey = PanelOcrCache.key(p.src, p.w, p.h)
+                        val shared = panelOcr.getOrJoin(ocrKey, 90_000L) {
+                            ocrBytes(bytes, script, p.src, fastMode = fastPass)
+                                ?.let { PanelOcrCache.Value(it.text, it.bubbles) }
+                        }
+                        shared?.let { PanelOcr(if (it.text.isBlank()) "" else it.text, it.bubbles) }
                     }
                     diag.decoded++
                     if (po == null) continue                      // too small to be a panel: ignored, not an error
@@ -1656,8 +1682,32 @@ internal class WebModeExtractor(
         }
 
         // ---- fetching: HTTP with the WebView's cookies; blob:/data: and refused requests go through the page itself
+
+        /**
+         * Panel bytes shared by every job of this extractor (visible scan and read-ahead).
+         *
+         * Without this, read-ahead downloaded a panel and kept only its text; when that panel became
+         * visible it was downloaded again (and OCRed again when read-ahead had not finished yet).
+         * The download is deliberately NOT tied to the caller's cancellation: a cancelled read-ahead
+         * still stores what it received, and a visible scan waiting for it gets the bytes.
+         */
+        private fun sharedPanelBytes(p: PanelRef, pageUrl: String, timeoutMs: Long): ByteArray? {
+            val u = p.src
+            // data:/blob: URLs are page-local exports; there is nothing to share or re-download.
+            if (u.startsWith("data:", true) || u.startsWith("blob:", true)) return fetchWithRetry(p, pageUrl)
+            val key = WebModeLogic.normalizeUrl(u)
+            val bytes = panelBytes.loadOrJoin(key, timeoutMs) {
+                // The load runs on THIS thread for the first caller. alive() is intentionally not consulted:
+                // work that has started is finished and cached even if this caller is cancelled meanwhile.
+                fetchWithRetry(p.copy(cancellable = false), pageUrl)
+            }
+            // Visible scan waiting on a cancelled read-ahead: carry on with the full ladder itself.
+            if (bytes == null && alive() && !cancelled.get()) return fetchWithRetry(p, pageUrl)
+            return bytes
+        }
+
         private fun fetchWithRetry(p: PanelRef, pageUrl: String): ByteArray? {
-            if (!alive()) return null
+            if (p.cancellable && !alive()) return null
             val u = p.src
             // Local / page-owned sources never need HTTP retry loops.
             if (u.startsWith("data:", true)) return try { decodeDataUrl(u) } catch (_: Exception) { null }

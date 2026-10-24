@@ -1,7 +1,15 @@
 package com.ashraf.novelstudio
 
-/** Pure helpers for Web Mode (no Android types, so they are unit-testable on the JVM). */
-internal data class PanelRef(val src: String, val top: Int, val left: Int, val w: Int, val h: Int)
+/**
+ * Pure helpers for Web Mode (no Android types, so they are unit-testable on the JVM).
+ *
+ * [cancellable] = a cancel of the calling job aborts this download. False while a shared
+ * PanelStore download runs on behalf of every job (see WebModeExtractor.sharedPanelBytes).
+ */
+internal data class PanelRef(
+    val src: String, val top: Int, val left: Int, val w: Int, val h: Int,
+    val cancellable: Boolean = true
+)
 
 internal object WebModeLogic {
     const val SLICE_H = 2000
