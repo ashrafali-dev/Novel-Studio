@@ -189,3 +189,21 @@ explicit `-`); every CJK/Bengali translation correctly fails that match.
 
 CI cannot run: Actions billing is blocked ("recent account payments have failed").
 The Kotlin has therefore not been compiled and the new tests have not been run in CI.
+
+### Fix (commit 2) — the "did not send any text" state
+
+Root cause, reproduced on the JVM: a read that returns only UI chrome
+("Write a message…", "Message collapsed Show more") is cleaned to an empty string,
+so `hasMeaningfulRealtimeReply` is false and the job failed with "The chatbot did
+not send any text" while the answer was visible. `__trk` can miss the answer's own
+nodes for a poll (short nodes, base-text duplicates), and the only text it returned
+was chrome.
+
+- `ReplyHandoff.shouldReRead` + `MAX_RE_READS = 3`: a chrome-only read is re-read
+  (250 ms apart) before the job is failed. The re-read goes to `readText()`, whose
+  cache was already consumed, so it performs a fresh page scan.
+- The counter resets on a good read and for every new job.
+- `ReplyRereadTest` covers the bound, the reset and the terminal case.
+
+Unchanged on purpose: when all re-reads are chrome, the job still fails with the
+same message and the same bounded auto-retry.

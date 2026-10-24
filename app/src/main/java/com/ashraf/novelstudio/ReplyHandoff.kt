@@ -25,4 +25,18 @@ internal object ReplyHandoff {
         if (t.trim().length < MIN_USABLE_CHARS) return null
         return t
     }
+
+    /** How many times a chrome-only read is re-read before the job is reported as "no text". */
+    const val MAX_RE_READS = 3
+
+    /**
+     * Whether an empty (chrome-only) read should be retried instead of failing the job.
+     *
+     * A read can come back as nothing but UI labels ("Write a message…", "Message collapsed Show more")
+     * while the answer sits on the page: the DOM tracker misses the answer's own nodes for that poll.
+     * Reporting "the chatbot did not send any text" there was wrong. [attempts] is how many re-reads this
+     * job already spent, so a page that truly has no answer still fails after a bounded wait.
+     */
+    fun shouldReRead(meaningful: Boolean, attempts: Int): Boolean =
+        !meaningful && attempts < MAX_RE_READS
 }

@@ -2434,6 +2434,8 @@ return t.length>=40?'TXT:'+t:'';
     private var hasTr = false                 // a translation is currently shown on the novel page
     private var shownTranslated = false
     private var jobMarkers = 0                 // number of [NNN] paragraph markers sent in the running job
+    /** How many times the current reply was re-read because only UI chrome was visible (bounded). */
+    private var replyReReads = 0
     private var lastFastWhy = ""               // why the fast extractor failed (shown in the failure toast)
     private var shownTrRaw: String? = null     // translation text currently on the page (for font/size re-apply)
     private val handler = Handler(Looper.getMainLooper())
@@ -8141,6 +8143,7 @@ return t.length>=40?'TXT:'+t:'';
         val isWtrLab = host == "wtr-lab.com" || host.endsWith(".wtr-lab.com")
         val marked = addInternalMarkers(ch.text, splitSingleLines = isWtrLab)
         jobMarkers = Regex("(?m)^\\[\\d{3,}\\] ").findAll(marked).count()
+        replyReReads = 0
         val markerInstruction = """
 [Internal paragraph markers]
 Each paragraph starts with a marker such as [001], [002], [003].
@@ -8491,9 +8494,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             }
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
+                // A chrome-only read ("Write a message…", "Message collapsed Show more") does not mean
+                // the chatbot failed: the DOM tracker can miss the answer's own nodes for one poll and
+                // the page still shows it. Re-read the page a couple of times before declaring that
+                // nothing was sent; the answer usually appears on the first re-read.
+                if (ReplyHandoff.shouldReRead(meaningful = false, attempts = replyReReads)) {
+                    replyReReads++
+                    Log.i("NovelStudioOCR", "REPLY_EMPTY re-read ${replyReReads}/${ReplyHandoff.MAX_RE_READS} (${rawTranslation.length} chars after clean)")
+                    handler.postDelayed({ finishJob(tok, ch) }, 250L)
+                    return@run
+                }
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
                 return@run
             }
+            replyReReads = 0
             if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
                 failJob(tok, ch, "Could not read the answer")
                 return@run
