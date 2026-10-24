@@ -232,3 +232,11 @@ compiled and the real logic executed (no APK, no device, no models):
 
 Still blocked: GitHub Actions cannot run (billing). Nothing has been built into an
 APK, and `MainActivity.kt` (Android-dependent) has not been compiled.
+
+### CI status: blocked, not attempted further
+
+`verify.yml` only triggers on `fix/ocr-cache-inpaint-perf-20261024`, `main` and
+pull_request, so pushing this branch started no run. Even on a matching branch the
+jobs would not start: Actions is blocked by billing ("recent account payments have
+failed or your spending limit needs to be increased"). No run is claimed to have
+passed for this branch.
