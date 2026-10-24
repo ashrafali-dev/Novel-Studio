@@ -7,6 +7,8 @@ on:
   push:
     branches:
       - 'fix/ocr-cache-inpaint-perf-20261024'
+      - 'fix/live-panel-reply-completion-20261024'
+      - main
   pull_request:
 
 permissions:
