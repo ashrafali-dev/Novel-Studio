@@ -207,3 +207,28 @@ was chrome.
 
 Unchanged on purpose: when all re-reads are chrome, the job still fails with the
 same message and the same bounded auto-retry.
+
+### Fix (commit 3) — stage diagnostics
+
+Placement had no logging at all, so "nothing appeared on the page" left no evidence.
+Added `PLACE …` lines (tag `NovelStudioOCR`), counts and flags only, never the text:
+
+- `PLACE start live=<bool> blocks=<n> placed=<n> markers=<n>` (only when loggable)
+- `PLACE skipped: layout=… placed=…` / `PLACE skipped: no scan layout…`
+- `PLACE scan mode blocks=… placed=…`
+- `PLACE result live=… ok=<bool> script=<n>B`
+
+### Verification performed locally (no CI)
+
+The Kotlin compiler is available in the Gradle cache, so the changed files were
+compiled and the real logic executed (no APK, no device, no models):
+
+- `ReplyHandoff.kt` compiles; a harness exercised `shouldReRead` at attempts 0-2
+  (retry), 3-50 (terminal), the meaningful case and the bound: ALL PASS.
+- `WebModeLayout.kt` compiles (only stubs for Android/JSON siblings were supplied);
+  a harness ran the REAL `align` and `isPlausibleTranslation` over the reported
+  reply, partial answers, titleOffset, reversed/repeated/out-of-range/markerless
+  replies, tilde bodies and the plausibility parity set: 34/34 PASS.
+
+Still blocked: GitHub Actions cannot run (billing). Nothing has been built into an
+APK, and `MainActivity.kt` (Android-dependent) has not been compiled.

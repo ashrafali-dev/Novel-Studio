@@ -8961,9 +8961,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val wmLayout = if (livePanelBatch) realtimeBatchLayout(ch)
                 else WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
             val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
+            // Stage diagnostics: counts only, never the translation itself.
+            if (Log.isLoggable("NovelStudioOCR", Log.INFO)) {
+                val blocks = wmLayout?.bubbles?.size ?: 0
+                val placedCount = wmPlaced?.count { !it.isNullOrBlank() } ?: -1
+                val markerCount = Regex("\\[\\d{3,}\\]").findAll(text).count()
+                Log.i("NovelStudioOCR", "PLACE start live=$livePanelBatch blocks=$blocks placed=$placedCount markers=$markerCount")
+            }
             val wmScript: String
             if (livePanelBatch) {
                 if (wmLayout == null || wmPlaced == null) {
+                    Log.i("NovelStudioOCR", "PLACE skipped: layout=${wmLayout != null} placed=${wmPlaced != null}")
                     releaseDeepSeekHashBatch(ch)
                     toast("⚠️ This batch did not match the bubbles; nothing was placed in the wrong spot")
                     restoreChapterAfterBubbleJob(ch.url)
@@ -8976,11 +8984,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     Prefs.fontFile(this), pageKey(ch.url)
                 )
             } else if (wmLayout != null && wmPlaced != null) {
+                val scanPlaced = wmPlaced.count { v -> !v.isNullOrBlank() }
+                Log.i("NovelStudioOCR", "PLACE scan mode blocks=${wmLayout.bubbles.size} placed=$scanPlaced")
                 val translatedLayout = WebModeLayout.translated(wmLayout, wmPlaced)
                 WebModeLayoutStore.replace(this, ch.url, translatedLayout)
                 wmScript = WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
             } else {
                 // Scanning mode has no reader-view fallback: tell the user briefly (English) and point to Realtime mode.
+                Log.i("NovelStudioOCR", "PLACE skipped: no scan layout and no stored layout for this page")
                 toast("Something went wrong. Please use Realtime mode.")
                 return
             }
@@ -8991,6 +9002,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     if (livePanelBatch) releaseDeepSeekHashBatch(ch)
                     return@evaluateJavascript
                 }
+                val placedOk = r != null && r.contains("ok")
+                Log.i("NovelStudioOCR", "PLACE result live=$livePanelBatch ok=$placedOk script=${wmScript.length}B")
                 if (r != null && r.contains("ok")) {
                     if (livePanelBatch) {
                         val matched = wmLayout?.bubbles?.mapIndexedNotNull { index, bubble ->
