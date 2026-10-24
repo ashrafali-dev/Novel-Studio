@@ -118,3 +118,125 @@ CI had been failing since `b304a63`; the Bug C change was written but never comp
   already required that the shared download survive caller cancellation).
 
 Still open: full green `Verify (tests + build)` on the branch, then the release steps.
+
+## Released 1.7.0 (2026-10-24)
+
+- `eb6b15a` CI green (40043905170, all 3 jobs, no failed steps).
+- Merge commit `18cc26e` (main = d94788b + eb6b15a); build.yml on main success (40044399609).
+- Tag `v1.7.0` -> `18cc26e`; tag build 40044964176 success.
+- Release https://github.com/ashrafali-dev/Novel-Studio/releases/tag/v1.7.0
+  asset NovelStudio-SIGNED-RELEASE-APK.apk, 73 821 603 B, state=uploaded,
+  served by the API (HTTP 206, application/vnd.android.package-archive).
+
+Known environment issue: plain `github.com/.../releases/download/...` returns 404
+from this network for EVERY release asset, including the pre-existing `ci-latest`.
+The authenticated asset API serves it correctly.
+
+Outstanding:
+- Chatbot reply latency is still unmeasured (WebView DOM JS; no emulator in CI).
+- verify.yml does not run on main (build.yml does), so main's PR-style job matrix
+  is only validated on feature branches.
+- Actions artifact quota is exhausted; APK artifacts are best-effort.
+
+## 2026-10-24 Reading Panel / Live Lens pipeline diagnosis
+
+Branch `fix/live-panel-reply-completion-20261024` (from main 18cc26e).
+
+Reproduced from the screenshot, by reading the code (no device): Claude answered
+`[001]…[007]`, two bubbles got `[008] B` / `[009] Q`, no bubble was painted, and the
+app said "did not send any text".
+
+P1  WebModeLayout.align accepts a one-character body as a translation.
+    `body.isNotEmpty()` is the only test, so `[008] B` becomes the text of bubble 8.
+    Proven: aligning the screenshot reply with n=9 yields out[7]="B", out[8]="Q"
+    and `pass:true`. Symptom 3 (and 1: bogus bubbles count toward the 70% floor).
+
+P2  align's 70% admission rule discards the WHOLE reply on a reading-panel scan.
+    titleOffset=1 there, so `found*100 >= n*70` applies; 6/7 = 85% passes but e.g.
+    4/7 = 57% returns null, and applyTranslation then toasts "Could not show the
+    translation" and places nothing. Live batches are unaffected (titleOffset=0).
+    This is the "translation visible in the chatbot, no bubble painted" case.
+
+P3  Completion needs `meaningfulReply || (filledReply && allMarkers)`.
+    A reply that is only markers has neither, so polling continues to the 6-minute
+    timeout even though the chatbot finished, and the user is told the chatbot sent
+    no text (symptom 2). A one-char body like "B" also passes __meaningful, so the
+    opposite error exists too: garbage is accepted as done.
+
+Planned fixes: reject implausible one-char bodies, make the 70% rule per-marker
+instead of all-or-nothing, and treat "all markers present and stable" as a valid
+completion signal. Each gets a JVM test.
+
+### Fix (commit 1)
+
+- `WebModeLayout.isPlausibleTranslation`: a marker body needs >= 2 letters/digits, so
+  `[008] B` / `[009] Q` leave their bubbles blank instead of painting a stray letter.
+- `WebModeLayout.align`: one plausible marker is enough. The 70% floor threw away the
+  whole reply on reading-panel scans (titleOffset=1) when the chatbot had answered the
+  page only partially.
+- `Js.__plausible` + `readLen`: `filled` uses the same rule, so a truncated reply no
+  longer reports itself complete (`done=1`) and the poll keeps waiting for real text.
+  Uses `\p{L}\p{N}` with a code-point fallback for old WebViews.
+- Tests: `WebModeAlignTest` (11 cases + plausibility parity with the JS rule).
+
+Verified locally on OpenJDK 17 (no Gradle, no build): the align algorithm and the
+plausibility rule both reproduce every test expectation.
+
+Also checked, NOT a bug: `[~～]` is two literals in java.util.regex (a range needs an
+explicit `-`); every CJK/Bengali translation correctly fails that match.
+
+### Still to verify (blocked)
+
+CI cannot run: Actions billing is blocked ("recent account payments have failed").
+The Kotlin has therefore not been compiled and the new tests have not been run in CI.
+
+### Fix (commit 2) — the "did not send any text" state
+
+Root cause, reproduced on the JVM: a read that returns only UI chrome
+("Write a message…", "Message collapsed Show more") is cleaned to an empty string,
+so `hasMeaningfulRealtimeReply` is false and the job failed with "The chatbot did
+not send any text" while the answer was visible. `__trk` can miss the answer's own
+nodes for a poll (short nodes, base-text duplicates), and the only text it returned
+was chrome.
+
+- `ReplyHandoff.shouldReRead` + `MAX_RE_READS = 3`: a chrome-only read is re-read
+  (250 ms apart) before the job is failed. The re-read goes to `readText()`, whose
+  cache was already consumed, so it performs a fresh page scan.
+- The counter resets on a good read and for every new job.
+- `ReplyRereadTest` covers the bound, the reset and the terminal case.
+
+Unchanged on purpose: when all re-reads are chrome, the job still fails with the
+same message and the same bounded auto-retry.
+
+### Fix (commit 3) — stage diagnostics
+
+Placement had no logging at all, so "nothing appeared on the page" left no evidence.
+Added `PLACE …` lines (tag `NovelStudioOCR`), counts and flags only, never the text:
+
+- `PLACE start live=<bool> blocks=<n> placed=<n> markers=<n>` (only when loggable)
+- `PLACE skipped: layout=… placed=…` / `PLACE skipped: no scan layout…`
+- `PLACE scan mode blocks=… placed=…`
+- `PLACE result live=… ok=<bool> script=<n>B`
+
+### Verification performed locally (no CI)
+
+The Kotlin compiler is available in the Gradle cache, so the changed files were
+compiled and the real logic executed (no APK, no device, no models):
+
+- `ReplyHandoff.kt` compiles; a harness exercised `shouldReRead` at attempts 0-2
+  (retry), 3-50 (terminal), the meaningful case and the bound: ALL PASS.
+- `WebModeLayout.kt` compiles (only stubs for Android/JSON siblings were supplied);
+  a harness ran the REAL `align` and `isPlausibleTranslation` over the reported
+  reply, partial answers, titleOffset, reversed/repeated/out-of-range/markerless
+  replies, tilde bodies and the plausibility parity set: 34/34 PASS.
+
+Still blocked: GitHub Actions cannot run (billing). Nothing has been built into an
+APK, and `MainActivity.kt` (Android-dependent) has not been compiled.
+
+### CI status: blocked, not attempted further
+
+`verify.yml` only triggers on `fix/ocr-cache-inpaint-perf-20261024`, `main` and
+pull_request, so pushing this branch started no run. Even on a matching branch the
+jobs would not start: Actions is blocked by billing ("recent account payments have
+failed or your spending limit needs to be increased"). No run is claimed to have
+passed for this branch.

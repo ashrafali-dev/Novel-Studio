@@ -2434,6 +2434,8 @@ return t.length>=40?'TXT:'+t:'';
     private var hasTr = false                 // a translation is currently shown on the novel page
     private var shownTranslated = false
     private var jobMarkers = 0                 // number of [NNN] paragraph markers sent in the running job
+    /** How many times the current reply was re-read because only UI chrome was visible (bounded). */
+    private var replyReReads = 0
     private var lastFastWhy = ""               // why the fast extractor failed (shown in the failure toast)
     private var shownTrRaw: String? = null     // translation text currently on the page (for font/size re-apply)
     private val handler = Handler(Looper.getMainLooper())
@@ -8141,6 +8143,7 @@ return t.length>=40?'TXT:'+t:'';
         val isWtrLab = host == "wtr-lab.com" || host.endsWith(".wtr-lab.com")
         val marked = addInternalMarkers(ch.text, splitSingleLines = isWtrLab)
         jobMarkers = Regex("(?m)^\\[\\d{3,}\\] ").findAll(marked).count()
+        replyReReads = 0
         val markerInstruction = """
 [Internal paragraph markers]
 Each paragraph starts with a marker such as [001], [002], [003].
@@ -8375,7 +8378,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     RealtimeCompletionPolicy.noStopSignalThreshold(
                         this, if (livePanelBatch) 8 else 20
                     )
-                // A stable "[001]" without any translated body is not a completed answer.
+                // A stable "[001]" without any translated body is not a completed answer. "filledReply"
+                // now means every marker carries a PLAUSIBLE body (Js.__plausible), so a reply whose
+                // only content is "[008] B" no longer looks finished, while an answer that really did
+                // translate every bubble still completes even if __meaningful judged the whole text
+                // chrome-like (CJK-only answers, for example).
                 val usableRealtimeReply = !livePanelBatch || meaningfulReply || (filledReply && allMarkers)
                 val completedByMarkers = got && usableRealtimeReply && effLen >= minReplyLength && !streaming &&
                     allMarkers && st >= markerStableNeeded
@@ -8487,9 +8494,20 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             }
             val rawTranslation = cleanReply(decode(raw))
             if (livePanelBatch && !hasMeaningfulRealtimeReply(rawTranslation)) {
+                // A chrome-only read ("Write a message…", "Message collapsed Show more") does not mean
+                // the chatbot failed: the DOM tracker can miss the answer's own nodes for one poll and
+                // the page still shows it. Re-read the page a couple of times before declaring that
+                // nothing was sent; the answer usually appears on the first re-read.
+                if (ReplyHandoff.shouldReRead(meaningful = false, attempts = replyReReads)) {
+                    replyReReads++
+                    Log.i("NovelStudioOCR", "REPLY_EMPTY re-read ${replyReReads}/${ReplyHandoff.MAX_RE_READS} (${rawTranslation.length} chars after clean)")
+                    handler.postDelayed({ finishJob(tok, ch) }, 250L)
+                    return@run
+                }
                 failJob(tok, ch, "The chatbot did not send any text. Just wait — the app will try again by itself.", autoRetry = true)
                 return@run
             }
+            replyReReads = 0
             if (rawTranslation.length < (if (livePanelBatch) 2 else 30)) {
                 failJob(tok, ch, "Could not read the answer")
                 return@run
@@ -8943,9 +8961,17 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
             val wmLayout = if (livePanelBatch) realtimeBatchLayout(ch)
                 else WebModeLayoutStore.getScan(ch.url) ?: WebModeLayoutStore.get(this, ch.url)
             val wmPlaced = wmLayout?.let { WebModeLayout.align(text, it) }
+            // Stage diagnostics: counts only, never the translation itself.
+            if (Log.isLoggable("NovelStudioOCR", Log.INFO)) {
+                val blocks = wmLayout?.bubbles?.size ?: 0
+                val placedCount = wmPlaced?.count { !it.isNullOrBlank() } ?: -1
+                val markerCount = Regex("\\[\\d{3,}\\]").findAll(text).count()
+                Log.i("NovelStudioOCR", "PLACE start live=$livePanelBatch blocks=$blocks placed=$placedCount markers=$markerCount")
+            }
             val wmScript: String
             if (livePanelBatch) {
                 if (wmLayout == null || wmPlaced == null) {
+                    Log.i("NovelStudioOCR", "PLACE skipped: layout=${wmLayout != null} placed=${wmPlaced != null}")
                     releaseDeepSeekHashBatch(ch)
                     toast("⚠️ This batch did not match the bubbles; nothing was placed in the wrong spot")
                     restoreChapterAfterBubbleJob(ch.url)
@@ -8958,11 +8984,14 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     Prefs.fontFile(this), pageKey(ch.url)
                 )
             } else if (wmLayout != null && wmPlaced != null) {
+                val scanPlaced = wmPlaced.count { v -> !v.isNullOrBlank() }
+                Log.i("NovelStudioOCR", "PLACE scan mode blocks=${wmLayout.bubbles.size} placed=$scanPlaced")
                 val translatedLayout = WebModeLayout.translated(wmLayout, wmPlaced)
                 WebModeLayoutStore.replace(this, ch.url, translatedLayout)
                 wmScript = WebModeWriter.bubbleScript(wmLayout, wmPlaced, Prefs.fontFile(this), pageKey(ch.url))
             } else {
                 // Scanning mode has no reader-view fallback: tell the user briefly (English) and point to Realtime mode.
+                Log.i("NovelStudioOCR", "PLACE skipped: no scan layout and no stored layout for this page")
                 toast("Something went wrong. Please use Realtime mode.")
                 return
             }
@@ -8973,6 +9002,8 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     if (livePanelBatch) releaseDeepSeekHashBatch(ch)
                     return@evaluateJavascript
                 }
+                val placedOk = r != null && r.contains("ok")
+                Log.i("NovelStudioOCR", "PLACE result live=$livePanelBatch ok=$placedOk script=${wmScript.length}B")
                 if (r != null && r.contains("ok")) {
                     if (livePanelBatch) {
                         val matched = wmLayout?.bubbles?.mapIndexedNotNull { index, bubble ->

@@ -1,6 +1,21 @@
-# Novel Studio 1.7.0
+# Novel Studio 1.8.0
 
-Bug-fix release for OCR providers, panel caching, AI Inpaint start-up crashes and chatbot reply hand-off.
+Fixes the Reading Panel / Live Lens pipeline, on top of everything in 1.7.0.
+
+## Bubble placement and reply completion
+
+- A marker whose text is a single letter or symbol (for example `[008] B`, `[009] Q`) is no longer
+  painted over the artwork. Such a bubble keeps its original text instead of showing a stray
+  character.
+- A partially answered page now places the bubbles it does cover. Previously the whole reply was
+  discarded unless at least 70% of the bubbles had a translation (reading-panel scans), so a good
+  answer could produce nothing on the page.
+- "The chatbot did not send any text" no longer appears while the answer is visible. A read that
+  returned only interface labels is now re-read a few times before the job is reported as failed.
+- The completion poll and the placement step now agree on what counts as a finished translation,
+  so a reply that is still being written is not treated as final.
+
+Diagnostic logging was added for each placement stage (counts only, never the translation).
 
 ## Google Lens OCR
 
@@ -49,5 +64,6 @@ the JVM unit tests, and no emulator is used in this project's CI. No latency imp
 ## Tests
 
 JVM unit tests cover Lens reply classification and upload geometry, Paddle config validation, the
-panel byte/OCR caches (including cancellation), reply hand-off, script detection and bubble
-geometry. CI also builds and verifies the signed release APK.
+panel byte/OCR caches (including cancellation), reply hand-off, script detection, bubble geometry,
+marker-to-bubble alignment (`WebModeAlignTest`) and the chrome-only re-read rule (`ReplyRereadTest`).
+CI also builds and verifies the signed release APK.
