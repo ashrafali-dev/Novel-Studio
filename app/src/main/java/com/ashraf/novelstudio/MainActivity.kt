@@ -8375,7 +8375,11 @@ Do not invent text. Keep each translation short enough to fit a speech bubble.
                     RealtimeCompletionPolicy.noStopSignalThreshold(
                         this, if (livePanelBatch) 8 else 20
                     )
-                // A stable "[001]" without any translated body is not a completed answer.
+                // A stable "[001]" without any translated body is not a completed answer. "filledReply"
+                // now means every marker carries a PLAUSIBLE body (Js.__plausible), so a reply whose
+                // only content is "[008] B" no longer looks finished, while an answer that really did
+                // translate every bubble still completes even if __meaningful judged the whole text
+                // chrome-like (CJK-only answers, for example).
                 val usableRealtimeReply = !livePanelBatch || meaningfulReply || (filledReply && allMarkers)
                 val completedByMarkers = got && usableRealtimeReply && effLen >= minReplyLength && !streaming &&
                     allMarkers && st >= markerStableNeeded

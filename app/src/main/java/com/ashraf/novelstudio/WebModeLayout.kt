@@ -163,7 +163,7 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
                 val body = text.substring(m.range.last + 1, end).trim()
                 // Older prompts/models used a tilde as a fake translation for skipped OCR.
                 // Treat it as an empty answer so it is never painted over a comic bubble.
-                if (body.isNotEmpty() && !body.matches(Regex("[~～]+"))) byNo[no] = body
+                if (isPlausibleTranslation(body)) byNo[no] = body
             }
 
             // Full-chapter replies include the title as [001], so a response that starts at [001]
@@ -176,8 +176,26 @@ internal class WebModeLayout(val titleOffset: Int, val bubbles: List<WmBubble>) 
             // Marker numbers are positional IDs. Never select a different offset just because it
             // happens to produce more matches; missing IDs leave their own bubble blank.
             val out = List(n) { i -> byNo[i + 1 + layout.titleOffset]?.replace(NL, " ") }
-            val found = out.count { !it.isNullOrBlank() }
-            return if (found > 0 && (found * 100 >= n * 70 || layout.titleOffset == 0)) out else null
+            // One plausible marker is enough. The old rule required 70% of the bubbles (except for
+            // live batches, where titleOffset is 0) and threw the WHOLE reply away below that, so a
+            // partially answered page placed nothing even though the good markers were unambiguous.
+            // Each bubble is already keyed by its own marker; blanks simply stay untranslated.
+            return if (out.any { !it.isNullOrBlank() }) out else null
+        }
+
+        /**
+         * Whether [body] is a usable translation for one bubble rather than a stray fragment.
+         *
+         * The reported failure had "[008] B" and "[009] Q" painted as if they were translations: the
+         * only check used to be "not empty". A real bubble translation is at least two letters, so a
+         * lone letter or a lone symbol is treated as a missing answer (that bubble keeps its original
+         * text) instead of being drawn over the artwork.
+         */
+        fun isPlausibleTranslation(body: String): Boolean {
+            if (body.isEmpty()) return false
+            // Escaped so the two tildes are literals, never a range (U+007E..U+FF5E would match everything).
+            if (body.matches(Regex("[~～]+"))) return false          // explicit "nothing here"
+            return body.count { it.isLetterOrDigit() } >= 2
         }
     }
 }

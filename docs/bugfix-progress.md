@@ -166,3 +166,26 @@ P3  Completion needs `meaningfulReply || (filledReply && allMarkers)`.
 Planned fixes: reject implausible one-char bodies, make the 70% rule per-marker
 instead of all-or-nothing, and treat "all markers present and stable" as a valid
 completion signal. Each gets a JVM test.
+
+### Fix (commit 1)
+
+- `WebModeLayout.isPlausibleTranslation`: a marker body needs >= 2 letters/digits, so
+  `[008] B` / `[009] Q` leave their bubbles blank instead of painting a stray letter.
+- `WebModeLayout.align`: one plausible marker is enough. The 70% floor threw away the
+  whole reply on reading-panel scans (titleOffset=1) when the chatbot had answered the
+  page only partially.
+- `Js.__plausible` + `readLen`: `filled` uses the same rule, so a truncated reply no
+  longer reports itself complete (`done=1`) and the poll keeps waiting for real text.
+  Uses `\p{L}\p{N}` with a code-point fallback for old WebViews.
+- Tests: `WebModeAlignTest` (11 cases + plausibility parity with the JS rule).
+
+Verified locally on OpenJDK 17 (no Gradle, no build): the align algorithm and the
+plausibility rule both reproduce every test expectation.
+
+Also checked, NOT a bug: `[~～]` is two literals in java.util.regex (a range needs an
+explicit `-`); every CJK/Bengali translation correctly fails that match.
+
+### Still to verify (blocked)
+
+CI cannot run: Actions billing is blocked ("recent account payments have failed").
+The Kotlin has therefore not been compiled and the new tests have not been run in CI.
