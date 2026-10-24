@@ -122,8 +122,10 @@ jobs:
           fi
           echo "PASS: permanent Novel Studio release signing certificate."
 
-      # Required, not best-effort: the APK is the product of this job.
+      # Best-effort: Actions artifact storage has a quota that is often exhausted. The publishable
+      # copy of this APK is the GitHub Release asset created by build.yml on a v* tag.
       - name: Upload signed release APK
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: NovelStudio-SIGNED-RELEASE-APK
